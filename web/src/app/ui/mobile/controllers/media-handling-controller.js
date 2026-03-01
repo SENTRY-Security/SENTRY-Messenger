@@ -8,7 +8,7 @@
 import { BaseController } from './base-controller.js';
 import { downloadAndDecrypt } from '../../../features/media.js';
 import { downloadChunkedManifest, streamChunks } from '../../../features/chunked-download.js';
-import { isMseSupported, detectCodecFromInitSegment, buildMimeFromCodecString, createMsePlayer } from '../../../features/mse-player.js';
+import { isMseSupported, detectCodecFromInitSegment, buildMimeFromCodecString, createMsePlayer, isValidMseInitSegment } from '../../../features/mse-player.js';
 import { mergeInitSegments } from '../../../features/mp4-remuxer.js';
 import { renderPdfViewer, cleanupPdfViewer } from '../viewers/pdf-viewer.js';
 import { openImageViewer, cleanupImageViewer } from '../viewers/image-viewer.js';
@@ -263,6 +263,7 @@ export class MediaHandlingController extends BaseController {
                     throw new Error('無法偵測影片編碼格式');
                 }
 
+                let decodeErrors = 0;
                 for (let attempt = 0; attempt < codecs.length; attempt++) {
                     const codec = codecs[attempt];
                     try {
@@ -291,6 +292,17 @@ export class MediaHandlingController extends BaseController {
                         return;
                     } catch (err) {
                         console.warn(`[mse] init attempt ${attempt + 1}/${codecs.length} failed (${codec}):`, err?.message);
+                        // Detect decode errors (readyState transitions to "ended").
+                        // If 2+ consecutive decode errors occur, the issue is with
+                        // the data format, not the codec — bail out early instead
+                        // of trying all remaining codecs.
+                        if (err?.message?.includes('readyState=ended')) {
+                            decodeErrors++;
+                            if (decodeErrors >= 2) {
+                                console.warn('[mse] data format incompatible with MSE (consecutive decode errors), bailing out');
+                                throw err;
+                            }
+                        }
                         if (attempt === codecs.length - 1) throw err;
                     }
                 }
@@ -357,6 +369,17 @@ export class MediaHandlingController extends BaseController {
                     } else {
                         const track = manifestTracks[0];
                         primaryMime = track.codec ? buildMimeFromCodecString(track.codec) : null;
+                    }
+
+                    // Validate fMP4 format: mvex box is required for MSE.
+                    // Regular MP4 (no mvex) plays via blob URL but not MSE.
+                    if (!isValidMseInitSegment(initData)) {
+                        console.warn('[video] init segment missing mvex box (not fMP4), skipping MSE → blob fallback');
+                        useBlobFallback = true;
+                        blobParts.push(initData);
+                        try { msePlayer.destroy(); } catch {}
+                        msePlayer = null;
+                        continue;
                     }
 
                     try {

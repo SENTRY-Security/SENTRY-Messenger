@@ -159,6 +159,24 @@ export function detectCodecFromFirstChunk(data, contentType) {
 }
 
 /**
+ * Validate that data looks like a valid fMP4 init segment for MSE.
+ * MSE requires fragmented MP4 which has an 'mvex' (Movie Extends) box
+ * inside 'moov'. Without mvex, browsers reject appendBuffer with a
+ * decode error (readyState → "ended") even if the codec string is correct.
+ *
+ * Returns false for regular (non-fragmented) MP4 data, which plays fine
+ * via blob URL but cannot be streamed via MSE SourceBuffer.
+ */
+export function isValidMseInitSegment(data) {
+  if (!data || data.length < 12) return false;
+  if (!hasMp4Box(data, 'moov')) return false;
+  // mvex (Movie Extends) is the key indicator of fragmented MP4.
+  // Without it, the browser treats the data as non-fragmented MP4 and
+  // rejects appendBuffer with a decode error.
+  return hasMp4Box(data, 'mvex');
+}
+
+/**
  * Check if MP4 data contains a specific box type.
  */
 function hasMp4Box(data, boxType) {
