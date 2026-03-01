@@ -748,23 +748,33 @@ async function muxToFmp4(encodedVideo, encodedAudio, videoConfig, audioTrackInfo
   // Start segmentation — enables onSegment callbacks during addSample()
   mp4boxFile.start();
 
-  // Add video samples — each addSample() may trigger onSegment
-  // when nbSamples have been accumulated
-  for (const frame of encodedVideo) {
-    const tsInTimescale = Math.round((frame.timestamp / 1_000_000) * 90000);
-    const durInTimescale = Math.round((frame.duration / 1_000_000) * 90000);
-    mp4boxFile.addSample(videoTrackId, frame.data.buffer, {
-      duration: durInTimescale || 3000,
-      is_sync: frame.key,
-      cts: tsInTimescale,
-      dts: tsInTimescale,
-    });
-  }
+  // [FIX] Interleave video and audio addSample() calls by timestamp.
+  // mp4box.js emits per-track segments (each moof+mdat covers one track).
+  // If all video samples are added first, mediaSegs becomes:
+  //   [video_seg_1, ..., video_seg_N, audio_seg_1, ..., audio_seg_M]
+  // During MSE streaming, the player appends all video before any audio,
+  // causing silent playback. Interleaving by timestamp produces:
+  //   [video_seg_1, audio_seg_1, video_seg_2, audio_seg_2, ...]
+  // so both tracks progress together and MSE has audio data from the start.
+  const audioTimescale = audioTrackInfo?.audio?.sample_rate || 44100;
+  let vi = 0;
+  let ai = 0;
+  while (vi < encodedVideo.length || (audioTrackId && ai < encodedAudio.length)) {
+    const vTs = vi < encodedVideo.length ? encodedVideo[vi].timestamp : Infinity;
+    const aTs = (audioTrackId && ai < encodedAudio.length) ? encodedAudio[ai].timestamp : Infinity;
 
-  // Add audio samples
-  if (audioTrackId) {
-    const audioTimescale = audioTrackInfo?.audio?.sample_rate || 44100;
-    for (const frame of encodedAudio) {
+    if (vTs <= aTs && vi < encodedVideo.length) {
+      const frame = encodedVideo[vi++];
+      const tsInTimescale = Math.round((frame.timestamp / 1_000_000) * 90000);
+      const durInTimescale = Math.round((frame.duration / 1_000_000) * 90000);
+      mp4boxFile.addSample(videoTrackId, frame.data.buffer, {
+        duration: durInTimescale || 3000,
+        is_sync: frame.key,
+        cts: tsInTimescale,
+        dts: tsInTimescale,
+      });
+    } else if (audioTrackId && ai < encodedAudio.length) {
+      const frame = encodedAudio[ai++];
       const tsInTimescale = Math.round((frame.timestamp / 1_000_000) * audioTimescale);
       const durInTimescale = Math.round((frame.duration / 1_000_000) * audioTimescale);
       mp4boxFile.addSample(audioTrackId, frame.data.buffer, {
@@ -773,6 +783,8 @@ async function muxToFmp4(encodedVideo, encodedAudio, videoConfig, audioTrackInfo
         cts: tsInTimescale,
         dts: tsInTimescale,
       });
+    } else {
+      break; // safety — shouldn't reach here
     }
   }
 

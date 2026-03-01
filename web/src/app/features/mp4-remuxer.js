@@ -789,12 +789,38 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
     }
   }
 
+  // [FIX] Interleave per-track media segments so video and audio data
+  // progress together in the chunk stream. mp4box.js emits per-track segments
+  // (each moof+mdat covers one track). If the source file has non-interleaved
+  // samples, all video segments may come before all audio segments. During MSE
+  // streaming, the player would append all video before any audio arrives,
+  // causing silent playback. Zip video and audio segments together:
+  //   [video_seg_0, audio_seg_0, video_seg_1, audio_seg_1, ...]
+  const perTrack = {};
+  for (const seg of orderedMediaSegs) {
+    (perTrack[seg.trackId] || (perTrack[seg.trackId] = [])).push(seg);
+  }
+  const trackIds = Object.keys(perTrack);
+  const interleaved = [];
+  if (trackIds.length <= 1) {
+    // Single track — no interleaving needed
+    interleaved.push(...orderedMediaSegs);
+  } else {
+    // Zip: round-robin across tracks by index
+    const maxLen = Math.max(...trackIds.map(id => perTrack[id].length));
+    for (let i = 0; i < maxLen; i++) {
+      for (const id of trackIds) {
+        if (i < perTrack[id].length) interleaved.push(perTrack[id][i]);
+      }
+    }
+  }
+
   // Build flat segments array for upload:
   // [combined-init, mediaSeg1, mediaSeg2, ...]
   // Media segments are already Blobs (from onSegment), init stays as Uint8Array (tiny).
   const segments = [
     { trackIndex: 0, data: combinedInit },
-    ...orderedMediaSegs.map(ms => ({ trackIndex: 0, blob: ms.blob, size: ms.size, data: null }))
+    ...interleaved.map(ms => ({ trackIndex: 0, blob: ms.blob, size: ms.size, data: null }))
   ];
 
   // Release orderedMediaSegs — blob references now live in segments array
