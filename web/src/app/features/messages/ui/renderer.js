@@ -437,10 +437,6 @@ export class MessageRenderer {
 
     renderUploadOverlay(wrapper, media, msgId) {
         if (!wrapper || !media) return;
-
-        // Always keep the progress pie in sync
-        this.renderProgressPie(wrapper, media);
-
         const target = wrapper.querySelector?.('.message-file-preview');
         if (!target) return;
         target.style.position = 'relative';
@@ -535,83 +531,6 @@ export class MessageRenderer {
             });
         }
         if (!existing) target.appendChild(overlay);
-    }
-
-    /**
-     * Render a small circular SVG progress pie on the right side of the
-     * file-info row.  Replaces Toast for transcode / upload progress.
-     */
-    renderProgressPie(wrapper, media) {
-        if (!wrapper) return;
-        const row = wrapper.querySelector('.message-file-info-row');
-        if (!row) return;
-
-        const shouldShow = media &&
-            (media.uploading || (Number.isFinite(media.progress) && media.progress > 0 && media.progress < 100));
-        const existing = row.querySelector('.upload-progress-pie');
-
-        if (!shouldShow) {
-            if (existing) existing.remove();
-            return;
-        }
-
-        const pct = Number.isFinite(media.progress)
-            ? Math.min(100, Math.max(0, Math.round(media.progress)))
-            : 0;
-        const R = 15;
-        const C = 2 * Math.PI * R; // ≈ 94.25
-        const offset = C * (1 - pct / 100);
-
-        // Fast path — update existing pie
-        if (existing) {
-            const arc = existing.querySelector('[data-role="arc"]');
-            const label = existing.querySelector('[data-role="pct"]');
-            if (arc) arc.setAttribute('stroke-dashoffset', String(offset));
-            if (label) label.textContent = `${pct}%`;
-            return;
-        }
-
-        // Build new SVG
-        const NS = 'http://www.w3.org/2000/svg';
-        const SIZE = 36;
-        const svg = document.createElementNS(NS, 'svg');
-        svg.setAttribute('viewBox', `0 0 ${SIZE} ${SIZE}`);
-        svg.setAttribute('width', String(SIZE));
-        svg.setAttribute('height', String(SIZE));
-        svg.classList.add('upload-progress-pie');
-
-        const bg = document.createElementNS(NS, 'circle');
-        bg.setAttribute('cx', '18'); bg.setAttribute('cy', '18'); bg.setAttribute('r', String(R));
-        bg.setAttribute('fill', 'none');
-        bg.setAttribute('stroke-width', '3');
-        bg.classList.add('upload-pie-bg');
-        svg.appendChild(bg);
-
-        const arc = document.createElementNS(NS, 'circle');
-        arc.setAttribute('cx', '18'); arc.setAttribute('cy', '18'); arc.setAttribute('r', String(R));
-        arc.setAttribute('fill', 'none');
-        arc.setAttribute('stroke', '#22d3ee');
-        arc.setAttribute('stroke-width', '3');
-        arc.setAttribute('stroke-dasharray', String(C));
-        arc.setAttribute('stroke-dashoffset', String(offset));
-        arc.setAttribute('stroke-linecap', 'round');
-        arc.setAttribute('transform', `rotate(-90 18 18)`);
-        arc.dataset.role = 'arc';
-        arc.classList.add('upload-pie-arc');
-        svg.appendChild(arc);
-
-        const txt = document.createElementNS(NS, 'text');
-        txt.setAttribute('x', '18'); txt.setAttribute('y', '18');
-        txt.setAttribute('text-anchor', 'middle');
-        txt.setAttribute('dominant-baseline', 'central');
-        txt.setAttribute('font-size', '9');
-        txt.setAttribute('font-weight', '600');
-        txt.dataset.role = 'pct';
-        txt.classList.add('upload-pie-text');
-        txt.textContent = `${pct}%`;
-        svg.appendChild(txt);
-
-        row.appendChild(svg);
     }
 
     /**
@@ -726,11 +645,8 @@ export class MessageRenderer {
         metaEl.textContent = formatFileMeta(media);
         info.appendChild(nameEl);
         info.appendChild(metaEl);
-        const infoRow = document.createElement('div');
-        infoRow.className = 'message-file-info-row';
-        infoRow.appendChild(info);
         wrapper.appendChild(preview);
-        wrapper.appendChild(infoRow);
+        wrapper.appendChild(info);
 
         // For videos, use the download/play overlay instead of direct preview interaction.
         // All videos start in 'idle' state — no blobs are stored in memory.

@@ -182,6 +182,13 @@ export function updateUploadSteps(steps) {
         if (_detailExpanded) _renderDetailContent();
         return;
     }
+    // Fast path: if step count and statuses are unchanged, only update pies
+    if (_detailExpanded && _uploadSteps.length === steps.length &&
+        steps.every((s, i) => s.status === _uploadSteps[i].status && s.label === _uploadSteps[i].label)) {
+        _uploadSteps = steps;
+        _updateStepPies();
+        return;
+    }
     _uploadSteps = steps;
     if (_detailExpanded) _renderDetailContent();
 }
@@ -303,6 +310,77 @@ function _calcSpeed() {
     return (last.loaded - first.loaded) / dt;
 }
 
+/** Build or update a small SVG progress-pie circle (24×24). */
+const _PIE_R = 9;
+const _PIE_C = 2 * Math.PI * _PIE_R; // ≈ 56.55
+
+function _buildPieSvg(pct) {
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('width', '24');
+    svg.setAttribute('height', '24');
+    svg.classList.add('transfer-step-pie');
+
+    const bg = document.createElementNS(NS, 'circle');
+    bg.setAttribute('cx', '12'); bg.setAttribute('cy', '12'); bg.setAttribute('r', String(_PIE_R));
+    bg.setAttribute('fill', 'none');
+    bg.setAttribute('stroke', 'rgba(255,255,255,0.15)');
+    bg.setAttribute('stroke-width', '2.5');
+    svg.appendChild(bg);
+
+    const arc = document.createElementNS(NS, 'circle');
+    arc.setAttribute('cx', '12'); arc.setAttribute('cy', '12'); arc.setAttribute('r', String(_PIE_R));
+    arc.setAttribute('fill', 'none');
+    arc.setAttribute('stroke', '#38bdf8');
+    arc.setAttribute('stroke-width', '2.5');
+    arc.setAttribute('stroke-dasharray', String(_PIE_C));
+    arc.setAttribute('stroke-dashoffset', String(_PIE_C * (1 - pct / 100)));
+    arc.setAttribute('stroke-linecap', 'round');
+    arc.setAttribute('transform', 'rotate(-90 12 12)');
+    arc.dataset.role = 'arc';
+    svg.appendChild(arc);
+
+    const txt = document.createElementNS(NS, 'text');
+    txt.setAttribute('x', '12'); txt.setAttribute('y', '12');
+    txt.setAttribute('text-anchor', 'middle');
+    txt.setAttribute('dominant-baseline', 'central');
+    txt.setAttribute('fill', '#fff');
+    txt.setAttribute('font-size', '7');
+    txt.setAttribute('font-weight', '600');
+    txt.dataset.role = 'pct';
+    txt.textContent = `${pct}`;
+    svg.appendChild(txt);
+
+    return svg;
+}
+
+/** Fast-path: update only pie SVGs without full DOM rebuild */
+function _updateStepPies() {
+    if (!_uploadDetailPanelEl) return;
+    const rows = _uploadDetailPanelEl.querySelectorAll('.transfer-step');
+    for (let i = 0; i < _uploadSteps.length && i < rows.length; i++) {
+        const step = _uploadSteps[i];
+        const row = rows[i];
+        const pie = row.querySelector('.transfer-step-pie');
+        if (Number.isFinite(step.percent) && step.percent > 0 && step.status === 'active') {
+            const pct = Math.min(100, Math.max(0, Math.round(step.percent)));
+            if (pie) {
+                // Update existing pie
+                const arc = pie.querySelector('[data-role="arc"]');
+                const label = pie.querySelector('[data-role="pct"]');
+                if (arc) arc.setAttribute('stroke-dashoffset', String(_PIE_C * (1 - pct / 100)));
+                if (label) label.textContent = `${pct}`;
+            } else {
+                // Add new pie
+                row.appendChild(_buildPieSvg(pct));
+            }
+        } else if (pie) {
+            pie.remove();
+        }
+    }
+}
+
 /** Render the full detail panel content (stats + steps) */
 function _renderDetailContent() {
     if (!_uploadDetailPanelEl) return;
@@ -341,6 +419,11 @@ function _renderDetailContent() {
             detailEl.className = 'transfer-step-detail';
             detailEl.textContent = step.detail;
             row.appendChild(detailEl);
+        }
+
+        // Progress pie for active steps with percent (e.g. transcode)
+        if (Number.isFinite(step.percent) && step.percent > 0 && step.status === 'active') {
+            row.appendChild(_buildPieSvg(Math.min(100, Math.max(0, Math.round(step.percent)))));
         }
 
         _uploadDetailPanelEl.appendChild(row);
