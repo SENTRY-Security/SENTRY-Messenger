@@ -597,6 +597,20 @@ export class MediaHandlingController extends BaseController {
                 if (appendError) throw appendError;
                 await msePlayer.endOfStream();
 
+                // Log chunk time index summary for diagnostics
+                {
+                    const validEntries = chunkTimeIndex.filter(Boolean);
+                    if (validEntries.length > 0) {
+                        const first = validEntries[0];
+                        const last = validEntries[validEntries.length - 1];
+                        console.info(`[video-seek] chunkTimeIndex: ${validEntries.length} entries, ` +
+                            `range ${first.startTime.toFixed(1)}s–${(last.startTime + last.duration).toFixed(1)}s, ` +
+                            `trackIds: ${[...new Set(validEntries.map(e => e.trackId))].join(',')}`);
+                    } else {
+                        console.warn('[video-seek] chunkTimeIndex: 0 valid entries — seek re-append will not work');
+                    }
+                }
+
                 // ── Seek-aware re-append ──
                 // All chunks are now cached as Blobs. Set up a handler that
                 // re-appends chunks from cache when the user seeks to an
@@ -700,6 +714,9 @@ export class MediaHandlingController extends BaseController {
             const BATCH = 8;
             for (let b = 0; b < indices.length; b += BATCH) {
                 if (destroyed || !msePlayer) break;
+                // Safety: re-resume queues before each batch in case
+                // something paused them despite endstreaming suppression.
+                msePlayer.resumeQueues();
                 const batch = indices.slice(b, b + BATCH);
                 const blobReads = [];
                 for (const idx of batch) {
@@ -707,16 +724,15 @@ export class MediaHandlingController extends BaseController {
                     blobReads.push(chunkCache[idx].arrayBuffer());
                 }
                 const bufs = await Promise.all(blobReads.map(async (p) => new Uint8Array(await p)));
-                const appends = [];
+                // Append sequentially to avoid queue ordering issues
                 for (const data of bufs) {
                     if (destroyed || !msePlayer) break;
-                    appends.push(
-                        msePlayer.appendChunk('muxed', data).catch(err => {
-                            console.warn('[video-seek] append error:', err?.message);
-                        })
-                    );
+                    try {
+                        await msePlayer.appendChunk('muxed', data);
+                    } catch (err) {
+                        console.warn('[video-seek] append error:', err?.message);
+                    }
                 }
-                if (appends.length > 0) await Promise.allSettled(appends);
             }
         };
 
@@ -741,11 +757,16 @@ export class MediaHandlingController extends BaseController {
                 // Disable eviction during re-append to protect freshly-appended data
                 msePlayer.setEvictionEnabled(false);
 
-                // CRITICAL: Resume append queues before re-appending.
-                // On MMS (iOS Safari), endOfStream() triggers 'endstreaming'
-                // which pauses all queues. Without resuming first, appendChunk()
-                // pushes data into the queue but processQueue() exits immediately
-                // (paused=true) → promises never resolve → deadlock.
+                // CRITICAL (MMS fix): Suppress the endstreaming handler during
+                // re-append. On iOS Safari MMS, endstreaming can fire at any time
+                // (e.g. when the browser decides it has "enough" data from the old
+                // buffer regions), which pauses all queues mid-re-append. This
+                // causes most chunks to never actually get appended, leaving the
+                // buffer at the wrong position.
+                msePlayer.setSuppressEndStreaming(true);
+
+                // Resume append queues — endOfStream() may have triggered
+                // 'endstreaming' which paused all queues before we suppressed it.
                 msePlayer.resumeQueues();
 
                 // Use precise chunk time index to find exactly which chunks
@@ -760,7 +781,16 @@ export class MediaHandlingController extends BaseController {
                     indices = findChunksForTime(seekTime, margin);
                 }
 
-                console.info(`[video-seek] precise lookup: ${indices.length} chunks cover ${seekTime.toFixed(1)}s ±${margin}s (indices: ${indices.join(',')})`);
+                // Log chunk timing details for diagnostics
+                if (indices.length > 0) {
+                    const timingInfo = indices.map(i => {
+                        const t = chunkTimeIndex[i];
+                        return t ? `[${i}]${t.startTime.toFixed(1)}-${(t.startTime + t.duration).toFixed(1)}s` : `[${i}]null`;
+                    }).join(', ');
+                    console.info(`[video-seek] seek=${seekTime.toFixed(1)}s ±${margin}s → ${indices.length} chunks: ${timingInfo}`);
+                } else {
+                    console.warn(`[video-seek] no chunks found for ${seekTime.toFixed(1)}s ±${margin}s (index count: ${chunkTimeIndex.filter(Boolean).length})`);
+                }
 
                 // Safety timeout: cap total re-append time.
                 const REAPPEND_TIMEOUT = 5_000;
@@ -777,6 +807,19 @@ export class MediaHandlingController extends BaseController {
                     }
                 }
 
+                // Log post-append buffer state
+                if (!destroyed && msePlayer) {
+                    const buffered = msePlayer.isTimeBuffered(seekTime);
+                    const ranges = [];
+                    try {
+                        const buf = video.buffered;
+                        for (let i = 0; i < buf.length; i++) {
+                            ranges.push(`${buf.start(i).toFixed(1)}-${buf.end(i).toFixed(1)}`);
+                        }
+                    } catch {}
+                    console.info(`[video-seek] post-append: buffered@${seekTime.toFixed(1)}s=${buffered}, ranges=[${ranges.join(', ')}]`);
+                }
+
                 // Re-signal end of stream so the browser knows the full
                 // timeline. appendBuffer() transitions readyState from
                 // 'ended' → 'open'; we must transition back to 'ended'
@@ -787,8 +830,11 @@ export class MediaHandlingController extends BaseController {
             } catch (err) {
                 console.warn('[video-seek] re-append failed:', err?.message);
             } finally {
-                // Re-enable eviction for normal playback
-                if (msePlayer) msePlayer.setEvictionEnabled(true);
+                // Restore endstreaming handling and re-enable eviction
+                if (msePlayer) {
+                    msePlayer.setSuppressEndStreaming(false);
+                    msePlayer.setEvictionEnabled(true);
+                }
                 reappending = false;
 
                 // If another seek arrived during this re-append, process it now

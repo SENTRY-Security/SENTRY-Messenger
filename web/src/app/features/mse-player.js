@@ -271,28 +271,39 @@ export function parseMoofTiming(data, timescaleMap) {
     const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
     const len = data.length;
 
-    // Find moof box
+    // Find moof box using proper box traversal (not byte-by-byte scan)
+    // to avoid false matches inside mdat or other box payloads.
     let moofStart = -1, moofEnd = -1;
-    for (let i = 0; i <= len - 8; i++) {
-      if (data[i + 4] === 0x6D && data[i + 5] === 0x6F &&
-          data[i + 6] === 0x6F && data[i + 7] === 0x66) { // 'moof'
+    {
+      let i = 0;
+      while (i <= len - 8) {
         const boxSize = view.getUint32(i);
-        moofStart = i + 8;
-        moofEnd = i + boxSize;
-        break;
+        if (boxSize < 8 || i + boxSize > len) break;
+        if (data[i + 4] === 0x6D && data[i + 5] === 0x6F &&
+            data[i + 6] === 0x6F && data[i + 7] === 0x66) { // 'moof'
+          moofStart = i + 8;
+          moofEnd = i + boxSize;
+          break;
+        }
+        i += boxSize;
       }
     }
     if (moofStart < 0) return null;
 
-    // Scan inside moof for traf
+    // Find traf inside moof using proper box traversal
     let trafStart = -1, trafEnd = -1;
-    for (let i = moofStart; i <= moofEnd - 8; i++) {
-      if (data[i + 4] === 0x74 && data[i + 5] === 0x72 &&
-          data[i + 6] === 0x61 && data[i + 7] === 0x66) { // 'traf'
+    {
+      let i = moofStart;
+      while (i <= moofEnd - 8) {
         const boxSize = view.getUint32(i);
-        trafStart = i + 8;
-        trafEnd = i + boxSize;
-        break;
+        if (boxSize < 8 || i + boxSize > moofEnd) break;
+        if (data[i + 4] === 0x74 && data[i + 5] === 0x72 &&
+            data[i + 6] === 0x61 && data[i + 7] === 0x66) { // 'traf'
+          trafStart = i + 8;
+          trafEnd = i + boxSize;
+          break;
+        }
+        i += boxSize;
       }
     }
     if (trafStart < 0) return null;
@@ -686,6 +697,7 @@ export function createMsePlayer({ videoElement, onError }) {
 
   // Map of label → { sourceBuffer, queue }
   const buffers = {};
+  let suppressEndStreaming = false; // Suppress endstreaming during seek re-append
 
   const MSCtor = getMediaSourceCtor();
   const isMMS = typeof self !== 'undefined' && typeof self.ManagedMediaSource === 'function' && MSCtor === self.ManagedMediaSource;
@@ -728,6 +740,10 @@ export function createMsePlayer({ videoElement, onError }) {
           }
         });
         mediaSource.addEventListener('endstreaming', () => {
+          if (suppressEndStreaming) {
+            console.info('[mse-player] endstreaming suppressed during re-append');
+            return;
+          }
           for (const b of Object.values(buffers)) {
             b.queue.pause();
           }
@@ -964,6 +980,13 @@ export function createMsePlayer({ videoElement, onError }) {
         b.queue.resume();
       }
     },
+
+    /**
+     * Suppress MMS 'endstreaming' handler from pausing queues.
+     * Must be enabled during seek re-append and disabled after.
+     * On non-MMS browsers this is a no-op.
+     */
+    setSuppressEndStreaming(v) { suppressEndStreaming = !!v; },
 
     /** Get the list of track labels that have SourceBuffers. */
     get labels() { return Object.keys(buffers); },
