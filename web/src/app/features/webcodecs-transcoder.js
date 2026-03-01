@@ -173,19 +173,21 @@ export async function transcodeToFmp4(file, { onProgress, encoderConstraints, on
   const mp4boxMod = await loadMp4box();
   onProgress?.({ phase: 'load', percent: 100 });
 
-  // 2. Demux: parse input to discover tracks and extract samples
+  // 2. Probe tracks FIRST (lightweight — only reads headers, no sample extraction).
+  //    This avoids loading ~582MB of sample data just to discover the file is
+  //    already H.264+AAC and doesn't need transcoding.
   onProgress?.({ phase: 'encode', percent: 0 });
 
-  const { tracks: inputTracks, samples: inputSamples, duration } =
-    await demuxFile(file, mp4boxMod);
+  const probeResult = await probeFileTracks(file, mp4boxMod);
 
-  if (inputTracks.length === 0) {
+  if (probeResult.tracks.length === 0) {
     throw new Error('影片不包含可播放的音視訊軌道');
   }
 
-  // 3. Check if transcoding is actually needed
-  if (!needsTranscode(inputTracks)) {
-    // Already MSE-safe → return null so caller uses fast remux path
+  // 3. Check if transcoding is actually needed — BEFORE extracting samples
+  if (!needsTranscode(probeResult.tracks)) {
+    // Already MSE-safe → return null so caller uses fast remux path.
+    // No samples were extracted, so memory usage stays near zero.
     return null;
   }
 
@@ -193,9 +195,74 @@ export async function transcodeToFmp4(file, { onProgress, encoderConstraints, on
   // This only fires for non-H.264 input (e.g. HEVC), NOT for already-safe files.
   onTranscodeStart?.();
 
-  // 4. Transcode via WebCodecs
+  // 4. Now extract samples (heavy — loads all sample data for transcoding)
+  const { tracks: inputTracks, samples: inputSamples, duration } =
+    await demuxFile(file, mp4boxMod);
+
+  if (inputTracks.length === 0) {
+    throw new Error('影片不包含可播放的音視訊軌道');
+  }
+
+  // 5. Transcode via WebCodecs
   const result = await doTranscode(inputTracks, inputSamples, duration, mp4boxMod, onProgress, encoderConstraints);
   return result;
+}
+
+// ─── Lightweight probe: reads only headers to discover tracks (no samples) ───
+
+function probeFileTracks(file, mp4boxMod) {
+  return new Promise(async (resolve, reject) => {
+    const mp4boxFile = createMp4boxFile(mp4boxMod);
+    const tracks = [];
+    let fileDuration = 0;
+
+    mp4boxFile.onError = (err) => {
+      reject(new Error('影片解析失敗：' + (err?.message || err)));
+    };
+
+    mp4boxFile.onReady = (info) => {
+      fileDuration = (info.duration || 0) / (info.timescale || 1);
+
+      for (const t of (info.tracks || [])) {
+        const type =
+          (t.type === 'video' || (t.codec && /^(avc|hvc|hev|vp0|av01)/.test(t.codec))) ? 'video' :
+          (t.type === 'audio' || (t.codec && /^(mp4a|opus|ac-3|ec-3|flac)/.test(t.codec))) ? 'audio' :
+          null;
+        if (!type) continue;
+        tracks.push({ ...t, _type: type });
+      }
+
+      // Do NOT call setExtractionOptions / start — we only need track info.
+      // Resolve immediately to avoid loading any sample data.
+      resolve({ tracks, duration: fileDuration });
+    };
+
+    // Feed just enough data for mp4box to parse moov (headers).
+    // For most MP4 files, moov is at the start or end; mp4box handles both.
+    const READ_CHUNK_SIZE = 2 * 1024 * 1024;
+    let readOffset = 0;
+    try {
+      while (readOffset < file.size) {
+        const end = Math.min(readOffset + READ_CHUNK_SIZE, file.size);
+        const chunk = await file.slice(readOffset, end).arrayBuffer();
+        chunk.fileStart = readOffset;
+        mp4boxFile.appendBuffer(chunk);
+        readOffset = end;
+        // If onReady already fired, stop reading — we have what we need
+        if (tracks.length > 0) break;
+      }
+      if (tracks.length === 0) {
+        mp4boxFile.flush();
+      }
+    } catch (err) {
+      reject(new Error('無法解析此影片：' + (err?.message || err)));
+      return;
+    }
+
+    if (tracks.length === 0) {
+      resolve({ tracks: [], duration: 0 });
+    }
+  });
 }
 
 // ─── Demux helper ───

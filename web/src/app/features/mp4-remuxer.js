@@ -704,6 +704,18 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
 
   mp4boxFile.flush();
 
+  // Release mp4box.js internal buffers immediately after flush.
+  // mp4box.js MultiBufferStream retains ALL appended ArrayBuffers (~582MB).
+  // Without this, the buffers stay in heap until mp4boxFile is GC'd.
+  try {
+    if (mp4boxFile.stream && mp4boxFile.stream.buffers) {
+      mp4boxFile.stream.buffers = [];
+    }
+    if (mp4boxFile.moov) mp4boxFile.moov = null;
+    if (mp4boxFile.mdats) mp4boxFile.mdats = [];
+    if (mp4boxFile.boxes) mp4boxFile.boxes = [];
+  } catch (_) { /* best-effort cleanup */ }
+
   if (mp4boxError) throw mp4boxError;
 
   if (!readyFired) {
