@@ -169,6 +169,163 @@ function concatU8(arrays) {
   return out;
 }
 
+// ─── Codec description extraction from mp4box internals ───
+//
+// mp4box.js's getInfo() does NOT copy codec config boxes (avcC, hvcC, esds)
+// to the track info object. We must access them from the internal moov
+// structure: trak → mdia → minf → stbl → stsd → entries[0].
+//
+// Additionally, mp4box.js 0.5.3 has NO write method for hvcC boxes,
+// so we must manually serialize the HEVCDecoderConfigurationRecord.
+
+/**
+ * Extract the raw codec description for VideoDecoder.configure({ description }).
+ * Accesses mp4box's internal moov to find avcC/hvcC boxes and serializes them.
+ *
+ * @param {object} mp4boxFile - the mp4box ISOFile instance (demuxer)
+ * @param {number} trackId - the track ID
+ * @returns {Uint8Array|undefined}
+ */
+function getCodecDescription(mp4boxFile, trackId) {
+  try {
+    const trak = mp4boxFile.getTrackById(trackId);
+    if (!trak) return undefined;
+
+    const entry = trak.mdia?.minf?.stbl?.stsd?.entries?.[0];
+    if (!entry) return undefined;
+
+    if (entry.avcC) return serializeAvcC(entry.avcC);
+    if (entry.hvcC) return serializeHvcC(entry.hvcC);
+    // For other codecs (VP9, AV1), try generic extractBoxData
+    if (entry.vpcC) return extractBoxData(entry.vpcC);
+    if (entry.av1C) return extractBoxData(entry.av1C);
+
+    return undefined;
+  } catch (err) {
+    console.warn('[getCodecDescription] failed for track', trackId, err?.message);
+    return undefined;
+  }
+}
+
+/**
+ * Extract the raw audio codec description (esds) from mp4box's internal moov.
+ */
+function getAudioDescription(mp4boxFile, trackId) {
+  try {
+    const trak = mp4boxFile.getTrackById(trackId);
+    if (!trak) return undefined;
+
+    const entry = trak.mdia?.minf?.stbl?.stsd?.entries?.[0];
+    if (!entry?.esds) return undefined;
+
+    return extractBoxData(entry.esds);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Manually serialize an AVCDecoderConfigurationRecord (avcC box content). */
+function serializeAvcC(box) {
+  const parts = [];
+  parts.push(new Uint8Array([
+    box.configurationVersion || 1,
+    box.AVCProfileIndication || 0,
+    box.profile_compatibility || 0,
+    box.AVCLevelIndication || 0,
+    0xFC | ((box.lengthSizeMinusOne ?? 3) & 0x03),
+  ]));
+
+  // SPS NALUs
+  const spsList = box.SPS || [];
+  parts.push(new Uint8Array([0xE0 | (spsList.length & 0x1F)]));
+  for (const sps of spsList) {
+    const data = sps.nalu || sps.data || sps;
+    const len = data.length || data.byteLength;
+    parts.push(new Uint8Array([(len >> 8) & 0xFF, len & 0xFF]));
+    parts.push(data instanceof Uint8Array ? data : new Uint8Array(data));
+  }
+
+  // PPS NALUs
+  const ppsList = box.PPS || [];
+  parts.push(new Uint8Array([ppsList.length & 0xFF]));
+  for (const pps of ppsList) {
+    const data = pps.nalu || pps.data || pps;
+    const len = data.length || data.byteLength;
+    parts.push(new Uint8Array([(len >> 8) & 0xFF, len & 0xFF]));
+    parts.push(data instanceof Uint8Array ? data : new Uint8Array(data));
+  }
+
+  return concatU8(parts);
+}
+
+/** Manually serialize an HEVCDecoderConfigurationRecord (hvcC box content).
+ *  mp4box.js 0.5.3 has NO write method for hvcC, so we must do this ourselves. */
+function serializeHvcC(box) {
+  const parts = [];
+
+  // Byte 0: configurationVersion
+  // Byte 1: general_profile_space(2) | general_tier_flag(1) | general_profile_idc(5)
+  parts.push(new Uint8Array([
+    box.configurationVersion || 1,
+    ((box.general_profile_space || 0) << 6) |
+      ((box.general_tier_flag || 0) << 5) |
+      ((box.general_profile_idc || 0) & 0x1F),
+  ]));
+
+  // Bytes 2-5: general_profile_compatibility (4 bytes, big-endian)
+  const gpc = box.general_profile_compatibility || 0;
+  parts.push(new Uint8Array([
+    (gpc >>> 24) & 0xFF, (gpc >>> 16) & 0xFF,
+    (gpc >>> 8) & 0xFF, gpc & 0xFF,
+  ]));
+
+  // Bytes 6-11: general_constraint_indicator (6 bytes)
+  const gci = box.general_constraint_indicator;
+  if (gci && gci.length >= 6) {
+    parts.push(gci instanceof Uint8Array ? gci.slice(0, 6) : new Uint8Array(gci.slice(0, 6)));
+  } else {
+    parts.push(new Uint8Array(6));
+  }
+
+  // Bytes 12-22: remaining fixed fields
+  const mss = box.min_spatial_segmentation_idc || 0;
+  parts.push(new Uint8Array([
+    box.general_level_idc || 0,                         // byte 12
+    0xF0 | ((mss >> 8) & 0x0F),                         // byte 13 (4 reserved bits + upper 4 of mss)
+    mss & 0xFF,                                          // byte 14
+    0xFC | ((box.parallelismType || 0) & 0x03),          // byte 15
+    0xFC | ((box.chroma_format_idc || 0) & 0x03),        // byte 16
+    0xF8 | ((box.bit_depth_luma_minus8 || 0) & 0x07),    // byte 17
+    0xF8 | ((box.bit_depth_chroma_minus8 || 0) & 0x07),  // byte 18
+    ((box.avgFrameRate || 0) >> 8) & 0xFF,                // byte 19
+    (box.avgFrameRate || 0) & 0xFF,                       // byte 20
+    ((box.constantFrameRate || 0) << 6) |                 // byte 21
+      (((box.numTemporalLayers || 0) & 0x07) << 3) |
+      (((box.temporalIdNested || 0) & 0x01) << 2) |
+      ((box.lengthSizeMinusOne ?? 3) & 0x03),
+  ]));
+
+  // NALU arrays
+  const arrays = box.nalu_arrays || [];
+  parts.push(new Uint8Array([arrays.length & 0xFF])); // byte 22: numOfArrays
+
+  for (const arr of arrays) {
+    parts.push(new Uint8Array([
+      ((arr.completeness || 0) << 7) | ((arr.nalu_type || 0) & 0x3F),
+    ]));
+    const nalus = arr.nalus || [];
+    parts.push(new Uint8Array([(nalus.length >> 8) & 0xFF, nalus.length & 0xFF]));
+    for (const nalu of nalus) {
+      const data = nalu.data;
+      const len = nalu.length || data?.length || data?.byteLength || 0;
+      parts.push(new Uint8Array([(len >> 8) & 0xFF, len & 0xFF]));
+      if (data) parts.push(data instanceof Uint8Array ? data : new Uint8Array(data));
+    }
+  }
+
+  return concatU8(parts);
+}
+
 // ─── Main transcode function ───
 
 /**
@@ -434,8 +591,16 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
       codedWidth: track.video?.width || track.track_width,
       codedHeight: track.video?.height || track.track_height,
     };
-    if (track.avcC) decoderConfig.description = extractBoxData(track.avcC);
-    else if (track.hvcC) decoderConfig.description = extractBoxData(track.hvcC);
+    // Extract codec description from mp4box's internal moov structure.
+    // track.avcC/hvcC are NOT populated by getInfo() — we must access
+    // the internal trak→stsd→entry to get the decoder config record.
+    const description = getCodecDescription(demuxer, track.id);
+    if (description) {
+      decoderConfig.description = description;
+    } else {
+      console.warn('[setupVideoDecoder] no codec description for', track.codec,
+        '— decoder may fail for codecs that require SPS/PPS/VPS (HEVC, AVC)');
+    }
     videoDecoder.configure(decoderConfig);
   }
 
@@ -484,7 +649,9 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
       sampleRate: track.audio?.sample_rate || 44100,
       numberOfChannels: track.audio?.channel_count || 2,
     };
-    if (track.esds) decoderConfig.description = extractBoxData(track.esds);
+    // Extract esds description from mp4box's internal moov structure
+    const audioDesc = getAudioDescription(demuxer, track.id);
+    if (audioDesc) decoderConfig.description = audioDesc;
     audioDecoder.configure(decoderConfig);
   }
 
