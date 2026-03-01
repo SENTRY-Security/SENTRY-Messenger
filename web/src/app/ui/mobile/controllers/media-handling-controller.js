@@ -652,38 +652,20 @@ export class MediaHandlingController extends BaseController {
         let pendingSeekTime = null; // Track seek that arrived during re-append
 
         /**
-         * Re-append ALL media chunks from the blob cache in parallel
-         * batches, with early exit once the target seek time is buffered.
-         *
-         * Why not estimate which chunks to re-append?
-         * The remuxer uses nbSamples:100 for both video and audio tracks,
-         * producing segments of ~3.3s (video@30fps) and ~2.3s (audio@44100Hz).
-         * After interleaving [v0,a0,v1,a1,...], video segment i and audio
-         * segment i cover COMPLETELY DIFFERENT time ranges. Any linear
-         * estimation (seekTime/dur * chunkCount) maps to the wrong time
-         * region — causing the "wrong area buffered" problem.
-         *
-         * Solution: re-append all media chunks. The SourceBuffer handles
-         * duplicate timestamps gracefully (replaces existing data). We
-         * check isTimeBuffered() after each batch for early exit.
+         * Read a range of chunk blobs and append them to MSE.
+         * Returns after all appends in this range have settled.
          */
-        const reappendAllChunks = async (seekTime) => {
+        const appendRange = async (from, to) => {
             const BATCH = 8;
-            const total = chunkCache.length;
-
-            for (let b = numTracks; b < total; b += BATCH) {
+            for (let b = from; b < to; b += BATCH) {
                 if (destroyed || !msePlayer) break;
-                // Early exit: seek position is now buffered
-                if (msePlayer.isTimeBuffered(seekTime)) break;
-
-                const batchEnd = Math.min(b + BATCH, total);
+                const batchEnd = Math.min(b + BATCH, to);
                 const blobReads = [];
                 for (let i = b; i < batchEnd; i++) {
                     if (!chunkCache[i]) continue;
                     blobReads.push(chunkCache[i].arrayBuffer());
                 }
                 const bufs = await Promise.all(blobReads.map(async (p) => new Uint8Array(await p)));
-
                 const appends = [];
                 for (const data of bufs) {
                     if (destroyed || !msePlayer) break;
@@ -693,9 +675,57 @@ export class MediaHandlingController extends BaseController {
                         })
                     );
                 }
-                if (appends.length > 0) {
-                    await Promise.allSettled(appends);
-                }
+                if (appends.length > 0) await Promise.allSettled(appends);
+            }
+        };
+
+        /**
+         * Expand outward from an estimated center until seekTime is buffered.
+         *
+         * Why expand outward instead of a fixed window or sequential scan?
+         * The remuxer uses nbSamples:100 for both video (~3.3s @30fps) and
+         * audio (~2.3s @44100Hz). After interleaving [v0,a0,v1,a1,...],
+         * the video chunk and audio chunk covering the SAME time T can be
+         * far apart in the chunk array. A linear estimation gives a rough
+         * center; expanding outward from there quickly covers both tracks.
+         *
+         * Why not start from chunk 0?
+         * The SourceBuffer has limited quota. Appending from the beginning
+         * fills the buffer with data before the seek position; the browser's
+         * QuotaExceeded handler evicts data before currentTime, wiping out
+         * all the just-appended early chunks — causing a "buffer a small
+         * segment → discard → repeat" pattern that never reaches the target.
+         */
+        const expandFromCenter = async (seekTime, dur) => {
+            const mediaCount = chunkCache.length - numTracks;
+            if (mediaCount <= 0) return;
+
+            // Rough center estimate. Not exact due to interleaving, but
+            // good enough as a starting point for outward expansion.
+            const centerMedia = Math.floor((seekTime / dur) * mediaCount);
+            const center = numTracks + Math.max(0, Math.min(centerMedia, mediaCount - 1));
+
+            const STEP = 16; // expand 16 chunks per direction per iteration
+            let lo = center;
+            let hi = center;
+            const loLimit = numTracks;
+            const hiLimit = chunkCache.length;
+
+            while (!destroyed && msePlayer) {
+                if (msePlayer.isTimeBuffered(seekTime)) break;
+                if (lo <= loLimit && hi >= hiLimit) break; // exhausted
+
+                // Expand bounds
+                const newLo = Math.max(loLimit, lo - STEP);
+                const newHi = Math.min(hiLimit, hi + STEP);
+
+                // Append the newly expanded ranges (avoid re-appending)
+                const appendLo = (newLo < lo) ? appendRange(newLo, lo) : Promise.resolve();
+                const appendHi = (hi < newHi) ? appendRange(hi, newHi) : Promise.resolve();
+                await Promise.all([appendLo, appendHi]);
+
+                lo = newLo;
+                hi = newHi;
             }
         };
 
@@ -727,12 +757,12 @@ export class MediaHandlingController extends BaseController {
                 // (paused=true) → promises never resolve → deadlock.
                 msePlayer.resumeQueues();
 
-                console.info(`[video-seek] re-appending all ${chunkCache.length - numTracks} media chunks for seek to ${seekTime.toFixed(1)}s`);
+                console.info(`[video-seek] expanding outward for seek to ${seekTime.toFixed(1)}s (${chunkCache.length - numTracks} media chunks total)`);
 
                 // Safety timeout: cap total re-append time.
                 const REAPPEND_TIMEOUT = 5_000;
                 const timeoutPromise = new Promise(r => setTimeout(r, REAPPEND_TIMEOUT));
-                await Promise.race([reappendAllChunks(seekTime), timeoutPromise]);
+                await Promise.race([expandFromCenter(seekTime, dur), timeoutPromise]);
 
                 // Re-signal end of stream so the browser knows the full
                 // timeline. appendBuffer() transitions readyState from
