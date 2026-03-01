@@ -5,6 +5,7 @@
 import { signGetChunked as apiSignGetChunked } from '../api/media.js';
 import { getMkRaw } from '../core/store.js';
 import { decryptWithMK as aeadDecryptWithMK, b64u8 } from '../crypto/aead.js';
+import { AdaptiveConcurrency } from './adaptive-concurrency.js';
 
 const CHUNK_INFO_TAG = 'media/chunk-v1';
 const MANIFEST_INFO_TAG = 'media/manifest-v1';
@@ -165,19 +166,19 @@ export async function getChunkUrls({ baseKey, chunkIndices, abortSignal }) {
  * Yields { index, data: Uint8Array, progress: number } for each chunk **in order**.
  *
  * Optimizations over sequential download:
- * 1. Concurrent downloads (default 3) — multiple chunks in-flight simultaneously
+ * 1. Adaptive concurrent downloads (AIMD) — ramps up on fast networks, backs off on slow
  * 2. Larger URL signing batches (20) — fewer API round-trips
  * 3. URL prefetching — next batch's signed URLs are requested while current batch downloads
  *
- * @param {{ baseKey: string, manifest: object, manifestEnvelope: object, abortSignal?: AbortSignal, onProgress?: Function, concurrency?: number }} params
+ * @param {{ baseKey: string, manifest: object, manifestEnvelope: object, abortSignal?: AbortSignal, onProgress?: Function }} params
  */
-export async function* streamChunks({ baseKey, manifest, manifestEnvelope, abortSignal, onProgress, concurrency = 3 }) {
+export async function* streamChunks({ baseKey, manifest, manifestEnvelope, abortSignal, onProgress }) {
   const cryptoKey = resolveKey(manifestEnvelope);
   const totalChunks = manifest.totalChunks;
 
   // Larger batches to reduce API round-trips (signed URLs are valid for minutes)
   const URL_BATCH_SIZE = 20;
-  const CONCURRENCY = Math.max(1, Math.min(concurrency, 6));
+  const ac = new AdaptiveConcurrency({ floor: 2, ceiling: 10 });
 
   let prefetchPromise = null;
 
@@ -204,22 +205,25 @@ export async function* streamChunks({ baseKey, manifest, manifestEnvelope, abort
     }
 
     // --- Concurrent downloads with ordered yield ---
-    // Sliding window: up to CONCURRENCY downloads in-flight, yield in index order.
-    const downloads = new Map(); // index → Promise<Uint8Array>
+    // Sliding window: up to ac.concurrency downloads in-flight, yield in index order.
+    // ac.concurrency is read dynamically each time launchNext() runs, so the window
+    // grows/shrinks as the adaptive controller adjusts.
+    const downloads = new Map(); // index → Promise<{ data: Uint8Array, durationMs: number }>
     let head = 0; // next position in `indices` to yield
     let tail = 0; // next position in `indices` to start downloading
 
     const launchNext = () => {
-      while (tail < indices.length && tail - head < CONCURRENCY) {
+      while (tail < indices.length && tail - head < ac.concurrency) {
         const idx = indices[tail++];
         const url = urlMap.get(idx);
         const chunkMeta = manifest.chunks[idx];
         if (!url) { downloads.set(idx, Promise.reject(new Error(`No signed URL for chunk ${idx}`))); continue; }
         if (!chunkMeta) { downloads.set(idx, Promise.reject(new Error(`No metadata for chunk ${idx}`))); continue; }
+        const t0 = performance.now();
         downloads.set(idx, withRetry(
           () => downloadAndDecryptChunk({ chunkUrl: url, encryptionKey: cryptoKey, chunkMeta, abortSignal }),
           { label: `chunk ${idx}/${totalChunks}`, abortSignal }
-        ));
+        ).then(data => ({ data, durationMs: performance.now() - t0 })));
       }
     };
 
@@ -229,15 +233,21 @@ export async function* streamChunks({ baseKey, manifest, manifestEnvelope, abort
       if (abortSignal?.aborted) throw new DOMException('aborted', 'AbortError');
 
       const idx = indices[head];
-      const data = await downloads.get(idx);
-      downloads.delete(idx);
-      head++;
-      launchNext(); // refill window
+      try {
+        const result = await downloads.get(idx);
+        downloads.delete(idx);
+        head++;
+        ac.recordSuccess(result.durationMs);
+        launchNext(); // refill window (uses updated ac.concurrency)
 
-      const progress = (idx + 1) / totalChunks;
-      onProgress?.({ chunkIndex: idx, totalChunks, progress, percent: Math.round(progress * 100) });
+        const progress = (idx + 1) / totalChunks;
+        onProgress?.({ chunkIndex: idx, totalChunks, progress, percent: Math.round(progress * 100) });
 
-      yield { index: idx, data, progress };
+        yield { index: idx, data: result.data, progress };
+      } catch (err) {
+        ac.recordFailure();
+        throw err;
+      }
     }
   }
 }

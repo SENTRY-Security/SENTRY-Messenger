@@ -24,15 +24,12 @@ import {
   extractDurationFromFile
 } from './mp4-remuxer.js';
 import { transcodeToFmp4, isWebCodecsSupported } from './webcodecs-transcoder.js';
+import { AdaptiveConcurrency } from './adaptive-concurrency.js';
 
 // Fallback encoder constraints for WebCodecs retry (lower quality to reduce OOM risk)
 const FALLBACK_ENCODER = { maxWidth: 1280, maxHeight: 720, maxBitrate: 1_500_000 };
 
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB for non-segment chunking
-// 10 concurrent processChunk calls: browsers allow 6 HTTP/1.1 connections per host,
-// but the extra 4 slots pre-encrypt while the 6 network slots are busy uploading.
-// With HTTP/2 (MinIO/S3), all 10 can upload in parallel over a single connection.
-const UPLOAD_CONCURRENCY = 10;
 const CHUNK_INFO_TAG = 'media/chunk-v1';
 const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024; // 1GB — must match server UPLOAD_MAX_BYTES
 
@@ -197,7 +194,7 @@ async function uploadChunkWithRetry(opts) {
  * Streaming upload for already-fragmented fMP4 files.
  * Reads boxes directly from the File via file.slice() — never loads the entire
  * file into memory. Each segment is read, encrypted, and uploaded before the
- * next is read. Peak memory: a few segments (bounded by UPLOAD_CONCURRENCY).
+ * next is read. Peak memory: a few segments (bounded by adaptive concurrency).
  */
 async function _streamingUploadFragmented({
   file, convId, cryptoKey, useSharedKey, sharedKeyU8,
@@ -274,6 +271,7 @@ async function _streamingUploadFragmented({
   };
 
   const bulkEncrypt = createBulkEncryptor(cryptoKey, CHUNK_INFO_TAG);
+  const ac = new AdaptiveConcurrency({ floor: 2, ceiling: 15 });
 
   try {
     const pool = new Set();
@@ -288,16 +286,23 @@ async function _streamingUploadFragmented({
       if (!chunkPut?.url) throw new Error(`missing presigned URL for chunk ${idx}`);
 
       const p = (async () => {
+        const t0 = performance.now();
         const ct = await bulkEncrypt(data);
         streamInFlight[idx] = 0;
-        await uploadChunkWithRetry({
-          url: chunkPut.url, method: chunkPut.method || 'PUT',
-          headers: chunkPut.headers, cipherBuf: ct.cipherBuf, abortSignal,
-          onUploadProgress: (loaded, total) => {
-            streamInFlight[idx] = total > 0 ? segSize * (loaded / total) : 0;
-            _reportStreamProgress();
-          }
-        });
+        try {
+          await uploadChunkWithRetry({
+            url: chunkPut.url, method: chunkPut.method || 'PUT',
+            headers: chunkPut.headers, cipherBuf: ct.cipherBuf, abortSignal,
+            onUploadProgress: (loaded, total) => {
+              streamInFlight[idx] = total > 0 ? segSize * (loaded / total) : 0;
+              _reportStreamProgress();
+            }
+          });
+          ac.recordSuccess(performance.now() - t0);
+        } catch (err) {
+          ac.recordFailure();
+          throw err;
+        }
         delete streamInFlight[idx];
         completedBytesStream += segSize;
         _reportStreamProgress(true);
@@ -309,7 +314,7 @@ async function _streamingUploadFragmented({
         .finally(() => pool.delete(p));
 
       pool.add(p);
-      if (pool.size >= UPLOAD_CONCURRENCY) {
+      if (pool.size >= ac.concurrency) {
         await Promise.race(pool);
       }
       if (uploadError) throw uploadError;
@@ -675,8 +680,9 @@ export async function encryptAndPutChunked({
     });
   };
 
-  // 2. Encrypt and upload chunks with concurrency limit
+  // 2. Encrypt and upload chunks with adaptive concurrency (AIMD)
   const bulkEncryptMain = createBulkEncryptor(cryptoKey, CHUNK_INFO_TAG);
+  const uploadAc = new AdaptiveConcurrency({ floor: 2, ceiling: 15 });
   let uploadError = null;
 
   const processChunk = async (index) => {
@@ -714,18 +720,24 @@ export async function encryptAndPutChunked({
     const chunkPut = chunkPuts[index];
     if (!chunkPut?.url) throw new Error(`missing presigned URL for chunk ${index}`);
 
-    await uploadChunkWithRetry({
-      url: chunkPut.url,
-      method: chunkPut.method || 'PUT',
-      headers: chunkPut.headers,
-      cipherBuf: ct.cipherBuf,
-      abortSignal,
-      onUploadProgress: (loaded, total) => {
-        // Map cipher bytes to plain bytes ratio for accurate progress
-        chunkInFlight[index] = total > 0 ? chunkPlainSize * (loaded / total) : 0;
-        _reportProgress();
-      }
-    });
+    try {
+      await uploadChunkWithRetry({
+        url: chunkPut.url,
+        method: chunkPut.method || 'PUT',
+        headers: chunkPut.headers,
+        cipherBuf: ct.cipherBuf,
+        abortSignal,
+        onUploadProgress: (loaded, total) => {
+          // Map cipher bytes to plain bytes ratio for accurate progress
+          chunkInFlight[index] = total > 0 ? chunkPlainSize * (loaded / total) : 0;
+          _reportProgress();
+        }
+      });
+      uploadAc.recordSuccess(performance.now() - t0);
+    } catch (err) {
+      uploadAc.recordFailure();
+      throw err;
+    }
 
     const tUpload = performance.now();
 
@@ -764,8 +776,8 @@ export async function encryptAndPutChunked({
     }
   };
 
-  // Concurrency pool — use a proper slot-based limiter so that exactly
-  // UPLOAD_CONCURRENCY uploads run in parallel (not more, not fewer).
+  // Concurrency pool — AIMD adaptive: starts conservative, ramps up on
+  // stable RTT, backs off on errors. ac.concurrency is checked each iteration.
   try {
     const pool = new Set();
     for (let i = 0; i < chunkCount; i++) {
@@ -777,7 +789,7 @@ export async function encryptAndPutChunked({
       }).finally(() => pool.delete(p));
       pool.add(p);
 
-      if (pool.size >= UPLOAD_CONCURRENCY) {
+      if (pool.size >= uploadAc.concurrency) {
         await Promise.race(pool);
       }
     }
