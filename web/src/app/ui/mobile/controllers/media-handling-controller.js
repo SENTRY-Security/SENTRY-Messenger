@@ -7,7 +7,7 @@
 
 import { BaseController } from './base-controller.js';
 import { downloadAndDecrypt } from '../../../features/media.js';
-import { downloadChunkedManifest, streamChunks, downloadAllChunks } from '../../../features/chunked-download.js';
+import { downloadChunkedManifest, streamChunks, downloadAllChunks, getChunkUrls } from '../../../features/chunked-download.js';
 import { isMseSupported, detectCodecFromInitSegment, buildMimeFromCodecString, createMsePlayer, isValidMseInitSegment } from '../../../features/mse-player.js';
 import { mergeInitSegments } from '../../../features/mp4-remuxer.js';
 import { renderPdfViewer, cleanupPdfViewer } from '../viewers/pdf-viewer.js';
@@ -186,14 +186,20 @@ export class MediaHandlingController extends BaseController {
             this._updateVideoOverlayUI(msgId, media);
             updateDownloadProgress(2);
 
-            // Wait for both MSE open and manifest download in parallel
-            const [, downloadedManifest] = await Promise.all([
+            // Wait for MSE open, manifest download, AND first batch chunk URL
+            // signing all in parallel. Prefetching chunk URLs eliminates the
+            // ~100-200ms API round-trip that previously blocked after manifest parse.
+            const PREFETCH_BATCH = 20;
+            const prefetchIndices = Array.from({ length: PREFETCH_BATCH }, (_, i) => i);
+            const [, downloadedManifest, prefetchedUrlMap] = await Promise.all([
                 mseOpenPromise,
                 downloadChunkedManifest({
                     baseKey: media.baseKey,
                     manifestEnvelope: media.manifestEnvelope,
                     abortSignal: downloadAbort.signal
-                })
+                }),
+                getChunkUrls({ baseKey: media.baseKey, chunkIndices: prefetchIndices, abortSignal: downloadAbort.signal })
+                    .catch(() => new Map()) // non-fatal: streamChunks will re-fetch if needed
             ]);
             manifest = downloadedManifest;
 
@@ -395,6 +401,7 @@ export class MediaHandlingController extends BaseController {
                 manifest,
                 manifestEnvelope: media.manifestEnvelope,
                 abortSignal: downloadAbort.signal,
+                prefetchedUrlMap,
                 onProgress: ({ percent }) => {
                     const adjusted = 5 + Math.round(percent * 0.9);
                     media._videoProgress = Math.min(95, adjusted);
@@ -504,7 +511,7 @@ export class MediaHandlingController extends BaseController {
                     if (!bufferHealthPassed && mediaSegmentsSent === BUFFER_HEALTH_SEGMENTS) {
                         // Wait for pending appends to settle (with safety timeout)
                         if (inflightAppends.size > 0) {
-                            const healthWait = new Promise(r => setTimeout(r, 8_000));
+                            const healthWait = new Promise(r => setTimeout(r, 3_000));
                             await Promise.race([Promise.allSettled([...inflightAppends]), healthWait]);
                         }
                         const hasBuffer = video.buffered?.length > 0;
@@ -533,7 +540,7 @@ export class MediaHandlingController extends BaseController {
                     // Safety timeout prevents permanent deadlock if all appends are stuck
                     // (e.g. eviction hang, MMS endstreaming pause with no resume).
                     if (inflightAppends.size >= MAX_INFLIGHT) {
-                        const BACKPRESSURE_TIMEOUT = 20_000;
+                        const BACKPRESSURE_TIMEOUT = 10_000;
                         const timeout = new Promise(r => setTimeout(r, BACKPRESSURE_TIMEOUT));
                         await Promise.race([Promise.race(inflightAppends), timeout]);
                     }

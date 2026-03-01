@@ -150,10 +150,14 @@ export class AdaptiveConcurrency {
         console.info(`[adaptive] RTT spike (${ratio.toFixed(2)}x) → concurrency ${prev} → ${this._concurrency}`);
       }
     } else {
-      // RTT stable or improving → additive increase
+      // RTT stable or improving → additive increase.
+      // Increase by +2 when RTT is well below baseline (fast network with
+      // headroom), +1 otherwise. This halves ramp-up time on fast connections
+      // while staying conservative when RTT is near the spike threshold.
       if (this._concurrency < this._ceiling) {
-        this._concurrency = Math.min(this._ceiling, this._concurrency + 1);
-        console.info(`[adaptive] stable RTT → concurrency ${prev} → ${this._concurrency}`);
+        const increment = ratio < 0.85 ? 2 : 1;
+        this._concurrency = Math.min(this._ceiling, this._concurrency + increment);
+        console.info(`[adaptive] stable RTT (${ratio.toFixed(2)}x) → concurrency ${prev} → ${this._concurrency}`);
       }
       // Slowly adapt baseline toward current RTT (exponential moving average)
       this._baselineRtt = this._baselineRtt * 0.7 + currentRtt * 0.3;

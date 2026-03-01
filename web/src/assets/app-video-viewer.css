@@ -141,12 +141,33 @@ body.vv-open {
 }
 
 .vv-buffering-spinner {
-  width: 36px;
-  height: 36px;
+  position: relative;
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Rotating ring around the logo */
+.vv-buffering-spinner::before {
+  content: '';
+  position: absolute;
+  inset: 0;
   border-radius: 50%;
-  border: 3px solid rgba(148, 163, 184, 0.2);
+  border: 3px solid rgba(148, 163, 184, 0.15);
   border-top-color: #38bdf8;
   animation: vv-spin 0.9s linear infinite;
+}
+
+/* Logo in center */
+.vv-buffering-logo {
+  width: 28px;
+  height: 28px;
+  position: relative;
+  z-index: 1;
+  opacity: 0.92;
+  filter: brightness(0) invert(1);
 }
 
 @keyframes vv-spin {

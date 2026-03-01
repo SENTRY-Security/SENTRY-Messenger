@@ -91,7 +91,7 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
         <div class="vv-stage">
             <video playsinline></video>
             <div class="vv-buffering">
-                <div class="vv-buffering-spinner"></div>
+                <div class="vv-buffering-spinner"><img class="vv-buffering-logo" src="/assets/images/logo.svg" alt="" /></div>
                 <div class="vv-buffering-text">緩衝中...</div>
             </div>
             <div class="vv-stats">

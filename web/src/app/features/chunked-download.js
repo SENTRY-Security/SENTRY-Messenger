@@ -169,16 +169,17 @@ export async function getChunkUrls({ baseKey, chunkIndices, abortSignal }) {
  * 1. Adaptive concurrent downloads (AIMD) — ramps up on fast networks, backs off on slow
  * 2. Larger URL signing batches (20) — fewer API round-trips
  * 3. URL prefetching — next batch's signed URLs are requested while current batch downloads
+ * 4. Accepts prefetchedUrlMap for batch 0 to eliminate initial API round-trip
  *
- * @param {{ baseKey: string, manifest: object, manifestEnvelope: object, abortSignal?: AbortSignal, onProgress?: Function }} params
+ * @param {{ baseKey: string, manifest: object, manifestEnvelope: object, abortSignal?: AbortSignal, onProgress?: Function, prefetchedUrlMap?: Map }} params
  */
-export async function* streamChunks({ baseKey, manifest, manifestEnvelope, abortSignal, onProgress }) {
+export async function* streamChunks({ baseKey, manifest, manifestEnvelope, abortSignal, onProgress, prefetchedUrlMap }) {
   const cryptoKey = resolveKey(manifestEnvelope);
   const totalChunks = manifest.totalChunks;
 
   // Larger batches to reduce API round-trips (signed URLs are valid for minutes)
   const URL_BATCH_SIZE = 20;
-  const ac = new AdaptiveConcurrency({ floor: 2, ceiling: 10 });
+  const ac = new AdaptiveConcurrency({ floor: 3, ceiling: 12, initial: 6, window: 2 });
 
   let prefetchPromise = null;
 
@@ -189,10 +190,15 @@ export async function* streamChunks({ baseKey, manifest, manifestEnvelope, abort
     const indices = [];
     for (let i = batchStart; i < batchEnd; i++) indices.push(i);
 
-    // Use prefetched URLs from previous iteration, or fetch now
-    const urlMap = prefetchPromise
-      ? await prefetchPromise
-      : await getChunkUrls({ baseKey, chunkIndices: indices, abortSignal });
+    // Use prefetched URLs: caller-provided (batch 0) or from previous iteration
+    let urlMap;
+    if (batchStart === 0 && prefetchedUrlMap && prefetchedUrlMap.size > 0) {
+      urlMap = prefetchedUrlMap;
+    } else if (prefetchPromise) {
+      urlMap = await prefetchPromise;
+    } else {
+      urlMap = await getChunkUrls({ baseKey, chunkIndices: indices, abortSignal });
+    }
     prefetchPromise = null;
 
     // Prefetch next batch's signed URLs while we download the current batch
