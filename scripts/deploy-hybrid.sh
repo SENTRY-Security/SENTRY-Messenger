@@ -88,7 +88,7 @@ reload_pm2() {
 }
 
 # Check if running on the remote server itself (skip SSH)
-if [ "$SKIP_SSH" = "1" ] || [ "$(hostname)" = "localhost" ] || [ -f "/root/service/.is-server" ]; then
+if [ "${SKIP_SSH:-}" = "1" ] || [ "$(hostname)" = "localhost" ] || [ -f "/root/service/.is-server" ]; then
   echo "   - Running locally on server, updating directly..."
   echo "     - Pulling latest code ($CURRENT_BRANCH)..."
   git fetch origin
