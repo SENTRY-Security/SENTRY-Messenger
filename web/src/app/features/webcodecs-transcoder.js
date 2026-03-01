@@ -132,18 +132,34 @@ function videoEncoderConfig(track, constraints = {}) {
   const baseBitrate = track.bitrate || 2_000_000;
   const maxBitrate = constraints.maxBitrate || 5_000_000;
 
+  // Compute output dimensions (swap for 90°/270° rotation)
+  const outW = swap ? codedH : codedW;
+  const outH = swap ? codedW : codedH;
+
+  // Select the minimum H.264 level that supports the output resolution.
+  // Level 3.0 only handles 720×480 — using it for 1280×720 causes
+  // "Encoding task failed" on iOS Safari because the hardware encoder
+  // rejects the resolution/level mismatch.
+  const macroblocks = Math.ceil(outW / 16) * Math.ceil(outH / 16);
+  let avcLevel;
+  if (macroblocks <= 1620)      avcLevel = '1E'; // Level 3.0: up to 720×480
+  else if (macroblocks <= 3600) avcLevel = '1F'; // Level 3.1: up to 1280×720
+  else if (macroblocks <= 5120) avcLevel = '20'; // Level 3.2: up to 1280×1024
+  else if (macroblocks <= 8192) avcLevel = '28'; // Level 4.0: up to 1920×1080
+  else                          avcLevel = '32'; // Level 5.0: up to 3672×1536
+
   // Target: H.264 Baseline for maximum MSE compatibility
   // If source has 90°/270° rotation, swap output dimensions so the
   // re-encoded video is already in display orientation (no matrix needed).
   return {
-    codec: 'avc1.42001E', // Baseline profile, level 3.0
-    width: swap ? codedH : codedW,
-    height: swap ? codedW : codedH,
+    codec: `avc1.4200${avcLevel}`, // Baseline profile, dynamic level
+    width: outW,
+    height: outH,
     bitrate: Math.min(baseBitrate, maxBitrate),
     framerate: track.video?.frame_rate || track.timescale / (track.samples_duration / track.nb_samples) || 30,
     latencyMode: 'quality',
-    avc: { format: 'avc' }, // Annex-B → mp4box expects AVC (length-prefixed)
-    _rotation: rotation, // internal: used by transcodeVideoTrack
+    avc: { format: 'avc' }, // length-prefixed NALUs for mp4box muxing
+    _rotation: rotation, // internal: used by streaming transcode
   };
 }
 
@@ -549,7 +565,16 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
     rotation = encConfig._rotation || 0;
     const needsRot = rotation !== 0;
 
-    if (needsRot && typeof OffscreenCanvas === 'function') {
+    // Determine if we need an OffscreenCanvas for scaling and/or rotation.
+    // Decoded frames are at original resolution (e.g. 3840×2160) but the
+    // encoder expects the target resolution (e.g. 720×1280). Some browsers'
+    // VideoEncoder won't auto-rescale, so we must do it ourselves.
+    const srcW = track.video?.width || track.track_width || encConfig.width;
+    const srcH = track.video?.height || track.track_height || encConfig.height;
+    const needsResize = (srcW !== encConfig.width) || (srcH !== encConfig.height);
+    const needsCanvas = needsRot || needsResize;
+
+    if (needsCanvas && typeof OffscreenCanvas === 'function') {
       rotCanvas = new OffscreenCanvas(encConfig.width, encConfig.height);
       rotCtx = rotCanvas.getContext('2d');
     }
@@ -558,7 +583,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
       output: (frame) => {
         try {
           let toEncode = frame;
-          if (needsRot && rotCtx) {
+          if (needsCanvas && rotCtx) {
             const fw = frame.displayWidth;
             const fh = frame.displayHeight;
             const ow = encConfig.width;
@@ -566,8 +591,22 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
             rotCtx.clearRect(0, 0, ow, oh);
             rotCtx.save();
             rotCtx.translate(ow / 2, oh / 2);
-            rotCtx.rotate((rotation * Math.PI) / 180);
-            rotCtx.drawImage(frame, -fw / 2, -fh / 2, fw, fh);
+            if (needsRot) rotCtx.rotate((rotation * Math.PI) / 180);
+
+            // Scale the frame to fit the target canvas.
+            // After rotation, a 90°/270° turn swaps the frame's effective
+            // width/height relative to the canvas dimensions.
+            let sx, sy;
+            if (needsRot && (rotation === 90 || rotation === 270)) {
+              sx = ow / fh;
+              sy = oh / fw;
+            } else {
+              sx = ow / fw;
+              sy = oh / fh;
+            }
+            const s = Math.min(sx, sy);
+            rotCtx.drawImage(frame, (-fw * s) / 2, (-fh * s) / 2, fw * s, fh * s);
+
             rotCtx.restore();
             toEncode = new VideoFrame(rotCanvas, {
               timestamp: frame.timestamp,
@@ -897,7 +936,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
 
   onProgress?.({ phase: 'encode', percent: 100 });
 
-  const codecs = ['avc1.42001E'];
+  const codecs = [vEncConfig.codec];
   if (hadAudio) codecs.push('mp4a.40.2');
 
   return {
