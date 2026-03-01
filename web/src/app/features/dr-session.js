@@ -2888,6 +2888,9 @@ export async function sendDrMedia(params = {}) {
         if (Number.isFinite(p?.percent)) {
           forwarded.percent = PREVIEW_UPLOAD_END + Math.round(p.percent * mainProgressRange / 100);
         }
+        // Forward byte-level stats for upload speed/progress display
+        if (Number.isFinite(p?.loaded)) forwarded.loaded = p.loaded;
+        if (Number.isFinite(p?.total)) forwarded.total = p.total;
         // Forward non-percent fields (statusText, steps) so the UI can render them
         if (p?.statusText !== undefined) forwarded.statusText = p.statusText;
         if (p?.steps) forwarded.steps = p.steps;
