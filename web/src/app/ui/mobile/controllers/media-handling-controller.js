@@ -737,7 +737,7 @@ export class MediaHandlingController extends BaseController {
 
                 // Safety timeout: cap total re-append time. If the queue is
                 // stuck (e.g. SourceBuffer in a broken state), don't hang forever.
-                const REAPPEND_TIMEOUT = 15_000;
+                const REAPPEND_TIMEOUT = 5_000;
                 const timeoutPromise = new Promise(r => setTimeout(r, REAPPEND_TIMEOUT));
 
                 await Promise.race([batchAppendChunks(start, end, null), timeoutPromise]);
