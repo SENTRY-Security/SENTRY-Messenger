@@ -180,6 +180,7 @@ export class MediaHandlingController extends BaseController {
         video.play().catch(() => {});
 
         let manifest = null;
+        let streamingComplete = false;
         try {
             // Step 2: Download and decrypt manifest (async — gesture context lost)
             media._videoProgress = 2;
@@ -234,7 +235,6 @@ export class MediaHandlingController extends BaseController {
             let consecutiveErrors = 0;
             const MAX_CONSECUTIVE_ERRORS = 5;
             const initChunks = [];
-            let streamingComplete = false;
             let userPaused = false; // true when user explicitly pauses via UI
 
             // Detect user-initiated pauses via the video-viewer's togglePlay
