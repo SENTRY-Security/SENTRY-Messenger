@@ -623,6 +623,7 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
   const orderedMediaSegs = [];
   let mp4boxError = null;
   let readyFired = false;
+  let mediaDurationSec = 0; // Total duration in seconds from mp4box.js info
 
   mp4boxFile.onError = (err) => {
     mp4boxError = new Error('影片解析失敗：' + (err?.message || err || 'unknown mp4box error'));
@@ -632,6 +633,12 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
     if (!info || !info.tracks || info.tracks.length === 0) {
       mp4boxError = new UnsupportedVideoFormatError('影片不包含任何可播放的音視訊軌道');
       return;
+    }
+
+    // Extract total media duration for the manifest.
+    // mp4box.js provides info.duration in info.timescale units.
+    if (info.duration && info.timescale) {
+      mediaDurationSec = info.duration / info.timescale;
     }
 
     const avTracks = info.tracks.filter(t => {
@@ -766,5 +773,8 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
 
   const outputName = name.replace(/\.(mov|m4v|qt)$/i, '.mp4');
   onProgress?.({ percent: 100 });
-  return { tracks: [muxedTrack], segments, contentType: 'video/mp4', remuxed: true, name: outputName };
+  return {
+    tracks: [muxedTrack], segments, contentType: 'video/mp4', remuxed: true, name: outputName,
+    duration: mediaDurationSec > 0 ? mediaDurationSec : undefined
+  };
 }

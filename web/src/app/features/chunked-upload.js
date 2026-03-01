@@ -772,7 +772,11 @@ export async function encryptAndPutChunked({
     // Per-track info for multi-SourceBuffer MSE playback
     // tracks[i] = { type: 'video'|'audio'|'muxed', codec: 'avc1.xxx'|'mp4a.40.2'|null }
     // Each chunk's trackIndex references this array
-    tracks: fmp4Tracks || null
+    tracks: fmp4Tracks || null,
+    // Total media duration in seconds (if available from remuxer).
+    // Used by MSE player to set MediaSource.duration upfront, preventing
+    // incremental duration growth that causes auto-pause on some browsers.
+    duration: preprocessResult?.duration || undefined
   };
 
   const manifestJson = new TextEncoder().encode(JSON.stringify(manifest));

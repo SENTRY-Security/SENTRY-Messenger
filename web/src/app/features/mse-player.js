@@ -609,6 +609,34 @@ export function createMsePlayer({ videoElement, onError }) {
     removeSourceBuffer,
 
     /**
+     * Set MediaSource.duration explicitly. Call after the init segment is
+     * appended so the browser knows the full timeline upfront, preventing
+     * incremental duration growth (and associated durationchange pauses).
+     */
+    setDuration(seconds) {
+      if (!mediaSource || mediaSource.readyState !== 'open') return;
+      if (!Number.isFinite(seconds) || seconds <= 0) return;
+      try {
+        // Wait for all SourceBuffers to finish updating before setting duration
+        const anyUpdating = Object.values(buffers).some(b => b.sourceBuffer?.updating);
+        if (anyUpdating) {
+          // Defer until next updateend
+          const waitAndSet = () => {
+            const still = Object.values(buffers).some(b => b.sourceBuffer?.updating);
+            if (!still && mediaSource?.readyState === 'open') {
+              mediaSource.duration = seconds;
+            }
+          };
+          setTimeout(waitAndSet, 100);
+        } else {
+          mediaSource.duration = seconds;
+        }
+      } catch (err) {
+        console.warn('[mse-player] setDuration failed:', err?.message);
+      }
+    },
+
+    /**
      * Queue a chunk of data to be appended to a specific track's SourceBuffer.
      * @param {string} label - Track label (e.g. 'video', 'audio', 'muxed')
      * @param {Uint8Array} data - The fMP4 segment data

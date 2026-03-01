@@ -218,6 +218,45 @@ export class MediaHandlingController extends BaseController {
             let consecutiveErrors = 0;
             const MAX_CONSECUTIVE_ERRORS = 5;
             const initChunks = [];
+            let streamingComplete = false;
+            let userPaused = false; // true when user explicitly pauses via UI
+
+            // Track user-initiated pauses: mark userPaused=true when the user
+            // taps play/pause controls. The viewer's click handlers call
+            // video.pause() which fires the 'pause' event. We detect this by
+            // briefly setting userPaused before the pause event propagates.
+            // Uses 'pointerdown' on the viewer overlay (captures all taps on
+            // play/pause buttons, stage tap, etc.) to know user intent.
+            let userInteracting = false;
+            const onPointerDown = () => { userInteracting = true; };
+            const onPointerUp = () => { setTimeout(() => { userInteracting = false; }, 300); };
+            viewer.overlay.addEventListener('pointerdown', onPointerDown, true);
+            viewer.overlay.addEventListener('pointerup', onPointerUp, true);
+            viewer.overlay.addEventListener('pointercancel', onPointerUp, true);
+
+            // When pause fires during user interaction → user explicitly paused.
+            // When play fires → clear userPaused (user resumed or auto-resume).
+            const onPauseEvent = () => {
+                if (userInteracting && !video.ended) userPaused = true;
+            };
+            const onPlayEvent = () => { userPaused = false; };
+            video.addEventListener('pause', onPauseEvent);
+            video.addEventListener('play', onPlayEvent);
+
+            // Auto-resume: during streaming, the browser may pause when
+            // MediaSource duration grows (incremental durationchange).
+            // If the user didn't explicitly pause, auto-resume playback.
+            const onUnexpectedPause = () => {
+                if (userPaused || streamingComplete || !mseInitialized) return;
+                if (userInteracting) return; // user is tapping — don't interfere
+                // Small delay — let the browser settle after duration change
+                setTimeout(() => {
+                    if (!video.paused || userPaused || streamingComplete) return;
+                    console.info('[mse] auto-resuming after unexpected pause during streaming');
+                    video.play().catch(() => {});
+                }, 150);
+            };
+            video.addEventListener('pause', onUnexpectedPause);
 
             // Hide buffering overlay only when the video actually has frames
             // (not just when MSE accepts data — that doesn't guarantee decodability).
@@ -226,7 +265,7 @@ export class MediaHandlingController extends BaseController {
                     firstMediaAppended = true;
                     viewer.hideBuffering();
                     // Ensure playback starts — autoplay may have been blocked
-                    if (video.paused) {
+                    if (video.paused && !userPaused) {
                         video.play().catch(() => {
                             // [FIX] Fallback: muted autoplay (always allowed on iOS).
                             // Unmute once playback starts.
@@ -397,6 +436,12 @@ export class MediaHandlingController extends BaseController {
                         await tryInitMse(initData, primaryMime);
                         mseInitialized = true;
                         savedForFallback.push(initData); // keep for potential blob fallback
+
+                        // Set MediaSource.duration upfront to prevent incremental
+                        // durationchange events that cause auto-pause on some browsers.
+                        if (manifest.duration && msePlayer) {
+                            msePlayer.setDuration(manifest.duration);
+                        }
                     } catch (initErr) {
                         // MSE init failed after all retries — switch to blob fallback
                         console.warn('[video] MSE init failed, switching to blob-URL fallback:', initErr?.message);
@@ -479,6 +524,17 @@ export class MediaHandlingController extends BaseController {
             // Check for deferred append errors (skip if we voluntarily abandoned MSE)
             if (appendError && !mseAbandoned) throw appendError;
 
+            // Streaming complete — disable auto-resume so user pause works normally
+            streamingComplete = true;
+            video.removeEventListener('pause', onUnexpectedPause);
+            video.removeEventListener('pause', onPauseEvent);
+            video.removeEventListener('play', onPlayEvent);
+            try {
+                viewer.overlay.removeEventListener('pointerdown', onPointerDown, true);
+                viewer.overlay.removeEventListener('pointerup', onPointerUp, true);
+                viewer.overlay.removeEventListener('pointercancel', onPointerUp, true);
+            } catch {}
+
             if (useBlobFallback) {
                 // All chunks collected — create blob URL and play natively
                 console.info(`[video] blob fallback: ${blobParts.length} parts, ${bytesReceived} bytes`);
@@ -516,6 +572,16 @@ export class MediaHandlingController extends BaseController {
             this._updateVideoOverlayUI(msgId, media);
 
         } catch (err) {
+            // Clean up auto-resume listeners
+            streamingComplete = true;
+            try {
+                video.removeEventListener('pause', onUnexpectedPause);
+                video.removeEventListener('pause', onPauseEvent);
+                viewer.overlay.removeEventListener('pointerdown', onPointerDown, true);
+                viewer.overlay.removeEventListener('pointerup', onPointerUp, true);
+                viewer.overlay.removeEventListener('pointercancel', onPointerUp, true);
+            } catch {}
+
             // Release seek handler and chunk cache
             if (seekCleanup) { try { seekCleanup(); } catch {} seekCleanup = null; }
             chunkCache.length = 0;
