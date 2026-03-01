@@ -1523,7 +1523,12 @@ export function initMessagesPane({
       ['Server ID', msg.serverMessageId || 'N/A'],
       ['Type', msg.msgType || msg.subtype || 'N/A'],
       ['Status', msg.status || '<span style="color:#10b981; font-weight:600;">Normal</span>'],
-      ['Timestamp', new Date((msg.ts || 0) * 1000).toLocaleString()]
+      ['Timestamp', (() => {
+        const ts = Number(msg.ts || 0);
+        // ts > 10^10 means it's already milliseconds; otherwise treat as seconds
+        const ms = ts > 10_000_000_000 ? ts : ts * 1000;
+        return new Date(ms).toLocaleString();
+      })()]
     ];
 
     // Group 2: Counters
