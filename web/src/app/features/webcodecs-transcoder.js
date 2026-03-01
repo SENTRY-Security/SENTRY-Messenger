@@ -475,19 +475,37 @@ function probeFileTracks(file, mp4boxMod) {
     };
 
     // Feed just enough data for mp4box to parse moov (headers).
-    // For most MP4 files, moov is at the start or end; mp4box handles both.
+    // moov can be at the start (progressive MP4) or end (iPhone MOV).
+    // Read start first, then end if needed — avoids loading entire file.
     const READ_CHUNK_SIZE = 2 * 1024 * 1024;
+    const MAX_START_PROBE = 4 * 1024 * 1024;   // 4MB from start
+    const MAX_END_PROBE   = 8 * 1024 * 1024;   // 8MB from end
     let readOffset = 0;
     try {
-      while (readOffset < file.size) {
+      // Phase 1: read from start (covers progressive MP4, short files)
+      while (readOffset < Math.min(MAX_START_PROBE, file.size)) {
         const end = Math.min(readOffset + READ_CHUNK_SIZE, file.size);
         const chunk = await file.slice(readOffset, end).arrayBuffer();
         chunk.fileStart = readOffset;
         mp4boxFile.appendBuffer(chunk);
         readOffset = end;
-        // If onReady already fired, stop reading — we have what we need
         if (tracks.length > 0) break;
       }
+
+      // Phase 2: moov not found at start — read from end (iPhone MOV, etc.)
+      if (tracks.length === 0 && file.size > MAX_START_PROBE) {
+        const endStart = Math.max(readOffset, file.size - MAX_END_PROBE);
+        let endOffset = endStart;
+        while (endOffset < file.size) {
+          const end = Math.min(endOffset + READ_CHUNK_SIZE, file.size);
+          const chunk = await file.slice(endOffset, end).arrayBuffer();
+          chunk.fileStart = endOffset;
+          mp4boxFile.appendBuffer(chunk);
+          endOffset = end;
+          if (tracks.length > 0) break;
+        }
+      }
+
       if (tracks.length === 0) {
         mp4boxFile.flush();
       }
@@ -1084,46 +1102,86 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
   };
 
   // ── Feed file in 2MB chunks, process samples after each chunk ──
+  //
+  // Phase 1: Find moov by reading the start and (if needed) end of the file.
+  //          For iPhone MOV, moov is at the end — reading sequentially would
+  //          load the entire file (~581MB) into mp4box stream.buffers, crashing
+  //          the tab.  Reading only start + end caps memory at ~12MB.
+  // Phase 2: Once moov is found and codecs are set up, read the remaining data
+  //          sequentially.  The buffer-cleanup in processPendingSamples keeps
+  //          memory bounded.
 
   const READ_CHUNK_SIZE = 2 * 1024 * 1024;
+  const MOOV_START_PROBE = 4 * 1024 * 1024;
+  const MOOV_END_PROBE   = 8 * 1024 * 1024;
   let readOffset = 0;
   let ready = false;
+  let endProbeStart = -1; // byte offset where the end-probe region starts (-1 = not used)
 
-  while (readOffset < file.size) {
+  // Phase 1a: read from start
+  while (readOffset < Math.min(MOOV_START_PROBE, file.size)) {
     checkError();
     const end = Math.min(readOffset + READ_CHUNK_SIZE, file.size);
     const chunk = await file.slice(readOffset, end).arrayBuffer();
     chunk.fileStart = readOffset;
-    try {
-      demuxer.appendBuffer(chunk);
-    } catch (appendErr) {
-      // appendBuffer can throw if mp4box runs out of memory or can't parse
-      throw fatalError || new Error('影片解析失敗（記憶體不足？）：' + (appendErr?.message || appendErr));
+    try { demuxer.appendBuffer(chunk); } catch (e) {
+      throw fatalError || new Error('影片解析失敗（記憶體不足？）：' + (e?.message || e));
     }
     readOffset = end;
+    if (videoTrack) { await readyPromise; ready = true; break; }
+  }
 
-    // Wait for onReady to fire and set up codecs (first time only)
-    if (!ready && videoTrack) {
-      await readyPromise;
-      ready = true;
-    }
-
-    // Process any samples that onSamples accumulated from this chunk
-    if (ready) {
-      await processPendingSamples();
-      // Streaming: drain segments produced by encoder → muxer pipeline
-      if (isStreaming) await drainReadySegments();
+  // Phase 1b: moov not found at start — read from end
+  if (!ready && file.size > MOOV_START_PROBE) {
+    endProbeStart = Math.max(readOffset, file.size - MOOV_END_PROBE);
+    let endOffset = endProbeStart;
+    while (endOffset < file.size) {
+      checkError();
+      const end = Math.min(endOffset + READ_CHUNK_SIZE, file.size);
+      const chunk = await file.slice(endOffset, end).arrayBuffer();
+      chunk.fileStart = endOffset;
+      try { demuxer.appendBuffer(chunk); } catch (e) {
+        throw fatalError || new Error('影片解析失敗（記憶體不足？）：' + (e?.message || e));
+      }
+      endOffset = end;
+      if (videoTrack) { await readyPromise; ready = true; break; }
     }
   }
 
-  // Ensure onReady has fired even for small files
+  // Tiny/edge-case: flush to trigger onReady for small files
   if (!ready) {
     try { demuxer.flush(); } catch {}
     await readyPromise;
     ready = true;
-  } else {
-    try { demuxer.flush(); } catch {}
   }
+
+  // Process any samples that the start/end probes already triggered
+  checkError();
+  await processPendingSamples();
+  if (isStreaming) await drainReadySegments();
+
+  // Phase 2: sequential read for sample data (cleanup active from the start)
+  // readOffset is where Phase 1a left off; skip ranges already fed in Phase 1b.
+  while (readOffset < file.size) {
+    checkError();
+    // Skip bytes already fed during the end-probe
+    if (endProbeStart >= 0 && readOffset >= endProbeStart) {
+      readOffset = file.size; // end-probe data already fed
+      break;
+    }
+    const end = Math.min(readOffset + READ_CHUNK_SIZE,
+                         endProbeStart >= 0 ? endProbeStart : file.size);
+    const chunk = await file.slice(readOffset, end).arrayBuffer();
+    chunk.fileStart = readOffset;
+    try { demuxer.appendBuffer(chunk); } catch (e) {
+      throw fatalError || new Error('影片解析失敗（記憶體不足？）：' + (e?.message || e));
+    }
+    readOffset = end;
+    await processPendingSamples();
+    if (isStreaming) await drainReadySegments();
+  }
+
+  try { demuxer.flush(); } catch {}
 
   // Process any remaining samples from flush
   checkError();
