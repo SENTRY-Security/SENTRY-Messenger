@@ -240,9 +240,13 @@ export class MessageSendingController extends BaseController {
                         ? progress.percent
                         : (progress?.loaded && progress?.total ? (progress.loaded / progress.total) * 100 : null);
 
-                    this.applyUploadProgress(msg, { percent });
-                    this.updateUploadOverlayUI(msg.id, msg.media);
-                    if (Number.isFinite(percent)) updateUploadProgress(percent);
+                    // Only update progress values when a numeric percent is provided.
+                    // Steps-only or statusText-only callbacks should not touch progress.
+                    if (Number.isFinite(percent)) {
+                        this.applyUploadProgress(msg, { percent });
+                        this.updateUploadOverlayUI(msg.id, msg.media);
+                        updateUploadProgress(percent);
+                    }
 
                     // Forward processing steps to the detail panel checklist
                     if (progress?.steps) {
@@ -287,6 +291,7 @@ export class MessageSendingController extends BaseController {
                     const messageStatus = this.deps.messageStatus;
                     if (!messageStatus) {
                         console.error('MessageStatusController not available in deps');
+                        endUpload();
                         continue;
                     }
 

@@ -180,7 +180,14 @@ async function _streamingUploadFragmented({
     convId, totalSize: totalFileSize, chunkCount, contentType, direction,
     dir: storageDir || undefined
   });
-  if (!rSign.ok) throw new Error('sign-put-chunked failed: ' + JSON.stringify(signData));
+  if (!rSign.ok) {
+    const errCode = signData?.error || 'Unknown';
+    if (errCode === 'FileTooLarge') {
+      const limitMB = signData?.maxBytes ? Math.round(signData.maxBytes / 1024 / 1024) : '?';
+      throw new Error(`檔案大小超過伺服器限制 (${limitMB}MB)，請確認伺服器已更新至最新版本`);
+    }
+    throw new Error('sign-put-chunked failed: ' + JSON.stringify(signData));
+  }
   const { baseKey, manifest: manifestPut, chunks: chunkPuts } = signData;
   if (!baseKey || !manifestPut?.url || !chunkPuts?.length) {
     throw new Error('sign-put-chunked returned incomplete data');
@@ -528,7 +535,14 @@ export async function encryptAndPutChunked({
     direction,
     dir: storageDir || undefined
   });
-  if (!rSign.ok) throw new Error('sign-put-chunked failed: ' + JSON.stringify(signData));
+  if (!rSign.ok) {
+    const errCode = signData?.error || 'Unknown';
+    if (errCode === 'FileTooLarge') {
+      const limitMB = signData?.maxBytes ? Math.round(signData.maxBytes / 1024 / 1024) : '?';
+      throw new Error(`檔案大小超過伺服器限制 (${limitMB}MB)，請確認伺服器已更新至最新版本`);
+    }
+    throw new Error('sign-put-chunked failed: ' + JSON.stringify(signData));
+  }
   const { baseKey, manifest: manifestPut, chunks: chunkPuts } = signData;
   if (!baseKey || !manifestPut?.url || !chunkPuts?.length) {
     throw new Error('sign-put-chunked returned incomplete data');

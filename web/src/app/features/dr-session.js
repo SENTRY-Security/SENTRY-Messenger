@@ -2882,8 +2882,12 @@ export async function sendDrMedia(params = {}) {
   const mainProgressRange = 100 - PREVIEW_UPLOAD_END;
   const remappedProgress = onProgress
     ? (p) => {
-        const inner = Number.isFinite(p?.percent) ? p.percent : 0;
-        const forwarded = { percent: PREVIEW_UPLOAD_END + Math.round(inner * mainProgressRange / 100) };
+        const forwarded = {};
+        // Only remap percent when actually provided — steps-only or statusText-only
+        // callbacks must NOT default to 0, which would regress the bar (100% → 5%).
+        if (Number.isFinite(p?.percent)) {
+          forwarded.percent = PREVIEW_UPLOAD_END + Math.round(p.percent * mainProgressRange / 100);
+        }
         // Forward non-percent fields (statusText, steps) so the UI can render them
         if (p?.statusText !== undefined) forwarded.statusText = p.statusText;
         if (p?.steps) forwarded.steps = p.steps;
@@ -2894,37 +2898,41 @@ export async function sendDrMedia(params = {}) {
   let uploadResult;
   const isChunked = shouldUseChunkedUpload(file);
 
-  if (isChunked) {
-    uploadResult = await encryptAndPutChunked({
-      convId: conversationId,
-      file,
-      dir,
-      onProgress: remappedProgress,
-      abortSignal,
-      encryptionKey: { key: sharedMediaKey, type: 'shared' },
-      direction: 'sent'
-    });
-  } else {
-    uploadResult = await encryptAndPutWithProgress({
-      convId: conversationId,
-      file,
-      dir,
-      onProgress: remappedProgress,
-      abortSignal,
-      skipIndex: true,
-      encryptionKey: { key: sharedMediaKey, type: 'shared' },
-      encryptionInfoTag: 'media/v1'
-    });
-  }
-
-  // --- Phase 3: DR encrypt + vault + send (brief lock — only crypto, no network upload) ---
-  // [FIX] Wait for our ticket before entering the DR session lock.
-  // This ensures that even if image B uploads faster than image A,
-  // B waits for A to DR-encrypt first, preserving monotonic Ns ordering.
+  // [FIX] Wrap Phase 2 + Phase 3 in a single try/finally so the ticket counter
+  // is ALWAYS advanced, even when the upload (Phase 2) throws. Without this,
+  // a failed upload leaves mediaSendTicketCurrent stuck, causing subsequent
+  // uploads for the same peer to wait until the 2-min safety timeout.
   const TICKET_POLL_MS = 50;
   const TICKET_TIMEOUT_MS = 120000; // 2 min safety timeout
   const ticketStart = Date.now();
   try {
+    if (isChunked) {
+      uploadResult = await encryptAndPutChunked({
+        convId: conversationId,
+        file,
+        dir,
+        onProgress: remappedProgress,
+        abortSignal,
+        encryptionKey: { key: sharedMediaKey, type: 'shared' },
+        direction: 'sent'
+      });
+    } else {
+      uploadResult = await encryptAndPutWithProgress({
+        convId: conversationId,
+        file,
+        dir,
+        onProgress: remappedProgress,
+        abortSignal,
+        skipIndex: true,
+        encryptionKey: { key: sharedMediaKey, type: 'shared' },
+        encryptionInfoTag: 'media/v1'
+      });
+    }
+
+    // --- Phase 3: DR encrypt + vault + send (brief lock — only crypto, no network upload) ---
+    // [FIX] Wait for our ticket before entering the DR session lock.
+    // This ensures that even if image B uploads faster than image A,
+    // B waits for A to DR-encrypt first, preserving monotonic Ns ordering.
     while ((mediaSendTicketCurrent.get(queueKey) || 0) < myTicket) {
       // [FIX] Respect cancel signal during ticket wait — user expects
       // the cancel button to take effect immediately, not after a 2-min wait.
