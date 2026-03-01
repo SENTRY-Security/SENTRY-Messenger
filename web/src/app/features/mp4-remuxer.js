@@ -314,6 +314,32 @@ export function mergeInitSegments(initSegments) {
   let mvhd = null;
   const traks = [];
   const trexes = [];
+  // Track IDs already seen — prevents duplicates when mp4box.js returns
+  // per-track init segments that each contain ALL tracks.
+  const seenTrakIds = new Set();
+  const seenTrexIds = new Set();
+
+  // Extract track_ID from a trak box (trak → tkhd → track_ID)
+  const getTrakId = (trakData) => {
+    const children = parseChildBoxes(trakData, 8);
+    for (const c of children) {
+      if (c.type === 'tkhd' && c.data.length >= 16) {
+        const ver = c.data[8]; // version byte (after 8-byte box header)
+        const idOff = 8 + (ver === 1 ? 20 : 12); // v1: 20 bytes before track_ID
+        if (idOff + 4 <= c.data.length) {
+          return readU32(c.data, idOff);
+        }
+      }
+    }
+    return null;
+  };
+
+  // Extract track_ID from a trex box (full box: 4 version/flags + 4 track_ID)
+  const getTrexId = (trexData) => {
+    // trex: box header (8) + version+flags (4) + track_ID (4)
+    if (trexData.length >= 16) return readU32(trexData, 12);
+    return null;
+  };
 
   for (const initSeg of initSegments) {
     const topBoxes = parseTopLevelBoxes(initSeg);
@@ -328,12 +354,18 @@ export function mergeInitSegments(initSegments) {
             mvhd = child.data;
           }
           if (child.type === 'trak') {
+            const id = getTrakId(child.data);
+            if (id != null && seenTrakIds.has(id)) continue; // deduplicate
+            if (id != null) seenTrakIds.add(id);
             traks.push(child.data);
           }
           if (child.type === 'mvex') {
             const mvexChildren = parseChildBoxes(child.data, 8);
             for (const mc of mvexChildren) {
               if (mc.type === 'trex') {
+                const id = getTrexId(mc.data);
+                if (id != null && seenTrexIds.has(id)) continue; // deduplicate
+                if (id != null) seenTrexIds.add(id);
                 trexes.push(mc.data);
               }
             }

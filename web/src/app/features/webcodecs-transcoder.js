@@ -551,6 +551,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
   let videoMuxDesc = null;         // avcC from first encoder keyframe
   let audioMuxDesc = null;         // esds from demuxer (passthrough) or encoder
   let audioMuxDescReady = false;   // true immediately for passthrough
+  let audioEsdsBox = null;         // mp4box.js Box object for esds (passthrough only)
   const preMuxVideoFrames = [];    // buffered until muxer init
   const preMuxAudioFrames = [];
   const readySegments = [];        // fMP4 segments waiting to be consumed
@@ -943,6 +944,26 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
         if (incMuxAudioTrackId == null) {
           throw new Error('addTrack(audio) returned ' + incMuxAudioTrackId);
         }
+
+        // [FIX] Inject correct esds into the muxer's mp4a sample entry.
+        // mp4box.js v0.5.3 generates a default/broken esds when addTrack
+        // is called without a description (gpac/mp4box.js#502). Without
+        // the proper AudioSpecificConfig in the esds, browsers cannot
+        // initialize the audio decoder from the init segment, causing
+        // MSE SourceBuffer append errors and infinite buffering on playback.
+        if (audioEsdsBox) {
+          // Passthrough: copy the original esds Box object from the demuxer
+          try {
+            const muxTrak = incMuxer.getTrackById(incMuxAudioTrackId);
+            const muxEntry = muxTrak?.mdia?.minf?.stbl?.stsd?.entries?.[0];
+            if (muxEntry) {
+              muxEntry.esds = audioEsdsBox;
+              console.info('[streamingTranscode] injected source esds into muxer audio track');
+            }
+          } catch (e) {
+            console.warn('[streamingTranscode] failed to inject audio esds:', e?.message);
+          }
+        }
       }
 
       incMuxer.setSegmentOptions(incMuxVideoTrackId, null, { nbSamples: 100 });
@@ -962,9 +983,12 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
         }
         initParts.push(new Uint8Array(seg.buffer));
       }
-      const combinedInit = initParts.length === 1
-        ? initParts[0]
-        : mergeInitSegments(initParts);
+      // [FIX] mp4box.js initializeSegmentation() returns one init segment
+      // per setSegmentOptions() call. Each init already contains ALL
+      // segmented tracks' trak + trex boxes. Using only the first avoids
+      // mergeInitSegments creating duplicate traks (e.g., 2× video + 2× audio
+      // in the moov) which confuses MSE SourceBuffer decoders.
+      const combinedInit = initParts[0];
       readySegments.push({ trackIndex: 0, data: combinedInit, encodeProgress: 0 });
 
       incMuxer.onSegment = (_id, _user, buf) => {
@@ -1068,6 +1092,14 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
           // Streaming mode: capture audio description now for muxer init
           if (isStreaming) {
             audioMuxDesc = getAudioDescription(demuxer, audioTrack.id) || undefined;
+            // Also capture the mp4box.js Box object directly — avoids
+            // serialization/deserialization roundtrip and mp4box.js esds
+            // parsing bugs (gpac/mp4box.js#502).
+            try {
+              const srcTrak = demuxer.getTrackById(audioTrack.id);
+              const srcEntry = srcTrak?.mdia?.minf?.stbl?.stsd?.entries?.[0];
+              if (srcEntry?.esds) audioEsdsBox = srcEntry.esds;
+            } catch {}
             audioMuxDescReady = true;
           }
         } else {
@@ -1329,12 +1361,10 @@ async function muxToFmp4(encodedVideo, encodedAudio, videoConfig, audioTrackInfo
   const initSegs = mp4boxFile.initializeSegmentation();
   const initParts = initSegs.map(s => new Uint8Array(s.buffer));
 
-  // [FIX] Use mergeInitSegments for multi-track (video+audio) init segments.
-  // Simple concatenation (concatU8) produces invalid fMP4 with two ftyp+moov
-  // blocks. mergeInitSegments properly combines traks into one moov.
-  const combinedInit = initParts.length === 1
-    ? initParts[0]
-    : mergeInitSegments(initParts);
+  // [FIX] mp4box.js initializeSegmentation() returns one init per
+  // setSegmentOptions() call, but each already contains ALL segmented
+  // tracks' trak+trex. Using only the first avoids duplicate traks.
+  const combinedInit = initParts[0];
 
   segments.push({ trackIndex: 0, data: combinedInit });
 
