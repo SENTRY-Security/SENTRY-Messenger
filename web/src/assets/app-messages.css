@@ -678,6 +678,38 @@
   color: rgba(255, 255, 255, 0.85);
 }
 
+/* Info row: flex container for file-info + progress pie */
+.message-file-info-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Circular progress pie */
+.upload-progress-pie {
+  flex-shrink: 0;
+}
+
+.upload-pie-bg {
+  stroke: rgba(148, 163, 184, 0.25);
+}
+
+.message-me .upload-pie-bg {
+  stroke: rgba(255, 255, 255, 0.2);
+}
+
+.upload-pie-arc {
+  transition: stroke-dashoffset 0.3s ease;
+}
+
+.upload-pie-text {
+  fill: #64748b;
+}
+
+.message-me .upload-pie-text {
+  fill: #fff;
+}
+
 .message-file-download {
   border: none;
   border-radius: 12px;
