@@ -261,12 +261,14 @@ const BUFFER_EVICT_KEEP_BEHIND = 5;
 // Max retries for QuotaExceededError before giving up.
 const QUOTA_MAX_RETRIES = 3;
 // Proactive eviction: trigger when played-behind exceeds this many seconds.
-const PROACTIVE_EVICT_THRESHOLD = 15;
+// Higher = less frequent eviction = fewer buffer gaps during playback.
+const PROACTIVE_EVICT_THRESHOLD = 30;
 // Safety timeout: if an append doesn't complete within this time, reject it.
-const APPEND_TIMEOUT_MS = 15_000;
+const APPEND_TIMEOUT_MS = 10_000;
 // Safety timeout for buffer eviction (sourceBuffer.remove): if updateend
 // never fires after remove(), unblock the queue after this many ms.
-const EVICT_TIMEOUT_MS = 5_000;
+// Typical remove() completes in <200ms; 2s is a generous safety margin.
+const EVICT_TIMEOUT_MS = 2_000;
 
 function createAppendQueue(sourceBuffer, { onError, getVideoElement, getMediaSource } = {}) {
   let queue = [];

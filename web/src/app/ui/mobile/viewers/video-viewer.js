@@ -274,12 +274,22 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
 
     /* ── Waiting / Seeking — re-show buffering spinner when video stalls ── */
     let seekCallbacks = [];  // external callbacks registered via onSeeking()
+    let waitingTimer = null; // debounce timer for 'waiting' event
 
     video.addEventListener('waiting', () => {
-        // Video stalled waiting for data — show buffering spinner
-        if (!destroyed && bufOverlay) {
-            if (bufText) bufText.textContent = '緩衝中…';
-            bufOverlay.classList.remove('vv-buf-hidden');
+        // Debounce: don't show spinner for micro-stalls (<400ms).
+        // MSE per-track segments cause brief gaps between video and audio
+        // appends (~50ms). Without debounce, the spinner flashes constantly
+        // on fast networks even though data arrives almost immediately.
+        if (!destroyed && bufOverlay && !waitingTimer) {
+            waitingTimer = setTimeout(() => {
+                waitingTimer = null;
+                // Only show if still waiting (not already resumed)
+                if (!destroyed && video.readyState < 3) {
+                    if (bufText) bufText.textContent = '緩衝中…';
+                    bufOverlay.classList.remove('vv-buf-hidden');
+                }
+            }, 400);
         }
     });
 
@@ -293,6 +303,8 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
 
     // Hide buffering when playback actually resumes after a stall
     video.addEventListener('playing', () => {
+        // Cancel pending debounce — stall resolved before spinner appeared
+        if (waitingTimer) { clearTimeout(waitingTimer); waitingTimer = null; }
         if (!destroyed && bufOverlay) {
             bufOverlay.classList.add('vv-buf-hidden');
         }
@@ -551,6 +563,7 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
         if (destroyed) return;
         destroyed = true;
         if (controlsTimer) clearTimeout(controlsTimer);
+        if (waitingTimer) { clearTimeout(waitingTimer); waitingTimer = null; }
         clearTimeout(orientationFallbackTimer);
         rotationResizeObs.disconnect();
         if (statsIntervalId) { clearInterval(statsIntervalId); statsIntervalId = null; }
