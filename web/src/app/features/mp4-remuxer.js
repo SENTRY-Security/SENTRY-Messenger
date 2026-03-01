@@ -127,6 +127,42 @@ export async function countMoofBoxesFromFile(file) {
 }
 
 /**
+ * Extract video duration (in seconds) from a File/Blob using a temporary
+ * <video> element. The browser only reads the container header (moov/mvhd),
+ * so this is fast and doesn't buffer media data.
+ *
+ * Returns duration in seconds, or undefined if metadata cannot be read
+ * within the timeout (e.g. codec not supported on this browser).
+ *
+ * @param {File|Blob} file
+ * @param {number} [timeoutMs=5000]
+ * @returns {Promise<number|undefined>}
+ */
+export function extractDurationFromFile(file, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement('video');
+    video.preload = 'metadata';
+    let settled = false;
+    const done = (dur) => {
+      if (settled) return;
+      settled = true;
+      video.removeAttribute('src');
+      video.load();                // release any buffers
+      URL.revokeObjectURL(url);
+      resolve(dur);
+    };
+    video.onloadedmetadata = () => {
+      const d = video.duration;
+      done(Number.isFinite(d) && d > 0 ? d : undefined);
+    };
+    video.onerror = () => done(undefined);
+    setTimeout(() => done(undefined), timeoutMs);
+    video.src = url;
+  });
+}
+
+/**
  * Async generator that yields fMP4 segments from a File/Blob without loading
  * the entire file into memory. First yield is the init segment (ftyp + moov),
  * then each media segment (moof + mdat pair).

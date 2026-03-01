@@ -447,7 +447,11 @@ export class MediaHandlingController extends BaseController {
                         // Set MediaSource.duration upfront to prevent incremental
                         // durationchange events that cause auto-pause on some browsers.
                         if (manifest.duration && msePlayer) {
+                            console.info('[video] setting duration upfront:', manifest.duration, 's');
                             msePlayer.setDuration(manifest.duration);
+                        } else {
+                            console.warn('[video] no manifest.duration — duration will grow incrementally',
+                                { duration: manifest.duration, hasMsePlayer: !!msePlayer });
                         }
                     } catch (initErr) {
                         // MSE init failed after all retries — switch to blob fallback

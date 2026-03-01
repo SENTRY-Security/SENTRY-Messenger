@@ -621,6 +621,7 @@ export function createMsePlayer({ videoElement, onError }) {
         try {
           if (mediaSource?.readyState === 'open') {
             mediaSource.duration = seconds;
+            console.info('[mse-player] duration set to', seconds, 's (was', mediaSource.duration, ')');
           }
         } catch (err) {
           console.warn('[mse-player] setDuration failed:', err?.message);

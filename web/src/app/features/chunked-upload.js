@@ -20,7 +20,8 @@ import { b64 } from '../crypto/aead.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
 import {
   remuxToFragmentedMp4, canRemuxVideo, UnsupportedVideoFormatError,
-  isAlreadyFragmented, countMoofBoxesFromFile, iterateFragmentedSegmentsFromFile
+  isAlreadyFragmented, countMoofBoxesFromFile, iterateFragmentedSegmentsFromFile,
+  extractDurationFromFile
 } from './mp4-remuxer.js';
 import { transcodeToFmp4, isWebCodecsSupported } from './webcodecs-transcoder.js';
 
@@ -203,9 +204,13 @@ async function _streamingUploadFragmented({
   name, direction, dir, mk,
   PHASE, onProgress, abortSignal
 }) {
-  // Count moof boxes by scanning box headers — only reads 16 bytes per box,
-  // never loads the file into memory.
-  const moofCount = await countMoofBoxesFromFile(file);
+  // Count moof boxes and extract duration in parallel.
+  // countMoofBoxes scans only 16-byte box headers; extractDuration uses a
+  // temporary <video> element that only reads the moov header — both are fast.
+  const [moofCount, fileDuration] = await Promise.all([
+    countMoofBoxesFromFile(file),
+    extractDurationFromFile(file)
+  ]);
   if (moofCount === 0) {
     throw new UnsupportedVideoFormatError('已分片的影片格式無法正確解析');
   }
@@ -326,7 +331,8 @@ async function _streamingUploadFragmented({
     totalSize: actualTotalSize, totalChunks: chunkIndex,
     contentType, name,
     chunks: chunkMetas.slice(0, chunkIndex),
-    tracks: [{ type: 'muxed', codec: null }]
+    tracks: [{ type: 'muxed', codec: null }],
+    duration: fileDuration
   };
   const manifestJson = new TextEncoder().encode(JSON.stringify(manifest));
   const manifestCt = await aeadEncryptWithMK(manifestJson, cryptoKey, MANIFEST_INFO_TAG);
