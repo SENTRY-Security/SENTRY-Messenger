@@ -377,7 +377,7 @@ async function _streamingTranscodeUpload({
   file, probe, convId, cryptoKey, useSharedKey, sharedKeyU8,
   name, direction, dir, mk,
   encoderConstraints, onProgress, abortSignal,
-  onEncodePercent,
+  onSegmentProduced,
 }) {
   const PHASE = { chunkStart: 5, chunkEnd: 95, manifestEnd: 100 };
   const contentType = 'video/mp4';
@@ -447,6 +447,7 @@ async function _streamingTranscodeUpload({
     if (uploadError) throw uploadError;
 
     const idx = chunkIndex++;
+    onSegmentProduced?.(chunkIndex, totalExpectedSegments);
     const segData = seg?.data;
     if (!segData || !segData.byteLength) {
       console.warn('[streaming-upload] skipping empty segment at index', idx);
@@ -519,8 +520,6 @@ async function _streamingTranscodeUpload({
           if (encodePercent > currentUploadPercent) {
             onProgress?.({ percent: encodePercent, statusText: `正在轉碼… ${percent}%` });
           }
-          // Report raw encode percent for the step progress pie
-          onEncodePercent?.(Math.round(percent));
         }
       },
     });
@@ -655,15 +654,16 @@ export async function encryptAndPutChunked({
     if (detail !== undefined) _steps[idx].detail = detail;
     _emitSteps();
   };
-  // Throttled step percent updater — updates the percent field on a step
-  // and emits steps at most every 300ms to keep the pie responsive without
+  // Throttled step progress updater — updates produced/total on a step
+  // and emits steps at most every 500ms to keep the pie responsive without
   // flooding the UI with full DOM rebuilds.
   let _stepPctTimer = null;
-  const _setStepPercent = (idx, pct) => {
+  const _setStepSegments = (idx, produced, total) => {
     if (!_steps || idx < 0 || !_steps[idx]) return;
-    _steps[idx].percent = pct;
+    _steps[idx].produced = produced;
+    _steps[idx].total = total;
     if (!_stepPctTimer) {
-      _stepPctTimer = setTimeout(() => { _stepPctTimer = null; _emitSteps(); }, 300);
+      _stepPctTimer = setTimeout(() => { _stepPctTimer = null; _emitSteps(); }, 500);
     }
   };
   /** Extract a short, UI-friendly error reason from a transcode Error. */
@@ -711,7 +711,7 @@ export async function encryptAndPutChunked({
             file, probe: transcodeProbe, convId, cryptoKey, useSharedKey, sharedKeyU8,
             name, direction, dir, mk,
             encoderConstraints: DEFAULT_ENCODER, onProgress, abortSignal,
-            onEncodePercent: (pct) => _setStepPercent(tcIdx, pct),
+            onSegmentProduced: (produced, total) => _setStepSegments(tcIdx, produced, total),
           });
           _setStep(tcIdx, 'done', '720p');
           return result;
@@ -727,7 +727,7 @@ export async function encryptAndPutChunked({
               file, probe: transcodeProbe, convId, cryptoKey, useSharedKey, sharedKeyU8,
               name, direction, dir, mk,
               encoderConstraints: EXTREME_FALLBACK_ENCODER, onProgress, abortSignal,
-              onEncodePercent: (pct) => _setStepPercent(retryIdx, pct),
+              onSegmentProduced: (produced, total) => _setStepSegments(retryIdx, produced, total),
             });
             _setStep(retryIdx, 'done', '480p');
             return retryResult;

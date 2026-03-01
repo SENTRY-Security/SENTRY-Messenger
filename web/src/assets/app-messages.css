@@ -1053,7 +1053,7 @@
   to { transform: rotate(360deg); }
 }
 
-/* Progress pie on active transcode steps */
+/* Progress pie + fraction label on active transcode steps */
 .transfer-step-pie {
   margin-left: auto;
   flex-shrink: 0;
@@ -1061,6 +1061,13 @@
 
 .transfer-step-pie circle[data-role="arc"] {
   transition: stroke-dashoffset 0.3s ease;
+}
+
+.transfer-step-frac {
+  font-size: 11px;
+  opacity: 0.7;
+  flex-shrink: 0;
+  margin-left: 4px;
 }
 
 .message-me {
