@@ -79,7 +79,7 @@
 - **端對端加密訊息** — 文字、媒體、檔案，伺服器無法解密
 - **語音/視訊通話** — WebRTC P2P + Cloudflare TURN relay，InsertableStreams E2EE 媒體加密
 - **AI 人臉/背景馬賽克** — MediaPipe Face Detection 三階段模糊（人臉馬賽克 / 背景馬賽克 / 關閉），三層偵測策略（Native FaceDetector → MediaPipe WASM → 膚色偵測）
-- **分片加密串流** — 影片上傳自動轉碼為 fMP4，Per-chunk AES-256-GCM 加密，MSE/ManagedMediaSource 即時串流播放（單檔上限 1GB）
+- **分片加密串流** — 影片上傳自動轉碼為 fMP4，Per-chunk AES-256-GCM 加密，MSE/ManagedMediaSource 即時串流播放（單檔上限 1GB），AIMD 自適應併發控制
 - **WebCodecs 智慧轉碼** — HEVC/VP9 → H.264 fMP4 自動轉碼，支援降級重試（720p/1.5Mbps），已是 H.264 時直接 remux 免轉碼
 - **聯絡人邀請** — 加密 Invite Dropbox 機制（支援離線互加 + 確認回饋）
 - **群組對話** — 多人加密聊天室，角色權限管理（owner/admin/member）
@@ -92,7 +92,7 @@
 - **頭像管理** — 聯絡人頭像上傳/下載（Presigned URL + R2）
 - **媒體預覽** — 圖片檢視器、PDF 檢視器、媒體權限管理
 - **檔案儲存空間** — Drive Pane 檔案管理，資料夾建立/瀏覽/上傳，配額管理（預設 3GB）
-- **傳輸進度 UI** — 上傳/下載雙進度條，可展開處理步驟 checklist（格式偵測→轉碼→加密上傳）
+- **傳輸進度 UI** — 上傳/下載雙進度條，可展開處理步驟 checklist（格式偵測→轉碼→加密上傳），即時速度與已傳輸量顯示
 - **SDM 模擬** — 開發用 NFC 標籤模擬（Sim Chips）
 - **離線同步** — Hybrid Flow 離線/線上訊息同步、Gap 偵測與填補
 - **帳號管理** — 管理員帳號清除（purge）與強制登出
@@ -200,10 +200,15 @@ RTCRtpSender.replaceTrack() → 送出處理後的視訊
   ├── 非影片檔案 ──▶ 固定 5MB byte-range chunks
   ↓
 Per-chunk 加密: HKDF-SHA256(MK, random_salt, 'media/chunk-v1') → AES-256-GCM
+  │  ├── Bulk Encryptor: CryptoKey 一次匯入，所有 chunk 共用（省去 per-chunk importKey）
+  │  └── 加密後立即釋放明文 buffer → 降低記憶體峰值
   ↓
-並行上傳 (concurrency=3) → S3 Presigned URL
+AIMD 自適應並行上傳 → S3 Presigned URL (ArrayBuffer 直傳，無 Blob 複製)
+  │  ├── 初始併發: navigator.connection 自動偵測 (4g→6, 3g→3, 2g→2)
+  │  ├── Additive Increase: RTT 穩定 → +1 (上限 15)
+  │  └── Multiplicative Decrease: timeout/error/RTT 飆升 → ×0.5 (下限 2)
   ↓
-上傳 Manifest (v3): chunk 清單 + codec 資訊 + track 資訊
+上傳 Manifest (v3): chunk 清單 + codec 資訊 + track 資訊 + 影片時長
   ↓
 Manifest 加密: HKDF-SHA256(MK, salt, 'media/manifest-v1') → AES-256-GCM
 ```
@@ -217,15 +222,19 @@ Manifest 加密: HKDF-SHA256(MK, salt, 'media/manifest-v1') → AES-256-GCM
   ↓
 URL 批次簽章 (每批 20 URLs，預取下一批)
   ↓
-並行下載 chunks (concurrency=3, 每 chunk 30s timeout, 3 retries + exponential backoff)
+AIMD 自適應並行下載 (每 chunk 30s timeout, 3 retries + exponential backoff)
+  │  ├── 初始併發: navigator.connection 自動偵測 (4g→6, 3g→3, 2g→2)
+  │  ├── Additive Increase: RTT 穩定 → +1 (上限 10)
+  │  └── Multiplicative Decrease: timeout/error → ×0.5 (下限 2)
   ↓
 Per-chunk 解密: AES-256-GCM
   ↓                                    ┌─────────────────────────────┐
 MSE 串流播放                            │  MediaSource Extensions      │
   ├── Desktop: MediaSource API         │  Codec 自動偵測 from fMP4    │
   ├── iOS 17.1+: ManagedMediaSource    │  H.264 / HEVC profiles      │
-  │     (startstreaming/endstreaming)  │  Buffer 自動回收 (5s behind) │
-  └── Fallback: Blob URL 整檔播放      │  QuotaExceeded 自動 evict    │
+  │     (startstreaming/endstreaming)  │  Duration 預設定（防 auto-pause）│
+  └── Fallback: Blob URL 整檔播放      │  Buffer 自動回收 (5s behind) │
+                                        │  QuotaExceeded 自動 evict    │
                                         └─────────────────────────────┘
 ```
 
@@ -239,6 +248,7 @@ MSE 串流播放                            │  MediaSource Extensions      │
   "totalChunks": 12,
   "contentType": "video/mp4",
   "name": "video.mp4",
+  "duration": 127.5,
   "chunks": [
     { "index": 0, "size": 4194304, "cipher_size": 4194320, "iv_b64": "...", "salt_b64": "..." }
   ],
@@ -255,11 +265,18 @@ MSE 串流播放                            │  MediaSource Extensions      │
 | 單檔上限 | 1 GB |
 | 最大 chunk 數 | 2,000 |
 | 固定 chunk 大小（非影片） | 5 MB |
-| 上傳並行數 | 3 |
-| 下載並行數 | 3（最大 6） |
+| 上傳併發 | AIMD 自適應 2~15（依網速自動調整） |
+| 下載併發 | AIMD 自適應 2~10（依網速自動調整） |
+| 併發初始值偵測 | `navigator.connection.effectiveType` (4g→6, 3g→3, 2g→2) |
+| AIMD 調整策略 | RTT 穩定 → +1；timeout/error/RTT 1.5x → ×0.5 |
 | URL 預取批次 | 20 URLs/批 |
+| 上傳逾時/chunk | 120 秒 |
 | 下載逾時/chunk | 30 秒 |
+| 上傳重試 | 2 次，exponential backoff (2s→4s) |
 | 下載重試 | 3 次，exponential backoff (1s→8s) |
+| 加密加速 | Bulk Encryptor（CryptoKey 單次匯入，全 chunk 共用） |
+| 上傳傳輸 | ArrayBuffer 直傳（無 Blob 複製） |
+| Duration 預設定 | Manifest 含影片時長，播放前即設定 MediaSource.duration |
 | MSE 最大 in-flight appends | 15 |
 | Buffer 回收保留 | currentTime - 5s |
 
@@ -418,12 +435,13 @@ SENTRY-Messenger/
 │       │   │   ├── settings.js       #   應用程式設定
 │       │   │   ├── groups.js         #   群組管理
 │       │   │   ├── media.js          #   媒體處理（上傳/下載）
-│       │   │   ├── chunked-upload.js #   分片加密上傳（影片轉碼 + fMP4 + AES-GCM）
-│       │   │   ├── chunked-download.js #  分片解密下載（並行下載 + URL 預取）
+│       │   │   ├── chunked-upload.js #   分片加密上傳（影片轉碼 + fMP4 + AES-GCM + AIMD 自適應併發）
+│       │   │   ├── chunked-download.js #  分片解密下載（AIMD 自適應併發 + URL 預取）
+│       │   │   ├── adaptive-concurrency.js # AIMD 自適應併發控制器（TCP 壅塞控制啟發）
 │       │   │   ├── mse-player.js    #   MSE/ManagedMediaSource 串流播放器
 │       │   │   ├── webcodecs-transcoder.js # WebCodecs H.264 轉碼器
-│       │   │   ├── mp4-remuxer.js   #   MP4 → fMP4 Remux（Box 解析 + 分段）
-│       │   │   ├── transfer-progress.js #  傳輸進度 UI（雙進度條 + 步驟 checklist）
+│       │   │   ├── mp4-remuxer.js   #   MP4 → fMP4 Remux（Box 解析 + 分段 + Duration 提取）
+│       │   │   ├── transfer-progress.js #  傳輸進度 UI（雙進度條 + 步驟 checklist + 即時速度）
 │       │   │   ├── semantic.js       #   語意版本管理
 │       │   │   ├── messages.js       #   訊息處理
 │       │   │   ├── messages-flow-facade.js # 訊息流程 Facade 入口
