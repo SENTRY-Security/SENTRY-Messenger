@@ -10,7 +10,7 @@ import { importWithSRI } from '/shared/utils/sri.js';
 import { CDN_SRI } from '/shared/utils/cdn-integrity.js';
 
 const DEFAULT_DRIVE_QUOTA_BYTES = 3 * 1024 * 1024 * 1024; // 3GB
-const MAX_UPLOAD_BYTES = 500 * 1024 * 1024; // 500MB per file
+const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024; // 1GB per file
 
 export function initDrivePane({
   dom = {},
@@ -1191,7 +1191,7 @@ export function initDrivePane({
       }
       const oversized = files.filter((file) => Number(file?.size || 0) > MAX_UPLOAD_BYTES);
       if (oversized.length) {
-        const msg = `單檔上限 500MB：${escapeHtml(oversized[0].name || '檔案')} 超過限制`;
+        const msg = `單檔上限 1GB：${escapeHtml(oversized[0].name || '檔案')} 超過限制`;
         if (errorEl) errorEl.textContent = msg;
         showBlockingModal(msg, { title: '檔案過大' });
         input.value = '';
@@ -1221,7 +1221,7 @@ export function initDrivePane({
       }
       const oversized = files.filter((file) => Number(file?.size || 0) > MAX_UPLOAD_BYTES);
       if (oversized.length) {
-        const msg = `單檔上限 500MB：${escapeHtml(oversized[0].name || '檔案')} 超過限制`;
+        const msg = `單檔上限 1GB：${escapeHtml(oversized[0].name || '檔案')} 超過限制`;
         if (errorEl) errorEl.textContent = msg;
         showBlockingModal(msg, { title: '檔案過大' });
         return;
@@ -1306,7 +1306,7 @@ export function initDrivePane({
     const oversized = files.filter((file) => Number(file?.size || 0) > MAX_UPLOAD_BYTES);
     if (oversized.length) {
       const name = escapeHtml(oversized[0].name || '檔案');
-      showBlockingModal(`無法上傳：${name} 超過 500MB 單檔限制`, { title: '檔案過大' });
+      showBlockingModal(`無法上傳：${name} 超過 1GB 單檔限制`, { title: '檔案過大' });
       return;
     }
     const quotaBytes = resolveDriveQuotaBytes();

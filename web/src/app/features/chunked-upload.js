@@ -30,7 +30,7 @@ const FALLBACK_ENCODER = { maxWidth: 1280, maxHeight: 720, maxBitrate: 1_500_000
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB for non-segment chunking
 const UPLOAD_CONCURRENCY = 3;
 const CHUNK_INFO_TAG = 'media/chunk-v1';
-const MAX_UPLOAD_BYTES = 500 * 1024 * 1024; // 500MB — must match server UPLOAD_MAX_BYTES
+const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024; // 1GB — must match server UPLOAD_MAX_BYTES
 
 const encoder = new TextEncoder();
 

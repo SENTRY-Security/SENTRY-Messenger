@@ -18,7 +18,7 @@ import {
 const r = Router();
 const nano = customAlphabet('1234567890abcdef', 32);
 
-const MAX_UPLOAD_BYTES = Number(process.env.UPLOAD_MAX_BYTES || 524_288_000); // default 500MB
+const MAX_UPLOAD_BYTES = Number(process.env.UPLOAD_MAX_BYTES || 1_073_741_824); // default 1GB
 const DRIVE_QUOTA_BYTES = Number(process.env.DRIVE_QUOTA_BYTES || 3 * 1024 * 1024 * 1024); // default 3GB total per system dir
 const DATA_API = process.env.DATA_API_URL;
 const HMAC_SECRET = process.env.DATA_API_HMAC;
@@ -182,7 +182,7 @@ r.post('/media/sign-put', asyncH(async (req, res) => {
   const input = SignPutSchema.parse(req.body);
 
   const ttlSec = Number(process.env.SIGNED_PUT_TTL || 900);
-  const maxBytes = Number.isFinite(MAX_UPLOAD_BYTES) && MAX_UPLOAD_BYTES > 0 ? MAX_UPLOAD_BYTES : 524_288_000;
+  const maxBytes = Number.isFinite(MAX_UPLOAD_BYTES) && MAX_UPLOAD_BYTES > 0 ? MAX_UPLOAD_BYTES : 1_073_741_824;
 
   const tokenClean = input.account_token ? String(input.account_token).trim() : undefined;
   const digestClean = input.account_digest ? normalizeAccountDigest(input.account_digest) : undefined;
@@ -368,7 +368,7 @@ r.post('/media/sign-put-chunked', asyncH(async (req, res) => {
   }
   if (!(await authorizeConv(convId, resolvedDigest, req, res))) return;
 
-  const maxBytes = Number.isFinite(MAX_UPLOAD_BYTES) && MAX_UPLOAD_BYTES > 0 ? MAX_UPLOAD_BYTES : 524_288_000;
+  const maxBytes = Number.isFinite(MAX_UPLOAD_BYTES) && MAX_UPLOAD_BYTES > 0 ? MAX_UPLOAD_BYTES : 1_073_741_824;
   if (input.total_size > maxBytes) {
     return res.status(413).json({
       error: 'FileTooLarge',
