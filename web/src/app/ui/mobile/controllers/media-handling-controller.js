@@ -8,7 +8,7 @@
 import { BaseController } from './base-controller.js';
 import { downloadAndDecrypt } from '../../../features/media.js';
 import { downloadChunkedManifest, streamChunks, downloadAllChunks, getChunkUrls } from '../../../features/chunked-download.js';
-import { isMseSupported, detectCodecFromInitSegment, buildMimeFromCodecString, createMsePlayer, isValidMseInitSegment } from '../../../features/mse-player.js';
+import { isMseSupported, detectCodecFromInitSegment, buildMimeFromCodecString, createMsePlayer, isValidMseInitSegment, parseInitTimescales, parseMoofTiming } from '../../../features/mse-player.js';
 import { mergeInitSegments } from '../../../features/mp4-remuxer.js';
 import { renderPdfViewer, cleanupPdfViewer } from '../viewers/pdf-viewer.js';
 import { openImageViewer, cleanupImageViewer } from '../viewers/image-viewer.js';
@@ -218,6 +218,16 @@ export class MediaHandlingController extends BaseController {
             const manifestTracks = manifest.tracks;
             const numTracks = manifestTracks.length;
             const isLegacyMultiTrack = numTracks > 1;
+
+            // Per-track timescale map (trackId → timescale) extracted from
+            // the init segment. Needed to convert moof baseMediaDecodeTime
+            // to seconds for the chunk time index.
+            let timescaleMap = {};
+
+            // Chunk time index: chunkTimeIndex[chunkCacheIndex] = { trackId, startTime, duration }
+            // Built during initial streaming by parsing each moof's tfdt/trun.
+            // Used by seek re-append for precise chunk→time mapping (no guessing).
+            const chunkTimeIndex = [];
 
             let mseInitialized = false;
             let firstMediaAppended = false;
@@ -459,6 +469,10 @@ export class MediaHandlingController extends BaseController {
                         mseInitialized = true;
                         savedForFallback.push(initData); // keep for potential blob fallback
 
+                        // Extract per-track timescales from init segment (moov → trak → mdhd).
+                        // These are needed to convert moof baseMediaDecodeTime to seconds.
+                        timescaleMap = parseInitTimescales(initData);
+
                         // Set MediaSource.duration upfront to prevent incremental
                         // durationchange events that cause auto-pause on some browsers.
                         if (manifest.duration && msePlayer) {
@@ -479,6 +493,12 @@ export class MediaHandlingController extends BaseController {
                     }
                 } else {
                     if (!mseInitialized) continue;
+
+                    // Build chunk time index: parse moof to get startTime + trackId.
+                    // This runs during initial streaming (data is still a Uint8Array)
+                    // so there's no extra blob→arrayBuffer cost.
+                    const timing = parseMoofTiming(data, timescaleMap);
+                    chunkTimeIndex[index] = timing; // null if parse failed (harmless)
 
                     // Save for potential blob fallback until health check passes
                     if (!bufferHealthPassed) {
@@ -583,7 +603,7 @@ export class MediaHandlingController extends BaseController {
                 // evicted (unbuffered) region.
                 if (chunkCache.length > 0) {
                     seekCleanup = this._setupSeekReappend({
-                        video, viewer, msePlayer, chunkCache, numTracks
+                        video, viewer, msePlayer, chunkCache, numTracks, chunkTimeIndex
                     });
                 }
             }
@@ -645,25 +665,46 @@ export class MediaHandlingController extends BaseController {
      *
      * @returns {Function} cleanup — call to remove all event listeners
      */
-    _setupSeekReappend({ video, viewer, msePlayer, chunkCache, numTracks }) {
+    _setupSeekReappend({ video, viewer, msePlayer, chunkCache, numTracks, chunkTimeIndex }) {
         let reappending = false;
         let seekTimer = null;
         let destroyed = false;
         let pendingSeekTime = null; // Track seek that arrived during re-append
 
         /**
-         * Read a range of chunk blobs and append them to MSE.
-         * Returns after all appends in this range have settled.
+         * Find chunk indices whose time range overlaps [seekTime - margin, seekTime + margin].
+         * Uses the precise chunkTimeIndex built during initial streaming.
+         * Returns a sorted array of chunk cache indices.
          */
-        const appendRange = async (from, to) => {
+        const findChunksForTime = (seekTime, margin = 1.0) => {
+            const lo = seekTime - margin;
+            const hi = seekTime + margin;
+            const indices = [];
+            for (let i = numTracks; i < chunkCache.length; i++) {
+                const t = chunkTimeIndex[i];
+                if (!t) continue;
+                const segEnd = t.startTime + t.duration;
+                // Overlaps if segment start < hi AND segment end > lo
+                if (t.startTime < hi && segEnd > lo) {
+                    indices.push(i);
+                }
+            }
+            return indices;
+        };
+
+        /**
+         * Read specific chunk blobs and append them to MSE.
+         */
+        const appendChunks = async (indices) => {
+            if (!indices.length) return;
             const BATCH = 8;
-            for (let b = from; b < to; b += BATCH) {
+            for (let b = 0; b < indices.length; b += BATCH) {
                 if (destroyed || !msePlayer) break;
-                const batchEnd = Math.min(b + BATCH, to);
+                const batch = indices.slice(b, b + BATCH);
                 const blobReads = [];
-                for (let i = b; i < batchEnd; i++) {
-                    if (!chunkCache[i]) continue;
-                    blobReads.push(chunkCache[i].arrayBuffer());
+                for (const idx of batch) {
+                    if (!chunkCache[idx]) continue;
+                    blobReads.push(chunkCache[idx].arrayBuffer());
                 }
                 const bufs = await Promise.all(blobReads.map(async (p) => new Uint8Array(await p)));
                 const appends = [];
@@ -676,56 +717,6 @@ export class MediaHandlingController extends BaseController {
                     );
                 }
                 if (appends.length > 0) await Promise.allSettled(appends);
-            }
-        };
-
-        /**
-         * Expand outward from an estimated center until seekTime is buffered.
-         *
-         * Why expand outward instead of a fixed window or sequential scan?
-         * The remuxer uses nbSamples:100 for both video (~3.3s @30fps) and
-         * audio (~2.3s @44100Hz). After interleaving [v0,a0,v1,a1,...],
-         * the video chunk and audio chunk covering the SAME time T can be
-         * far apart in the chunk array. A linear estimation gives a rough
-         * center; expanding outward from there quickly covers both tracks.
-         *
-         * Why not start from chunk 0?
-         * The SourceBuffer has limited quota. Appending from the beginning
-         * fills the buffer with data before the seek position; the browser's
-         * QuotaExceeded handler evicts data before currentTime, wiping out
-         * all the just-appended early chunks — causing a "buffer a small
-         * segment → discard → repeat" pattern that never reaches the target.
-         */
-        const expandFromCenter = async (seekTime, dur) => {
-            const mediaCount = chunkCache.length - numTracks;
-            if (mediaCount <= 0) return;
-
-            // Rough center estimate. Not exact due to interleaving, but
-            // good enough as a starting point for outward expansion.
-            const centerMedia = Math.floor((seekTime / dur) * mediaCount);
-            const center = numTracks + Math.max(0, Math.min(centerMedia, mediaCount - 1));
-
-            const STEP = 16; // expand 16 chunks per direction per iteration
-            let lo = center;
-            let hi = center;
-            const loLimit = numTracks;
-            const hiLimit = chunkCache.length;
-
-            while (!destroyed && msePlayer) {
-                if (msePlayer.isTimeBuffered(seekTime)) break;
-                if (lo <= loLimit && hi >= hiLimit) break; // exhausted
-
-                // Expand bounds
-                const newLo = Math.max(loLimit, lo - STEP);
-                const newHi = Math.min(hiLimit, hi + STEP);
-
-                // Append the newly expanded ranges (avoid re-appending)
-                const appendLo = (newLo < lo) ? appendRange(newLo, lo) : Promise.resolve();
-                const appendHi = (hi < newHi) ? appendRange(hi, newHi) : Promise.resolve();
-                await Promise.all([appendLo, appendHi]);
-
-                lo = newLo;
-                hi = newHi;
             }
         };
 
@@ -757,12 +748,34 @@ export class MediaHandlingController extends BaseController {
                 // (paused=true) → promises never resolve → deadlock.
                 msePlayer.resumeQueues();
 
-                console.info(`[video-seek] expanding outward for seek to ${seekTime.toFixed(1)}s (${chunkCache.length - numTracks} media chunks total)`);
+                // Use precise chunk time index to find exactly which chunks
+                // cover the seek position. Start with ±1s margin, widen if needed.
+                let margin = 1.0;
+                let indices = findChunksForTime(seekTime, margin);
+
+                // Progressively widen until we find chunks (handles edge cases
+                // where segment boundaries don't align perfectly)
+                while (indices.length === 0 && margin <= 30) {
+                    margin += 3;
+                    indices = findChunksForTime(seekTime, margin);
+                }
+
+                console.info(`[video-seek] precise lookup: ${indices.length} chunks cover ${seekTime.toFixed(1)}s ±${margin}s (indices: ${indices.join(',')})`);
 
                 // Safety timeout: cap total re-append time.
                 const REAPPEND_TIMEOUT = 5_000;
                 const timeoutPromise = new Promise(r => setTimeout(r, REAPPEND_TIMEOUT));
-                await Promise.race([expandFromCenter(seekTime, dur), timeoutPromise]);
+                await Promise.race([appendChunks(indices), timeoutPromise]);
+
+                // If still not buffered after precise chunks, widen further
+                if (!destroyed && msePlayer && !msePlayer.isTimeBuffered(seekTime)) {
+                    const widerIndices = findChunksForTime(seekTime, margin + 10)
+                        .filter(i => !indices.includes(i));
+                    if (widerIndices.length > 0) {
+                        console.info(`[video-seek] widening: +${widerIndices.length} chunks`);
+                        await Promise.race([appendChunks(widerIndices), timeoutPromise]);
+                    }
+                }
 
                 // Re-signal end of stream so the browser knows the full
                 // timeline. appendBuffer() transitions readyState from

@@ -254,6 +254,180 @@ function tryReadAvcProfile(data, avc1Offset) {
   return null;
 }
 
+/**
+ * Parse an fMP4 media segment (moof+mdat) to extract timing metadata.
+ *
+ * Returns { trackId, startTime, duration } where startTime is in seconds,
+ * or null if parsing fails. Reads:
+ *   moof → traf → tfhd (track_ID)
+ *   moof → traf → tfdt (baseMediaDecodeTime)
+ *   moof → traf → trun (sample count + durations)
+ *
+ * Also needs the per-track timescale from the init segment (moov → trak → mdhd).
+ */
+export function parseMoofTiming(data, timescaleMap) {
+  if (!data || data.length < 16) return null;
+  try {
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    const len = data.length;
+
+    // Find moof box
+    let moofStart = -1, moofEnd = -1;
+    for (let i = 0; i <= len - 8; i++) {
+      if (data[i + 4] === 0x6D && data[i + 5] === 0x6F &&
+          data[i + 6] === 0x6F && data[i + 7] === 0x66) { // 'moof'
+        const boxSize = view.getUint32(i);
+        moofStart = i + 8;
+        moofEnd = i + boxSize;
+        break;
+      }
+    }
+    if (moofStart < 0) return null;
+
+    // Scan inside moof for traf
+    let trafStart = -1, trafEnd = -1;
+    for (let i = moofStart; i <= moofEnd - 8; i++) {
+      if (data[i + 4] === 0x74 && data[i + 5] === 0x72 &&
+          data[i + 6] === 0x61 && data[i + 7] === 0x66) { // 'traf'
+        const boxSize = view.getUint32(i);
+        trafStart = i + 8;
+        trafEnd = i + boxSize;
+        break;
+      }
+    }
+    if (trafStart < 0) return null;
+
+    let trackId = 0;
+    let baseDecodeTime = 0;
+    let totalDuration = 0;
+    let defaultDuration = 0;
+
+    // Scan traf children
+    let pos = trafStart;
+    while (pos < trafEnd - 8) {
+      const boxSize = view.getUint32(pos);
+      if (boxSize < 8 || pos + boxSize > trafEnd) break;
+      const type = String.fromCharCode(data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7]);
+
+      if (type === 'tfhd') {
+        const flags = (view.getUint8(pos + 9) << 16) | (view.getUint8(pos + 10) << 8) | view.getUint8(pos + 11);
+        trackId = view.getUint32(pos + 12);
+        let off = 16;
+        if (flags & 0x01) off += 8; // base-data-offset
+        if (flags & 0x02) off += 4; // sample-description-index
+        if (flags & 0x08) { defaultDuration = view.getUint32(pos + off); }
+      } else if (type === 'tfdt') {
+        const ver = data[pos + 8];
+        if (ver === 1) {
+          baseDecodeTime = Number(view.getBigUint64(pos + 12));
+        } else {
+          baseDecodeTime = view.getUint32(pos + 12);
+        }
+      } else if (type === 'trun') {
+        const flags = (view.getUint8(pos + 9) << 16) | (view.getUint8(pos + 10) << 8) | view.getUint8(pos + 11);
+        const sampleCount = view.getUint32(pos + 12);
+        let off = 16;
+        if (flags & 0x01) off += 4; // data-offset
+        if (flags & 0x04) off += 4; // first-sample-flags
+        const hasDuration = !!(flags & 0x100);
+        const hasSize = !!(flags & 0x200);
+        const hasFlags = !!(flags & 0x400);
+        const hasCTO = !!(flags & 0x800);
+        for (let s = 0; s < sampleCount && pos + off + 4 <= trafEnd; s++) {
+          if (hasDuration) { totalDuration += view.getUint32(pos + off); off += 4; }
+          else { totalDuration += defaultDuration; }
+          if (hasSize) off += 4;
+          if (hasFlags) off += 4;
+          if (hasCTO) off += 4;
+        }
+        if (!hasDuration && defaultDuration) {
+          totalDuration = sampleCount * defaultDuration;
+        }
+      }
+      pos += boxSize;
+    }
+
+    const timescale = (timescaleMap && timescaleMap[trackId]) || 0;
+    if (!timescale || !trackId) return null;
+
+    return {
+      trackId,
+      startTime: baseDecodeTime / timescale,
+      duration: totalDuration / timescale,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extract per-track timescales from an fMP4 init segment (moov).
+ * Returns a map of { trackId → timescale }.
+ *
+ * Parses: moov → trak → tkhd (track_ID) + mdia → mdhd (timescale)
+ */
+export function parseInitTimescales(data) {
+  const map = {};
+  if (!data || data.length < 16) return map;
+  try {
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    const len = data.length;
+
+    // Find all trak boxes inside moov
+    const findBoxes = (start, end, type) => {
+      const results = [];
+      let i = start;
+      while (i <= end - 8) {
+        const boxSize = view.getUint32(i);
+        if (boxSize < 8 || i + boxSize > end) break;
+        if (data[i + 4] === type.charCodeAt(0) && data[i + 5] === type.charCodeAt(1) &&
+            data[i + 6] === type.charCodeAt(2) && data[i + 7] === type.charCodeAt(3)) {
+          results.push({ start: i + 8, end: i + boxSize });
+        }
+        i += boxSize;
+      }
+      return results;
+    };
+
+    const findBox = (start, end, type) => {
+      let i = start;
+      while (i <= end - 8) {
+        const boxSize = view.getUint32(i);
+        if (boxSize < 8 || i + boxSize > end) break;
+        if (data[i + 4] === type.charCodeAt(0) && data[i + 5] === type.charCodeAt(1) &&
+            data[i + 6] === type.charCodeAt(2) && data[i + 7] === type.charCodeAt(3)) {
+          return { start: i + 8, end: i + boxSize, headerStart: i };
+        }
+        i += boxSize;
+      }
+      return null;
+    };
+
+    // Find moov
+    const moov = findBox(0, len, 'moov');
+    if (!moov) return map;
+
+    // Find each trak
+    for (const trak of findBoxes(moov.start, moov.end, 'trak')) {
+      // tkhd → track_ID
+      const tkhd = findBox(trak.start, trak.end, 'tkhd');
+      if (!tkhd) continue;
+      const tkhdVer = data[tkhd.start];
+      const trackId = view.getUint32(tkhd.start + (tkhdVer === 1 ? 20 : 12));
+
+      // mdia → mdhd → timescale
+      const mdia = findBox(trak.start, trak.end, 'mdia');
+      if (!mdia) continue;
+      const mdhd = findBox(mdia.start, mdia.end, 'mdhd');
+      if (!mdhd) continue;
+      const mdhdVer = data[mdhd.start];
+      const timescale = view.getUint32(mdhd.start + (mdhdVer === 1 ? 20 : 12));
+      if (timescale > 0) map[trackId] = timescale;
+    }
+  } catch {}
+  return map;
+}
+
 // ─── Single SourceBuffer Append Queue (internal) ───
 
 // Seconds of already-played buffer to keep before evicting.
