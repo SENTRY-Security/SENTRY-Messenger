@@ -226,16 +226,10 @@ export async function transcodeToFmp4(file, { onProgress, encoderConstraints, on
     onTranscodeStart?.();
   }
 
-  // 4. Now extract samples (heavy — loads all sample data for transcoding)
-  const { tracks: inputTracks, samples: inputSamples, duration } =
-    await demuxFile(file, mp4boxMod);
-
-  if (inputTracks.length === 0) {
-    throw new Error('影片不包含可播放的音視訊軌道');
-  }
-
-  // 5. Transcode via WebCodecs
-  const result = await doTranscode(inputTracks, inputSamples, duration, mp4boxMod, onProgress, encoderConstraints);
+  // 4. Streaming transcode — processes samples incrementally to avoid loading
+  //    the entire file into memory (critical for 500MB+ files on iOS Safari).
+  //    Peak memory: ~current 2MB chunk + decoder/encoder pipeline + encoded output.
+  const result = await streamingTranscode(file, mp4boxMod, onProgress, encoderConstraints);
   return result;
 }
 
@@ -296,105 +290,53 @@ function probeFileTracks(file, mp4boxMod) {
   });
 }
 
-// ─── Demux helper ───
+// ─── Streaming transcode pipeline ───
+//
+// Processes file incrementally: feed 2MB chunks to mp4box → extract samples in
+// small batches (nbSamples=60) → decode → encode → release immediately.
+//
+// Memory profile (500MB 4K input → 720p output):
+//   Input buffer:   ~2MB  (current file.slice chunk)
+//   Decoder queue:  ~few decoded VideoFrames (~5-10MB)
+//   Encoder queue:  ~few encoded chunks (~1MB)
+//   Encoded output: accumulates, but 720p@1.5Mbps ≈ 50MB for 3min video
+//   Total peak:     ~60-70MB instead of 500MB+
 
-function demuxFile(file, mp4boxMod) {
-  return new Promise(async (resolve, reject) => {
-    const mp4boxFile = createMp4boxFile(mp4boxMod);
-    const tracks = [];
-    const samples = {}; // trackId → [{ data, duration, is_sync, cts, dts }]
-    let fileDuration = 0;
+async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraints = {}) {
+  const demuxer = createMp4boxFile(mp4boxMod);
 
-    mp4boxFile.onError = (err) => {
-      reject(new Error('影片解析失敗：' + (err?.message || err)));
-    };
+  // Encoded output (accumulates — but much smaller than input at 720p)
+  const encodedVideo = [];
+  const encodedAudio = [];
 
-    mp4boxFile.onReady = (info) => {
-      fileDuration = (info.duration || 0) / (info.timescale || 1);
-
-      for (const t of (info.tracks || [])) {
-        const type =
-          (t.type === 'video' || (t.codec && /^(avc|hvc|hev|vp0|av01)/.test(t.codec))) ? 'video' :
-          (t.type === 'audio' || (t.codec && /^(mp4a|opus|ac-3|ec-3|flac)/.test(t.codec))) ? 'audio' :
-          null;
-        if (!type) continue;
-
-        tracks.push({ ...t, _type: type });
-        samples[t.id] = [];
-
-        // Extract all samples for this track
-        mp4boxFile.setExtractionOptions(t.id, null, {
-          nbSamples: Infinity,
-        });
-      }
-
-      if (tracks.length === 0) {
-        reject(new Error('影片不包含可播放的音視訊軌道'));
-        return;
-      }
-
-      mp4boxFile.start();
-    };
-
-    mp4boxFile.onSamples = (trackId, _user, sampleArray) => {
-      if (!samples[trackId]) samples[trackId] = [];
-      for (const s of sampleArray) {
-        samples[trackId].push({
-          data: s.data, // ArrayBuffer
-          duration: s.duration,
-          is_sync: s.is_sync,
-          cts: s.cts,
-          dts: s.dts,
-          timescale: s.timescale,
-          size: s.size,
-        });
-      }
-    };
-
-    // Feed file to mp4box in 2MB chunks via file.slice() — avoids loading
-    // the entire file into memory. mp4box supports incremental appendBuffer.
-    const READ_CHUNK_SIZE = 2 * 1024 * 1024;
-    let readOffset = 0;
-    try {
-      while (readOffset < file.size) {
-        const end = Math.min(readOffset + READ_CHUNK_SIZE, file.size);
-        const chunk = await file.slice(readOffset, end).arrayBuffer();
-        chunk.fileStart = readOffset;
-        mp4boxFile.appendBuffer(chunk);
-        readOffset = end;
-      }
-      mp4boxFile.flush();
-    } catch (err) {
-      reject(new Error('無法解析此影片：' + (err?.message || err)));
-      return;
-    }
-
-    if (tracks.length === 0) {
-      reject(new Error('影片不包含可播放的音視訊軌道'));
-      return;
-    }
-
-    resolve({ tracks, samples, duration: fileDuration });
-  });
-}
-
-// ─── Transcode pipeline ───
-
-async function doTranscode(inputTracks, inputSamples, duration, mp4boxMod, onProgress, encoderConstraints = {}) {
-  const videoTrack = inputTracks.find(t => t._type === 'video');
-  const audioTrack = inputTracks.find(t => t._type === 'audio');
-
-  if (!videoTrack) throw new Error('影片不包含視訊軌道');
-
-  // Collect encoded output
-  const encodedVideo = []; // [{ data: Uint8Array, timestamp, duration, key }]
-  const encodedAudio = []; // [{ data: Uint8Array, timestamp, duration, key }]
-
-  // Total samples for progress
-  const totalVideoSamples = (inputSamples[videoTrack.id] || []).length;
-  const totalAudioSamples = audioTrack ? (inputSamples[audioTrack.id] || []).length : 0;
-  const totalSamples = totalVideoSamples + totalAudioSamples;
+  // Track info (discovered in onReady)
+  let videoTrack = null;
+  let audioTrack = null;
+  let vEncConfig = null;
+  let totalSamples = 0;
   let processedSamples = 0;
+
+  // Video codec instances
+  let videoEncoder = null;
+  let videoDecoder = null;
+  let decodedFrameCount = 0;
+
+  // Rotation support
+  let rotCanvas = null;
+  let rotCtx = null;
+  let rotation = 0;
+
+  // Audio
+  let audioIsPassthrough = false;
+  let audioEncoder = null;
+  let audioDecoder = null;
+
+  // Pending samples queue (filled by onSamples, drained after each appendBuffer)
+  const pendingVideo = [];
+  const pendingAudio = [];
+
+  // Last released sample number per track (for releaseUsedSamples)
+  const lastReleasedSample = {};
 
   const reportProgress = () => {
     if (!totalSamples) return;
@@ -402,143 +344,14 @@ async function doTranscode(inputTracks, inputSamples, duration, mp4boxMod, onPro
     onProgress?.({ phase: 'encode', percent: Math.min(pct, 99) });
   };
 
-  // ── Video: decode → re-encode ──
+  // ── Setup helpers ──
 
-  const vEncConfig = videoEncoderConfig(videoTrack, encoderConstraints);
-
-  // Check encoder support
-  const vSupport = await VideoEncoder.isConfigSupported(vEncConfig);
-  if (!vSupport.supported) {
-    throw new Error('此裝置不支援 H.264 編碼');
-  }
-
-  await transcodeVideoTrack(
-    videoTrack, inputSamples[videoTrack.id] || [],
-    vEncConfig, encodedVideo,
-    () => { processedSamples++; reportProgress(); }
-  );
-  // Release video samples — transcodeVideoTrack already nulled individual entries,
-  // but drop the array reference too so the entire allocation can be reclaimed.
-  delete inputSamples[videoTrack.id];
-
-  // ── Audio: passthrough if AAC, else re-encode ──
-
-  if (audioTrack) {
-    const audioCodec = (audioTrack.codec || '').toLowerCase();
-    if (MSE_SAFE_AUDIO.test(audioCodec)) {
-      // AAC passthrough — no re-encoding needed
-      const audioSamples = inputSamples[audioTrack.id] || [];
-      for (let ai = 0; ai < audioSamples.length; ai++) {
-        const s = audioSamples[ai];
-        encodedAudio.push({
-          data: new Uint8Array(s.data),
-          timestamp: Math.round((s.cts / s.timescale) * 1_000_000),
-          duration: Math.round((s.duration / s.timescale) * 1_000_000),
-          key: s.is_sync,
-        });
-        s.data = null;
-        audioSamples[ai] = null;
-        processedSamples++;
-        reportProgress();
-      }
-    } else {
-      // Need to re-encode audio
-      const aEncConfig = audioEncoderConfig(audioTrack);
-      const aSupport = await AudioEncoder.isConfigSupported(aEncConfig);
-      if (aSupport.supported) {
-        await transcodeAudioTrack(
-          audioTrack, inputSamples[audioTrack.id] || [],
-          aEncConfig, encodedAudio,
-          () => { processedSamples++; reportProgress(); }
-        );
-      }
-      // If audio encode not supported, skip audio (video-only output)
-    }
-    delete inputSamples[audioTrack.id];
-  }
-
-  onProgress?.({ phase: 'encode', percent: 95 });
-
-  // ── Mux into fMP4 segments ──
-
-  const segments = await muxToFmp4(encodedVideo, encodedAudio, vEncConfig, audioTrack, mp4boxMod);
-
-  // Release encoded frame arrays — data now lives in segments
-  const hadAudio = encodedAudio.length > 0;
-  encodedVideo.length = 0;
-  encodedAudio.length = 0;
-
-  onProgress?.({ phase: 'encode', percent: 100 });
-
-  // Build codec string
-  const codecs = ['avc1.42001E'];
-  if (hadAudio) codecs.push('mp4a.40.2');
-  const combinedCodec = codecs.join(',');
-
-  return {
-    segments,
-    tracks: [{ type: 'muxed', codec: combinedCodec }],
-    contentType: 'video/mp4',
-    remuxed: false,
-    transcoded: true,
-    name: (typeof file?.name === 'string' ? file.name : 'video').replace(/\.[^.]+$/, '') + '.mp4',
-  };
-}
-
-// ─── Video transcode (decode → encode) ───
-
-function transcodeVideoTrack(track, samples, encConfig, output, onSample) {
-  return new Promise((resolve, reject) => {
-    if (!samples.length) { resolve(); return; }
-
-    let decoded = 0;
-    let encoded = 0;
-    const totalCount = samples.length;
-    let decoderDone = false;
-
-    const rotation = encConfig._rotation || 0;
-    const needsRotation = rotation !== 0;
-
-    // Prepare OffscreenCanvas for frame rotation (reused across all frames)
-    let rotCanvas = null;
-    let rotCtx = null;
-    if (needsRotation && typeof OffscreenCanvas === 'function') {
-      rotCanvas = new OffscreenCanvas(encConfig.width, encConfig.height);
-      rotCtx = rotCanvas.getContext('2d');
-    }
-
-    /**
-     * Rotate a decoded VideoFrame via OffscreenCanvas.
-     * Returns a new VideoFrame at the display dimensions; caller must close both.
-     */
-    function rotateFrame(frame) {
-      if (!rotCtx) return frame; // fallback: no rotation
-      const fw = frame.displayWidth;
-      const fh = frame.displayHeight;
-      const ow = encConfig.width;
-      const oh = encConfig.height;
-
-      rotCtx.clearRect(0, 0, ow, oh);
-      rotCtx.save();
-      rotCtx.translate(ow / 2, oh / 2);
-      rotCtx.rotate((rotation * Math.PI) / 180);
-      // After rotation, the source frame center must align with canvas center
-      rotCtx.drawImage(frame, -fw / 2, -fh / 2, fw, fh);
-      rotCtx.restore();
-
-      const rotated = new VideoFrame(rotCanvas, {
-        timestamp: frame.timestamp,
-        duration: frame.duration,
-      });
-      return rotated;
-    }
-
-    // Encoder: collects re-encoded H.264 chunks
-    const encoder = new VideoEncoder({
+  function setupVideoEncoder(config) {
+    videoEncoder = new VideoEncoder({
       output: (chunk, meta) => {
         const buf = new Uint8Array(chunk.byteLength);
         chunk.copyTo(buf);
-        output.push({
+        encodedVideo.push({
           data: buf,
           timestamp: chunk.timestamp,
           duration: chunk.duration || 0,
@@ -547,88 +360,68 @@ function transcodeVideoTrack(track, samples, encConfig, output, onSample) {
             ? new Uint8Array(meta.decoderConfig.description)
             : undefined,
         });
-        encoded++;
-        onSample();
-        if (decoderDone && encoded >= totalCount) resolve();
+        processedSamples++;
+        reportProgress();
       },
-      error: (err) => reject(new Error('視訊編碼失敗：' + (err?.message || err))),
+      error: (err) => { throw new Error('視訊編碼失敗：' + (err?.message || err)); },
     });
-    encoder.configure(encConfig);
+    videoEncoder.configure(config);
+  }
 
-    // Decoder: decodes input frames → optionally rotates → feeds to encoder
-    const decoder = new VideoDecoder({
+  function setupVideoDecoder(track, encConfig) {
+    rotation = encConfig._rotation || 0;
+    const needsRot = rotation !== 0;
+
+    if (needsRot && typeof OffscreenCanvas === 'function') {
+      rotCanvas = new OffscreenCanvas(encConfig.width, encConfig.height);
+      rotCtx = rotCanvas.getContext('2d');
+    }
+
+    videoDecoder = new VideoDecoder({
       output: (frame) => {
         let toEncode = frame;
-        if (needsRotation) {
-          toEncode = rotateFrame(frame);
+        if (needsRot && rotCtx) {
+          const fw = frame.displayWidth;
+          const fh = frame.displayHeight;
+          const ow = encConfig.width;
+          const oh = encConfig.height;
+          rotCtx.clearRect(0, 0, ow, oh);
+          rotCtx.save();
+          rotCtx.translate(ow / 2, oh / 2);
+          rotCtx.rotate((rotation * Math.PI) / 180);
+          rotCtx.drawImage(frame, -fw / 2, -fh / 2, fw, fh);
+          rotCtx.restore();
+          toEncode = new VideoFrame(rotCanvas, {
+            timestamp: frame.timestamp,
+            duration: frame.duration,
+          });
           frame.close();
         }
-        encoder.encode(toEncode, { keyFrame: decoded % 60 === 0 });
+        videoEncoder.encode(toEncode, { keyFrame: decodedFrameCount % 60 === 0 });
         toEncode.close();
-        decoded++;
+        decodedFrameCount++;
       },
-      error: (err) => reject(new Error('視訊解碼失敗：' + (err?.message || err))),
+      error: (err) => { throw new Error('視訊解碼失敗：' + (err?.message || err)); },
     });
 
-    // Build decoder config from track info
     const decoderConfig = {
       codec: track.codec,
       codedWidth: track.video?.width || track.track_width,
       codedHeight: track.video?.height || track.track_height,
     };
+    if (track.avcC) decoderConfig.description = extractBoxData(track.avcC);
+    else if (track.hvcC) decoderConfig.description = extractBoxData(track.hvcC);
+    videoDecoder.configure(decoderConfig);
+  }
 
-    // Extract avcC/hvcC description from track (needed for AVC/HEVC decoding)
-    if (track.avcC) {
-      decoderConfig.description = extractBoxData(track.avcC);
-    } else if (track.hvcC) {
-      decoderConfig.description = extractBoxData(track.hvcC);
-    }
+  function setupAudioTranscode(track) {
+    const aEncConfig = audioEncoderConfig(track);
 
-    decoder.configure(decoderConfig);
-
-    // Feed samples to decoder, releasing each sample's data after
-    // it's been consumed to avoid holding all compressed frames in memory.
-    for (let si = 0; si < samples.length; si++) {
-      const s = samples[si];
-      const chunk = new EncodedVideoChunk({
-        type: s.is_sync ? 'key' : 'delta',
-        timestamp: Math.round((s.cts / s.timescale) * 1_000_000),
-        duration: Math.round((s.duration / s.timescale) * 1_000_000),
-        data: s.data,
-      });
-      decoder.decode(chunk);
-      // Release reference to the compressed frame data so GC can reclaim it
-      s.data = null;
-      samples[si] = null;
-    }
-
-    decoder.flush().then(() => {
-      decoderDone = true;
-      return encoder.flush();
-    }).then(() => {
-      if (encoded >= totalCount) resolve();
-      // else the output callback will resolve
-      decoder.close();
-      encoder.close();
-    }).catch(reject);
-  });
-}
-
-// ─── Audio transcode (decode → encode) ───
-
-function transcodeAudioTrack(track, samples, encConfig, output, onSample) {
-  return new Promise((resolve, reject) => {
-    if (!samples.length) { resolve(); return; }
-
-    let encoded = 0;
-    const totalCount = samples.length;
-    let decoderDone = false;
-
-    const encoder = new AudioEncoder({
+    audioEncoder = new AudioEncoder({
       output: (chunk, meta) => {
         const buf = new Uint8Array(chunk.byteLength);
         chunk.copyTo(buf);
-        output.push({
+        encodedAudio.push({
           data: buf,
           timestamp: chunk.timestamp,
           duration: chunk.duration || 0,
@@ -637,20 +430,19 @@ function transcodeAudioTrack(track, samples, encConfig, output, onSample) {
             ? new Uint8Array(meta.decoderConfig.description)
             : undefined,
         });
-        encoded++;
-        onSample();
-        if (decoderDone && encoded >= totalCount) resolve();
+        processedSamples++;
+        reportProgress();
       },
-      error: (err) => reject(new Error('音訊編碼失敗：' + (err?.message || err))),
+      error: (err) => { throw new Error('音訊編碼失敗：' + (err?.message || err)); },
     });
-    encoder.configure(encConfig);
+    audioEncoder.configure(aEncConfig);
 
-    const decoder = new AudioDecoder({
+    audioDecoder = new AudioDecoder({
       output: (frame) => {
-        encoder.encode(frame);
+        audioEncoder.encode(frame);
         frame.close();
       },
-      error: (err) => reject(new Error('音訊解碼失敗：' + (err?.message || err))),
+      error: (err) => { throw new Error('音訊解碼失敗：' + (err?.message || err)); },
     });
 
     const decoderConfig = {
@@ -658,35 +450,225 @@ function transcodeAudioTrack(track, samples, encConfig, output, onSample) {
       sampleRate: track.audio?.sample_rate || 44100,
       numberOfChannels: track.audio?.channel_count || 2,
     };
+    if (track.esds) decoderConfig.description = extractBoxData(track.esds);
+    audioDecoder.configure(decoderConfig);
+  }
 
-    if (track.esds) {
-      decoderConfig.description = extractBoxData(track.esds);
-    }
+  // ── Process accumulated samples from onSamples queue ──
 
-    decoder.configure(decoderConfig);
-
-    for (let si = 0; si < samples.length; si++) {
-      const s = samples[si];
-      const chunk = new EncodedAudioChunk({
+  async function processPendingSamples() {
+    // Feed video samples to decoder, releasing compressed data immediately
+    while (pendingVideo.length > 0) {
+      const s = pendingVideo.shift();
+      videoDecoder.decode(new EncodedVideoChunk({
         type: s.is_sync ? 'key' : 'delta',
         timestamp: Math.round((s.cts / s.timescale) * 1_000_000),
         duration: Math.round((s.duration / s.timescale) * 1_000_000),
         data: s.data,
-      });
-      decoder.decode(chunk);
+      }));
+      // Track last sample number for releaseUsedSamples
+      if (s.number != null) lastReleasedSample[s.track_id || videoTrack.id] = s.number;
       s.data = null;
-      samples[si] = null;
+
+      // Backpressure: if decoder queue is building up, yield to let it drain.
+      // decodeQueueSize may not exist on all browsers — guard safely.
+      if (videoDecoder.decodeQueueSize > 30) {
+        await new Promise(r => setTimeout(r, 0));
+      }
     }
 
-    decoder.flush().then(() => {
-      decoderDone = true;
-      return encoder.flush();
-    }).then(() => {
-      if (encoded >= totalCount) resolve();
-      decoder.close();
-      encoder.close();
-    }).catch(reject);
-  });
+    // Feed audio samples
+    while (pendingAudio.length > 0) {
+      const s = pendingAudio.shift();
+      if (audioIsPassthrough) {
+        encodedAudio.push({
+          data: new Uint8Array(s.data),
+          timestamp: Math.round((s.cts / s.timescale) * 1_000_000),
+          duration: Math.round((s.duration / s.timescale) * 1_000_000),
+          key: s.is_sync,
+        });
+        processedSamples++;
+        reportProgress();
+      } else if (audioDecoder) {
+        audioDecoder.decode(new EncodedAudioChunk({
+          type: s.is_sync ? 'key' : 'delta',
+          timestamp: Math.round((s.cts / s.timescale) * 1_000_000),
+          duration: Math.round((s.duration / s.timescale) * 1_000_000),
+          data: s.data,
+        }));
+      }
+      if (s.number != null) lastReleasedSample[s.track_id || audioTrack.id] = s.number;
+      s.data = null;
+    }
+
+    // Tell mp4box.js to release buffer data for processed samples
+    for (const [trackId, sampleNum] of Object.entries(lastReleasedSample)) {
+      try { demuxer.releaseUsedSamples(Number(trackId), sampleNum); } catch {}
+    }
+  }
+
+  // ── Main flow ──
+
+  let readyResolve, readyReject;
+  const readyPromise = new Promise((res, rej) => { readyResolve = res; readyReject = rej; });
+
+  demuxer.onError = (err) => readyReject(new Error('影片解析失敗：' + (err?.message || err)));
+
+  demuxer.onReady = async (info) => {
+    try {
+      for (const t of (info.tracks || [])) {
+        const type =
+          (t.type === 'video' || (t.codec && /^(avc|hvc|hev|vp0|av01)/.test(t.codec))) ? 'video' :
+          (t.type === 'audio' || (t.codec && /^(mp4a|opus|ac-3|ec-3|flac)/.test(t.codec))) ? 'audio' :
+          null;
+        if (!type) continue;
+
+        if (type === 'video' && !videoTrack) {
+          videoTrack = { ...t, _type: 'video' };
+          totalSamples += t.nb_samples || 0;
+          // Extract in small batches to avoid holding all samples in memory
+          demuxer.setExtractionOptions(t.id, null, { nbSamples: 60 });
+        } else if (type === 'audio' && !audioTrack) {
+          audioTrack = { ...t, _type: 'audio' };
+          totalSamples += t.nb_samples || 0;
+          demuxer.setExtractionOptions(t.id, null, { nbSamples: 60 });
+        }
+      }
+
+      if (!videoTrack) {
+        readyReject(new Error('影片不包含視訊軌道'));
+        return;
+      }
+
+      // Configure video encoder/decoder
+      vEncConfig = videoEncoderConfig(videoTrack, encoderConstraints);
+      const vSupport = await VideoEncoder.isConfigSupported(vEncConfig);
+      if (!vSupport.supported) {
+        readyReject(new Error('此裝置不支援 H.264 編碼'));
+        return;
+      }
+
+      setupVideoEncoder(vEncConfig);
+      setupVideoDecoder(videoTrack, vEncConfig);
+
+      // Configure audio
+      if (audioTrack) {
+        const audioCodec = (audioTrack.codec || '').toLowerCase();
+        if (MSE_SAFE_AUDIO.test(audioCodec)) {
+          audioIsPassthrough = true;
+        } else {
+          audioIsPassthrough = false;
+          try {
+            const aEncConfig = audioEncoderConfig(audioTrack);
+            const aSupport = await AudioEncoder.isConfigSupported(aEncConfig);
+            if (aSupport.supported) {
+              setupAudioTranscode(audioTrack);
+            } else {
+              // Audio encoder not supported — skip audio (video-only output)
+              audioTrack = null;
+            }
+          } catch {
+            audioTrack = null;
+          }
+        }
+      }
+
+      demuxer.start();
+      readyResolve();
+    } catch (err) {
+      readyReject(err);
+    }
+  };
+
+  demuxer.onSamples = (trackId, _user, sampleArray) => {
+    if (videoTrack && trackId === videoTrack.id) {
+      for (const s of sampleArray) pendingVideo.push(s);
+    } else if (audioTrack && trackId === audioTrack.id) {
+      for (const s of sampleArray) pendingAudio.push(s);
+    }
+  };
+
+  // ── Feed file in 2MB chunks, process samples after each chunk ──
+
+  const READ_CHUNK_SIZE = 2 * 1024 * 1024;
+  let readOffset = 0;
+  let ready = false;
+
+  while (readOffset < file.size) {
+    const end = Math.min(readOffset + READ_CHUNK_SIZE, file.size);
+    const chunk = await file.slice(readOffset, end).arrayBuffer();
+    chunk.fileStart = readOffset;
+    demuxer.appendBuffer(chunk);
+    readOffset = end;
+
+    // Wait for onReady to fire and set up codecs (first time only)
+    if (!ready && videoTrack) {
+      await readyPromise;
+      ready = true;
+    }
+
+    // Process any samples that onSamples accumulated from this chunk
+    if (ready) {
+      await processPendingSamples();
+    }
+  }
+
+  // Ensure onReady has fired even for small files
+  if (!ready) {
+    try { demuxer.flush(); } catch {}
+    await readyPromise;
+    ready = true;
+  } else {
+    try { demuxer.flush(); } catch {}
+  }
+
+  // Process any remaining samples from flush
+  await processPendingSamples();
+
+  // ── Flush decoder → encoder pipelines ──
+
+  if (videoDecoder && videoDecoder.state === 'configured') {
+    await videoDecoder.flush();
+  }
+  if (videoEncoder && videoEncoder.state === 'configured') {
+    await videoEncoder.flush();
+  }
+  if (audioDecoder && audioDecoder.state === 'configured') {
+    await audioDecoder.flush();
+  }
+  if (audioEncoder && audioEncoder.state === 'configured') {
+    await audioEncoder.flush();
+  }
+
+  // Close codecs
+  try { videoDecoder?.close(); } catch {}
+  try { videoEncoder?.close(); } catch {}
+  try { audioDecoder?.close(); } catch {}
+  try { audioEncoder?.close(); } catch {}
+
+  onProgress?.({ phase: 'encode', percent: 95 });
+
+  // ── Mux into fMP4 segments ──
+
+  const segments = await muxToFmp4(encodedVideo, encodedAudio, vEncConfig, audioTrack, mp4boxMod);
+
+  const hadAudio = encodedAudio.length > 0;
+  encodedVideo.length = 0;
+  encodedAudio.length = 0;
+
+  onProgress?.({ phase: 'encode', percent: 100 });
+
+  const codecs = ['avc1.42001E'];
+  if (hadAudio) codecs.push('mp4a.40.2');
+
+  return {
+    segments,
+    tracks: [{ type: 'muxed', codec: codecs.join(',') }],
+    contentType: 'video/mp4',
+    remuxed: false,
+    transcoded: true,
+    name: (typeof file?.name === 'string' ? file.name : 'video').replace(/\.[^.]+$/, '') + '.mp4',
+  };
 }
 
 // ─── Extract codec-specific description box data ───
