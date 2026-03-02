@@ -936,41 +936,18 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
 
       if (audioTrack) {
         const audioTimescale = audioTrack.audio?.sample_rate || 44100;
+        // Pass the source esds Box via description_boxes so mp4box.js
+        // serializes it directly into the mp4a sample entry — same pattern
+        // as the remux path where the original moov metadata is preserved.
+        // Without a valid esds, MSE cannot initialize the audio decoder.
         incMuxAudioTrackId = incMuxer.addTrack({
           type: 'mp4a', timescale: audioTimescale, media_duration: 0, nb_samples: 0,
           channel_count: audioTrack.audio?.channel_count || 2,
           samplerate: audioTimescale, samplesize: 16,
+          description_boxes: audioEsdsBox ? [audioEsdsBox] : undefined,
         });
         if (incMuxAudioTrackId == null) {
           throw new Error('addTrack(audio) returned ' + incMuxAudioTrackId);
-        }
-
-        // [FIX] Inject correct esds into the muxer's mp4a sample entry.
-        // mp4box.js v0.5.3 generates a default/broken esds when addTrack
-        // is called without a description (gpac/mp4box.js#502). Without
-        // the proper AudioSpecificConfig in the esds, browsers cannot
-        // initialize the audio decoder from the init segment, causing
-        // MSE SourceBuffer append errors and infinite buffering on playback.
-        if (audioEsdsBox) {
-          // Passthrough: copy the original esds Box object from the demuxer.
-          // Must update BOTH the named property AND the boxes array because
-          // mp4box.js serializer iterates muxEntry.boxes (not named props).
-          try {
-            const muxTrak = incMuxer.getTrackById(incMuxAudioTrackId);
-            const muxEntry = muxTrak?.mdia?.minf?.stbl?.stsd?.entries?.[0];
-            if (muxEntry) {
-              muxEntry.esds = audioEsdsBox;
-              // Replace in boxes array (serializer reads this)
-              if (Array.isArray(muxEntry.boxes)) {
-                const ei = muxEntry.boxes.findIndex(b => b && b.type === 'esds');
-                if (ei >= 0) muxEntry.boxes[ei] = audioEsdsBox;
-                else muxEntry.boxes.push(audioEsdsBox);
-              }
-              console.info('[streamingTranscode] injected source esds into muxer audio track');
-            }
-          } catch (e) {
-            console.warn('[streamingTranscode] failed to inject audio esds:', e?.message);
-          }
         }
       }
 
@@ -1272,7 +1249,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
 
   // ── Batch mode: mux into fMP4 segments ──
 
-  const segments = await muxToFmp4(encodedVideo, encodedAudio, vEncConfig, audioTrack, mp4boxMod);
+  const segments = await muxToFmp4(encodedVideo, encodedAudio, vEncConfig, audioTrack, mp4boxMod, audioEsdsBox);
 
   const hadAudio = encodedAudio.length > 0;
   encodedVideo.length = 0;
@@ -1316,7 +1293,7 @@ function extractBoxData(boxObj) {
 
 // ─── Mux encoded frames into fMP4 segments via mp4box.js ───
 
-async function muxToFmp4(encodedVideo, encodedAudio, videoConfig, audioTrackInfo, mp4boxMod) {
+async function muxToFmp4(encodedVideo, encodedAudio, videoConfig, audioTrackInfo, mp4boxMod, audioEsdsBox) {
   const mp4boxFile = createMp4boxFile(mp4boxMod);
   const segments = []; // [{ trackIndex: 0, data: Uint8Array }]
 
@@ -1339,6 +1316,8 @@ async function muxToFmp4(encodedVideo, encodedAudio, videoConfig, audioTrackInfo
   });
 
   // Add audio track (if we have encoded audio)
+  // Pass the source esds Box via description_boxes so mp4box.js serializes
+  // it directly into the mp4a sample entry — same as the remux path.
   let audioTrackId = null;
   if (encodedAudio.length > 0) {
     audioTrackId = mp4boxFile.addTrack({
@@ -1349,6 +1328,7 @@ async function muxToFmp4(encodedVideo, encodedAudio, videoConfig, audioTrackInfo
       channel_count: audioTrackInfo?.audio?.channel_count || 2,
       samplerate: audioTrackInfo?.audio?.sample_rate || 44100,
       samplesize: 16,
+      description_boxes: audioEsdsBox ? [audioEsdsBox] : undefined,
     });
   }
 
