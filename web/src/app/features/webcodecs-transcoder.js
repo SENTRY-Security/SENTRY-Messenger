@@ -941,7 +941,8 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
         // as the remux path where the original moov metadata is preserved.
         // Without a valid esds, MSE cannot initialize the audio decoder.
         incMuxAudioTrackId = incMuxer.addTrack({
-          type: 'mp4a', timescale: audioTimescale, media_duration: 0, nb_samples: 0,
+          type: 'mp4a', hdlr: 'soun',
+          timescale: audioTimescale, media_duration: 0, nb_samples: 0,
           channel_count: audioTrack.audio?.channel_count || 2,
           samplerate: audioTimescale, samplesize: 16,
           description_boxes: audioEsdsBox ? [audioEsdsBox] : undefined,
@@ -1321,7 +1322,7 @@ async function muxToFmp4(encodedVideo, encodedAudio, videoConfig, audioTrackInfo
   let audioTrackId = null;
   if (encodedAudio.length > 0) {
     audioTrackId = mp4boxFile.addTrack({
-      type: 'mp4a',
+      type: 'mp4a', hdlr: 'soun',
       timescale: audioTrackInfo?.audio?.sample_rate || 44100,
       media_duration: 0,
       nb_samples: encodedAudio.length,
