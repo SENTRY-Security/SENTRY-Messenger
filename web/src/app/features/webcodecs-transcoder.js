@@ -627,6 +627,9 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
               : undefined,
           };
           processedSamples++;
+          if (processedSamples <= 3 || processedSamples % 200 === 0) {
+            console.info('[vEncoder] output #' + processedSamples, 'key:', frame.key, 'desc:', !!frame.description, 'muxReady:', incMuxReady);
+          }
           reportProgress();
 
           if (isStreaming) {
@@ -978,12 +981,14 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
 
       incMuxer.onSegment = (_id, _user, buf) => {
         const ep = totalSamples > 0 ? Math.min(1, processedSamples / totalSamples) : 0;
+        console.info('[incMuxer] onSegment fired, buf size:', buf?.byteLength ?? 'null');
         if (buf) readySegments.push({ trackIndex: 0, data: new Uint8Array(buf), encodeProgress: ep });
       };
       incMuxer.start();
       incMuxReady = true;
 
       // Flush buffered frames that arrived before muxer was ready
+      console.info('[incMuxer] flushing preMux: video=', preMuxVideoFrames.length, 'audio=', preMuxAudioFrames.length);
       for (const f of preMuxVideoFrames) feedVideoToIncMuxer(f);
       preMuxVideoFrames.length = 0;
       for (const f of preMuxAudioFrames) feedAudioToIncMuxer(f);
@@ -994,8 +999,14 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
     }
   }
 
+  let _vidSamplesAdded = 0;
+  let _audSamplesAdded = 0;
   function feedVideoToIncMuxer(frame) {
     if (!frame?.data || !incMuxer) return;
+    _vidSamplesAdded++;
+    if (_vidSamplesAdded <= 3 || _vidSamplesAdded % 100 === 0) {
+      console.info('[incMuxer] addSample(video) #' + _vidSamplesAdded, 'bytes:', frame.data.byteLength, 'key:', frame.key);
+    }
     const ts = Math.round((frame.timestamp / 1_000_000) * 90000);
     const dur = Math.round((frame.duration / 1_000_000) * 90000);
     incMuxer.addSample(incMuxVideoTrackId, toArrayBuffer(frame.data), {
@@ -1005,6 +1016,10 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
 
   function feedAudioToIncMuxer(frame) {
     if (!frame?.data || !incMuxer) return;
+    _audSamplesAdded++;
+    if (_audSamplesAdded <= 3 || _audSamplesAdded % 100 === 0) {
+      console.info('[incMuxer] addSample(audio) #' + _audSamplesAdded, 'bytes:', frame.data.byteLength);
+    }
     const audioTimescale = audioTrack?.audio?.sample_rate || 44100;
     const ts = Math.round((frame.timestamp / 1_000_000) * audioTimescale);
     const dur = Math.round((frame.duration / 1_000_000) * audioTimescale);
@@ -1018,6 +1033,9 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
     if (!isStreaming) return;
     // Give decoder/encoder callbacks a chance to fire and produce segments
     await new Promise(r => setTimeout(r, 0));
+    if (readySegments.length > 0) {
+      console.info('[drain] readySegments:', readySegments.length, 'sizes:', readySegments.map(s => s.data?.byteLength || 0));
+    }
     while (readySegments.length > 0) {
       const seg = readySegments.shift();
       totalEmittedSegments++;
@@ -1236,8 +1254,12 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
   // ── Streaming mode: flush muxer and drain final segments ──
 
   if (isStreaming) {
-    try { incMuxer?.flush(); } catch {}
+    console.info('[streamingTranscode] pre-flush: vidSamples=', _vidSamplesAdded, 'audSamples=', _audSamplesAdded,
+      'readySegs=', readySegments.length, 'emitted=', totalEmittedSegments, 'fatalError=', fatalError?.message || 'none');
+    try { incMuxer?.flush(); } catch (e) { console.warn('[incMuxer] flush error:', e?.message); }
+    console.info('[streamingTranscode] post-flush readySegs=', readySegments.length);
     await drainReadySegments();
+    console.info('[streamingTranscode] final emitted=', totalEmittedSegments);
     onProgress?.({ phase: 'encode', percent: 100 });
 
     const codecs = [vEncConfig.codec];
