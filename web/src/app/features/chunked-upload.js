@@ -519,15 +519,18 @@ async function _streamingTranscodeUpload({
           const currentUploadFrac = segmentsComplete / totalExpectedSegments;
           const currentUploadPercent = Math.round(PHASE.chunkStart + currentUploadFrac * (PHASE.chunkEnd - PHASE.chunkStart));
           if (encodePercent > currentUploadPercent) {
-            // Only report percent + statusText here. Do NOT send loaded/total —
-            // the upload pipeline (_reportPipelineProgress) is the sole source of
-            // byte-level stats for speed calculation. Sending loaded/total from
-            // both encode (per-sample, very frequent) and upload (200ms throttle)
-            // causes the speed display to refresh at double frequency with mixed
-            // synthetic/real byte values.
+            // Share the same 200ms throttle timer (_lastPT) with the upload
+            // pipeline so encode + upload never double-fire within the same
+            // window. This keeps speed calculation stable.
+            const now = Date.now();
+            if (now - _lastPT < 200) return;
+            _lastPT = now;
+            const encodeRatio = percent / 100;
             onProgress?.({
               percent: encodePercent,
               statusText: `正在轉碼… ${percent}%`,
+              loaded: Math.round(encodeRatio * rawFileSize),
+              total: rawFileSize,
             });
           }
         }
