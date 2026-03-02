@@ -366,11 +366,13 @@ export function initMessagesPane({
     hasInput: !!elements.input
   });
 
-  if (!elements.messagesList || !elements.peerAvatar) {
-    console.error('[messages-pane] Critical elements missing', elements);
+  if (!elements.messagesList || !elements.peerAvatar || !elements.scrollEl) {
+    console.error('[messages-pane] Critical elements missing', {
+      messagesList: !!elements.messagesList,
+      peerAvatar: !!elements.peerAvatar,
+      scrollEl: !!elements.scrollEl
+    });
     try {
-      // Force visual feedback for debugging
-      // dom.showToast?.('System Error: UI Elements Missing');
       alert('System Error: Message UI Elements Missing. Please screenshot console.');
     } catch { }
   }

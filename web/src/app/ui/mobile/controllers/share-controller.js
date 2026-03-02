@@ -3043,8 +3043,10 @@ export function setupShareController(options) {
     closePairingCodeModal,
     setWsSend(fn) {
       wsTransport = typeof fn === 'function' ? fn : null;
+    },
+    destroy() {
+      clearPairingCountdown();
+      clearInviteCountdown();
     }
   };
-
-  profileInitPromise?.catch(() => { });
 }
