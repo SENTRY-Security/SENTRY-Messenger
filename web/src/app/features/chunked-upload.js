@@ -420,6 +420,7 @@ async function _streamingTranscodeUpload({
   let uploadError = null;
   const uploadPool = new Set();
   const inFlightFrac = {};   // idx → fraction of segment uploaded (0-1)
+  const segSizes = {};       // idx → plaintext segment byte size (for in-flight byte calc)
   let _lastPT = 0;
 
   // Progress is based on segment count, not bytes, because the transcoded
@@ -431,11 +432,17 @@ async function _streamingTranscodeUpload({
       _lastPT = now;
     }
     let frac = segmentsComplete;
-    for (const k in inFlightFrac) frac += inFlightFrac[k];
+    // Include partial upload progress in both fraction and byte count
+    let inflightBytes = 0;
+    for (const k in inFlightFrac) {
+      frac += inFlightFrac[k];
+      inflightBytes += (segSizes[k] || 0) * inFlightFrac[k];
+    }
     const ratio = Math.min(frac / totalExpectedSegments, 1);
     const chunkRange = PHASE.chunkEnd - PHASE.chunkStart;
     onProgress?.({
-      loaded: completedBytes, total: actualTotalSize || completedBytes || 1,
+      loaded: completedBytes + Math.round(inflightBytes),
+      total: actualTotalSize || completedBytes || 1,
       percent: Math.round(PHASE.chunkStart + ratio * chunkRange),
       statusText: segmentsComplete > 0 ? `上傳中 ${segmentsComplete}/${totalExpectedSegments}` : undefined,
     });
@@ -455,6 +462,7 @@ async function _streamingTranscodeUpload({
     }
     const segSize = segData.byteLength;
     actualTotalSize += segSize;
+    segSizes[idx] = segSize;
 
     if (idx >= chunkPuts.length) {
       throw new Error(`segment count exceeded estimate (${idx + 1} > ${chunkPuts.length})`);
@@ -481,6 +489,7 @@ async function _streamingTranscodeUpload({
         throw err;
       }
       delete inFlightFrac[idx];
+      delete segSizes[idx];
       completedBytes += segSize;
       segmentsComplete++;
       _reportPipelineProgress(true);
@@ -518,7 +527,17 @@ async function _streamingTranscodeUpload({
           const currentUploadFrac = segmentsComplete / totalExpectedSegments;
           const currentUploadPercent = Math.round(PHASE.chunkStart + currentUploadFrac * (PHASE.chunkEnd - PHASE.chunkStart));
           if (encodePercent > currentUploadPercent) {
-            onProgress?.({ percent: encodePercent, statusText: `正在轉碼… ${percent}%` });
+            // Include loaded/total so the UI byte stats keep updating
+            let inflightBytes = 0;
+            for (const k in inFlightFrac) {
+              inflightBytes += (segSizes[k] || 0) * inFlightFrac[k];
+            }
+            onProgress?.({
+              percent: encodePercent,
+              statusText: `正在轉碼… ${percent}%`,
+              loaded: completedBytes + Math.round(inflightBytes),
+              total: actualTotalSize || completedBytes || 1,
+            });
           }
         }
       },
