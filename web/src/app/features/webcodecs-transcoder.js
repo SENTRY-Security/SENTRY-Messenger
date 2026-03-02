@@ -952,12 +952,20 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
         // initialize the audio decoder from the init segment, causing
         // MSE SourceBuffer append errors and infinite buffering on playback.
         if (audioEsdsBox) {
-          // Passthrough: copy the original esds Box object from the demuxer
+          // Passthrough: copy the original esds Box object from the demuxer.
+          // Must update BOTH the named property AND the boxes array because
+          // mp4box.js serializer iterates muxEntry.boxes (not named props).
           try {
             const muxTrak = incMuxer.getTrackById(incMuxAudioTrackId);
             const muxEntry = muxTrak?.mdia?.minf?.stbl?.stsd?.entries?.[0];
             if (muxEntry) {
               muxEntry.esds = audioEsdsBox;
+              // Replace in boxes array (serializer reads this)
+              if (Array.isArray(muxEntry.boxes)) {
+                const ei = muxEntry.boxes.findIndex(b => b && b.type === 'esds');
+                if (ei >= 0) muxEntry.boxes[ei] = audioEsdsBox;
+                else muxEntry.boxes.push(audioEsdsBox);
+              }
               console.info('[streamingTranscode] injected source esds into muxer audio track');
             }
           } catch (e) {

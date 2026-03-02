@@ -364,7 +364,18 @@ export class MediaHandlingController extends BaseController {
                             video.play().catch(() => {});
                         }
                         msePlayer.addSourceBuffer('muxed', codec);
-                        await msePlayer.appendChunk('muxed', initData);
+                        // [FIX] On MMS (iOS Safari), 'endstreaming' may fire before the
+                        // first appendBuffer if manifest download took too long, pausing
+                        // the queue and causing appendChunk to hang indefinitely.
+                        // Force-resume queues and race against a safety timeout.
+                        msePlayer.resumeQueues();
+                        await Promise.race([
+                            msePlayer.appendChunk('muxed', initData),
+                            new Promise((_, reject) => setTimeout(
+                                () => reject(new Error('init segment append timed out (5s)')),
+                                5_000
+                            ))
+                        ]);
                         console.info(`[mse] init succeeded with ${codec}`);
                         return;
                     } catch (err) {
