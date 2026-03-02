@@ -185,6 +185,94 @@ function concatU8(arrays) {
   return out;
 }
 
+// ─── Manual fMP4 segment builder ───
+//
+// mp4box.js v0.5.3's fragmentation path (processSamples → createFragment →
+// onSegment) produces 0-byte media segments when samples are added via
+// addSample(). The root cause: createFragment stores sample.data as-is
+// (ArrayBuffer) in the mdat box, but Box.prototype.write uses this.data.length
+// (undefined for ArrayBuffer — should be byteLength) and writeUint8Array()
+// fails silently on non-Uint8Array inputs.
+//
+// To bypass this entirely, we build moof+mdat segments manually. The binary
+// structure is well-defined and straightforward:
+//   moof { mfhd, traf { tfhd, tfdt, trun } } + mdat { data }
+
+/**
+ * Build a single-sample fMP4 fragment (moof + mdat).
+ *
+ * @param {number} trackId - Track ID
+ * @param {number} sequenceNumber - Moof sequence number (1-based, incrementing)
+ * @param {number} baseDecodeTime - Base media decode time (in track timescale)
+ * @param {number} duration - Sample duration (in track timescale)
+ * @param {Uint8Array} sampleData - Encoded sample data
+ * @param {boolean} isSync - Whether this is a sync (key) sample
+ * @param {number} ctsOffset - CTS minus DTS (composition time offset)
+ * @returns {Uint8Array} Binary fMP4 fragment
+ */
+function buildMoofMdat(trackId, sequenceNumber, baseDecodeTime, duration, sampleData, isSync, ctsOffset) {
+  const dataLen = sampleData.byteLength;
+
+  // Fixed box sizes (all version=0):
+  //   mfhd: 8(header) + 4(fullbox) + 4(seq_num) = 16
+  //   tfhd: 8 + 4 + 4(track_id) = 16 (flag=0x020000 default-base-is-moof)
+  //   tfdt: 8 + 4 + 4(baseMediaDecodeTime) = 16 (version 0, 32-bit time)
+  //   trun: 8 + 4 + 4(count) + 4(data_offset) + 16(1 sample * 4 fields) = 36
+  //         flags = data_offset(0x1) | duration(0x100) | size(0x200) | flags(0x400) | cts(0x800)
+  //   traf: 8 + 16 + 16 + 36 = 76
+  //   moof: 8 + 16 + 76 = 100
+  //   mdat: 8 + dataLen
+  const MFHD_SIZE = 16;
+  const TFHD_SIZE = 16;
+  const TFDT_SIZE = 16;
+  const TRUN_SIZE = 36;
+  const TRAF_SIZE = 8 + TFHD_SIZE + TFDT_SIZE + TRUN_SIZE;
+  const MOOF_SIZE = 8 + MFHD_SIZE + TRAF_SIZE;
+  const MDAT_SIZE = 8 + dataLen;
+
+  const total = MOOF_SIZE + MDAT_SIZE;
+  const buf = new ArrayBuffer(total);
+  const dv = new DataView(buf);
+  let p = 0;
+
+  const w32 = (v) => { dv.setUint32(p, v); p += 4; };
+  const wStr = (s) => { for (let i = 0; i < s.length; i++) dv.setUint8(p + i, s.charCodeAt(i)); p += s.length; };
+  const wFullBoxHdr = (size, type, flags) => { w32(size); wStr(type); dv.setUint8(p, 0); p++; dv.setUint8(p, (flags >> 16) & 0xFF); p++; dv.setUint8(p, (flags >> 8) & 0xFF); p++; dv.setUint8(p, flags & 0xFF); p++; };
+
+  // ── moof ──
+  w32(MOOF_SIZE); wStr('moof');
+
+  // mfhd
+  wFullBoxHdr(MFHD_SIZE, 'mfhd', 0);
+  w32(sequenceNumber);
+
+  // traf
+  w32(TRAF_SIZE); wStr('traf');
+
+  // tfhd (flag 0x020000 = default-base-is-moof)
+  wFullBoxHdr(TFHD_SIZE, 'tfhd', 0x020000);
+  w32(trackId);
+
+  // tfdt (version 0 = 32-bit baseMediaDecodeTime)
+  wFullBoxHdr(TFDT_SIZE, 'tfdt', 0);
+  w32(baseDecodeTime >>> 0); // ensure unsigned 32-bit
+
+  // trun (flags: data_offset | duration | size | flags | cts_offset = 0xF01)
+  wFullBoxHdr(TRUN_SIZE, 'trun', 0xF01);
+  w32(1);                      // sample_count
+  dv.setInt32(p, MOOF_SIZE + 8); p += 4; // data_offset = moof_size + mdat_header(8)
+  w32(duration);               // sample_duration
+  w32(dataLen);                // sample_size
+  w32(isSync ? (1 << 25) : (1 << 16)); // sample_flags
+  w32(ctsOffset >>> 0);        // sample_composition_time_offset (unsigned)
+
+  // ── mdat ──
+  w32(MDAT_SIZE); wStr('mdat');
+  new Uint8Array(buf, p).set(sampleData);
+
+  return new Uint8Array(buf);
+}
+
 // ─── Codec description extraction from mp4box internals ───
 //
 // mp4box.js's getInfo() does NOT copy codec config boxes (avcC, hvcC, esds)
@@ -540,10 +628,10 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
   const encodedVideo = isStreaming ? null : [];
   const encodedAudio = isStreaming ? null : [];
 
-  // ── Streaming mode: incremental muxer state ──
-  // When onSegment is provided, encoder outputs are fed to the muxer in
-  // real-time instead of being collected in arrays. The muxer emits fMP4
-  // segments which are passed to onSegment() for immediate encrypt+upload.
+  // ── Streaming mode: manual segment builder state ──
+  // When onSegment is provided, encoder outputs are turned into fMP4 segments
+  // using our manual buildMoofMdat() function (bypasses mp4box.js's broken
+  // fragmentation path). mp4box.js is still used for addTrack and init segments.
   let incMuxer = null;
   let incMuxVideoTrackId = null;
   let incMuxAudioTrackId = null;
@@ -557,6 +645,14 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
   const readySegments = [];        // fMP4 segments waiting to be consumed
   let totalEmittedSegments = 0;
   let hadAudioOutput = false;
+
+  // Manual segment builder state
+  let segSequenceNum = 0;          // moof sequence number (incrementing)
+  let videoFirstDts = null;        // first video DTS (for baseMediaDecodeTime)
+  let audioFirstDts = null;        // first audio DTS
+  const pendingFragments = [];     // accumulated moof+mdat fragments
+  let samplesInPendingSegment = 0;
+  const SAMPLES_PER_SEGMENT = 100;
 
   // Track info (discovered in onReady)
   let videoTrack = null;
@@ -627,9 +723,6 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
               : undefined,
           };
           processedSamples++;
-          if (processedSamples <= 3 || processedSamples % 200 === 0) {
-            console.info('[vEncoder] output #' + processedSamples, 'key:', frame.key, 'desc:', !!frame.description, 'muxReady:', incMuxReady);
-          }
           reportProgress();
 
           if (isStreaming) {
@@ -955,6 +1048,10 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
         }
       }
 
+      // Generate init segment using mp4box.js (this works correctly).
+      // setSegmentOptions + initializeSegmentation builds the ftyp+moov.
+      // We do NOT call start() — media segments are built manually via
+      // buildMoofMdat() to bypass mp4box.js's broken DataStream write path.
       incMuxer.setSegmentOptions(incMuxVideoTrackId, null, { nbSamples: 100 });
       if (incMuxAudioTrackId != null) {
         incMuxer.setSegmentOptions(incMuxAudioTrackId, null, { nbSamples: 100 });
@@ -979,16 +1076,9 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
       const combinedInit = mergeInitSegments(initParts);
       readySegments.push({ trackIndex: 0, data: combinedInit, encodeProgress: 0 });
 
-      incMuxer.onSegment = (_id, _user, buf) => {
-        const ep = totalSamples > 0 ? Math.min(1, processedSamples / totalSamples) : 0;
-        console.info('[incMuxer] onSegment fired, buf size:', buf?.byteLength ?? 'null');
-        if (buf) readySegments.push({ trackIndex: 0, data: new Uint8Array(buf), encodeProgress: ep });
-      };
-      incMuxer.start();
       incMuxReady = true;
 
       // Flush buffered frames that arrived before muxer was ready
-      console.info('[incMuxer] flushing preMux: video=', preMuxVideoFrames.length, 'audio=', preMuxAudioFrames.length);
       for (const f of preMuxVideoFrames) feedVideoToIncMuxer(f);
       preMuxVideoFrames.length = 0;
       for (const f of preMuxAudioFrames) feedAudioToIncMuxer(f);
@@ -999,33 +1089,53 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
     }
   }
 
-  let _vidSamplesAdded = 0;
-  let _audSamplesAdded = 0;
+  /** Flush accumulated fragments into a single ready segment. */
+  function flushPendingFragments() {
+    if (pendingFragments.length === 0) return;
+    const ep = totalSamples > 0 ? Math.min(1, processedSamples / totalSamples) : 0;
+    const data = concatU8(pendingFragments);
+    readySegments.push({ trackIndex: 0, data, encodeProgress: ep });
+    pendingFragments.length = 0;
+    samplesInPendingSegment = 0;
+  }
+
   function feedVideoToIncMuxer(frame) {
-    if (!frame?.data || !incMuxer) return;
-    _vidSamplesAdded++;
-    if (_vidSamplesAdded <= 3 || _vidSamplesAdded % 100 === 0) {
-      console.info('[incMuxer] addSample(video) #' + _vidSamplesAdded, 'bytes:', frame.data.byteLength, 'key:', frame.key);
-    }
+    if (!frame?.data) return;
+    const sampleData = frame.data instanceof Uint8Array ? frame.data : new Uint8Array(frame.data);
     const ts = Math.round((frame.timestamp / 1_000_000) * 90000);
     const dur = Math.round((frame.duration / 1_000_000) * 90000);
-    incMuxer.addSample(incMuxVideoTrackId, toArrayBuffer(frame.data), {
-      duration: dur || 3000, is_sync: frame.key, cts: ts, dts: ts,
-    });
+    if (videoFirstDts === null) videoFirstDts = ts;
+    const baseDecodeTime = ts - videoFirstDts;
+
+    const frag = buildMoofMdat(
+      incMuxVideoTrackId, ++segSequenceNum, baseDecodeTime,
+      dur || 3000, sampleData, !!frame.key, 0
+    );
+    pendingFragments.push(frag);
+    samplesInPendingSegment++;
+    if (samplesInPendingSegment >= SAMPLES_PER_SEGMENT) {
+      flushPendingFragments();
+    }
   }
 
   function feedAudioToIncMuxer(frame) {
-    if (!frame?.data || !incMuxer) return;
-    _audSamplesAdded++;
-    if (_audSamplesAdded <= 3 || _audSamplesAdded % 100 === 0) {
-      console.info('[incMuxer] addSample(audio) #' + _audSamplesAdded, 'bytes:', frame.data.byteLength);
-    }
+    if (!frame?.data) return;
+    const sampleData = frame.data instanceof Uint8Array ? frame.data : new Uint8Array(frame.data);
     const audioTimescale = audioTrack?.audio?.sample_rate || 44100;
     const ts = Math.round((frame.timestamp / 1_000_000) * audioTimescale);
     const dur = Math.round((frame.duration / 1_000_000) * audioTimescale);
-    incMuxer.addSample(incMuxAudioTrackId, toArrayBuffer(frame.data), {
-      duration: dur || 1024, is_sync: frame.key !== false, cts: ts, dts: ts,
-    });
+    if (audioFirstDts === null) audioFirstDts = ts;
+    const baseDecodeTime = ts - audioFirstDts;
+
+    const frag = buildMoofMdat(
+      incMuxAudioTrackId, ++segSequenceNum, baseDecodeTime,
+      dur || 1024, sampleData, frame.key !== false, 0
+    );
+    pendingFragments.push(frag);
+    samplesInPendingSegment++;
+    if (samplesInPendingSegment >= SAMPLES_PER_SEGMENT) {
+      flushPendingFragments();
+    }
   }
 
   /** Yield to the event loop, then pass any ready segments to onSegment(). */
@@ -1033,9 +1143,8 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
     if (!isStreaming) return;
     // Give decoder/encoder callbacks a chance to fire and produce segments
     await new Promise(r => setTimeout(r, 0));
-    if (readySegments.length > 0) {
-      console.info('[drain] readySegments:', readySegments.length, 'sizes:', readySegments.map(s => s.data?.byteLength || 0));
-    }
+    // Flush any accumulated fragments into a segment before draining
+    flushPendingFragments();
     while (readySegments.length > 0) {
       const seg = readySegments.shift();
       totalEmittedSegments++;
@@ -1251,15 +1360,12 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
 
   onProgress?.({ phase: 'encode', percent: 95 });
 
-  // ── Streaming mode: flush muxer and drain final segments ──
+  // ── Streaming mode: flush remaining fragments and drain final segments ──
 
   if (isStreaming) {
-    console.info('[streamingTranscode] pre-flush: vidSamples=', _vidSamplesAdded, 'audSamples=', _audSamplesAdded,
-      'readySegs=', readySegments.length, 'emitted=', totalEmittedSegments, 'fatalError=', fatalError?.message || 'none');
-    try { incMuxer?.flush(); } catch (e) { console.warn('[incMuxer] flush error:', e?.message); }
-    console.info('[streamingTranscode] post-flush readySegs=', readySegments.length);
+    // Flush any remaining accumulated fragments
+    flushPendingFragments();
     await drainReadySegments();
-    console.info('[streamingTranscode] final emitted=', totalEmittedSegments);
     onProgress?.({ phase: 'encode', percent: 100 });
 
     const codecs = [vEncConfig.codec];
@@ -1409,7 +1515,7 @@ async function muxToFmp4(encodedVideo, encodedAudio, videoConfig, audioTrackInfo
       const frame = encodedVideo[vi++];
       const tsInTimescale = Math.round((frame.timestamp / 1_000_000) * 90000);
       const durInTimescale = Math.round((frame.duration / 1_000_000) * 90000);
-      mp4boxFile.addSample(videoTrackId, frame.data.buffer, {
+      mp4boxFile.addSample(videoTrackId, frame.data, {
         duration: durInTimescale || 3000,
         is_sync: frame.key,
         cts: tsInTimescale,
@@ -1419,7 +1525,7 @@ async function muxToFmp4(encodedVideo, encodedAudio, videoConfig, audioTrackInfo
       const frame = encodedAudio[ai++];
       const tsInTimescale = Math.round((frame.timestamp / 1_000_000) * audioTimescale);
       const durInTimescale = Math.round((frame.duration / 1_000_000) * audioTimescale);
-      mp4boxFile.addSample(audioTrackId, frame.data.buffer, {
+      mp4boxFile.addSample(audioTrackId, frame.data, {
         duration: durInTimescale || 1024,
         is_sync: frame.key !== false,
         cts: tsInTimescale,
