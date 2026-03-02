@@ -1143,8 +1143,9 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
     if (!isStreaming) return;
     // Give decoder/encoder callbacks a chance to fire and produce segments
     await new Promise(r => setTimeout(r, 0));
-    // Flush any accumulated fragments into a segment before draining
-    flushPendingFragments();
+    // Only drain segments that hit the 100-sample threshold naturally.
+    // Do NOT call flushPendingFragments() here — partial mid-loop flushes
+    // create extra segments that exceed the pre-allocated upload URL count.
     while (readySegments.length > 0) {
       const seg = readySegments.shift();
       totalEmittedSegments++;
