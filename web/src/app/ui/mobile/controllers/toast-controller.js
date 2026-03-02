@@ -102,13 +102,24 @@ export function createToastController(element) {
     }
   };
 
-  toastEl?.addEventListener('click', invokeHandler);
-  toastEl?.addEventListener('keydown', (e) => {
+  const keydownHandler = (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       invokeHandler();
     }
-  });
+  };
 
-  return { showToast: show, hideToast: hide };
+  toastEl?.addEventListener('click', invokeHandler);
+  toastEl?.addEventListener('keydown', keydownHandler);
+
+  function destroy() {
+    toastEl?.removeEventListener('click', invokeHandler);
+    toastEl?.removeEventListener('keydown', keydownHandler);
+    if (toastTimerId) {
+      clearTimeout(toastTimerId);
+      toastTimerId = null;
+    }
+  }
+
+  return { showToast: show, hideToast: hide, destroy };
 }

@@ -1409,9 +1409,33 @@ export class MessageFlowController extends BaseController {
         super.init();
 
         if (this.elements.scrollEl) {
-            this.elements.scrollEl.addEventListener('scroll', () => this.handleMessagesScroll());
-            this.elements.scrollEl.addEventListener('touchend', () => this.handleMessagesTouchEnd());
-            this.elements.scrollEl.addEventListener('wheel', () => this.handleMessagesWheel(), { passive: true });
+            this._onScroll = () => this.handleMessagesScroll();
+            this._onTouchEnd = () => this.handleMessagesTouchEnd();
+            this._onWheel = () => this.handleMessagesWheel();
+            this.elements.scrollEl.addEventListener('scroll', this._onScroll);
+            this.elements.scrollEl.addEventListener('touchend', this._onTouchEnd);
+            this.elements.scrollEl.addEventListener('wheel', this._onWheel, { passive: true });
         }
+    }
+
+    /**
+     * Cleanup all event listeners to prevent memory leaks.
+     */
+    destroy() {
+        if (this.handleBodyGapDetected) {
+            window.removeEventListener('sentry:gap-detected', this.handleBodyGapDetected);
+        }
+        if (this._onConversationDeleted) {
+            document.removeEventListener('sentry:conversation-deleted', this._onConversationDeleted);
+        }
+        if (this._onReceipt) {
+            document.removeEventListener('sentry:receipt', this._onReceipt);
+        }
+        if (this.elements.scrollEl) {
+            if (this._onScroll) this.elements.scrollEl.removeEventListener('scroll', this._onScroll);
+            if (this._onTouchEnd) this.elements.scrollEl.removeEventListener('touchend', this._onTouchEnd);
+            if (this._onWheel) this.elements.scrollEl.removeEventListener('wheel', this._onWheel);
+        }
+        super.destroy();
     }
 }

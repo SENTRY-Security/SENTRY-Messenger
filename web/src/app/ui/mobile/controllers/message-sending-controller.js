@@ -275,7 +275,6 @@ export class MessageSendingController extends BaseController {
                 // Without this, isUploadBusy() stays true and blocks ALL subsequent
                 // file uploads across the entire session.
                 try {
-                try {
                     const res = await sendDrMedia({
                         peerAccountDigest: state.activePeerDigest,
                         file,
@@ -455,7 +454,6 @@ export class MessageSendingController extends BaseController {
                         this.applyUploadProgress(msg, { percent: 0, error: err?.message || err });
                         this.updateUploadOverlayUI(msg.id, msg.media);
                     }
-                }
                 } finally {
                     // [FIX] Guarantee the upload lock is ALWAYS released.
                     // endUpload() is idempotent — safe to call even if the cancel

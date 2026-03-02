@@ -193,7 +193,7 @@ export class LayoutController extends BaseController {
     initKeyboardListeners() {
         if (typeof window === 'undefined' || !window.visualViewport) return;
 
-        const onViewportChange = () => {
+        this._onViewportChange = () => {
             try {
                 const vv = window.visualViewport;
                 if (!vv) return;
@@ -217,10 +217,10 @@ export class LayoutController extends BaseController {
             }
         };
 
-        window.visualViewport.addEventListener('resize', onViewportChange);
-        window.visualViewport.addEventListener('scroll', onViewportChange);
-        window.addEventListener('orientationchange', onViewportChange);
-        onViewportChange();
+        window.visualViewport.addEventListener('resize', this._onViewportChange);
+        window.visualViewport.addEventListener('scroll', this._onViewportChange);
+        window.addEventListener('orientationchange', this._onViewportChange);
+        this._onViewportChange();
     }
 
     /**
@@ -231,5 +231,20 @@ export class LayoutController extends BaseController {
         this.initKeyboardListeners();
         this.startViewportGuard();
         this.updateLayoutMode({ force: true });
+    }
+
+    /**
+     * Cleanup viewport/orientation event listeners to prevent memory leaks.
+     */
+    destroy() {
+        if (this._onViewportChange) {
+            window.visualViewport?.removeEventListener('resize', this._onViewportChange);
+            window.visualViewport?.removeEventListener('scroll', this._onViewportChange);
+            window.removeEventListener('orientationchange', this._onViewportChange);
+        }
+        if (this._keyboardManager && typeof this._keyboardManager.stop === 'function') {
+            this._keyboardManager.stop();
+        }
+        super.destroy();
     }
 }
