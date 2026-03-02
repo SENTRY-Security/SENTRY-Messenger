@@ -671,48 +671,6 @@ export class MessageFlowController extends BaseController {
         }
     }
 
-    /**
-     * [AUTO-FILL] Resolve a detected gap by actively fetching the missing range.
-     * Triggered by GapDetectedError from coordinator.
-     */
-    async resolveGap(conversationId, localMax, incomingCounter) {
-        if (!conversationId || !incomingCounter) return;
-
-        // Prevent concurrent gap fills for the same conversation
-        if (this.gapFillInProgress?.has(conversationId)) return;
-        this.gapFillInProgress = this.gapFillInProgress || new Set();
-        this.gapFillInProgress.add(conversationId);
-
-        console.log(`[MessageFlow] Auto-Resolving Gap: Local=${localMax} -> Incoming=${incomingCounter}`);
-        this.deps.showToast?.('正在補齊歷史訊息...', { type: 'loading', duration: 2000 });
-
-        try {
-            // Calculate limit: (Incoming - LocalMax) + padding
-            const gapSize = incomingCounter - (localMax || 0);
-            const limit = Math.ceil(gapSize + 5); // Fetch slightly more to be safe
-
-            await messagesFlowFacade.onScrollFetchMore({
-                conversationId,
-                // We don't have a cursor for specific range yet in this API, 
-                // but standard fetch goes backwards from Latest (or uses Time).
-                // If we are "Live", we usually want to fetch "Latest" to fill the top.
-                // Assuming standard fetch handles "filling holes" or "fetching latest" correctly.
-                options: {
-                    limit: Math.min(limit, 50), // Cap at 50
-                    sourceTag: 'gap_autofill'
-                }
-            });
-            console.log('[MessageFlow] Gap Auto-Fill Completed');
-        } catch (err) {
-            console.warn('[MessageFlow] Gap Auto-Fill Failed', err);
-        } finally {
-            this.gapFillInProgress.delete(conversationId);
-            if (this.gapTargets) this.gapTargets.delete(conversationId);
-        }
-    }
-
-
-
 
 
 
@@ -1392,11 +1350,14 @@ export class MessageFlowController extends BaseController {
         img.alt = name || '頭像預覽';
         overlay.appendChild(img);
 
-        const close = () => overlay.remove();
-        overlay.addEventListener('click', close);
         const onKey = (e) => {
-            if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); }
+            if (e.key === 'Escape') close();
         };
+        const close = () => {
+            overlay.remove();
+            document.removeEventListener('keydown', onKey);
+        };
+        overlay.addEventListener('click', close);
         document.addEventListener('keydown', onKey);
 
         document.body.appendChild(overlay);

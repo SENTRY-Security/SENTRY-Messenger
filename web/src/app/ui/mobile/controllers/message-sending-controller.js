@@ -83,6 +83,14 @@ export class MessageSendingController extends BaseController {
             try { msg.abortController.abort(); } catch { }
         }
 
+        // Revoke blob URLs to free memory (prevents leak on cancel/failure paths)
+        if (msg?.media?.localUrl) {
+            try { URL.revokeObjectURL(msg.media.localUrl); } catch { }
+        }
+        if (msg?.media?.previewUrl) {
+            try { URL.revokeObjectURL(msg.media.previewUrl); } catch { }
+        }
+
         // [FIX] Use removeMessagesMatching to delete from the actual Map store.
         // Previously we spliced from the snapshot array returned by getTimeline(),
         // which had no effect on the underlying Map — the message would reappear
@@ -218,7 +226,7 @@ export class MessageSendingController extends BaseController {
 
                             this.updateUploadOverlayUI(msg.id, msg.media);
                         }
-                    }).catch(() => {});
+                    }).catch(err => console.warn('[video-thumb] preview generation failed', err?.message || err));
                 }
 
                 const abortController = new AbortController();
