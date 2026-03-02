@@ -420,11 +420,12 @@ async function _streamingTranscodeUpload({
   let uploadError = null;
   const uploadPool = new Set();
   const inFlightFrac = {};   // idx → fraction of segment uploaded (0-1)
-  const segSizes = {};       // idx → plaintext segment byte size (for in-flight byte calc)
   let _lastPT = 0;
 
-  // Progress is based on segment count, not bytes, because the transcoded
-  // output at 720p is much smaller than the original file (e.g. 36MB vs 581MB).
+  // Progress is reported in terms of raw (original) file bytes, not transcoded
+  // output bytes. This gives the user a familiar "X MB / Y MB" display that
+  // matches the file they selected, regardless of transcode compression ratio.
+  const rawFileSize = file.size || 1;
   const _reportPipelineProgress = (force) => {
     if (!force) {
       const now = Date.now();
@@ -432,17 +433,12 @@ async function _streamingTranscodeUpload({
       _lastPT = now;
     }
     let frac = segmentsComplete;
-    // Include partial upload progress in both fraction and byte count
-    let inflightBytes = 0;
-    for (const k in inFlightFrac) {
-      frac += inFlightFrac[k];
-      inflightBytes += (segSizes[k] || 0) * inFlightFrac[k];
-    }
+    for (const k in inFlightFrac) frac += inFlightFrac[k];
     const ratio = Math.min(frac / totalExpectedSegments, 1);
     const chunkRange = PHASE.chunkEnd - PHASE.chunkStart;
     onProgress?.({
-      loaded: completedBytes + Math.round(inflightBytes),
-      total: actualTotalSize || completedBytes || 1,
+      loaded: Math.round(ratio * rawFileSize),
+      total: rawFileSize,
       percent: Math.round(PHASE.chunkStart + ratio * chunkRange),
       statusText: segmentsComplete > 0 ? `上傳中 ${segmentsComplete}/${totalExpectedSegments}` : undefined,
     });
@@ -462,7 +458,6 @@ async function _streamingTranscodeUpload({
     }
     const segSize = segData.byteLength;
     actualTotalSize += segSize;
-    segSizes[idx] = segSize;
 
     if (idx >= chunkPuts.length) {
       throw new Error(`segment count exceeded estimate (${idx + 1} > ${chunkPuts.length})`);
@@ -489,7 +484,6 @@ async function _streamingTranscodeUpload({
         throw err;
       }
       delete inFlightFrac[idx];
-      delete segSizes[idx];
       completedBytes += segSize;
       segmentsComplete++;
       _reportPipelineProgress(true);
@@ -527,16 +521,13 @@ async function _streamingTranscodeUpload({
           const currentUploadFrac = segmentsComplete / totalExpectedSegments;
           const currentUploadPercent = Math.round(PHASE.chunkStart + currentUploadFrac * (PHASE.chunkEnd - PHASE.chunkStart));
           if (encodePercent > currentUploadPercent) {
-            // Include loaded/total so the UI byte stats keep updating
-            let inflightBytes = 0;
-            for (const k in inFlightFrac) {
-              inflightBytes += (segSizes[k] || 0) * inFlightFrac[k];
-            }
+            // Use encode progress to derive raw bytes processed
+            const encodeRatio = percent / 100;
             onProgress?.({
               percent: encodePercent,
               statusText: `正在轉碼… ${percent}%`,
-              loaded: completedBytes + Math.round(inflightBytes),
-              total: actualTotalSize || completedBytes || 1,
+              loaded: Math.round(encodeRatio * rawFileSize),
+              total: rawFileSize,
             });
           }
         }
@@ -901,6 +892,9 @@ export async function encryptAndPutChunked({
   const chunkInFlight = new Float64Array(chunkCount); // tracks partial upload per chunk
   const chunkMetas = new Array(chunkCount);
 
+  // Report progress in terms of raw (original) file bytes so the user sees
+  // a familiar "X MB / Y MB" that matches their file, regardless of remuxing.
+  const rawFileSize = file.size || totalSize;
   let _lastProgressTime = 0;
   const _reportProgress = (force) => {
     // Throttle XHR byte-level updates to max 5/sec to avoid flooding the UI.
@@ -916,7 +910,7 @@ export async function encryptAndPutChunked({
     const chunkRange = PHASE.chunkEnd - PHASE.chunkStart;
     const ratio = Math.min(totalUploaded / totalSize, 1);
     onProgress?.({
-      loaded: totalUploaded, total: totalSize,
+      loaded: Math.round(ratio * rawFileSize), total: rawFileSize,
       percent: Math.round(PHASE.chunkStart + ratio * chunkRange)
     });
   };
