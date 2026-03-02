@@ -55,64 +55,6 @@ export function isWebCodecsSupported() {
 const MSE_SAFE_VIDEO = /^(avc1|avc3)/i;
 const MSE_SAFE_AUDIO = /^(mp4a|opus)/i;
 
-/**
- * Serialize a parsed MPEG-4 ES_Descriptor back to raw bytes.
- * mp4box.js v0.5.3 parses the esds box into structured descriptors but does NOT
- * preserve the raw data (this.data). The generic Box.prototype.write relies on
- * this.data, so without re-serialization, description_boxes produces an empty esds.
- */
-function serializeEsDescriptor(esd) {
-  if (!esd) return null;
-
-  // Encode descriptor: [tag, expandable-size, content]
-  function writeDesc(tag, content) {
-    const size = content.length;
-    const sizeBytes = [];
-    let s = size;
-    do { sizeBytes.unshift(s & 0x7F); s >>>= 7; } while (s > 0);
-    for (let i = 0; i < sizeBytes.length - 1; i++) sizeBytes[i] |= 0x80;
-    const out = new Uint8Array(1 + sizeBytes.length + size);
-    out[0] = tag;
-    out.set(sizeBytes, 1);
-    out.set(content, 1 + sizeBytes.length);
-    return out;
-  }
-
-  // DecoderSpecificInfo (tag 5) — AudioSpecificConfig bytes
-  const dcd = esd.findDescriptor?.(4); // DecoderConfigDescriptor
-  const dsi = dcd?.findDescriptor?.(5); // DecoderSpecificInfo
-  const ascData = dsi?.data || new Uint8Array(0);
-  const dsiBytes = writeDesc(5, ascData);
-
-  // DecoderConfigDescriptor (tag 4)
-  const dcdBody = new Uint8Array(13 + dsiBytes.length);
-  dcdBody[0] = dcd?.oti || 0x40; // objectTypeIndication
-  dcdBody[1] = ((dcd?.streamType || 5) << 2) | (dcd?.upStream ? 2 : 0) | 1;
-  const bs = dcd?.bufferSize || 0;
-  dcdBody[2] = (bs >> 16) & 0xFF; dcdBody[3] = (bs >> 8) & 0xFF; dcdBody[4] = bs & 0xFF;
-  const mx = dcd?.maxBitrate || 0;
-  dcdBody[5] = (mx >>> 24) & 0xFF; dcdBody[6] = (mx >> 16) & 0xFF;
-  dcdBody[7] = (mx >> 8) & 0xFF; dcdBody[8] = mx & 0xFF;
-  const av = dcd?.avgBitrate || 0;
-  dcdBody[9] = (av >>> 24) & 0xFF; dcdBody[10] = (av >> 16) & 0xFF;
-  dcdBody[11] = (av >> 8) & 0xFF; dcdBody[12] = av & 0xFF;
-  dcdBody.set(dsiBytes, 13);
-  const dcdBytes = writeDesc(4, dcdBody);
-
-  // SLConfigDescriptor (tag 6)
-  const slc = esd.findDescriptor?.(6);
-  const slcBytes = writeDesc(6, slc?.data || new Uint8Array([2]));
-
-  // ES_Descriptor (tag 3)
-  const esBody = new Uint8Array(3 + dcdBytes.length + slcBytes.length);
-  esBody[0] = ((esd.ES_ID || 0) >> 8) & 0xFF;
-  esBody[1] = (esd.ES_ID || 0) & 0xFF;
-  esBody[2] = esd.flags || 0;
-  esBody.set(dcdBytes, 3);
-  esBody.set(slcBytes, 3 + dcdBytes.length);
-  return writeDesc(3, esBody);
-}
-
 function needsTranscode(tracks) {
   let dominated = false;
   for (const t of tracks) {
@@ -1132,24 +1074,20 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
         const audioCodec = (audioTrack.codec || '').toLowerCase();
         if (MSE_SAFE_AUDIO.test(audioCodec)) {
           audioIsPassthrough = true;
-          // Streaming mode: capture audio description now for muxer init
+          // Capture the esds Box from the demuxer's parsed moov. mp4box.js
+          // parseDataAndRewind preserves the raw descriptor bytes in this.data
+          // during parsing, so the Box can be passed as-is via description_boxes
+          // and Box.prototype.write will serialize it correctly.
+          // Needed for both streaming and batch modes.
+          try {
+            const srcTrak = demuxer.getTrackById(audioTrack.id);
+            const srcEntry = srcTrak?.mdia?.minf?.stbl?.stsd?.entries?.[0];
+            if (srcEntry?.esds) {
+              audioEsdsBox = srcEntry.esds;
+            }
+          } catch {}
           if (isStreaming) {
             audioMuxDesc = getAudioDescription(demuxer, audioTrack.id) || undefined;
-            // Capture the esds Box and re-serialize its parsed descriptors.
-            // mp4box.js v0.5.3 esds parser stores descriptors in this.esd but
-            // does NOT preserve this.data. The generic Box.write relies on
-            // this.data, so without re-serialization, addTrack's
-            // description_boxes produces an empty esds box (just the header).
-            try {
-              const srcTrak = demuxer.getTrackById(audioTrack.id);
-              const srcEntry = srcTrak?.mdia?.minf?.stbl?.stsd?.entries?.[0];
-              if (srcEntry?.esds) {
-                audioEsdsBox = srcEntry.esds;
-                // Rebuild raw descriptor bytes so Box.write can serialize them
-                const rawDesc = serializeEsDescriptor(audioEsdsBox.esd);
-                if (rawDesc) audioEsdsBox.data = rawDesc;
-              }
-            } catch {}
             audioMuxDescReady = true;
           }
         } else {

@@ -181,6 +181,7 @@ export class MediaHandlingController extends BaseController {
 
         let manifest = null;
         let streamingComplete = false;
+        let playbackWatchdog = null;
         try {
             // Step 2: Download and decrypt manifest (async — gesture context lost)
             media._videoProgress = 2;
@@ -280,7 +281,7 @@ export class MediaHandlingController extends BaseController {
             // Watchdog: safety net for pauses not covered by the above handlers
             // (e.g. readyState was < 2 at durationchange time but data arrived
             // shortly after). Polls every 200ms.
-            const playbackWatchdog = setInterval(() => {
+            playbackWatchdog = setInterval(() => {
                 if (streamingComplete || !mseInitialized || video.ended) return;
                 if (userPaused) return;
                 if (video.paused && video.readyState >= 2) {

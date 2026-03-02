@@ -447,13 +447,13 @@ async function _streamingTranscodeUpload({
     if (abortSignal?.aborted) throw new DOMException('aborted', 'AbortError');
     if (uploadError) throw uploadError;
 
-    const idx = chunkIndex++;
-    onTranscodeStep?.(Math.round((seg.encodeProgress || 0) * 100), chunkIndex);
     const segData = seg?.data;
     if (!segData || !segData.byteLength) {
-      console.warn('[streaming-upload] skipping empty segment at index', idx);
+      console.warn('[streaming-upload] skipping empty segment');
       return;
     }
+    const idx = chunkIndex++;
+    onTranscodeStep?.(Math.round((seg.encodeProgress || 0) * 100), chunkIndex);
     const segSize = segData.byteLength;
     actualTotalSize += segSize;
 
