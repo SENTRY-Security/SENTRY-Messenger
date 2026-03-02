@@ -135,6 +135,12 @@ export function createControllerDeps(context) {
         logCapped: context.logCapped,
         showToast: context.showToast,
         showConfirmModal: context.showConfirmModal,
+        // Modal deps (media preview, PDF viewer, security modal)
+        openPreviewModal: context.openPreviewModal,
+        closePreviewModal: context.closePreviewModal,
+        showModalLoading: context.showModalLoading,
+        updateLoadingModal: context.updateLoadingModal,
+        showSecurityModal: context.showSecurityModal,
         getCurrentTab: context.getCurrentTab,
         switchTab: context.switchTab,
         navbarEl: context.navbarEl,
