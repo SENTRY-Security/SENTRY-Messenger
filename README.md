@@ -435,11 +435,11 @@ SENTRY-Messenger/
 │       │   │   ├── settings.js       #   應用程式設定
 │       │   │   ├── groups.js         #   群組管理
 │       │   │   ├── media.js          #   媒體處理（上傳/下載）
-│       │   │   ├── chunked-upload.js #   分片加密上傳（影片轉碼 + fMP4 + AES-GCM + AIMD 自適應併發）
+│       │   │   ├── chunked-upload.js #   分片加密上傳（自動 720p 轉碼 + fMP4 + AES-GCM + AIMD 自適應併發）
 │       │   │   ├── chunked-download.js #  分片解密下載（AIMD 自適應併發 + URL 預取）
 │       │   │   ├── adaptive-concurrency.js # AIMD 自適應併發控制器（TCP 壅塞控制啟發）
 │       │   │   ├── mse-player.js    #   MSE/ManagedMediaSource 串流播放器
-│       │   │   ├── webcodecs-transcoder.js # WebCodecs H.264 轉碼器
+│       │   │   ├── webcodecs-transcoder.js # WebCodecs 自動 720p/1.5Mbps H.264 轉碼器
 │       │   │   ├── mp4-remuxer.js   #   MP4 → fMP4 Remux（Box 解析 + 分段 + Duration 提取）
 │       │   │   ├── transfer-progress.js #  傳輸進度 UI（雙進度條 + 步驟 checklist + 即時速度）
 │       │   │   ├── semantic.js       #   語意版本管理
