@@ -80,7 +80,7 @@
 - **語音/視訊通話** — WebRTC P2P + Cloudflare TURN relay，InsertableStreams E2EE 媒體加密
 - **AI 人臉/背景馬賽克** — MediaPipe Face Detection 三階段模糊（人臉馬賽克 / 背景馬賽克 / 關閉），三層偵測策略（Native FaceDetector → MediaPipe WASM → 膚色偵測）
 - **分片加密串流** — 影片上傳自動轉碼為 fMP4，Per-chunk AES-256-GCM 加密，MSE/ManagedMediaSource 即時串流播放（單檔上限 1GB），AIMD 自適應併發控制
-- **WebCodecs 智慧轉碼** — HEVC/VP9 → H.264 fMP4 自動轉碼，支援降級重試（720p/1.5Mbps），已是 H.264 時直接 remux 免轉碼
+- **WebCodecs 智慧轉碼** — 所有影片自動轉碼至 720p/1.5Mbps H.264 fMP4（4K/1080p 自動縮放），HEVC/VP9 等非 H.264 格式自動轉碼，已是 H.264 且未超限時直接 remux 免轉碼，串流式轉碼→加密→上傳管線（低記憶體佔用）
 - **聯絡人邀請** — 加密 Invite Dropbox 機制（支援離線互加 + 確認回饋）
 - **群組對話** — 多人加密聊天室，角色權限管理（owner/admin/member）
 - **已讀回條** — Commit-driven 訊息狀態追蹤（✓ sent / ✓✓ delivered）
@@ -186,10 +186,10 @@ RTCRtpSender.replaceTrack() → 送出處理後的視訊
   ↓
 格式偵測 (canRemuxVideo)
   ↓                                    ┌─────────────────────────────┐
-  ├── 影片檔案 ──▶ WebCodecs 轉碼?     │  WebCodecs 智慧轉碼         │
-  │                  │                  │  HEVC/VP9 → H.264 fMP4      │
-  │                  ├── 需要轉碼 ──────│  失敗 → 降級 720p/1.5Mbps   │
-  │                  ├── 已是 H.264 ────│  → 跳過，直接 remux          │
+  ├── 影片檔案 ──▶ WebCodecs 轉碼?     │  WebCodecs 自動轉碼 720p     │
+  │                  │                  │  所有影片 → 720p/1.5Mbps     │
+  │                  ├── 需要轉碼 ──────│  4K/1080p 自動縮放至 720p    │
+  │                  ├── 已是 H.264 ────│  超限→轉碼，未超限→直接 remux │
   │                  └── 已是 fMP4 ─────│  → Streaming Upload (低記憶) │
   │                                     └─────────────────────────────┘
   │                  ↓
