@@ -30,8 +30,6 @@ import { AdaptiveConcurrency } from './adaptive-concurrency.js';
 // on iOS Safari. Short high-bitrate videos (e.g. 4K iPhone) cause excessive buffering times.
 const DEFAULT_ENCODER = { maxWidth: 1280, maxHeight: 720, maxBitrate: 1_500_000 };
 
-// Extreme fallback for OOM retry (480p @ 800Kbps)
-const EXTREME_FALLBACK_ENCODER = { maxWidth: 854, maxHeight: 480, maxBitrate: 800_000 };
 
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB for non-segment chunking
 const CHUNK_INFO_TAG = 'media/chunk-v1';
@@ -521,13 +519,15 @@ async function _streamingTranscodeUpload({
           const currentUploadFrac = segmentsComplete / totalExpectedSegments;
           const currentUploadPercent = Math.round(PHASE.chunkStart + currentUploadFrac * (PHASE.chunkEnd - PHASE.chunkStart));
           if (encodePercent > currentUploadPercent) {
-            // Use encode progress to derive raw bytes processed
-            const encodeRatio = percent / 100;
+            // Only report percent + statusText here. Do NOT send loaded/total —
+            // the upload pipeline (_reportPipelineProgress) is the sole source of
+            // byte-level stats for speed calculation. Sending loaded/total from
+            // both encode (per-sample, very frequent) and upload (200ms throttle)
+            // causes the speed display to refresh at double frequency with mixed
+            // synthetic/real byte values.
             onProgress?.({
               percent: encodePercent,
               statusText: `正在轉碼… ${percent}%`,
-              loaded: Math.round(encodeRatio * rawFileSize),
-              total: rawFileSize,
             });
           }
         }
@@ -727,26 +727,9 @@ export async function encryptAndPutChunked({
         } catch (err) {
           console.warn('[chunked-upload] Streaming transcode 720p failed:', err?.message);
           _setStep(tcIdx, 'warn', _shortError(err));
-
-          // Retry with extreme fallback (480p, 800Kbps)
-          const retryIdx = _addStep('降級重試 (480p)', 'active');
-          onProgress?.({ percent: 1, statusText: '影片轉換失敗，正在以較低品質重試…' });
-          try {
-            const retryResult = await _streamingTranscodeUpload({
-              file, probe: transcodeProbe, convId, cryptoKey, useSharedKey, sharedKeyU8,
-              name, direction, dir, mk,
-              encoderConstraints: EXTREME_FALLBACK_ENCODER, onProgress, abortSignal,
-              onTranscodeStep: (pct, segCount) => _setStepProgress(retryIdx, pct, segCount),
-            });
-            _setStep(retryIdx, 'done', '480p');
-            return retryResult;
-          } catch (retryErr) {
-            console.warn('[chunked-upload] Streaming transcode 480p also failed:', retryErr?.message);
-            _setStep(retryIdx, 'warn', _shortError(retryErr));
-            preprocessResult = null;
-            onProgress?.({ statusText: null });
-            // Fall through to remux path below
-          }
+          preprocessResult = null;
+          onProgress?.({ statusText: null });
+          // Fall through to remux path below
         }
       }
     }
