@@ -983,12 +983,11 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
         }
         initParts.push(new Uint8Array(seg.buffer));
       }
-      // [FIX] mp4box.js initializeSegmentation() returns one init segment
-      // per setSegmentOptions() call. Each init already contains ALL
-      // segmented tracks' trak + trex boxes. Using only the first avoids
-      // mergeInitSegments creating duplicate traks (e.g., 2× video + 2× audio
-      // in the moov) which confuses MSE SourceBuffer decoders.
-      const combinedInit = initParts[0];
+      // mp4box.js v0.5.3 initializeSegmentation() returns one init segment
+      // per setSegmentOptions() call. Each init contains only ONE track's
+      // trak + trex. mergeInitSegments combines them into a single moov
+      // with all tracks, which MSE requires for muxed playback.
+      const combinedInit = mergeInitSegments(initParts);
       readySegments.push({ trackIndex: 0, data: combinedInit, encodeProgress: 0 });
 
       incMuxer.onSegment = (_id, _user, buf) => {
@@ -1361,10 +1360,10 @@ async function muxToFmp4(encodedVideo, encodedAudio, videoConfig, audioTrackInfo
   const initSegs = mp4boxFile.initializeSegmentation();
   const initParts = initSegs.map(s => new Uint8Array(s.buffer));
 
-  // [FIX] mp4box.js initializeSegmentation() returns one init per
-  // setSegmentOptions() call, but each already contains ALL segmented
-  // tracks' trak+trex. Using only the first avoids duplicate traks.
-  const combinedInit = initParts[0];
+  // mp4box.js v0.5.3 initializeSegmentation() returns one init per
+  // setSegmentOptions() call, each with only ONE track's trak+trex.
+  // mergeInitSegments combines them into a single moov with all tracks.
+  const combinedInit = mergeInitSegments(initParts);
 
   segments.push({ trackIndex: 0, data: combinedInit });
 
