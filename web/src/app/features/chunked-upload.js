@@ -419,6 +419,7 @@ async function _streamingTranscodeUpload({
   const uploadPool = new Set();
   const inFlightFrac = {};   // idx → fraction of segment uploaded (0-1)
   let _lastPT = 0;
+  let _highWaterPercent = PHASE.chunkStart; // shared high-water mark to prevent progress regression
 
   // Progress is reported in terms of raw (original) file bytes, not transcoded
   // output bytes. This gives the user a familiar "X MB / Y MB" display that
@@ -434,10 +435,13 @@ async function _streamingTranscodeUpload({
     for (const k in inFlightFrac) frac += inFlightFrac[k];
     const ratio = Math.min(frac / totalExpectedSegments, 1);
     const chunkRange = PHASE.chunkEnd - PHASE.chunkStart;
+    const pct = Math.round(PHASE.chunkStart + ratio * chunkRange);
+    if (pct < _highWaterPercent) return; // never regress
+    _highWaterPercent = pct;
     onProgress?.({
       loaded: Math.round(ratio * rawFileSize),
       total: rawFileSize,
-      percent: Math.round(PHASE.chunkStart + ratio * chunkRange),
+      percent: pct,
       statusText: segmentsComplete > 0 ? `上傳中 ${segmentsComplete}/${totalExpectedSegments}` : undefined,
     });
   };
@@ -508,23 +512,19 @@ async function _streamingTranscodeUpload({
       onSegment: onSegmentReady,
       onProgress: ({ phase, percent }) => {
         if (phase === 'load') {
-          onProgress?.({ percent: Math.round(percent * PHASE.chunkStart / 100) });
+          const pct = Math.round(percent * PHASE.chunkStart / 100);
+          if (pct >= _highWaterPercent) {
+            _highWaterPercent = pct;
+            onProgress?.({ percent: pct });
+          }
         } else if (phase === 'encode') {
-          // Blend encode progress with upload progress:
-          // The encode phase covers the full chunkStart→chunkEnd range.
-          // As segments upload, _reportPipelineProgress also updates this range.
-          // Use whichever is higher so the bar never goes backwards.
           const encodePercent = Math.round(PHASE.chunkStart + (percent / 100) * (PHASE.chunkEnd - PHASE.chunkStart));
-          // Only report if encode progress leads upload progress
-          const currentUploadFrac = segmentsComplete / totalExpectedSegments;
-          const currentUploadPercent = Math.round(PHASE.chunkStart + currentUploadFrac * (PHASE.chunkEnd - PHASE.chunkStart));
-          if (encodePercent > currentUploadPercent) {
-            // Share the same 200ms throttle timer (_lastPT) with the upload
-            // pipeline so encode + upload never double-fire within the same
-            // window. This keeps speed calculation stable.
+          // Only report if ahead of the shared high-water mark
+          if (encodePercent > _highWaterPercent) {
             const now = Date.now();
             if (now - _lastPT < 200) return;
             _lastPT = now;
+            _highWaterPercent = encodePercent;
             const encodeRatio = percent / 100;
             onProgress?.({
               percent: encodePercent,
