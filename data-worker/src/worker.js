@@ -2072,11 +2072,12 @@ async function handleFriendsRoutes(req, env) {
     for (const entry of targetList) {
       const removed = await deleteContactByPeer(env, entry.convId, null, entry.targetAccountDigest);
 
-      if (ownerAccountDigest && entry.targetAccountDigest) {
+      const convOwner = entry.convId ? entry.convId.replace('contacts-', '') : null;
+      if (convOwner && entry.targetAccountDigest) {
         try {
           await env.DB.prepare(
-            `DELETE FROM contacts WHERE owner_account_digest=?1 AND peer_account_digest=?2`
-          ).bind(ownerAccountDigest, entry.targetAccountDigest).run();
+            `DELETE FROM contacts WHERE owner_digest=?1 AND peer_digest=?2`
+          ).bind(convOwner, entry.targetAccountDigest).run();
         } catch (err) {
           console.warn('contact_row_delete_failed', err?.message || err);
         }
