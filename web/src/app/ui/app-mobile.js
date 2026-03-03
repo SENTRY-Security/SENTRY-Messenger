@@ -1910,6 +1910,36 @@ const {
 
 initInviteReconciler({ handleContactInitEvent, replayDeliveryIntent });
 
+// --- Contacts tab add-friend button (reuses share controller) ---
+{
+  const btnCaf = document.getElementById('btnContactsAddFriend');
+  const cafMenu = document.getElementById('contactsAddFriendMenu');
+  const btnCafQr = document.getElementById('btnContactsAddFriendQr');
+  const btnCafCode = document.getElementById('btnContactsAddFriendCode');
+
+  if (btnCaf && cafMenu) {
+    btnCaf.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const visible = cafMenu.style.display !== 'none';
+      cafMenu.style.display = visible ? 'none' : 'flex';
+    });
+    document.addEventListener('click', (e) => {
+      if (cafMenu.style.display === 'none') return;
+      if (!cafMenu.contains(e.target) && !btnCaf.contains(e.target)) {
+        cafMenu.style.display = 'none';
+      }
+    });
+    btnCafQr?.addEventListener('click', () => {
+      cafMenu.style.display = 'none';
+      shareController.openShareModal('qr');
+    });
+    btnCafCode?.addEventListener('click', () => {
+      cafMenu.style.display = 'none';
+      shareController.openPairingCodeModal();
+    });
+  }
+}
+
 // --- WebSocket integration ---
 const wsIntegration = createWsIntegration({
   deps: {

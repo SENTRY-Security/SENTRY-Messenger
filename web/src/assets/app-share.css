@@ -561,6 +561,11 @@ body.media-permission-open {
   color: #94a3b8;
 }
 
+.add-friend-menu--below {
+  bottom: auto;
+  top: calc(100% + 10px);
+}
+
 /* ─── Pairing Code Modal ─── */
 
 .pairing-code-modal {

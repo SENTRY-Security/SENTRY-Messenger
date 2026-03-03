@@ -328,7 +328,24 @@
           <span class="label">下拉更新聯絡人</span>
         </div>
         <div id="contactsScroll" class="contacts-scroll">
-          <div class="contact-list-header"><strong id="contactsCount">0</strong> 個好友</div>
+          <div class="contact-list-header">
+            <span><strong id="contactsCount">0</strong> 個好友</span>
+            <div class="add-friend-wrapper">
+              <button id="btnContactsAddFriend" class="profile-share-btn" type="button" aria-label="新增好友" title="新增好友">
+                <i class='bx bx-user-plus'></i>
+              </button>
+              <div id="contactsAddFriendMenu" class="add-friend-menu add-friend-menu--below" style="display:none">
+                <button id="btnContactsAddFriendQr" class="add-friend-menu-item" type="button">
+                  <i class='bx bx-qr'></i>
+                  <span>QRCode 加好友</span>
+                </button>
+                <button id="btnContactsAddFriendCode" class="add-friend-menu-item" type="button">
+                  <i class='bx bx-dialpad'></i>
+                  <span>使用配對碼</span>
+                </button>
+              </div>
+            </div>
+          </div>
           <div class="contacts-search-wrap">
             <i class='bx bx-search' aria-hidden="true"></i>
             <input id="contactsSearch" type="text" class="contacts-search" placeholder="搜尋好友名稱…" autocomplete="off" />
