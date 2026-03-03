@@ -147,10 +147,10 @@ html.no-anim .cover-spinner {
   background: transparent;
 }
 
-/* Floating glass state: margin → padding so glass covers the full strip */
+/* Floating glass state: extend edge-to-edge past parent padding */
 .contacts-search-wrap.search-floating {
-  margin: 0;
-  padding: 8px 0 4px;
+  margin: 0 -12px;
+  padding: 8px 12px 4px;
   background: rgba(15, 23, 42, 0.55);
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
