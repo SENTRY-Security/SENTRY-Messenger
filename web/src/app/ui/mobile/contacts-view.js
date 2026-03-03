@@ -308,6 +308,9 @@ export function initContactsView(options) {
       presenceManager.removePresenceForContact(key);
       renderContacts();
       updateStats?.();
+      // Reset scroll state so header becomes visible after list shrinks
+      if (contactsScrollEl) contactsScrollEl.scrollTop = 0;
+      if (scrollController) scrollController.restoreBars();
       markRecentlyRemoved(key);
       if (accountOnly) deletedContacts.add(accountOnly);
     }
