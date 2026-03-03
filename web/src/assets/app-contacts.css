@@ -180,8 +180,7 @@ html.no-anim .cover-spinner {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  flex: 1 1 auto;
-  overflow-y: auto;
+  flex: 1 0 auto;
 }
 
 #tab-profile {
