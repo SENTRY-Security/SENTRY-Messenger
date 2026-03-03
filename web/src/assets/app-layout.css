@@ -301,6 +301,19 @@ body.messages-fullscreen .messages-scroll {
   will-change: transform;
 }
 
+/* Solid fill behind the bottom safe-area so Safari's toolbar
+   samples #0f172a instead of the transparent navbar container */
+.navbar::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: env(safe-area-inset-bottom, 0px);
+  background: #0f172a;
+  pointer-events: none;
+}
+
 .navbar-pill {
   display: flex;
   gap: 2px;
