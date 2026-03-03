@@ -10,6 +10,7 @@ import { getAccountDigest, ensureDeviceId, normalizePeerIdentity, clearDrState, 
 import { resetSecureConversation } from '../../features/secure-conversation-manager.js';
 import { markConversationTombstone } from '../../features/messages-support/conversation-tombstone-store.js';
 import { DEBUG } from './debug-flags.js';
+import { createContactsScrollController } from './contacts-scroll-controller.js';
 import {
   upsertContactCore,
   patchContactCore,
@@ -38,7 +39,12 @@ export function initContactsView(options) {
     contactsScrollEl,
     contactsSearchEl,
     contactsRefreshEl,
-    contactsRefreshLabel
+    contactsRefreshLabel,
+    contactsHeaderEl,
+    contactsTabEl,
+    topbarEl,
+    navbarEl,
+    contentEl
   } = dom;
 
   if (!contactsListEl) throw new Error('contactsListEl missing');
@@ -99,6 +105,7 @@ export function initContactsView(options) {
   let pullDistance = 0;
   let contactsRefreshing = false;
   let pendingInviteStatusInFlight = false;
+  let scrollController = null;
 
   const contactKey = (entry) => {
     if (entry?.peerKey) return entry.peerKey;
@@ -401,6 +408,10 @@ export function initContactsView(options) {
 
   function handleTouchStart(e) {
     if (contactsScrollEl && contactsScrollEl.scrollTop > 0) {
+      pullGuardActive = true;
+      return;
+    }
+    if (scrollController && scrollController.isBarsHidden()) {
       pullGuardActive = true;
       return;
     }
@@ -1278,6 +1289,17 @@ export function initContactsView(options) {
   }
 
   setupPullToRefresh();
+
+  // Scroll-driven progressive bar hide/show
+  scrollController = createContactsScrollController({
+    scrollEl: contactsScrollEl,
+    headerEl: contactsHeaderEl || contactsScrollEl?.querySelector('.contact-list-header') || null,
+    topbarEl: topbarEl || document.querySelector('.topbar'),
+    navbarEl: navbarEl || document.querySelector('.navbar'),
+    tabEl: contactsTabEl || document.getElementById('tab-contacts'),
+    contentEl: contentEl || document.querySelector('main.content')
+  });
+
   refreshPendingInviteStatus({ source: 'startup' }).catch((err) => {
     log({ pendingInviteStatusRefreshError: err?.message || err });
   });
@@ -1319,6 +1341,7 @@ export function initContactsView(options) {
     loadInitialContacts,
     renderContacts,
     addContactEntry,
-    removeContactLocal
+    removeContactLocal,
+    restoreContactsBars: () => { if (scrollController) scrollController.restoreBars(); }
   };
 }

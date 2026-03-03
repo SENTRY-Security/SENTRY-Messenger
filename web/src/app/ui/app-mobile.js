@@ -1065,6 +1065,7 @@ function flushContactSecretsLocal(reason = 'manual') {
 // Navigation
 const tabs = ['contacts', 'messages', 'drive', 'profile'];
 let currentTab = 'drive';
+let _restoreContactsBars = null;
 function switchTab(name, options = {}) {
   currentTab = name;
   normalizeOverlayState();
@@ -1106,6 +1107,7 @@ function switchTab(name, options = {}) {
     document.body.classList.remove('messages-fullscreen');
     ensureTopbarVisible();
     setUserMenuOpen(false);
+    if (typeof _restoreContactsBars === 'function') _restoreContactsBars();
   }
 }
 // Topbar actions (avatar menu)
@@ -1240,6 +1242,8 @@ const contactsScrollEl = document.getElementById('contactsScroll');
 const contactsSearchEl = document.getElementById('contactsSearch');
 const contactsRefreshEl = document.getElementById('contactsRefreshHint');
 const contactsRefreshLabel = contactsRefreshEl?.querySelector('.label') || null;
+const contactsHeaderEl = contactsScrollEl?.querySelector('.contact-list-header') || null;
+const contactsTabEl = document.getElementById('tab-contacts');
 const connectionIndicator = document.getElementById('connectionIndicator');
 const btnUp = document.getElementById('btnUp');
 const btnNewFolder = document.getElementById('btnNewFolder');
@@ -1509,7 +1513,7 @@ presenceManager = createPresenceManager({
 });
 
 const contactsView = initContactsView({
-  dom: { contactsListEl, contactsScrollEl, contactsSearchEl, contactsRefreshEl, contactsRefreshLabel, contactsCountEl },
+  dom: { contactsListEl, contactsScrollEl, contactsSearchEl, contactsRefreshEl, contactsRefreshLabel, contactsCountEl, contactsHeaderEl, contactsTabEl, topbarEl: document.querySelector('.topbar'), navbarEl, contentEl: mainContentEl },
   loadContactsApi: loadContacts,
   saveContactApi: saveContact,
   friendsDeleteContact,
@@ -1520,6 +1524,7 @@ const contactsView = initContactsView({
 });
 
 const { loadInitialContacts, renderContacts, addContactEntry: addContactEntryRaw, removeContactLocal: removeContactLocalRaw } = contactsView;
+_restoreContactsBars = contactsView.restoreContactsBars;
 
 if (typeof window !== 'undefined') {
   try {

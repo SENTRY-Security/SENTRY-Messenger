@@ -12,6 +12,7 @@
   background: rgba(15,23,42,0.92);
   backdrop-filter: saturate(180%) blur(6px);
   box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  will-change: transform;
 }
 
 .topbar .title {
@@ -296,6 +297,7 @@ body.messages-fullscreen .messages-scroll {
   padding: 6px 0 calc(6px + env(safe-area-inset-bottom, 0px));
   box-shadow: 0 -6px 20px rgba(0,0,0,0.3);
   backdrop-filter: saturate(180%) blur(8px);
+  will-change: transform;
 }
 
 .navbtn {

@@ -1,143 +1,139 @@
-# 配對碼加好友功能實作計劃
+# 聯絡人列表捲動驅動重構計劃
 
-## 概述
-在現有 QR Code 加好友流程旁，新增「6 碼配對碼」方式。點擊「加好友」按鈕後先跳出選單（QR / 配對碼）。配對碼 Modal 預設顯示自己的 6 碼（唯讀），可切換為輸入對方碼的模式。
+## 目標
 
-## 修改檔案清單
+重寫聯絡人 tab 的捲動機制，讓原生 scroll 驅動漸進式隱藏 UI，最終達到全螢幕列表。
+取代現有 touchmove + passive:false 的做法，徹底解決無法捲動的問題。
 
-### 1. 資料庫遷移
-**新增**: `data-worker/migrations/0007_add_pairing_code.sql`
-```sql
-ALTER TABLE invite_dropbox ADD COLUMN pairing_code TEXT;
-ALTER TABLE invite_dropbox ADD COLUMN prekey_bundle_json TEXT;
-CREATE UNIQUE INDEX idx_invite_dropbox_pairing_code
-  ON invite_dropbox(pairing_code)
-  WHERE pairing_code IS NOT NULL AND status = 'CREATED';
+## 行為規格
+
+### 往上滑（scrollTop 增加）
+
+| 階段 | scrollTop 範圍 | 行為 |
+|------|---------------|------|
+| 1 | 0 → headerH (~40px) | 「N個好友」依比例淡出（opacity） |
+| 2 | headerH → headerH+searchH (~90px) | 搜尋 bar 自然捲出可視區 |
+| 3 | > headerH+searchH | topbar 向上滑出、navbar 向下滑出（漸進 ~60px） |
+
+全部是**位置驅動**。
+
+### 往下滑（從全螢幕狀態）
+
+| 順序 | 觸發條件 | 行為 |
+|------|---------|------|
+| 1 | 方向改變瞬間 | topbar + navbar 立即動畫回復 |
+| 2 | 繼續往下滑 | 搜尋 bar 自然捲回 |
+| 3 | scrollTop 40→0 | 「N個好友」淡入 |
+
+隱藏＝位置驅動，回復＝方向驅動。
+
+### 特殊狀況
+
+- scrollTop === 0 且 bars 可見 → 允許 pull-to-refresh
+- 切換到其他 tab → 強制回復 bars
+- bars 回復後再往上滑 → 再次隱藏（循環）
+
+---
+
+## 實作步驟
+
+### Step 1: 新建 contacts-scroll-controller.js
+
+`web/src/app/ui/mobile/contacts-scroll-controller.js`
+
+職責：
+- 監聽 `contactsScrollEl` 的原生 `scroll` 事件
+- 追蹤捲動方向（比較 scrollTop 與 prevScrollTop）
+- 計算階段並驅動所有視覺變化
+- 管理 pull-to-refresh 觸發條件
+- 提供 `destroy()` 清理和 `restoreBars()` 供 tab 切換呼叫
+
+狀態變數：
+- `prevScrollTop` — 方向偵測
+- `barsHidden` — bars 是否已隱藏
+- `headerH` / `searchH` — 從 DOM 量測（一次）
+- `rafId` — requestAnimationFrame 節流
+
+### Step 2: 「N個好友」淡出（階段 1）
+
+scroll handler 內：
+```js
+opacity = clamp(1 - scrollTop / headerH, 0, 1)
+contactListHeaderEl.style.opacity = opacity
+```
+opacity = 0 時加 `visibility: hidden`。
+
+### Step 3: topbar/navbar 隱藏（階段 3 — 位置驅動）
+
+scrollTop 超過 barThreshold (headerH + searchH) 後：
+```js
+barRange = 60
+progress = clamp((scrollTop - barThreshold) / barRange, 0, 1)
+topbar.style.transform = `translateY(${-progress * 100}%)`
+navbar.style.transform = `translateY(${progress * 100}%)`
+```
+progress = 1 時：加 `.contacts-fullscreen` class 讓 tab 擴展到全螢幕。
+
+### Step 4: topbar/navbar 回復（方向驅動）
+
+偵測到 scrollTop < prevScrollTop（往下滑）時：
+- 若 bars 已隱藏 → 立即移除 transform，加 CSS transition 做平滑動畫
+- 移除 `.contacts-fullscreen`
+- 設 `barsHidden = false`
+
+再次往上滑超過門檻 → 重新隱藏。
+
+### Step 5: 全螢幕佈局
+
+CSS：
+```css
+#tab-contacts.contacts-fullscreen {
+  position: fixed;
+  inset: 0;
+  height: auto;
+  z-index: 9;
+}
+#tab-contacts.contacts-fullscreen .contacts-scroll {
+  padding-bottom: 28px; /* 移除 navbar 高度的 padding */
+}
 ```
 
-### 2. Data Worker — `data-worker/src/worker.js`
+### Step 6: pull-to-refresh 整合
 
-#### 2a. 修改 `/d1/invites/create` (~line 1486)
-- 產生隨機 6 碼數字（`000000`-`999999`）
-- 碰撞檢查：查詢未過期 + status=CREATED 的碼，若碰撞就重新產生（最多 10 次）
-- INSERT 時加入 `pairing_code` + `prekey_bundle_json` 欄位
-- **配對碼模式時** `expires_at` = `now + 180`（3 分鐘），QR 模式保持 300 秒
-- Response 加入 `pairing_code`
+保留現有 pull-to-refresh，但加入前置條件：
+- 僅在 `scrollTop === 0` **且** `barsHidden === false` 時啟動
+- pull-to-refresh 繼續使用 touchmove（僅用於下拉手勢）
+- 一般捲動完全由原生 scroll 處理，不被 touchmove 阻擋
 
-#### 2b. 新增 `/d1/invites/lookup-code`
-- 接收 `pairingCode` (6 碼) + `accountToken` + `accountDigest`
-- Rate limit（記憶體 Map）：
-  - Key: `account_digest`
-  - 每次查詢失敗（碼不存在/已過期）+1 attempt
-  - 達到 3 次 → 鎖定 30 秒
-  - 成功查詢 → 重置計數
-- 查詢 `invite_dropbox WHERE pairing_code=? AND status='CREATED' AND expires_at > now`
-- 回傳完整 invite 資料（invite_id, owner_account_digest, owner_device_id, owner_public_key_b64, expires_at, prekey_bundle）
+### Step 7: tab 切換清理
 
-### 3. Express Controller — `src/controllers/invites.controller.js`
+`switchTab()` 切離 contacts 時呼叫 `restoreBars()`，確保其他 tab 的 topbar/navbar 正常。
 
-#### 3a. 修改 `createInviteDropbox()`
-- Response 加入 `pairing_code` 欄位
+### Step 8: CSS 變更
 
-#### 3b. 新增 `lookupPairingCode()`
-- Zod schema: `{ pairing_code: z.string().regex(/^\d{6}$/), account_token, account_digest? }`
-- 驗證帳號 → 轉發至 `/d1/invites/lookup-code`
-- 回傳完整 invite 資料
+- `app-contacts.css`：新增 `.contacts-fullscreen`、`will-change: opacity` on header
+- `app-layout.css`：topbar/navbar 加 `transition: transform 220ms ease-out`、`will-change: transform`
 
-### 4. 路由 — `src/routes/v1/invites.routes.js`
-- 新增 `r.post('/invites/lookup-code', lookupPairingCode)`
+### Step 9: 清理舊 workaround
 
-### 5. Client API — `web/src/app/api/invites.js`
-- 新增 `invitesLookupCode({ pairingCode })` 函式
+- 移除 pull-to-refresh 對 scroll container 的 transform: translateY 操作
+- 清理殘留的 transition/transform inline styles
 
-### 6. HTML — `web/src/pages/app.html`
+---
 
-#### 6a. 加好友選單（在 btnShareModal 附近）
-```html
-<div id="addFriendMenu" class="add-friend-menu" style="display:none">
-  <button id="btnAddFriendQr">QRCode 加好友</button>
-  <button id="btnAddFriendCode">使用配對碼</button>
-</div>
-```
+## 修改的檔案
 
-#### 6b. 配對碼 Modal
-```html
-<div id="pairingCodeModal" class="modal pairing-code-modal" style="display:none">
-  <div class="modal-backdrop" data-pairing-close></div>
-  <div class="modal-panel pairing-code-panel">
-    <header class="pairing-code-head">
-      <button class="share-close" data-pairing-close-btn>×</button>
-      <span class="pairing-code-title">配對碼</span>
-    </header>
-    <div class="pairing-code-body">
-      <div class="pairing-code-countdown">
-        <span id="pairingCountdown"></span>
-        <button id="pairingRefreshBtn" type="button"><i class='bx bx-refresh'></i></button>
-      </div>
-      <div id="pairingDigits" class="pairing-code-digits">
-        <input type="tel" maxlength="1" readonly />  (×6)
-      </div>
-      <div class="pairing-code-actions">
-        <button id="btnPairingToggle" type="button">輸入對方配對碼</button>
-        <button id="btnPairingConfirm" type="button" style="display:none">確認</button>
-      </div>
-    </div>
-  </div>
-</div>
-```
+| 檔案 | 變更 |
+|------|------|
+| `contacts-scroll-controller.js` | **新建** — 捲動控制器 |
+| `contacts-view.js` | 整合 scroll controller，簡化 pull-to-refresh |
+| `app-mobile.js` | tab 切換時呼叫 restoreBars() |
+| `app-contacts.css` | fullscreen class、transitions、will-change |
+| `app-layout.css` | topbar/navbar transition 屬性 |
 
-### 7. CSS — `web/src/assets/app-share.css`
-- `.add-friend-menu` 彈出選單樣式
-- `.pairing-code-modal` / `.pairing-code-panel` Modal 樣式
-- `.pairing-code-digits` 6 格 PIN 輸入框
-- 倒數計時（共用現有 countdown 風格）
+## 效能注意事項
 
-### 8. Share Controller — `web/src/app/ui/mobile/controllers/share-controller.js`
-
-#### 8a. 修改 `btnShareModal` click (line 329)
-- 改為顯示 `addFriendMenu` 選單
-
-#### 8b. 新增配對碼邏輯
-- `openPairingCodeModal()` — 開 Modal + 建立 invite + 顯示 6 碼
-- `closePairingCodeModal()` — 關閉 Modal
-- `togglePairingMode()` — 切換 readonly/input 模式
-- `onPairingConfirm()` — 呼叫 `invitesLookupCode` → 走 `handleInviteScan` 同路徑
-- `startPairingCountdown()` — 3 分鐘倒數，到期自動刷新
-- PIN 輸入框自動跳格邏輯
-
-#### 8c. return 新增 public API
-- `openPairingCodeModal`, `closePairingCodeModal`
-
-### 9. app-mobile.js — `web/src/app/ui/app-mobile.js`
-- 新增 DOM element references（addFriendMenu, pairingCodeModal 等）
-- 傳遞新 DOM elements 到 share-controller
-
-## 流程
-
-```
-User clicks "加好友"
-    ↓
-┌─────────────┐
-│  選單彈出    │
-│  1. QR Code  │ → 現有 shareModal 流程
-│  2. 配對碼   │ → 配對碼 Modal
-└─────────────┘
-    ↓ (選配對碼)
-POST /api/v1/invites/create → 回傳 { invite_id, pairing_code, ... }
-    ↓
-┌───────────────────────────┐
-│  配對碼 Modal              │
-│  [4] [8] [2] [9] [1] [7]  │ ← readonly，我的碼
-│  [輸入對方配對碼]           │
-└───────────────────────────┘
-    ↓ (點擊 "輸入對方配對碼")
-┌───────────────────────────┐
-│  配對碼 Modal              │
-│  [ ] [ ] [ ] [ ] [ ] [ ]  │ ← 可輸入
-│  [顯示我的配對碼] [確認]    │
-└───────────────────────────┘
-    ↓ (輸入 6 碼 + 確認)
-POST /api/v1/invites/lookup-code { pairing_code }
-    ↓
-回傳完整 invite 資料 → 走 handleInviteScan 同路徑（deliver + x3dh）
-```
+- 所有動畫僅用 `transform` 和 `opacity`（compositor-only，不觸發 reflow）
+- scroll handler 以 `requestAnimationFrame` 節流
+- topbar/navbar 加 `will-change: transform` 提前建立 compositing layer
+- 不再有 `passive: false` 的 touchmove 阻擋原生捲動
