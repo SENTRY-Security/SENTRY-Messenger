@@ -239,6 +239,35 @@
   margin-right: 4px;
 }
 
+.contacts-add-btn {
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.contacts-add-btn i {
+  font-size: 18px;
+}
+
+.contacts-add-btn:hover,
+.contacts-add-btn:focus {
+  background: rgba(148, 163, 184, 0.12);
+  color: #e2e8f0;
+}
+
+.contacts-add-btn:active {
+  background: rgba(148, 163, 184, 0.2);
+  transform: translateY(1px);
+}
+
 body.modal-open .profile-share-btn {
   pointer-events: none;
   opacity: 0.75;
