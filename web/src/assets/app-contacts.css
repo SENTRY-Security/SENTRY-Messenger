@@ -147,9 +147,14 @@ html.no-anim .cover-spinner {
 }
 
 .contacts-search-wrap.search-floating {
-  background: rgba(15, 23, 42, 0.72);
+  background: rgba(15, 23, 42, 0.55);
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+
+.contacts-search-wrap.search-floating > input.contacts-search {
+  background: rgba(30, 41, 59, 0.45);
+  border-color: rgba(148, 163, 184, 0.18);
 }
 
 .contacts-search-wrap > i {
