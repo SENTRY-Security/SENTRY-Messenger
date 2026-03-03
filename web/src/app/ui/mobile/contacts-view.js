@@ -343,14 +343,13 @@ export function initContactsView(options) {
           const convId = contactEntry?.conversationId || contactEntry?.conversation?.conversation_id || contactEntry?.conversation?.id || null;
           const peerDeviceId = contactEntry?.peerDeviceId || contactEntry?.conversation?.peerDeviceId || null;
           const accountDigestOnly = key.includes('::') ? key.split('::')[0] : key;
-          await friendsDeleteContact({ peerAccountDigest: accountDigestOnly });
+          await friendsDeleteContact({ peerAccountDigest: accountDigestOnly, conversationId: convId || undefined, targetDeviceId: peerDeviceId || undefined });
           deletedContacts.add(accountDigestOnly);
           if (convId) markConversationTombstone(convId);
           clearDrState(
             { peerAccountDigest: key, peerDeviceId },
             { __drDebugTag: 'web/src/app/ui/mobile/contacts-view.js:258:confirm-delete-contact' }
           );
-          deleteContactSecret(key, { deviceId: ensureDeviceId() });
           removeContactState(key, { notifyPeer: true });
           if (element) swipe.closeSwipe(element);
           updateStats?.();
