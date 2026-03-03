@@ -138,10 +138,22 @@ html.no-anim .cover-spinner {
 }
 
 .contacts-search-wrap {
-  position: relative;
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   margin: 8px 0 4px;
+  padding: 0 var(--content-pad, 16px);
+  transition: background .2s ease, backdrop-filter .2s ease;
+}
+
+.contacts-search-wrap.search-floating {
+  background: rgba(15, 23, 42, 0.72);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  padding-top: 6px;
+  padding-bottom: 6px;
 }
 
 .contacts-search-wrap > i {

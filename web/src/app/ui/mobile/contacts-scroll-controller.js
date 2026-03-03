@@ -16,7 +16,9 @@
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
-const BAR_SCROLL_RANGE = 60; // px of scroll past threshold to fully hide bars
+const BAR_SCROLL_RANGE = 60;     // px of scroll past threshold to fully hide bars
+const RESTORE_SCROLL_DIST = 15;  // cumulative upward px before restoring bars
+const BOUNCE_GUARD_MS = 400;     // ms to suppress restore after hitting scroll bottom
 
 export function createContactsScrollController({
   scrollEl,
@@ -40,6 +42,8 @@ export function createContactsScrollController({
   let barsHidden = false;
   let rafId = 0;
   let destroyed = false;
+  let upwardAccum = 0;       // cumulative upward scroll px (for restore trigger)
+  let bounceGuardUntil = 0;  // suppress restore until this timestamp
 
   /* ---- helpers ---- */
   function applyHeaderOpacity(scrollTop) {
@@ -106,17 +110,41 @@ export function createContactsScrollController({
       rafId = 0;
       if (destroyed) return;
       const scrollTop = scrollEl.scrollTop;
-      const scrollingDown = scrollTop < prevScrollTop; // toward top = "down"
+      const delta = scrollTop - prevScrollTop;
 
       // Phase 1: header fade
       applyHeaderOpacity(scrollTop);
 
+      // Phase 2: floating glass search bar when header scrolled out
+      if (searchWrap) {
+        if (scrollTop >= headerH) {
+          searchWrap.classList.add('search-floating');
+        } else {
+          searchWrap.classList.remove('search-floating');
+        }
+      }
+
+      // Bottom bounce guard: suppress restore near maxScroll
+      const maxScroll = scrollEl.scrollHeight - scrollEl.clientHeight;
+      if (maxScroll > 0 && scrollTop >= maxScroll - 2) {
+        bounceGuardUntil = performance.now() + BOUNCE_GUARD_MS;
+      }
+
+      // Cumulative upward tracking (filters out small bounce deltas)
+      if (delta < 0) {
+        upwardAccum += -delta;
+      } else if (delta > 0) {
+        upwardAccum = 0;
+      }
+
       // Phase 3: bar hide/show
       if (scrollTop > barThreshold) {
-        if (scrollingDown && barsHidden) {
-          // direction-driven restore
+        if (barsHidden && upwardAccum >= RESTORE_SCROLL_DIST
+            && performance.now() > bounceGuardUntil) {
+          // direction-driven restore (requires sustained upward scroll)
           showBars();
-        } else if (!scrollingDown && !barsHidden) {
+          upwardAccum = 0;
+        } else if (!barsHidden && delta >= 0) {
           // position-driven hide
           const progress = clamp((scrollTop - barThreshold) / BAR_SCROLL_RANGE, 0, 1);
           hideBars(progress);
@@ -126,7 +154,7 @@ export function createContactsScrollController({
         if (barsHidden) {
           showBars();
         }
-        // Also clear any leftover transform from partial hide
+        // Clear any leftover transform from partial hide
         if (topbarEl && topbarEl.style.transform) {
           topbarEl.style.transition = 'transform 220ms ease-out';
           topbarEl.style.transform = '';
@@ -147,6 +175,7 @@ export function createContactsScrollController({
   applyHeaderOpacity(scrollEl.scrollTop);
 
   function restoreBars() {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
     if (barsHidden) showBars();
     // Force-clear transforms in case of partial state
     if (topbarEl) { topbarEl.style.transition = ''; topbarEl.style.transform = ''; topbarEl.style.boxShadow = ''; }
@@ -154,7 +183,10 @@ export function createContactsScrollController({
     if (contentEl) { contentEl.style.transition = ''; contentEl.style.marginTop = ''; contentEl.style.height = ''; contentEl.style.minHeight = ''; }
     if (tabEl) tabEl.style.paddingBottom = '';
     scrollEl.style.paddingBottom = '';
+    if (searchWrap) searchWrap.classList.remove('search-floating');
     barsHidden = false;
+    upwardAccum = 0;
+    prevScrollTop = scrollEl.scrollTop;
   }
 
   function isBarsHidden() {
