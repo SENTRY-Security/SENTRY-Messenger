@@ -580,7 +580,8 @@ export function initDrivePane({
     let best = null;
     for (const msg of items) {
       const header = safeJSON(msg?.header_json || msg?.header || '{}');
-      if (header?.obj === key) {
+      // Match by obj key (single file) or baseKey (chunked file)
+      if (header?.obj === key || header?.baseKey === key) {
         if (!best || Number(msg?.ts || 0) > Number(best.msg?.ts || 0)) {
           best = { msg, header };
         }
@@ -594,9 +595,13 @@ export function initDrivePane({
     const best = new Map();
     for (const msg of messages) {
       const header = safeJSON(msg?.header_json || msg?.header || '{}');
-      const objKey = typeof msg?.obj_key === 'string' && msg.obj_key
+      // Use obj_key, header.obj, or header.baseKey (chunked files) as the dedupe key
+      let objKey = typeof msg?.obj_key === 'string' && msg.obj_key
         ? msg.obj_key
         : (typeof header?.obj === 'string' ? header.obj : '');
+      if (!objKey && typeof header?.baseKey === 'string') {
+        objKey = header.baseKey;
+      }
       if (!objKey) continue;
       const ts = Number(msg?.ts || 0);
       const prev = best.get(objKey);
@@ -854,8 +859,10 @@ export function initDrivePane({
       driveListEl.appendChild(li);
     }
     for (const f of files) {
-      const key = f.obj_key || f.header?.obj || '';
-      const name = f.header?.name || key.split('/').pop() || 'file.bin';
+      const header = safeJSON(f?.header_json || f?.header || '{}');
+      const isChunkedFile = !!header?.chunked && !!header?.baseKey;
+      const key = isChunkedFile ? header.baseKey : (f.obj_key || header?.obj || '');
+      const name = header?.name || key.split('/').pop() || 'file.bin';
       const size = f.header?.size || 0;
       const ct = f.header?.contentType || 'application/octet-stream';
       const ts = friendlyTimestamp(f.ts);
@@ -887,7 +894,10 @@ export function initDrivePane({
           return;
         }
         closeOpenSwipe?.();
-        doPreview(key, ct, name).catch((err) => {
+        const previewMeta = isChunkedFile
+          ? { chunked: true, baseKey: header.baseKey, chunkCount: header.chunkCount, totalSize: header.totalSize, manifestEnvelope: header.manifestEnvelope }
+          : null;
+        doPreview(key, ct, name, previewMeta).catch((err) => {
           closeModal?.();
           log({ previewError: String(err?.message || err) });
         });
@@ -1392,7 +1402,54 @@ export function initDrivePane({
     });
   }
 
-  async function doPreview(key, contentTypeHint, nameHint) {
+  async function doPreview(key, contentTypeHint, nameHint, chunkedMeta) {
+    const ct = (contentTypeHint || '').toLowerCase();
+    const resolvedName = nameHint || key.split('/').pop() || 'download.bin';
+
+    // ── Chunked video: use MSE streaming (no full download) ──
+    if (chunkedMeta?.chunked && ct.startsWith('video/')) {
+      closeModal?.();
+      try {
+        await doChunkedVideoPreview(chunkedMeta, ct, resolvedName);
+      } catch (err) {
+        log({ chunkedVideoPreviewError: err?.message || err });
+      }
+      return;
+    }
+
+    // ── Chunked non-video: download all chunks then preview ──
+    if (chunkedMeta?.chunked) {
+      showModalLoading?.('下載加密檔案中…');
+      try {
+        cleanupPdfViewer();
+        const { downloadChunkedManifest, downloadAllChunks } = await import('../../features/chunked-download.js');
+        updateLoadingModal?.({ percent: 5, text: '取得解密資訊中…' });
+        const manifest = await downloadChunkedManifest({
+          baseKey: chunkedMeta.baseKey,
+          manifestEnvelope: chunkedMeta.manifestEnvelope
+        });
+        updateLoadingModal?.({ percent: 10, text: '下載加密分片中…' });
+        const result = await downloadAllChunks({
+          baseKey: chunkedMeta.baseKey,
+          manifest,
+          manifestEnvelope: chunkedMeta.manifestEnvelope,
+          onProgress: ({ percent: pct }) => {
+            if (Number.isFinite(pct)) {
+              const mapped = 10 + Math.round(pct * 0.85);
+              updateLoadingModal?.({ percent: mapped, text: `下載加密分片中… ${pct}%` });
+            }
+          }
+        });
+        updateLoadingModal?.({ percent: 98, text: '組裝檔案中…' });
+        doPreviewFromBlob(result.blob, result.contentType || ct, result.name || resolvedName);
+      } catch (err) {
+        closeModal?.();
+        throw err;
+      }
+      return;
+    }
+
+    // ── Standard single-object file ──
     showModalLoading?.('下載加密檔案中…');
     const envelope = findEnvelopeInMessages(driveState.currentMessages, key);
     try {
@@ -1417,121 +1474,326 @@ export function initDrivePane({
           }
         }
       });
+      doPreviewFromBlob(blob, contentType || ct, name || resolvedName);
+    } catch (err) {
+      closeModal?.();
+      throw err;
+    }
+  }
 
-      const ct = contentType || contentTypeHint || 'application/octet-stream';
-      const resolvedName = name || nameHint || key.split('/').pop() || 'download.bin';
-      const body = document.getElementById('modalBody');
-      const title = document.getElementById('modalTitle');
-      if (!body || !title) {
-        closeModal?.();
-        return;
-      }
+  /**
+   * Render a preview from an already-downloaded blob (shared by single + chunked non-video paths).
+   */
+  function doPreviewFromBlob(blob, contentType, resolvedName) {
+    const body = document.getElementById('modalBody');
+    const title = document.getElementById('modalTitle');
+    if (!body || !title) {
+      closeModal?.();
+      return;
+    }
 
-      body.innerHTML = '';
-      title.textContent = resolvedName;
-      title.setAttribute('title', resolvedName);
+    body.innerHTML = '';
+    title.textContent = resolvedName;
+    title.setAttribute('title', resolvedName);
 
-      const url = URL.createObjectURL(blob);
-      setModalObjectUrl?.(url);
+    const url = URL.createObjectURL(blob);
+    setModalObjectUrl?.(url);
 
-      const container = document.createElement('div');
-      container.className = 'preview-wrap';
-      const wrap = document.createElement('div');
-      wrap.className = 'viewer';
-      container.appendChild(wrap);
-      body.appendChild(container);
+    const container = document.createElement('div');
+    container.className = 'preview-wrap';
+    const wrap = document.createElement('div');
+    wrap.className = 'viewer';
+    container.appendChild(wrap);
+    body.appendChild(container);
 
-      if (ct === 'application/pdf' || ct.startsWith('application/pdf')) {
-        const handled = await renderPdfPreview({
-          url,
-          name: resolvedName,
-          modalApi: { openModal, closeModal, showConfirmModal }
-        });
+    const ct = (contentType || '').toLowerCase();
+
+    if (ct === 'application/pdf' || ct.startsWith('application/pdf')) {
+      renderPdfPreview({
+        url,
+        name: resolvedName,
+        modalApi: { openModal, closeModal, showConfirmModal }
+      }).then((handled) => {
         if (handled) return;
         const iframe = document.createElement('iframe');
         iframe.src = url;
         iframe.className = 'viewer';
         iframe.title = resolvedName;
         wrap.appendChild(iframe);
-      } else if (ct.startsWith('image/')) {
-        // Use full-screen image viewer with drive save support
-        // Clear the modal's object URL reference BEFORE closing, so closeModal()
-        // does not revoke the blob URL that the image viewer still needs.
-        setModalObjectUrl?.(null);
-        closeModal?.();
-        openImageViewer({
-          url,
-          blob,
-          name: resolvedName,
-          contentType: ct,
-          source: 'drive',
-          originalKey: key,
-          onSaveToDrive: async (editedBlob, mode, editedName) => {
-            const saveName = editedName || resolvedName;
-            const saveFile = new File([editedBlob], saveName, { type: 'image/png' });
-            if (mode === 'overwrite' && key) {
-              // Delete original then upload replacement
-              try {
-                const matches = driveState.currentMessages
-                  .filter((msg) => {
-                    const direct = typeof msg?.obj_key === 'string' ? msg.obj_key : '';
-                    if (direct && direct === key) return true;
-                    const header = safeJSON(msg?.header_json || msg?.header || '{}');
-                    return typeof header?.obj === 'string' && header.obj === key;
-                  });
-                const ids = matches.map((msg) => String(msg?.id || '')).filter(Boolean);
-                await performDelete({ keys: [key], ids });
-              } catch (err) {
-                log({ driveOverwriteDeleteError: err?.message || err });
-              }
-            }
-            await startUploadQueue([saveFile]);
-          },
-          onClose: () => {
-            try { URL.revokeObjectURL(url); } catch {}
-          }
-        });
-        return;
-      } else if (ct.startsWith('video/')) {
-        const video = document.createElement('video');
-        video.src = url;
-        video.controls = true;
-        video.playsInline = true;
-        wrap.appendChild(video);
-      } else if (ct.startsWith('audio/')) {
-        const audio = document.createElement('audio');
-        audio.src = url;
-        audio.controls = true;
-        wrap.appendChild(audio);
-      } else if (ct.startsWith('text/')) {
-        try {
-          const textContent = await blob.text();
+        openModal?.();
+      });
+      return;
+    } else if (ct.startsWith('image/')) {
+      // Use full-screen image viewer with drive save support
+      setModalObjectUrl?.(null);
+      closeModal?.();
+      openImageViewer({
+        url,
+        blob,
+        name: resolvedName,
+        contentType: ct,
+        source: 'drive',
+        onSaveToDrive: async (editedBlob, mode, editedName) => {
+          const saveName = editedName || resolvedName;
+          const saveFile = new File([editedBlob], saveName, { type: 'image/png' });
+          await startUploadQueue([saveFile]);
+        },
+        onClose: () => {
+          try { URL.revokeObjectURL(url); } catch {}
+        }
+      });
+      return;
+    } else if (ct.startsWith('video/')) {
+      const video = document.createElement('video');
+      video.src = url;
+      video.controls = true;
+      video.playsInline = true;
+      wrap.appendChild(video);
+    } else if (ct.startsWith('audio/')) {
+      const audio = document.createElement('audio');
+      audio.src = url;
+      audio.controls = true;
+      wrap.appendChild(audio);
+    } else if (ct.startsWith('text/')) {
+      try {
+        blob.text().then((textContent) => {
           const pre = document.createElement('pre');
           pre.textContent = textContent;
           wrap.appendChild(pre);
-        } catch (err) {
-          const msg = document.createElement('div');
-          msg.className = 'preview-message';
-          msg.textContent = '無法顯示文字內容。';
-          wrap.appendChild(msg);
+        });
+      } catch (err) {
+        const msg = document.createElement('div');
+        msg.className = 'preview-message';
+        msg.textContent = '無法顯示文字內容。';
+        wrap.appendChild(msg);
+      }
+    } else {
+      const message = document.createElement('div');
+      message.className = 'preview-message';
+      message.textContent = `無法預覽此類型（${ct}）`;
+      wrap.appendChild(message);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = resolvedName;
+      link.textContent = '下載檔案';
+      link.className = 'preview-download';
+      wrap.appendChild(link);
+    }
+
+    openModal?.();
+  }
+
+  /**
+   * Stream a chunked video from the drive using MSE (same approach as chat video player).
+   * Opens the full-screen video viewer with progressive chunk download + MSE playback.
+   */
+  async function doChunkedVideoPreview(chunkedMeta, contentType, name) {
+    const { downloadChunkedManifest, streamChunks } = await import('../../features/chunked-download.js');
+    const { openVideoViewer, cleanupVideoViewer } = await import('./viewers/video-viewer.js');
+    const { createMsePlayer, buildMimeFromCodecString, detectCodecFromInitSegment, isValidMseInitSegment, parseMoofTiming, parseInitTimescales } = await import('../../features/mse-player.js');
+    const { mergeInitSegments } = await import('../../features/mp4-remuxer.js');
+
+    cleanupVideoViewer();
+
+    // Download manifest first
+    const manifest = await downloadChunkedManifest({
+      baseKey: chunkedMeta.baseKey,
+      manifestEnvelope: chunkedMeta.manifestEnvelope
+    });
+
+    if (!manifest.segment_aligned || !manifest.tracks) {
+      // Non-segment-aligned: fall back to full download + blob URL
+      const { downloadAllChunks } = await import('../../features/chunked-download.js');
+      showModalLoading?.('下載影片中…');
+      const result = await downloadAllChunks({
+        baseKey: chunkedMeta.baseKey,
+        manifest,
+        manifestEnvelope: chunkedMeta.manifestEnvelope,
+        onProgress: ({ percent }) => {
+          updateLoadingModal?.({ percent: Math.min(95, percent), text: `下載影片中… ${percent}%` });
         }
-      } else {
-        const message = document.createElement('div');
-        message.className = 'preview-message';
-        message.textContent = `無法預覽此類型（${ct}）`;
-        wrap.appendChild(message);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = resolvedName;
-        link.textContent = '下載檔案';
-        link.className = 'preview-download';
-        wrap.appendChild(link);
+      });
+      doPreviewFromBlob(result.blob, result.contentType || contentType, result.name || name);
+      return;
+    }
+
+    const manifestTracks = Array.isArray(manifest.tracks) ? manifest.tracks : [];
+    const numTracks = manifestTracks.length || 1;
+
+    const downloadAbort = new AbortController();
+    let blobUrl = null;
+    let msePlayer = null;
+
+    const viewer = openVideoViewer({
+      name,
+      onClose: () => {
+        try { downloadAbort.abort(); } catch {}
+        if (msePlayer) { try { msePlayer.destroy(); } catch {} msePlayer = null; }
+        if (blobUrl) { try { URL.revokeObjectURL(blobUrl); } catch {} blobUrl = null; }
+      }
+    });
+
+    const video = viewer.video;
+
+    try {
+      // Create MSE player
+      const createPlayer = () => createMsePlayer({
+        videoElement: video,
+        onError: (err) => console.warn('[drive-mse] segment error:', err?.message)
+      });
+      msePlayer = createPlayer();
+      viewer.setMsePlayer(msePlayer);
+      await msePlayer.open();
+      video.play().catch(() => {});
+
+      let mseInitialized = false;
+      let useBlobFallback = false;
+      const blobParts = [];
+      const initChunks = [];
+      const chunkCache = [];
+      const chunkTimeIndex = [];
+      let timescaleMap = null;
+      let chunksReceived = 0;
+      let bytesReceived = 0;
+      const isLegacyMultiTrack = manifest.v < 3 && numTracks > 1;
+
+      // canplay handler
+      let firstMediaAppended = false;
+      video.addEventListener('canplay', () => {
+        if (!firstMediaAppended) {
+          firstMediaAppended = true;
+          viewer.hideBuffering();
+          if (video.paused) video.play().catch(() => {});
+        }
+      }, { once: true });
+
+      // Init MSE with codec detection + fallback
+      const tryInitMse = async (initData, primaryMimeCodec) => {
+        const codecs = [];
+        if (primaryMimeCodec) codecs.push(primaryMimeCodec);
+        const detected = detectCodecFromInitSegment(initData, 'muxed');
+        if (detected && !codecs.includes(detected)) codecs.push(detected);
+        const fallbacks = ['avc1.42E01E,mp4a.40.2', 'avc1.4D401E,mp4a.40.2', 'avc1.64001E,mp4a.40.2'];
+        for (const cs of fallbacks) {
+          const m = buildMimeFromCodecString(cs);
+          if (m && !codecs.includes(m)) codecs.push(m);
+        }
+        if (!codecs.length) throw new Error('無法偵測影片編碼格式');
+
+        for (let i = 0; i < codecs.length; i++) {
+          try {
+            if (i > 0) {
+              try { msePlayer.destroy(); } catch {}
+              video.src = '';
+              video.load();
+              msePlayer = createPlayer();
+              viewer.setMsePlayer(msePlayer);
+              await msePlayer.open();
+              video.play().catch(() => {});
+            }
+            msePlayer.addSourceBuffer('muxed', codecs[i]);
+            msePlayer.resumeQueues();
+            await Promise.race([
+              msePlayer.appendChunk('muxed', initData),
+              new Promise((_, rej) => setTimeout(() => rej(new Error('init timeout')), 5000))
+            ]);
+            return;
+          } catch (err) {
+            if (i === codecs.length - 1) throw err;
+          }
+        }
+      };
+
+      for await (const { data, index } of streamChunks({
+        baseKey: chunkedMeta.baseKey,
+        manifest,
+        manifestEnvelope: chunkedMeta.manifestEnvelope,
+        abortSignal: downloadAbort.signal,
+        onProgress: ({ percent }) => {
+          viewer.updateChunkStats({ received: chunksReceived, total: manifest.totalChunks });
+        }
+      })) {
+        chunksReceived++;
+        bytesReceived += (data?.byteLength || 0);
+        viewer.updateChunkStats({ received: chunksReceived, bytes: bytesReceived });
+        chunkCache[index] = new Blob([data]);
+
+        if (useBlobFallback) {
+          blobParts.push(data);
+          continue;
+        }
+
+        const isInitSegment = index < numTracks;
+
+        if (isInitSegment) {
+          let initData = data;
+          let primaryMime = null;
+
+          if (isLegacyMultiTrack) {
+            initChunks.push(data);
+            if (initChunks.length < numTracks) continue;
+            initData = mergeInitSegments(initChunks);
+            const manifestCodec = manifestTracks.map(t => t.codec).filter(Boolean).join(',');
+            primaryMime = manifestCodec ? buildMimeFromCodecString(manifestCodec) : null;
+          } else {
+            const track = manifestTracks[0];
+            primaryMime = track?.codec ? buildMimeFromCodecString(track.codec) : null;
+          }
+
+          if (!isValidMseInitSegment(initData)) {
+            useBlobFallback = true;
+            blobParts.push(initData);
+            try { msePlayer.destroy(); } catch {}
+            msePlayer = null;
+            continue;
+          }
+
+          try {
+            await tryInitMse(initData, primaryMime);
+            mseInitialized = true;
+            timescaleMap = parseInitTimescales(initData);
+            if (manifest.duration && msePlayer) msePlayer.setDuration(manifest.duration);
+          } catch (initErr) {
+            console.warn('[drive-video] MSE init failed:', initErr?.message);
+            useBlobFallback = true;
+            blobParts.push(initData);
+            try { msePlayer.destroy(); } catch {}
+            msePlayer = null;
+            continue;
+          }
+        } else {
+          if (!mseInitialized) continue;
+
+          const timing = parseMoofTiming(data, timescaleMap);
+          chunkTimeIndex[index] = timing;
+
+          try {
+            await msePlayer.appendChunk('muxed', data);
+          } catch (appendErr) {
+            console.warn(`[drive-video] segment ${index} append failed:`, appendErr?.message);
+          }
+        }
       }
 
-      openModal?.();
+      if (useBlobFallback) {
+        const blob = new Blob(blobParts, { type: contentType || 'video/mp4' });
+        blobParts.length = 0;
+        blobUrl = URL.createObjectURL(blob);
+        video.src = blobUrl;
+        video.load();
+        video.addEventListener('canplay', () => viewer.hideBuffering(), { once: true });
+        try { await video.play(); } catch {}
+      } else if (msePlayer) {
+        await msePlayer.endOfStream();
+      }
+
+      viewer.hideBuffering();
+
     } catch (err) {
-      closeModal?.();
-      throw err;
+      if (err?.name === 'AbortError') return;
+      console.error('[drive-video] streaming failed:', err?.message);
+      viewer.destroy();
+      log({ driveVideoError: err?.message || err });
     }
   }
 

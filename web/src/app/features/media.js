@@ -3,7 +3,7 @@
 // No UI here. Callers (UI) should pass File/Blob and render results.
 
 import { signPut as apiSignPut, signGet as apiSignGet, createMessage, deleteMediaKeys } from '../api/media.js';
-import { getMkRaw, buildAccountPayload } from '../core/store.js';
+import { getMkRaw, getAccountDigest, buildAccountPayload } from '../core/store.js';
 import { encryptWithMK as aeadEncryptWithMK, decryptWithMK as aeadDecryptWithMK, b64, b64u8 } from '../crypto/aead.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
 import { encryptAndPutChunked, CHUNK_SIZE, UnsupportedVideoFormatError } from './chunked-upload.js';
@@ -463,7 +463,12 @@ export async function smartEncryptAndPut(params = {}) {
 /** Request a short-lived GET URL for an object key. */
 export async function signGet({ key }) {
   const { r, data } = await apiSignGet({ key });
-  if (!r.ok) throw new Error('sign-get failed: ' + JSON.stringify(data));
+  if (!r.ok) {
+    const err = new Error('sign-get failed: ' + JSON.stringify(data));
+    err.status = r.status;
+    err.mediaExpired = r.status === 404 || r.status === 410;
+    throw err;
+  }
   return data; // { download:{url,bucket,key}, expiresIn }
 }
 
@@ -602,6 +607,145 @@ export async function downloadAndDecrypt({ key, envelope, onStatus, onProgress, 
   progress?.({ stage: 'done', bytes: plain.length });
   const blob = new Blob([plain], { type: meta.contentType || 'application/octet-stream' });
   return { blob, contentType: meta.contentType || 'application/octet-stream', name: meta.name || 'decrypted.bin', bytes: plain.length };
+}
+
+/**
+ * Save a chat media file to the user's cloud drive via server-side R2 CopyObject.
+ * Supports both single-file and chunked media. No re-download or re-upload needed.
+ *
+ * @param {{ media: object, driveDir?: string[] }} opts
+ *   media: the media object from chat bubble (with objectKey/envelope or baseKey/manifestEnvelope)
+ *   driveDir: optional directory path segments in the drive (defaults to root)
+ * @returns {Promise<{ ok: boolean, destKey?: string, destBaseKey?: string }>}
+ */
+export async function saveChatMediaToDrive({ media, driveDir } = {}) {
+  if (!media) throw new Error('media required');
+
+  const { copyMedia, copyChunkedMedia, createMessage: apiCreateMsg } = await import('../api/media.js');
+  const accountDigest = (getAccountDigest() || '').toUpperCase();
+  const driveConvId = `drive-${accountDigest}`;
+
+  const mk = getMkRaw();
+  if (!mk) throw new Error('Not unlocked: MK not ready');
+
+  const dirSegments = normalizeDirSegments(driveDir);
+  const storageDirHash = dirSegments.length ? await deriveStorageDirPath(dirSegments, mk) : '';
+
+  const isChunked = !!media.chunked && !!media.baseKey && !!media.manifestEnvelope;
+
+  if (isChunked) {
+    // Chunked file: copy manifest + all chunk objects
+    const chunkCount = media.chunkCount || media.totalChunks || 0;
+    if (!chunkCount) throw new Error('chunkCount missing for chunked media');
+
+    const { r, data } = await copyChunkedMedia({
+      sourceBaseKey: media.baseKey,
+      chunkCount,
+      destConvId: driveConvId,
+      destDir: storageDirHash || undefined
+    });
+    if (!r.ok) throw new Error('copy-chunked failed: ' + JSON.stringify(data));
+    const destBaseKey = data.dest_base_key;
+
+    // Create drive message index for the chunked file
+    const messageId = crypto.randomUUID();
+    const headerPayload = {
+      chunked: true,
+      baseKey: destBaseKey,
+      chunkCount,
+      totalSize: media.totalSize || media.size || 0,
+      name: media.name || 'file',
+      contentType: media.contentType || 'application/octet-stream',
+      dir: dirSegments,
+      manifestEnvelope: media.manifestEnvelope
+    };
+    if (media.preview) {
+      headerPayload.preview = media.preview;
+    }
+    const msgBody = buildAccountPayload({
+      overrides: {
+        convId: driveConvId,
+        type: 'media',
+        id: messageId,
+        header: headerPayload,
+        ciphertext_b64: b64(new TextEncoder().encode(JSON.stringify({
+          saved_from_chat: true,
+          chunked: true,
+          baseKey: destBaseKey,
+          manifestEnvelope: media.manifestEnvelope
+        })))
+      }
+    });
+    const { r: rMsg, data: msgData } = await apiCreateMsg(msgBody);
+    if (!rMsg.ok) throw new Error('drive index failed: ' + JSON.stringify(msgData));
+
+    return { ok: true, destBaseKey };
+  } else {
+    // Single file: copy one object
+    const sourceKey = media.objectKey;
+    if (!sourceKey) throw new Error('objectKey missing for single-file media');
+
+    const { r, data } = await copyMedia({
+      sourceKey,
+      destConvId: driveConvId,
+      destDir: storageDirHash || undefined
+    });
+    if (!r.ok) throw new Error('copy failed: ' + JSON.stringify(data));
+    const destKey = data.dest_key;
+
+    // Build envelope for the drive copy (same encryption — same ciphertext)
+    const envelope = media.envelope || loadEnvelopeMeta(sourceKey);
+    if (!envelope) throw new Error('envelope missing — cannot create drive index');
+
+    // Create drive message index
+    const messageId = crypto.randomUUID();
+    const headerPayload = {
+      obj: destKey,
+      name: media.name || 'file',
+      contentType: media.contentType || 'application/octet-stream',
+      size: media.size || 0,
+      dir: dirSegments,
+      iv_b64: envelope.iv_b64,
+      env: {
+        v: envelope.v || 1,
+        iv_b64: envelope.iv_b64,
+        hkdf_salt_b64: envelope.hkdf_salt_b64,
+        info_tag: envelope.info_tag,
+        key_type: envelope.key_type
+      }
+    };
+    // Preserve shared key info if present
+    if (envelope.key_type === 'shared' && envelope.key_b64) {
+      headerPayload.env.key_b64 = envelope.key_b64;
+    }
+    if (media.preview) {
+      headerPayload.preview = media.preview;
+    }
+    const msgBody = buildAccountPayload({
+      overrides: {
+        convId: driveConvId,
+        type: 'media',
+        id: messageId,
+        header: headerPayload,
+        ciphertext_b64: b64(new TextEncoder().encode(JSON.stringify({
+          v: envelope.v || 1,
+          aead: envelope.aead || 'aes-256-gcm',
+          iv_b64: envelope.iv_b64,
+          hkdf_salt_b64: envelope.hkdf_salt_b64,
+          info_tag: envelope.info_tag,
+          key_type: envelope.key_type,
+          ...(envelope.key_type === 'shared' && envelope.key_b64 ? { key_b64: envelope.key_b64 } : {})
+        })))
+      }
+    });
+    const { r: rMsg, data: msgData } = await apiCreateMsg(msgBody);
+    if (!rMsg.ok) throw new Error('drive index failed: ' + JSON.stringify(msgData));
+
+    // Cache envelope locally for the new key
+    saveEnvelopeMeta(destKey, envelope);
+
+    return { ok: true, destKey };
+  }
 }
 
 // Re-export for callers (dr-session.js)

@@ -677,7 +677,15 @@ export class MediaHandlingController extends BaseController {
             media._videoProgress = 0;
             this._updateVideoOverlayUI(msgId, media);
             viewer.destroy();
-            this.deps.showToast?.(`影片播放失敗：${err?.message || err}`);
+
+            // Mark as expired if file not found
+            if (err?.mediaExpired || err?.status === 404 || err?.status === 410) {
+                media._expired = true;
+                this.deps.showToast?.('影片已失效或被刪除');
+                this.deps.controllers?.messageFlow?.updateMessagesUI?.({ forceFullRender: true });
+            } else {
+                this.deps.showToast?.(`影片播放失敗：${err?.message || err}`);
+            }
         }
     }
 
@@ -963,6 +971,23 @@ export class MediaHandlingController extends BaseController {
     }
 
     /**
+     * Save a chat media file to the user's cloud drive.
+     * Uses server-side R2 CopyObject — no re-download/re-upload.
+     */
+    async saveToDrive(media) {
+        if (!media) return;
+        try {
+            const { saveChatMediaToDrive } = await import('../../../features/media.js');
+            this.deps.showToast?.('正在存到雲端硬碟…');
+            await saveChatMediaToDrive({ media });
+            this.deps.showToast?.('已存到雲端硬碟');
+        } catch (err) {
+            console.error('[saveToDrive] failed:', err);
+            this.deps.showToast?.(`存到雲端失敗：${err?.message || err}`);
+        }
+    }
+
+    /**
      * Open media preview modal.
      */
     async openMediaPreview(media) {
@@ -1037,7 +1062,16 @@ export class MediaHandlingController extends BaseController {
         } catch (err) {
             console.error('Media preview error', err);
             this.deps.closePreviewModal?.();
-            this.deps.showToast?.(`附件預覽失敗：${err?.message || err}`);
+
+            // Mark media as expired/unavailable if the file was not found on R2
+            if (err?.mediaExpired || err?.status === 404 || err?.status === 410) {
+                media._expired = true;
+                this.deps.showToast?.('檔案已失效或被刪除');
+                // Re-render to show expired indicator
+                this.deps.controllers?.messageFlow?.updateMessagesUI?.({ forceFullRender: true });
+            } else {
+                this.deps.showToast?.(`附件預覽失敗：${err?.message || err}`);
+            }
         }
     }
 

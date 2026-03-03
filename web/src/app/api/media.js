@@ -181,6 +181,46 @@ export async function cleanupChunked({ baseKey, accountToken, accountDigest } = 
   return await fetchJSON('/api/v1/media/cleanup-chunked', body, headers);
 }
 
+/**
+ * Server-side R2 copy of a single object to the user's drive.
+ * @param {{ sourceKey: string, destConvId: string, destDir?: string }} p
+ * @returns {Promise<{ r: Response, data: { ok: boolean, dest_key: string } }>}
+ */
+export async function copyMedia({ sourceKey, destConvId, destDir, accountToken, accountDigest } = {}) {
+  if (!sourceKey) throw new Error('sourceKey required');
+  if (!destConvId) throw new Error('destConvId required');
+  const body = { source_key: sourceKey, dest_conv_id: destConvId };
+  const headers = {};
+  const deviceId = ensureDeviceId();
+  if (deviceId) headers['X-Device-Id'] = deviceId;
+  if (destDir) body.dest_dir = destDir;
+  const token = accountToken || getAccountToken();
+  if (token) body.account_token = token;
+  const digest = (accountDigest || getAccountDigest() || '').toUpperCase();
+  if (digest) body.account_digest = digest;
+  return await fetchJSON('/api/v1/media/copy', body, headers);
+}
+
+/**
+ * Server-side R2 copy of a chunked (multi-object) file to the user's drive.
+ * @param {{ sourceBaseKey: string, chunkCount: number, destConvId: string, destDir?: string }} p
+ * @returns {Promise<{ r: Response, data: { ok: boolean, dest_base_key: string } }>}
+ */
+export async function copyChunkedMedia({ sourceBaseKey, chunkCount, destConvId, destDir, accountToken, accountDigest } = {}) {
+  if (!sourceBaseKey) throw new Error('sourceBaseKey required');
+  if (!destConvId) throw new Error('destConvId required');
+  const body = { source_base_key: sourceBaseKey, chunk_count: chunkCount, dest_conv_id: destConvId };
+  const headers = {};
+  const deviceId = ensureDeviceId();
+  if (deviceId) headers['X-Device-Id'] = deviceId;
+  if (destDir) body.dest_dir = destDir;
+  const token = accountToken || getAccountToken();
+  if (token) body.account_token = token;
+  const digest = (accountDigest || getAccountDigest() || '').toUpperCase();
+  if (digest) body.account_digest = digest;
+  return await fetchJSON('/api/v1/media/copy-chunked', body, headers);
+}
+
 export async function deleteMediaKeys({ ids = [], keys = [], conversationId } = {}) {
   if (!conversationId) throw new Error('conversationId required');
   const overrides = { conversation_id: conversationId, ids };

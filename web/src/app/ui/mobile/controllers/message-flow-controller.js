@@ -1122,6 +1122,7 @@ export class MessageFlowController extends BaseController {
                     },
                     onDownloadVideo: (media, msgId) => this.deps.controllers?.mediaHandling?.downloadVideoInline(media, msgId),
                     onPlayVideo: (media, msgId) => this.deps.controllers?.mediaHandling?.downloadVideoInline(media, msgId),
+                    onSaveToDrive: (media) => this.deps.controllers?.mediaHandling?.saveToDrive(media),
                     onAvatarClick: ({ avatarUrl, name }) => this.openAvatarPreview(avatarUrl, name)
                 }
             });

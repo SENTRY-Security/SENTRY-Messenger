@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { asyncH } from '../../middlewares/async.js';
 import { z } from 'zod';
 import { customAlphabet } from 'nanoid';
-import { createDownloadGet, createUploadPut, deleteAllWithPrefix } from '../../services/s3.js';
+import { createDownloadGet, createUploadPut, copyObject, deleteAllWithPrefix } from '../../services/s3.js';
 import { signHmac } from '../../utils/hmac.js';
 import {
   verifyAccount,
@@ -498,6 +498,103 @@ r.post('/media/cleanup-chunked', asyncH(async (req, res) => {
 
   const result = await deleteAllWithPrefix({ prefix: input.base_key });
   res.json({ ok: true, deleted: result.deleted });
+}));
+
+// POST /api/v1/media/copy
+// Server-side R2 CopyObject: copy a single object to a new key under the user's drive.
+// No re-download / re-upload — zero egress cost.
+const CopySchema = accountAuth.and(z.object({
+  source_key: z.string().min(3),
+  dest_conv_id: z.string().min(1),
+  dest_dir: z.string().max(200).optional()
+}));
+
+r.post('/media/copy', asyncH(async (req, res) => {
+  const input = CopySchema.parse(req.body);
+
+  const auth = await verifyAndResolve(input, res);
+  if (!auth) return;
+  const { resolvedDigest } = auth;
+
+  // Authorize source conversation (extract from source key)
+  const srcConvId = extractConversationIdFromKey(input.source_key);
+  const normalizedSrc = srcConvId ? normalizeConversationId(srcConvId) : null;
+  if (!normalizedSrc) {
+    return res.status(400).json({ error: 'BadRequest', message: 'invalid source_key' });
+  }
+  if (!(await authorizeConv(normalizedSrc, resolvedDigest, req, res))) return;
+
+  // Authorize destination conversation
+  const normalizedDest = normalizeConversationId(input.dest_conv_id);
+  if (!normalizedDest) {
+    return res.status(400).json({ error: 'BadRequest', message: 'invalid dest_conv_id' });
+  }
+  if (!(await authorizeConv(normalizedDest, resolvedDigest, req, res))) return;
+
+  // Build destination key
+  const uid = nano();
+  const dirPart = input.dest_dir ? `${input.dest_dir}/` : '';
+  const destKey = `${normalizedDest}/${dirPart}${uid}`;
+
+  await copyObject({ sourceKey: input.source_key, destinationKey: destKey });
+
+  res.json({ ok: true, dest_key: destKey });
+}));
+
+// POST /api/v1/media/copy-chunked
+// Server-side R2 CopyObject for chunked (multi-object) files.
+// Copies manifest + all chunk objects from source baseKey to a new baseKey under dest drive.
+const CopyChunkedSchema = accountAuth.and(z.object({
+  source_base_key: z.string().min(3),
+  chunk_count: z.number().int().min(1).max(MAX_CHUNKS),
+  dest_conv_id: z.string().min(1),
+  dest_dir: z.string().max(200).optional()
+}));
+
+r.post('/media/copy-chunked', asyncH(async (req, res) => {
+  const input = CopyChunkedSchema.parse(req.body);
+
+  const auth = await verifyAndResolve(input, res);
+  if (!auth) return;
+  const { resolvedDigest } = auth;
+
+  // Authorize source conversation
+  const srcConvId = extractConversationIdFromKey(input.source_base_key);
+  const normalizedSrc = srcConvId ? normalizeConversationId(srcConvId) : null;
+  if (!normalizedSrc) {
+    return res.status(400).json({ error: 'BadRequest', message: 'invalid source_base_key' });
+  }
+  if (!(await authorizeConv(normalizedSrc, resolvedDigest, req, res))) return;
+
+  // Authorize destination conversation
+  const normalizedDest = normalizeConversationId(input.dest_conv_id);
+  if (!normalizedDest) {
+    return res.status(400).json({ error: 'BadRequest', message: 'invalid dest_conv_id' });
+  }
+  if (!(await authorizeConv(normalizedDest, resolvedDigest, req, res))) return;
+
+  // Build destination base key
+  const uid = nano();
+  const dirPart = input.dest_dir ? `${input.dest_dir}/` : '';
+  const destBaseKey = `${normalizedDest}/${dirPart}${uid}`;
+
+  // Copy manifest + all chunks in parallel
+  const copyTasks = [];
+  // Manifest
+  copyTasks.push(copyObject({
+    sourceKey: `${input.source_base_key}/manifest`,
+    destinationKey: `${destBaseKey}/manifest`
+  }));
+  // Chunks 0..N-1
+  for (let i = 0; i < input.chunk_count; i++) {
+    copyTasks.push(copyObject({
+      sourceKey: `${input.source_base_key}/${i}`,
+      destinationKey: `${destBaseKey}/${i}`
+    }));
+  }
+  await Promise.all(copyTasks);
+
+  res.json({ ok: true, dest_base_key: destBaseKey });
 }));
 
 export default r;

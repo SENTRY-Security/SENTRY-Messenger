@@ -660,6 +660,32 @@ export class MessageRenderer {
             this.enableMediaPreviewInteraction(wrapper, media);
         }
 
+        // Expired / unavailable indicator
+        if (media._expired) {
+            const expiredTag = document.createElement('div');
+            expiredTag.className = 'message-file-expired';
+            expiredTag.innerHTML = '<svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="10" r="8"/><line x1="6" y1="6" x2="14" y2="14"/></svg> 檔案已失效';
+            wrapper.appendChild(expiredTag);
+        }
+
+        // Save-to-drive button (only for non-uploading, non-expired media with valid source)
+        const hasSource = !!(media.objectKey && media.envelope) || !!(media.chunked && media.baseKey && media.manifestEnvelope);
+        if (hasSource && !media.uploading && !media._expired) {
+            const actions = document.createElement('div');
+            actions.className = 'message-file-actions';
+            const saveBtn = document.createElement('button');
+            saveBtn.type = 'button';
+            saveBtn.className = 'message-file-save-drive';
+            saveBtn.innerHTML = '<svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 13v3a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 013 16v-3"/><polyline points="7 7 10 3 13 7"/><line x1="10" y1="3" x2="10" y2="13"/></svg> 存到雲端';
+            saveBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.callbacks.onSaveToDrive?.(media);
+            });
+            actions.appendChild(saveBtn);
+            wrapper.appendChild(actions);
+        }
+
         bubble.appendChild(wrapper);
         this.attachMediaPreview(preview, media);
 

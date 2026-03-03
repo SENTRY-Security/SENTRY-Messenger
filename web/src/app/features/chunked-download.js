@@ -107,7 +107,12 @@ export async function downloadChunkedManifest({ baseKey, manifestEnvelope, abort
 
   // Get signed URL for manifest
   const { r, data } = await apiSignGetChunked({ baseKey });
-  if (!r.ok) throw new Error('sign-get-chunked failed: ' + JSON.stringify(data));
+  if (!r.ok) {
+    const err = new Error('sign-get-chunked failed: ' + JSON.stringify(data));
+    err.status = r.status;
+    err.mediaExpired = r.status === 404 || r.status === 410;
+    throw err;
+  }
   const { manifest: manifestGet } = data;
   if (!manifestGet?.url) throw new Error('sign-get-chunked returned no manifest URL');
 

@@ -3,6 +3,7 @@ import {
   GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
+  CopyObjectCommand,
   DeleteObjectCommand,
   ListObjectsV2Command,
   DeleteObjectsCommand
@@ -60,6 +61,17 @@ export async function createDownloadGet({ key, ttlSec, downloadName }) {
   });
   const url = await getSignedUrl(s3, cmd, { expiresIn: ttlSec });
   return { url, bucket, key };
+}
+
+// Copy an object within the same bucket (server-side, no re-download)
+export async function copyObject({ sourceKey, destinationKey }) {
+  if (!sourceKey || !destinationKey) throw new Error('sourceKey and destinationKey required');
+  await s3.send(new CopyObjectCommand({
+    Bucket: bucket,
+    CopySource: `${bucket}/${sourceKey}`,
+    Key: destinationKey
+  }));
+  return { bucket, sourceKey, destinationKey };
 }
 
 export async function deleteObject({ key }) {
