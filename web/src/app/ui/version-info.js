@@ -88,6 +88,8 @@ function collectStorageEntries(label) {
   }
 }
 
+let showAlertModal = null;
+
 function renderStorageDetailModal(detail) {
   const existing = document.getElementById('versionStorageDetail');
   if (existing) existing.remove();
@@ -142,7 +144,7 @@ function renderStorageDetailModal(detail) {
       // 清除後登出
       window.location.href = '/logout';
     } catch (err) {
-      alert('清除失敗：' + (err?.message || err));
+      if (typeof showAlertModal === 'function') showAlertModal({ title: '清除失敗', message: '清除失敗：' + (err?.message || err) });
     }
   });
   const closeBtn = document.createElement('button');
@@ -234,7 +236,7 @@ function renderStorageDetailModal(detail) {
           setTimeout(() => { btn.textContent = old || '複製內容'; }, 1200);
         }
       } catch {
-        alert('複製失敗');
+        if (typeof showAlertModal === 'function') showAlertModal({ title: '複製失敗', message: '複製失敗' });
       }
     };
     copyButtons.forEach((btn) => {
@@ -389,7 +391,8 @@ function renderModalContent(container, info) {
   attachStorageDetailHandlers(container);
 }
 
-export async function showVersionModal({ openModal, closeModal } = {}) {
+export async function showVersionModal({ openModal, closeModal, showAlertModal: alertFn } = {}) {
+  if (typeof alertFn === 'function') showAlertModal = alertFn;
   const modal = document.getElementById('modal');
   const body = document.getElementById('modalBody');
   const title = document.getElementById('modalTitle');
@@ -401,6 +404,7 @@ export async function showVersionModal({ openModal, closeModal } = {}) {
     'upload-modal',
     'loading-modal',
     'confirm-modal',
+    'alert-modal',
     'nickname-modal',
     'avatar-modal',
     'avatar-preview-modal',
@@ -418,7 +422,8 @@ export async function showVersionModal({ openModal, closeModal } = {}) {
   modalCloseArea?.addEventListener('click', () => closeModal?.(), { once: true });
 }
 
-export function initVersionInfoButton({ buttonId, popupId, openModal, closeModal }) {
+export function initVersionInfoButton({ buttonId, popupId, openModal, closeModal, showAlertModal: alertFn }) {
+  if (typeof alertFn === 'function') showAlertModal = alertFn;
   const button = document.getElementById(buttonId);
   const popup = popupId ? document.getElementById(popupId) : null;
   if (!button) return;

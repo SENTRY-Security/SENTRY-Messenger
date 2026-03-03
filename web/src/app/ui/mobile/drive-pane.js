@@ -375,8 +375,7 @@ export function initDrivePane({
           onConfirm: proceed
         });
       } else {
-        const confirmed = window.confirm('下載後會在外部開啟，回到通訊軟體需重新感應。確定要下載嗎？');
-        if (confirmed) proceed();
+        showConfirmModal?.({ title: '下載 PDF', message: '下載後會在外部開啟，回到通訊軟體需重新感應。確定要下載嗎？', confirmLabel: '下載', onConfirm: proceed });
       }
     });
     body.querySelector('#pdfCloseBtn')?.addEventListener('click', () => activePdfCleanup?.());
@@ -454,6 +453,7 @@ export function initDrivePane({
     openModal,
     closeModal,
     showConfirmModal,
+    showAlertModal,
     showModalLoading,
     updateLoadingModal,
     showProgressModal,
@@ -483,8 +483,8 @@ export function initDrivePane({
         onConfirm: () => {},
         onCancel: () => {}
       });
-    } else {
-      alert(message);
+    } else if (typeof showAlertModal === 'function') {
+      showAlertModal({ title, message });
     }
   }
 

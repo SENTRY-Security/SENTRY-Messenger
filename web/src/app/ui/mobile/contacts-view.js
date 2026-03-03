@@ -361,7 +361,7 @@ export function initContactsView(options) {
           log({ contactDeleted: key });
         } catch (err) {
           log({ contactDeleteError: err?.message || err });
-          alert('刪除失敗，請稍後再試。');
+          modal.showAlertModal({ title: '刪除失敗', message: '刪除失敗，請稍後再試。' });
         }
       }
     });

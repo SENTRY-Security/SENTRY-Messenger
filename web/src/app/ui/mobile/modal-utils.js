@@ -58,6 +58,7 @@ export function setupModalController({ shareButtonProvider } = {}) {
       'upload-modal',
       'loading-modal',
       'confirm-modal',
+      'alert-modal',
       'nickname-modal',
       'avatar-modal',
       'avatar-preview-modal',
@@ -141,6 +142,7 @@ export function setupModalController({ shareButtonProvider } = {}) {
       'upload-modal',
       'loading-modal',
       'confirm-modal',
+      'alert-modal',
       'nickname-modal',
       'avatar-modal',
       'avatar-preview-modal',
@@ -179,6 +181,7 @@ export function setupModalController({ shareButtonProvider } = {}) {
       'folder-modal',
       'upload-modal',
       'confirm-modal',
+      'alert-modal',
       'nickname-modal',
       'avatar-modal',
       'avatar-preview-modal',
@@ -221,7 +224,8 @@ export function setupModalController({ shareButtonProvider } = {}) {
       'avatar-modal',
       'avatar-preview-modal',
       'settings-modal',
-      'pdf-modal'
+      'pdf-modal',
+      'alert-modal'
     );
     modal.classList.add('confirm-modal');
     const modalTitle = document.getElementById('modalTitle');
@@ -247,6 +251,41 @@ export function setupModalController({ shareButtonProvider } = {}) {
     }, { once: true });
   }
 
+  function showAlertModal({ title, message, confirmLabel = '確定', onConfirm }) {
+    const modal = document.getElementById('modal');
+    const body = document.getElementById('modalBody');
+    if (!modal || !body) return;
+    modal.classList.remove(
+      'security-modal',
+      'progress-modal',
+      'folder-modal',
+      'upload-modal',
+      'loading-modal',
+      'confirm-modal',
+      'nickname-modal',
+      'avatar-modal',
+      'avatar-preview-modal',
+      'settings-modal',
+      'pdf-modal'
+    );
+    modal.classList.add('alert-modal');
+    const modalTitle = document.getElementById('modalTitle');
+    if (modalTitle) modalTitle.textContent = title || '提示';
+    body.innerHTML = `
+      <div class="alert-wrap">
+        <div class="alert-message">${escapeHtml(message || '')}</div>
+        <div class="alert-actions">
+          <button type="button" id="alertOk" class="btn-secondary">${escapeHtml(confirmLabel)}</button>
+        </div>
+      </div>`;
+    openModal();
+    const okBtn = body.querySelector('#alertOk');
+    okBtn?.addEventListener('click', () => {
+      closeModal();
+      onConfirm?.();
+    }, { once: true });
+  }
+
   const PROGRESS_ICON_UPLOAD = '<svg viewBox="0 0 24 24" fill="none"><path d="M12 19V5m0 0l-5 5m5-5l5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 19h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
   const PROGRESS_ICON_CHECK = '<svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   const PROGRESS_ICON_FAIL = '<svg viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -261,6 +300,7 @@ export function setupModalController({ shareButtonProvider } = {}) {
       'upload-modal',
       'loading-modal',
       'confirm-modal',
+      'alert-modal',
       'nickname-modal',
       'avatar-modal',
       'avatar-preview-modal',
@@ -326,6 +366,7 @@ export function setupModalController({ shareButtonProvider } = {}) {
     showModalLoading,
     updateLoadingModal,
     showConfirmModal,
+    showAlertModal,
     showProgressModal,
     updateProgressModal,
     completeProgressModal,

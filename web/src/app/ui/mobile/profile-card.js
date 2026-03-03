@@ -144,7 +144,7 @@ export function initProfileCard(options) {
       const raw = input?.value || '';
       const normalized = normalizeNickname(raw);
       if (!normalized || normalized.length < 2) {
-        alert('暱稱需至少 2 個字，且只能包含文字、數字、空格或 - _ .');
+        modal.showAlertModal({ title: '格式錯誤', message: '暱稱需至少 2 個字，且只能包含文字、數字、空格或 - _ .' });
         input?.focus();
         return;
       }
@@ -176,7 +176,7 @@ export function initProfileCard(options) {
         restoreShareButton();
       } catch (err) {
         log({ profileNicknameError: err?.message || err });
-        alert('更新暱稱失敗，請稍後再試。');
+        modal.showAlertModal({ title: '更新失敗', message: '更新暱稱失敗，請稍後再試。' });
       } finally {
         setSubmitLoading(false);
       }

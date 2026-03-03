@@ -192,6 +192,7 @@ const MODAL_VARIANTS = [
   'upload-modal',
   'loading-modal',
   'confirm-modal',
+  'alert-modal',
   'nickname-modal',
   'avatar-modal',
   'avatar-preview-modal',
@@ -1070,6 +1071,9 @@ function switchTab(name, options = {}) {
   currentTab = name;
   normalizeOverlayState();
   resetMainContentScroll({ smooth: false });
+  // Always restore contacts scroll-hidden bars before switching tabs.
+  // Prevents stale transforms on topbar/navbar when leaving contacts.
+  if (typeof _restoreContactsBars === 'function') _restoreContactsBars();
   tabs.forEach((t) => {
     const page = document.getElementById(`tab-${t}`);
     const btn = document.getElementById(`nav-${t}`);
@@ -1255,6 +1259,7 @@ const {
   showModalLoading,
   updateLoadingModal,
   showConfirmModal,
+  showAlertModal,
   showProgressModal,
   updateProgressModal,
   completeProgressModal,
@@ -1330,7 +1335,8 @@ const settingsMod = createSettingsModule({
     log, showToast, sessionStore, openModal, closeModal, resetModalVariants,
     DEFAULT_SETTINGS, saveSettings, loadSettings,
     getMkRaw, getAccountDigest,
-    openChangePasswordModal
+    openChangePasswordModal,
+    showAlertModal
   }
 });
 const getEffectiveSettingsState = () => settingsMod.getEffective();
@@ -1368,7 +1374,8 @@ initVersionInfoButton({
   buttonId: 'userMenuVersionBtn',
   popupId: 'versionInfoPopupAppMenu',
   openModal,
-  closeModal
+  closeModal,
+  showAlertModal
 });
 
 // 讓主畫面選單的版本資訊強制使用 modal（同登入頁）
@@ -1376,7 +1383,7 @@ if (userMenuVersionBtn) {
   userMenuVersionBtn.addEventListener('click', (event) => {
     event.preventDefault();
     event.stopPropagation();
-    showVersionModal({ openModal, closeModal });
+    showVersionModal({ openModal, closeModal, showAlertModal });
   });
 }
 
@@ -1398,6 +1405,7 @@ const messagesPane = initMessagesPane({
   switchTab: (tab, options) => switchTab(tab, options),
   getCurrentTab: () => currentTab,
   showConfirmModal,
+  showAlertModal,
   saveContactApi: saveContact,
   setupSwipe,
   closeSwipe,
@@ -1439,6 +1447,7 @@ const drivePane = initDrivePane({
     openModal,
     closeModal,
     showConfirmModal,
+    showAlertModal,
     showModalLoading,
     updateLoadingModal,
     showProgressModal,

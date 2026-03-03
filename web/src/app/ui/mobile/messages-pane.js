@@ -324,6 +324,7 @@ export function initMessagesPane({
   switchTab,
   getCurrentTab,
   showConfirmModal,
+  showAlertModal,
   removeContactLocal,
   setupSwipe,
   closeSwipe,
@@ -373,7 +374,7 @@ export function initMessagesPane({
       scrollEl: !!elements.scrollEl
     });
     try {
-      alert('System Error: Message UI Elements Missing. Please screenshot console.');
+      if (typeof showAlertModal === 'function') showAlertModal({ title: '系統錯誤', message: 'Message UI Elements Missing. Please screenshot console.' });
     } catch { }
   }
 
@@ -1241,7 +1242,7 @@ export function initMessagesPane({
           // We already sent the encrypted signal via sendDrPlaintext above.
         } catch (err) {
           log({ conversationDeleteError: err?.message || err });
-          alert(err?.message || '刪除對話失敗，請稍後再試。');
+          if (typeof showAlertModal === 'function') showAlertModal({ title: '刪除失敗', message: err?.message || '刪除對話失敗，請稍後再試。' });
         }
       },
       onCancel: () => { if (element) closeSwipe?.(element); }

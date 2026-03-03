@@ -742,6 +742,31 @@
 .btn-danger:active {
   transform: translateY(1px);
 }
+
+/* Alert modal (single OK button) */
+.modal.alert-modal .modal-panel {
+  width: min(360px, 92vw);
+  max-height: none;
+}
+
+.modal.alert-modal .modal-body {
+  background: var(--bg-surface);
+  padding: 24px 24px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.alert-message {
+  font-size: 14px;
+  color: var(--fg);
+  line-height: 1.6;
+}
+
+.alert-actions {
+  display: flex;
+  justify-content: flex-end;
+}
 .modal.settings-modal .modal-panel {
   width: min(360px, 92vw);
   max-height: none;

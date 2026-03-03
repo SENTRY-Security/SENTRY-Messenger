@@ -16,7 +16,7 @@ export function createSettingsModule({ deps }) {
   const { log, showToast, sessionStore, openModal, closeModal, resetModalVariants,
     DEFAULT_SETTINGS, saveSettings, loadSettings,
     getMkRaw, getAccountDigest,
-    openChangePasswordModal } = deps;
+    openChangePasswordModal, showAlertModal } = deps;
 
   let initPromise = null;
   let customLogoutCtx = null;
@@ -287,7 +287,7 @@ export function createSettingsModule({ deps }) {
       event.preventDefault();
       openChangePasswordModal().catch((err) => {
         log({ changePasswordModalError: err?.message || err });
-        alert('目前無法開啟變更密碼視窗，請稍後再試。');
+        if (typeof showAlertModal === 'function') showAlertModal({ title: '操作失敗', message: '目前無法開啟變更密碼視窗，請稍後再試。' });
       });
     });
 
@@ -328,7 +328,7 @@ export function createSettingsModule({ deps }) {
       logoutDefaultRadio.disabled = true;
       logoutCustomRadio && (logoutCustomRadio.disabled = true);
       try { await persistPatch({ autoLogoutRedirectMode: 'default', autoLogoutCustomUrl: null }); refreshSummary(); }
-      catch (err) { log({ logoutRedirectModeSaveError: err?.message || err, mode: 'default' }); alert('儲存設定失敗，請稍後再試。'); }
+      catch (err) { log({ logoutRedirectModeSaveError: err?.message || err, mode: 'default' }); if (typeof showAlertModal === 'function') showAlertModal({ title: '儲存失敗', message: '儲存設定失敗，請稍後再試。' }); }
       finally { logoutDefaultRadio.disabled = false; if (logoutCustomRadio) logoutCustomRadio.disabled = false; syncRadios(); }
     });
     logoutCustomRadio?.addEventListener('change', (event) => {
@@ -345,7 +345,7 @@ export function createSettingsModule({ deps }) {
         if (previous[key] === nextValue) return;
         input.disabled = true;
         try { await persistPatch({ [key]: nextValue }); if (key === 'autoLogoutOnBackground') _autoLoggedOut = false; }
-        catch (err) { log({ settingsAutoSaveError: err?.message || err }); alert('儲存設定失敗，請稍後再試。'); input.checked = !!previous[key]; }
+        catch (err) { log({ settingsAutoSaveError: err?.message || err }); if (typeof showAlertModal === 'function') showAlertModal({ title: '儲存失敗', message: '儲存設定失敗，請稍後再試。' }); input.checked = !!previous[key]; }
         finally { input.disabled = false; }
       });
     };
@@ -359,7 +359,7 @@ export function createSettingsModule({ deps }) {
         autoLogoutInput.disabled = true;
         setAutoLogoutVis(nextValue);
         try { await persistPatch({ autoLogoutOnBackground: nextValue }); _autoLoggedOut = false; }
-        catch (err) { log({ settingsAutoSaveError: err?.message || err }); alert('儲存設定失敗，請稍後再試。'); autoLogoutInput.checked = prevValue; }
+        catch (err) { log({ settingsAutoSaveError: err?.message || err }); if (typeof showAlertModal === 'function') showAlertModal({ title: '儲存失敗', message: '儲存設定失敗，請稍後再試。' }); autoLogoutInput.checked = prevValue; }
         finally { autoLogoutInput.disabled = false; const state = getEffective(); setAutoLogoutVis(!!state.autoLogoutOnBackground); syncRadios(); }
       });
     }
