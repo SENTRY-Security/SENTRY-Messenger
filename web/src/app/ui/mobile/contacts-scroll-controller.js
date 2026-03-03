@@ -44,6 +44,7 @@ export function createContactsScrollController({
   let destroyed = false;
   let upwardAccum = 0;       // cumulative upward scroll px (for restore trigger)
   let bounceGuardUntil = 0;  // suppress restore until this timestamp
+  let scrollEndTimer = 0;    // debounce timer for scroll-end safety check
 
   /* ---- helpers ---- */
   function applyHeaderOpacity(scrollTop) {
@@ -102,9 +103,26 @@ export function createContactsScrollController({
     if (tabEl) tabEl.style.paddingBottom = '';
   }
 
+  /* ---- scroll-end safety: re-apply header after bounce settles ---- */
+  function onScrollSettle() {
+    if (destroyed) return;
+    const st = scrollEl.scrollTop;
+    applyHeaderOpacity(st);
+    if (searchWrap) {
+      if (st >= headerH) searchWrap.classList.add('search-floating');
+      else searchWrap.classList.remove('search-floating');
+    }
+  }
+
   /* ---- main scroll handler ---- */
   function onScroll() {
     if (destroyed) return;
+    // Debounced scroll-end check — corrects header/search state after
+    // iOS rubber-band bounce settles (the final scrollTop may differ from
+    // the last RAF-processed value).
+    if (scrollEndTimer) clearTimeout(scrollEndTimer);
+    scrollEndTimer = setTimeout(onScrollSettle, 150);
+
     if (rafId) return; // already scheduled
     rafId = requestAnimationFrame(() => {
       rafId = 0;
@@ -176,6 +194,7 @@ export function createContactsScrollController({
 
   function restoreBars() {
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    if (scrollEndTimer) { clearTimeout(scrollEndTimer); scrollEndTimer = 0; }
     if (barsHidden) showBars();
     // Force-clear transforms in case of partial state
     if (topbarEl) { topbarEl.style.transition = ''; topbarEl.style.transform = ''; topbarEl.style.boxShadow = ''; }
@@ -198,6 +217,7 @@ export function createContactsScrollController({
   function destroy() {
     destroyed = true;
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    if (scrollEndTimer) { clearTimeout(scrollEndTimer); scrollEndTimer = 0; }
     scrollEl.removeEventListener('scroll', onScroll);
     restoreBars();
     if (headerEl) { headerEl.style.opacity = ''; headerEl.style.visibility = ''; }
