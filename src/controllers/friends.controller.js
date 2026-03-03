@@ -76,7 +76,8 @@ export const deleteContact = async (req, res) => {
   }
 
   const path = '/d1/friends/contact-delete';
-  const payload = { ownerAccountDigest, peerAccountDigest };
+  const conversationId = typeof input.conversation_id === 'string' ? input.conversation_id.trim() : null;
+  const payload = { ownerAccountDigest, peerAccountDigest, ...(conversationId ? { conversationId } : null) };
   const body = JSON.stringify(payload);
   const sig = signHmac(path, body, HMAC_SECRET);
 

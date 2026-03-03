@@ -1982,6 +1982,32 @@ shareController?.setWsSend?.(wsSend);
 setCallSignalSender(wsSend);
 wsIntegration.startMonitor();
 
+// ── Pending invite poll handler ──
+// When the scanner side has pending invites, the share-controller dispatches
+// this event to trigger the live pipeline to check for the owner's contact-share
+// message. This covers scenarios where the WS notification was silently dropped.
+document.addEventListener('sentry:poll-pending-invite', (e) => {
+  const detail = e?.detail;
+  if (!detail?.conversationId || !detail?.peerAccountDigest) return;
+  const selfDeviceId = getDeviceId() || ensureDeviceId();
+  const syntheticEvent = {
+    type: 'secure-message',
+    conversationId: detail.conversationId,
+    senderAccountDigest: detail.peerAccountDigest,
+    senderDeviceId: detail.peerDeviceId || null,
+    targetDeviceId: detail.targetDeviceId || selfDeviceId,
+    targetAccountDigest: getAccountDigest()
+  };
+  const ctx = {
+    conversationId: detail.conversationId,
+    tokenB64: detail.tokenB64 || null,
+    peerAccountDigest: detail.peerAccountDigest,
+    peerDeviceId: detail.peerDeviceId || null,
+    sourceTag: 'pending_invite_poll'
+  };
+  messagesFlowFacade.onWsIncomingMessageNew({ event: syntheticEvent }, ctx);
+});
+
 profileInitPromise
   .then(() => {
     const state = sessionStore.profileState;

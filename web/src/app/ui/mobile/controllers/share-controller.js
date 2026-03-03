@@ -144,7 +144,12 @@ export function setupShareController(options) {
   }
 
   const pendingInviteTimers = new Map();
+  const pendingInvitePollTimers = new Map();
   const pendingInviteConsumes = new Map();
+
+  // Poll schedule: 3s, 5s, 8s, 15s, 30s, then every 30s
+  const POLL_SCHEDULE_MS = [3000, 5000, 8000, 15000, 30000];
+  const POLL_MAX_INTERVAL_MS = 30000;
 
   function ensurePendingInviteStore() {
     const store = restorePendingInvites();
@@ -198,6 +203,70 @@ export function setupShareController(options) {
     notifyPendingInvitesChanged();
   }
 
+  // ── Pending invite poll: proactively fetch messages for pending conversations ──
+  // When the scanner delivers an invite and waits for the owner's contact-share,
+  // the WS notification may not arrive (e.g. server drops it if targetDeviceId is
+  // missing, or WS was disconnected). This poll periodically triggers the message
+  // flow pipeline to check for new messages in the pending conversation.
+
+  function schedulePendingInvitePoll(entry) {
+    if (!entry?.inviteId || !entry?.conversationId) return;
+    const inviteId = String(entry.inviteId).trim();
+    if (!inviteId) return;
+    cancelPendingInvitePoll(inviteId);
+    let attempt = 0;
+    const tick = () => {
+      const store = ensurePendingInviteStore();
+      if (!store.has(inviteId)) {
+        cancelPendingInvitePoll(inviteId);
+        return;
+      }
+      const current = store.get(inviteId);
+      const expiresAt = Number(current?.expiresAt || 0);
+      if (Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= Date.now() / 1000) {
+        cancelPendingInvitePoll(inviteId);
+        return;
+      }
+      dispatchPendingInvitePollEvent(current);
+      attempt++;
+      const delayMs = attempt < POLL_SCHEDULE_MS.length
+        ? POLL_SCHEDULE_MS[attempt]
+        : POLL_MAX_INTERVAL_MS;
+      const timer = setTimeout(tick, delayMs);
+      pendingInvitePollTimers.set(inviteId, timer);
+    };
+    const initialDelay = POLL_SCHEDULE_MS[0] || 3000;
+    const timer = setTimeout(tick, initialDelay);
+    pendingInvitePollTimers.set(inviteId, timer);
+  }
+
+  function cancelPendingInvitePoll(inviteId) {
+    const timer = pendingInvitePollTimers.get(inviteId);
+    if (timer) {
+      clearTimeout(timer);
+      pendingInvitePollTimers.delete(inviteId);
+    }
+  }
+
+  function dispatchPendingInvitePollEvent(entry) {
+    if (!entry?.conversationId || !entry?.ownerAccountDigest) return;
+    const selfDeviceId = getDeviceId() || ensureDeviceId();
+    try {
+      document.dispatchEvent(new CustomEvent('sentry:poll-pending-invite', {
+        detail: {
+          conversationId: entry.conversationId,
+          tokenB64: entry.conversationToken || null,
+          peerAccountDigest: entry.ownerAccountDigest,
+          peerDeviceId: entry.ownerDeviceId || null,
+          targetDeviceId: selfDeviceId || null,
+          inviteId: entry.inviteId
+        }
+      }));
+    } catch (err) {
+      console.warn('[share-controller] poll dispatch failed', err);
+    }
+  }
+
   function upsertPendingInvite(entry) {
     const store = ensurePendingInviteStore();
     const id = typeof entry?.inviteId === 'string' ? entry.inviteId.trim() : '';
@@ -223,6 +292,7 @@ export function setupShareController(options) {
     store.set(id, next);
     persistPendingInvites();
     schedulePendingInviteExpiry(next);
+    schedulePendingInvitePoll(next);
     notifyPendingInvitesChanged();
     logCapped('pendingInviteUpserted', { inviteId: id, expiresAt, state: 'pending' }, LOG_CAP);
     return next;
@@ -277,6 +347,7 @@ export function setupShareController(options) {
         clearTimeout(timer);
         pendingInviteTimers.delete(inviteId);
       }
+      cancelPendingInvitePoll(inviteId);
     }
     persistPendingInvites();
     notifyPendingInvitesChanged();
@@ -293,6 +364,7 @@ export function setupShareController(options) {
       clearTimeout(timer);
       pendingInviteTimers.delete(id);
     }
+    cancelPendingInvitePoll(id);
     persistPendingInvites();
     notifyPendingInvitesChanged();
   }
@@ -399,6 +471,7 @@ export function setupShareController(options) {
   if (pendingInviteStore instanceof Map) {
     for (const entry of pendingInviteStore.values()) {
       schedulePendingInviteExpiry(entry);
+      schedulePendingInvitePoll(entry);
     }
   }
 
@@ -3086,6 +3159,9 @@ export function setupShareController(options) {
     destroy() {
       clearPairingCountdown();
       clearInviteCountdown();
+      for (const inviteId of pendingInvitePollTimers.keys()) {
+        cancelPendingInvitePoll(inviteId);
+      }
     }
   };
 }

@@ -494,6 +494,31 @@ async function deleteContactByPeer(env, convId, _targetUid, targetAccountDigest 
   return total;
 }
 
+async function deleteConversationData(env, conversationId) {
+  if (!conversationId) return 0;
+  let total = 0;
+  const tables = [
+    { sql: `DELETE FROM messages_secure WHERE conversation_id=?1`, label: 'messages_secure' },
+    { sql: `DELETE FROM messages WHERE conv_id=?1`, label: 'messages' },
+    { sql: `DELETE FROM attachments WHERE conversation_id=?1`, label: 'attachments' },
+    { sql: `DELETE FROM media_objects WHERE conv_id=?1`, label: 'media_objects' },
+    { sql: `DELETE FROM message_key_vault WHERE conversation_id=?1`, label: 'message_key_vault' },
+    { sql: `DELETE FROM deletion_cursors WHERE conversation_id=?1`, label: 'deletion_cursors' },
+    { sql: `DELETE FROM conversation_deletion_log WHERE conversation_id=?1`, label: 'conversation_deletion_log' },
+    { sql: `DELETE FROM conversation_acl WHERE conversation_id=?1`, label: 'conversation_acl' },
+    { sql: `DELETE FROM conversations WHERE id=?1`, label: 'conversations' }
+  ];
+  for (const { sql, label } of tables) {
+    try {
+      const res = await env.DB.prepare(sql).bind(conversationId).run();
+      total += res?.meta?.changes || 0;
+    } catch (err) {
+      console.warn(`delete_conversation_${label}_failed`, conversationId, err?.message || err);
+    }
+  }
+  return total;
+}
+
 async function insertContactMessage(env, { convAccountDigest, peerAccountDigest, envelope, ts, messageId }) {
   await ensureDataTables(env);
   const normalized = normalizeEnvelope(envelope);
@@ -2058,6 +2083,7 @@ async function handleFriendsRoutes(req, env) {
     const results = [];
     const now = Math.floor(Date.now() / 1000);
 
+    // 1. Delete contact-type messages from contacts-{digest} conversations
     const targets = new Map();
     const addTarget = (convId, targetAccountDigest) => {
       if (!convId) return;
@@ -2084,6 +2110,47 @@ async function handleFriendsRoutes(req, env) {
       }
 
       results.push({ convId: entry.convId, removed, target: entry.targetAccountDigest || null });
+    }
+
+    // 2. Delete DM conversation data (all messages, attachments, vault keys, etc.)
+    const dmConversationIds = new Set();
+    // Use client-provided conversationId if available
+    const clientConvId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    if (clientConvId && !clientConvId.startsWith('contacts-')) {
+      dmConversationIds.add(clientConvId);
+    }
+    // Also discover shared conversations via conversation_acl
+    try {
+      const aclRows = await env.DB.prepare(`
+        SELECT a1.conversation_id
+          FROM conversation_acl a1
+          JOIN conversation_acl a2
+            ON a1.conversation_id = a2.conversation_id
+         WHERE a1.account_digest = ?1
+           AND a2.account_digest = ?2
+           AND a1.conversation_id NOT LIKE 'contacts-%'
+           AND a1.conversation_id NOT LIKE 'drive-%'
+           AND a1.conversation_id NOT LIKE 'profile-%'
+           AND a1.conversation_id NOT LIKE 'profile:%'
+           AND a1.conversation_id NOT LIKE 'settings-%'
+           AND a1.conversation_id NOT LIKE 'avatar-%'
+      `).bind(ownerAccountDigest, peerAccountDigest).all();
+      for (const row of (aclRows?.results || [])) {
+        if (row?.conversation_id) dmConversationIds.add(row.conversation_id);
+      }
+    } catch (err) {
+      console.warn('dm_conversation_lookup_failed', err?.message || err);
+    }
+    let dmRemoved = 0;
+    for (const dmConvId of dmConversationIds) {
+      try {
+        dmRemoved += await deleteConversationData(env, dmConvId);
+      } catch (err) {
+        console.warn('dm_conversation_delete_failed', dmConvId, err?.message || err);
+      }
+    }
+    if (dmRemoved > 0) {
+      results.push({ convId: 'dm', removed: dmRemoved, conversationIds: Array.from(dmConversationIds) });
     }
 
     return json({ ok: true, ts: now, results });
