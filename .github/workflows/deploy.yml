@@ -4,9 +4,38 @@ on:
   push:
 
 jobs:
+  # ── Detect which projects have changes ──────────────────────────────
+  changes:
+    runs-on: ubuntu-latest
+    name: Detect Changes
+    outputs:
+      worker: ${{ steps.filter.outputs.worker }}
+      web: ${{ steps.filter.outputs.web }}
+      backend: ${{ steps.filter.outputs.backend }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check changed paths
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            worker:
+              - 'data-worker/**'
+            web:
+              - 'web/**'
+            backend:
+              - 'src/**'
+              - 'package.json'
+              - 'package-lock.json'
+
+  # ── Data Worker (Cloudflare Worker) ─────────────────────────────────
   deploy-worker:
     runs-on: ubuntu-latest
     name: Deploy Data Worker
+    needs: changes
+    if: needs.changes.outputs.worker == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -52,9 +81,12 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CI: true
 
+  # ── Web (Cloudflare Pages) ────────────────────────────────────────────
   deploy-pages:
     runs-on: ubuntu-latest
     name: Deploy Web Pages
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -105,10 +137,12 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CI: true
 
+  # ── Node.js Backend (SSH + PM2) ───────────────────────────────────────
   deploy-backend:
     runs-on: ubuntu-latest
     name: Deploy Node.js Backend
-    needs: [deploy-worker, deploy-pages]
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     steps:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1
