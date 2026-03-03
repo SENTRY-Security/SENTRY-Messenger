@@ -147,17 +147,17 @@ html.no-anim .cover-spinner {
   background: transparent;
 }
 
-/* Floating glass state: extend edge-to-edge past parent padding */
+/* Floating glass state: opaque wrapper (matches body bg), glass on input */
 .contacts-search-wrap.search-floating {
-  margin: 0 -12px;
-  padding: 8px 12px 4px;
-  background: rgba(15, 23, 42, 0.55);
-  backdrop-filter: saturate(180%) blur(20px);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  margin: 0;
+  padding: 8px 0 4px;
+  background: var(--bg);
 }
 
 .contacts-search-wrap.search-floating > input.contacts-search {
   background: rgba(30, 41, 59, 0.45);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
   border-color: rgba(148, 163, 184, 0.18);
 }
 
