@@ -703,68 +703,78 @@
   border-color: rgba(56, 189, 248, 0.25);
 }
 
-.modal.confirm-modal .modal-panel {
-  width: min(360px, 92vw);
+/* Confirm & Alert modals — compact dark dialogs */
+.modal.confirm-modal .modal-panel,
+.modal.alert-modal .modal-panel {
+  width: min(300px, 86vw);
   max-height: none;
+  background: #0f172a;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
 }
 
-.modal.confirm-modal .modal-body {
-  background: var(--bg-surface);
-  padding: 24px 24px 20px;
+.modal.confirm-modal .modal-head,
+.modal.alert-modal .modal-head {
+  background: transparent;
+  border-bottom: none;
+  padding: 18px 20px 0;
+}
+
+.modal.confirm-modal .modal-head .modal-close,
+.modal.alert-modal .modal-head .modal-close {
+  display: none;
+}
+
+.modal.confirm-modal .modal-body,
+.modal.alert-modal .modal-body {
+  background: transparent;
+  padding: 12px 20px 20px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 20px;
 }
 
-.confirm-message {
+.confirm-message,
+.alert-message {
   font-size: 14px;
-  color: var(--fg);
+  color: #cbd5e1;
   line-height: 1.6;
+  text-align: center;
 }
 
-.confirm-actions {
+.confirm-actions,
+.alert-actions {
   display: flex;
-  justify-content: flex-end;
   gap: 10px;
 }
 
-.btn-danger {
-  background: #ef4444;
-  color: #fff;
-  border: 1px solid #ef4444;
-  padding: 8px 16px;
-  border-radius: 12px;
+.confirm-actions button,
+.alert-actions button {
+  flex: 1;
+  padding: 10px 0;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.06);
+  color: #e2e8f0;
+  font-size: 14px;
   cursor: pointer;
-  box-shadow: 0 6px 16px rgba(239, 68, 68, 0.25);
+}
+
+.confirm-actions button:active,
+.alert-actions button:active {
+  transform: translateY(1px);
+}
+
+.btn-danger {
+  background: #ef4444 !important;
+  color: #fff !important;
+  border-color: transparent !important;
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
 }
 
 .btn-danger:active {
   transform: translateY(1px);
-}
-
-/* Alert modal (single OK button) */
-.modal.alert-modal .modal-panel {
-  width: min(360px, 92vw);
-  max-height: none;
-}
-
-.modal.alert-modal .modal-body {
-  background: var(--bg-surface);
-  padding: 24px 24px 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.alert-message {
-  font-size: 14px;
-  color: var(--fg);
-  line-height: 1.6;
-}
-
-.alert-actions {
-  display: flex;
-  justify-content: flex-end;
 }
 .modal.settings-modal .modal-panel {
   width: min(360px, 92vw);
