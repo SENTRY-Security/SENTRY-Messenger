@@ -4,9 +4,8 @@
  * Drives progressive hide/show of topbar, navbar, and contact-list-header
  * based on native scroll position and direction.
  *
- * Phase 1 (0 → headerH):     "N個好友" fades out (position-driven)
- * Phase 2 (headerH → barTh):  Search bar scrolls out naturally
- * Phase 3 (> barTh):          Topbar/navbar slide out (position-driven, ~60px)
+ * Phase 1 (0 → barTh):   Search bar becomes sticky with glass background
+ * Phase 2 (> barTh):     Topbar/navbar slide out (position-driven, ~60px)
  *
  * Restore: direction-driven — as soon as user scrolls back toward top,
  * bars animate back immediately.
@@ -44,16 +43,8 @@ export function createContactsScrollController({
   let destroyed = false;
   let upwardAccum = 0;       // cumulative upward scroll px (for restore trigger)
   let bounceGuardUntil = 0;  // suppress restore until this timestamp
-  let scrollEndTimer = 0;    // debounce timer for scroll-end safety check
 
   /* ---- helpers ---- */
-  function applyHeaderOpacity(scrollTop) {
-    if (!headerEl) return;
-    const opacity = clamp(1 - scrollTop / headerH, 0, 1);
-    headerEl.style.opacity = String(opacity);
-    headerEl.style.visibility = opacity <= 0 ? 'hidden' : '';
-  }
-
   function hideBars(progress) {
     // progress: 0 = fully visible, 1 = fully hidden
     if (topbarEl) {
@@ -103,26 +94,9 @@ export function createContactsScrollController({
     if (tabEl) tabEl.style.paddingBottom = '';
   }
 
-  /* ---- scroll-end safety: re-apply header after bounce settles ---- */
-  function onScrollSettle() {
-    if (destroyed) return;
-    const st = scrollEl.scrollTop;
-    applyHeaderOpacity(st);
-    if (searchWrap) {
-      if (st >= headerH) searchWrap.classList.add('search-floating');
-      else searchWrap.classList.remove('search-floating');
-    }
-  }
-
   /* ---- main scroll handler ---- */
   function onScroll() {
     if (destroyed) return;
-    // Debounced scroll-end check — corrects header/search state after
-    // iOS rubber-band bounce settles (the final scrollTop may differ from
-    // the last RAF-processed value).
-    if (scrollEndTimer) clearTimeout(scrollEndTimer);
-    scrollEndTimer = setTimeout(onScrollSettle, 150);
-
     if (rafId) return; // already scheduled
     rafId = requestAnimationFrame(() => {
       rafId = 0;
@@ -130,10 +104,7 @@ export function createContactsScrollController({
       const scrollTop = scrollEl.scrollTop;
       const delta = scrollTop - prevScrollTop;
 
-      // Phase 1: header fade
-      applyHeaderOpacity(scrollTop);
-
-      // Phase 2: floating glass search bar when header scrolled out
+      // Search bar: sticky glass background when header scrolled out
       if (searchWrap) {
         if (scrollTop >= headerH) {
           searchWrap.classList.add('search-floating');
@@ -155,7 +126,7 @@ export function createContactsScrollController({
         upwardAccum = 0;
       }
 
-      // Phase 3: bar hide/show
+      // Bar hide/show
       if (scrollTop > barThreshold) {
         if (barsHidden && upwardAccum >= RESTORE_SCROLL_DIST
             && performance.now() > bounceGuardUntil) {
@@ -189,12 +160,9 @@ export function createContactsScrollController({
 
   /* ---- lifecycle ---- */
   scrollEl.addEventListener('scroll', onScroll, { passive: true });
-  // initial state
-  applyHeaderOpacity(scrollEl.scrollTop);
 
   function restoreBars() {
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
-    if (scrollEndTimer) { clearTimeout(scrollEndTimer); scrollEndTimer = 0; }
     if (barsHidden) showBars();
     // Force-clear transforms in case of partial state
     if (topbarEl) { topbarEl.style.transition = ''; topbarEl.style.transform = ''; topbarEl.style.boxShadow = ''; }
@@ -203,7 +171,6 @@ export function createContactsScrollController({
     if (tabEl) tabEl.style.paddingBottom = '';
     scrollEl.style.paddingBottom = '';
     if (searchWrap) searchWrap.classList.remove('search-floating');
-    // Restore header visibility (opacity/visibility set by applyHeaderOpacity)
     if (headerEl) { headerEl.style.opacity = ''; headerEl.style.visibility = ''; }
     barsHidden = false;
     upwardAccum = 0;
@@ -217,7 +184,6 @@ export function createContactsScrollController({
   function destroy() {
     destroyed = true;
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
-    if (scrollEndTimer) { clearTimeout(scrollEndTimer); scrollEndTimer = 0; }
     scrollEl.removeEventListener('scroll', onScroll);
     restoreBars();
     if (headerEl) { headerEl.style.opacity = ''; headerEl.style.visibility = ''; }
