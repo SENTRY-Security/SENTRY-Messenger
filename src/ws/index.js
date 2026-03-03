@@ -700,15 +700,13 @@ export function setupWebSocket(server) {
       const senderDev = canonicalDeviceId(senderDeviceId);
       const targetDev = canonicalDeviceId(targetDeviceId);
       if (!digest) return;
-      if (!senderDev || !targetDev) {
+      if (!senderDev) {
         logger.warn({
-          event: 'ws.sendContactRemoved.missing-device',
+          event: 'ws.sendContactRemoved.missing-sender-device',
           targetAccountDigest: digest,
           senderAccountDigest: canonicalAccountDigest(fromAccountDigest),
-          senderDeviceId: senderDev || null,
-          targetDeviceId: targetDev || null,
-          conversationId: conversationId || null
-        }, 'drop contact-removed due to missing deviceId');
+          senderDeviceId: senderDev || null
+        }, 'drop contact-removed due to missing senderDeviceId');
         return;
       }
       const senderDigest = canonicalAccountDigest(fromAccountDigest);
@@ -716,7 +714,7 @@ export function setupWebSocket(server) {
         type: 'contact-removed',
         peerAccountDigest: senderDigest,
         senderDeviceId: senderDev,
-        targetDeviceId: targetDev,
+        targetDeviceId: targetDev || null,
         conversationId: conversationId || null,
         ts: Date.now()
       });

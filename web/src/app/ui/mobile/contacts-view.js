@@ -4,6 +4,7 @@ import { sessionStore, restorePendingInvites, listPendingInvites, persistPending
 import { normalizeNickname } from '../../features/profile.js';
 import { escapeHtml } from './ui-utils.js';
 import { deleteContactSecret, getContactSecret, restoreContactSecrets } from '../../core/contact-secrets.js';
+import { triggerContactSecretsBackup } from '../../features/contact-backup.js';
 import { hydrateConversationsFromSecrets } from './session-store.js';
 import { bootstrapDrFromGuestBundle } from '../../features/dr-session.js';
 import { getAccountDigest, ensureDeviceId, normalizePeerIdentity, clearDrState, normalizeAccountDigest, normalizeDeviceId } from '../../core/store.js';
@@ -295,6 +296,10 @@ export function initContactsView(options) {
     }
     if (mutated) {
       deleteContactSecret(key);
+      // Update vault backup so the deleted secret is not restored on re-login
+      triggerContactSecretsBackup('contact-deleted', { force: true }).catch((err) => {
+        log({ contactDeleteBackupError: err?.message || err, peerAccountDigest: key });
+      });
       try {
         resetSecureConversation(key, { reason: 'contact-removed', source: 'contacts-view' });
       } catch (err) {
@@ -845,11 +850,18 @@ export function initContactsView(options) {
       stageEntry(payload, 'contacts-view:local-cache');
     }
     // contact-secrets 還原聯絡人（含 peerDeviceId/token）
+    // Only supplement contacts already known from D1 or local cache; don't create
+    // new entries purely from secrets to avoid resurrecting deleted contacts.
+    const d1Digests = new Set(fetched.map(e => normalizeAccountDigest(e?.peerAccountDigest)).filter(Boolean));
     if (secretMap instanceof Map) {
       for (const [peerKey, record] of secretMap.entries()) {
+        const digest = normalizeAccountDigest(peerKey?.split?.('::')?.[0] || peerKey);
+        if (digest && deletedContacts.has(digest)) continue;
+        if (digest && !d1Digests.has(digest) && !localCache.has(peerKey)) continue;
         const payload = resolveCorePayload({ ...record, peerAccountDigest: peerKey }, 'contacts-view:secrets');
         if (!payload) continue;
         if (processed.has(payload.peerKey)) continue;
+        if (payload.peerKey && isRecentlyRemoved(payload.peerKey)) continue;
         stageEntry(payload, 'contacts-view:secrets');
       }
     }

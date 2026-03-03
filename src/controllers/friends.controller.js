@@ -109,21 +109,13 @@ export const deleteContact = async (req, res) => {
       manager.notifyContactsReload(null, peerTargetDigest);
       const targetDeviceId = req.body?.target_device_id || req.body?.targetDeviceId || null;
       const conversationId = input.conversation_id || null;
-      if (targetDeviceId && conversationId) {
-        manager.sendContactRemoved(null, {
-          fromAccountDigest: ownerAccountDigest,
-          targetAccountDigest: peerTargetDigest,
-          senderDeviceId,
-          targetDeviceId,
-          conversationId
-        });
-      } else {
-        logger.warn({
-          event: 'ws_contact_delete_missing_fields',
-          targetDeviceId,
-          conversationId
-        }, 'skip sending contactRemoved due to missing fields');
-      }
+      manager.sendContactRemoved(null, {
+        fromAccountDigest: ownerAccountDigest,
+        targetAccountDigest: peerTargetDigest,
+        senderDeviceId,
+        targetDeviceId,
+        conversationId
+      });
     }
   } catch (err) {
     logger.warn({ err: err?.message || err }, 'ws_contact_delete_notify_failed');
