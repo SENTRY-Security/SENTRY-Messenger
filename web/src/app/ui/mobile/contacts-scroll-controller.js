@@ -22,7 +22,8 @@ export function createContactsScrollController({
   scrollEl,
   headerEl,
   topbarEl,
-  navbarEl
+  navbarEl,
+  contentEl
 }) {
   if (!scrollEl) return null;
 
@@ -31,6 +32,8 @@ export function createContactsScrollController({
   const searchWrap = scrollEl.querySelector('.contacts-search-wrap');
   const searchH = searchWrap ? searchWrap.offsetHeight + 8 : 50; // +margin
   const barThreshold = headerH + searchH;
+
+  const tabEl = scrollEl.closest('.tab');
 
   /* ---- state ---- */
   let prevScrollTop = 0;
@@ -60,6 +63,14 @@ export function createContactsScrollController({
       barsHidden = true;
       // Reduce scroll bottom padding since navbar is off-screen
       scrollEl.style.paddingBottom = '28px';
+      // Reclaim topbar/navbar space — pull content up into body padding area
+      if (topbarEl) topbarEl.style.boxShadow = 'none';
+      if (contentEl) {
+        contentEl.style.marginTop = 'calc(-1 * var(--topbar-offset) + env(safe-area-inset-top, 0px))';
+        contentEl.style.height = 'calc(var(--app-height) - env(safe-area-inset-top, 0px))';
+        contentEl.style.minHeight = contentEl.style.height;
+      }
+      if (tabEl) tabEl.style.paddingBottom = '0';
     }
   }
 
@@ -68,7 +79,9 @@ export function createContactsScrollController({
     barsHidden = false;
     // Restore scroll padding for navbar
     scrollEl.style.paddingBottom = '';
+    // Restore topbar/navbar space with matching transition
     if (topbarEl) {
+      topbarEl.style.boxShadow = '';
       topbarEl.style.transition = 'transform 220ms ease-out';
       topbarEl.style.transform = '';
     }
@@ -76,6 +89,13 @@ export function createContactsScrollController({
       navbarEl.style.transition = 'transform 220ms ease-out';
       navbarEl.style.transform = '';
     }
+    if (contentEl) {
+      contentEl.style.transition = 'margin-top 220ms ease-out, height 220ms ease-out, min-height 220ms ease-out';
+      contentEl.style.marginTop = '';
+      contentEl.style.height = '';
+      contentEl.style.minHeight = '';
+    }
+    if (tabEl) tabEl.style.paddingBottom = '';
   }
 
   /* ---- main scroll handler ---- */
@@ -129,8 +149,10 @@ export function createContactsScrollController({
   function restoreBars() {
     if (barsHidden) showBars();
     // Force-clear transforms in case of partial state
-    if (topbarEl) { topbarEl.style.transition = ''; topbarEl.style.transform = ''; }
+    if (topbarEl) { topbarEl.style.transition = ''; topbarEl.style.transform = ''; topbarEl.style.boxShadow = ''; }
     if (navbarEl) { navbarEl.style.transition = ''; navbarEl.style.transform = ''; }
+    if (contentEl) { contentEl.style.transition = ''; contentEl.style.marginTop = ''; contentEl.style.height = ''; contentEl.style.minHeight = ''; }
+    if (tabEl) tabEl.style.paddingBottom = '';
     scrollEl.style.paddingBottom = '';
     barsHidden = false;
   }

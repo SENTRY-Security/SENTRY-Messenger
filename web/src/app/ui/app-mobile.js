@@ -1512,7 +1512,7 @@ presenceManager = createPresenceManager({
 });
 
 const contactsView = initContactsView({
-  dom: { contactsListEl, contactsScrollEl, contactsSearchEl, contactsRefreshEl, contactsRefreshLabel, contactsCountEl, contactsHeaderEl, topbarEl: document.querySelector('.topbar'), navbarEl },
+  dom: { contactsListEl, contactsScrollEl, contactsSearchEl, contactsRefreshEl, contactsRefreshLabel, contactsCountEl, contactsHeaderEl, topbarEl: document.querySelector('.topbar'), navbarEl, contentEl: document.querySelector('.content') },
   loadContactsApi: loadContacts,
   saveContactApi: saveContact,
   friendsDeleteContact,
