@@ -26,6 +26,9 @@ export class ConversationListController extends BaseController {
         this.conversationPullStartX = 0;
         this.conversationPullInvalid = false;
         this.conversationsRefreshing = false;
+        // Scroll-vs-tap detection: suppress click when user is scrolling
+        this._touchStartY = 0;
+        this._scrolledDuringTouch = false;
     }
 
     /**
@@ -875,19 +878,14 @@ export class ConversationListController extends BaseController {
             });
 
             li.addEventListener('click', (e) => {
+                // Suppress accidental selection when user was scrolling
+                if (this._scrolledDuringTouch) return;
                 if (li.classList.contains('show-delete')) {
                     e.preventDefault();
                     e.stopPropagation();
                     this.deps.closeSwipe?.(li);
                     return;
                 }
-                const hasFn = !!this.deps.setActiveConversation;
-                console.log('[ConversationList] item clicked', {
-                    peerDigest,
-                    hasFn,
-                    target: e.target.className,
-                    itemClasses: li.className
-                });
                 if (e.target.closest('.item-delete')) return;
                 if (li.classList.contains('show-delete')) { this.deps.closeSwipe?.(li); return; }
                 const threadKey = this._threadPeer(thread) || peerDigest;
@@ -923,6 +921,21 @@ export class ConversationListController extends BaseController {
             this.elements.conversationList.addEventListener('touchmove', (e) => this.handleConversationPullMove(e), { passive: false });
             this.elements.conversationList.addEventListener('touchend', () => this.handleConversationPullEnd());
             this.elements.conversationList.addEventListener('touchcancel', () => this.handleConversationPullEnd());
+
+            // Scroll-vs-tap: track vertical finger movement to suppress click during scroll
+            this.elements.conversationList.addEventListener('touchstart', (e) => {
+                if (e.touches.length === 1) {
+                    this._touchStartY = e.touches[0].clientY;
+                    this._scrolledDuringTouch = false;
+                }
+            }, { passive: true });
+            this.elements.conversationList.addEventListener('touchmove', (e) => {
+                if (!this._scrolledDuringTouch && e.touches.length === 1) {
+                    if (Math.abs(e.touches[0].clientY - this._touchStartY) > 10) {
+                        this._scrolledDuringTouch = true;
+                    }
+                }
+            }, { passive: true });
         }
     }
 }
