@@ -10,6 +10,8 @@
  *
  * Restore: direction-driven — as soon as user scrolls back toward top,
  * bars animate back immediately.
+ *
+ * No position:fixed layout changes — items never resize.
  */
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -20,9 +22,7 @@ export function createContactsScrollController({
   scrollEl,
   headerEl,
   topbarEl,
-  navbarEl,
-  tabEl,
-  contentEl
+  navbarEl
 }) {
   if (!scrollEl) return null;
 
@@ -58,16 +58,16 @@ export function createContactsScrollController({
     }
     if (progress >= 1 && !barsHidden) {
       barsHidden = true;
-      if (tabEl) tabEl.classList.add('contacts-fullscreen');
-      if (contentEl) contentEl.classList.add('contacts-content-fullscreen');
+      // Reduce scroll bottom padding since navbar is off-screen
+      scrollEl.style.paddingBottom = '28px';
     }
   }
 
   function showBars() {
     if (!barsHidden) return;
     barsHidden = false;
-    if (tabEl) tabEl.classList.remove('contacts-fullscreen');
-    if (contentEl) contentEl.classList.remove('contacts-content-fullscreen');
+    // Restore scroll padding for navbar
+    scrollEl.style.paddingBottom = '';
     if (topbarEl) {
       topbarEl.style.transition = 'transform 220ms ease-out';
       topbarEl.style.transform = '';
@@ -100,8 +100,6 @@ export function createContactsScrollController({
           // position-driven hide
           const progress = clamp((scrollTop - barThreshold) / BAR_SCROLL_RANGE, 0, 1);
           hideBars(progress);
-        } else if (!scrollingDown && barsHidden) {
-          // already hidden, keep hidden (no-op)
         }
       } else {
         // scrolled back above threshold — bars must be visible
@@ -130,11 +128,10 @@ export function createContactsScrollController({
 
   function restoreBars() {
     if (barsHidden) showBars();
-    // Also force-clear transforms in case of partial state
+    // Force-clear transforms in case of partial state
     if (topbarEl) { topbarEl.style.transition = ''; topbarEl.style.transform = ''; }
     if (navbarEl) { navbarEl.style.transition = ''; navbarEl.style.transform = ''; }
-    if (tabEl) tabEl.classList.remove('contacts-fullscreen');
-    if (contentEl) contentEl.classList.remove('contacts-content-fullscreen');
+    scrollEl.style.paddingBottom = '';
     barsHidden = false;
   }
 

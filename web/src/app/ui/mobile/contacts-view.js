@@ -41,10 +41,8 @@ export function initContactsView(options) {
     contactsRefreshEl,
     contactsRefreshLabel,
     contactsHeaderEl,
-    contactsTabEl,
     topbarEl,
-    navbarEl,
-    contentEl
+    navbarEl
   } = dom;
 
   if (!contactsListEl) throw new Error('contactsListEl missing');
@@ -1295,9 +1293,7 @@ export function initContactsView(options) {
     scrollEl: contactsScrollEl,
     headerEl: contactsHeaderEl || contactsScrollEl?.querySelector('.contact-list-header') || null,
     topbarEl: topbarEl || document.querySelector('.topbar'),
-    navbarEl: navbarEl || document.querySelector('.navbar'),
-    tabEl: contactsTabEl || document.getElementById('tab-contacts'),
-    contentEl: contentEl || document.querySelector('main.content')
+    navbarEl: navbarEl || document.querySelector('.navbar')
   });
 
   refreshPendingInviteStatus({ source: 'startup' }).catch((err) => {

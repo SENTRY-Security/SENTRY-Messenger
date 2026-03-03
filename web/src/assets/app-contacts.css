@@ -49,23 +49,6 @@ html.no-anim .cover-spinner {
   min-height: 0;
 }
 
-/* Fullscreen mode: bars hidden, contacts fills viewport */
-#tab-contacts.contacts-fullscreen {
-  position: fixed;
-  inset: 0;
-  height: auto;
-  z-index: 9;
-}
-
-#tab-contacts.contacts-fullscreen .contacts-scroll {
-  padding-bottom: 28px;
-}
-
-.contacts-content-fullscreen {
-  /* Allow contacts tab to escape normal flow when fullscreen */
-  overflow: visible !important;
-}
-
 .contacts-scroll {
   position: relative;
   padding: 0;

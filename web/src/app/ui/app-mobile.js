@@ -1243,7 +1243,6 @@ const contactsSearchEl = document.getElementById('contactsSearch');
 const contactsRefreshEl = document.getElementById('contactsRefreshHint');
 const contactsRefreshLabel = contactsRefreshEl?.querySelector('.label') || null;
 const contactsHeaderEl = contactsScrollEl?.querySelector('.contact-list-header') || null;
-const contactsTabEl = document.getElementById('tab-contacts');
 const connectionIndicator = document.getElementById('connectionIndicator');
 const btnUp = document.getElementById('btnUp');
 const btnNewFolder = document.getElementById('btnNewFolder');
@@ -1513,7 +1512,7 @@ presenceManager = createPresenceManager({
 });
 
 const contactsView = initContactsView({
-  dom: { contactsListEl, contactsScrollEl, contactsSearchEl, contactsRefreshEl, contactsRefreshLabel, contactsCountEl, contactsHeaderEl, contactsTabEl, topbarEl: document.querySelector('.topbar'), navbarEl, contentEl: mainContentEl },
+  dom: { contactsListEl, contactsScrollEl, contactsSearchEl, contactsRefreshEl, contactsRefreshLabel, contactsCountEl, contactsHeaderEl, topbarEl: document.querySelector('.topbar'), navbarEl },
   loadContactsApi: loadContacts,
   saveContactApi: saveContact,
   friendsDeleteContact,
