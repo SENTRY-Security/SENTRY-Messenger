@@ -294,7 +294,7 @@ body.messages-fullscreen .messages-scroll {
   display: flex;
   justify-content: center;
   padding: 8px 16px calc(8px + env(safe-area-inset-bottom, 0px));
-  background: transparent;
+  background: #0f172a;
   border: none;
   box-shadow: none;
   pointer-events: none;
