@@ -1072,7 +1072,7 @@ function switchTab(name, options = {}) {
   tabs.forEach((t) => {
     const page = document.getElementById(`tab-${t}`);
     const btn = document.getElementById(`nav-${t}`);
-    if (page) page.style.display = t === name ? 'block' : 'none';
+    if (page) page.style.display = t === name ? '' : 'none';
     if (btn) btn.classList.toggle('active', t === name);
   });
 
