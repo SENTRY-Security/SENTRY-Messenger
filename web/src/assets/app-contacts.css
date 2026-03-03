@@ -144,6 +144,7 @@ html.no-anim .cover-spinner {
   display: flex;
   align-items: center;
   margin: 8px 0 4px;
+  background: transparent;
 }
 
 .contacts-search-wrap.search-floating > input.contacts-search {
