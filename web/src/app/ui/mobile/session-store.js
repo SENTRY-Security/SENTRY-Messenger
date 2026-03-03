@@ -413,7 +413,7 @@ export function persistPendingVaultPuts() {
   } catch { }
 }
 
-export async function hydrateConversationsFromSecrets() {
+export async function hydrateConversationsFromSecrets({ knownD1Digests = null } = {}) {
   const secrets = restoreContactSecrets();
   if (!(secrets instanceof Map)) return { ready: 0, pending: 0 };
   const { upsertContactCore } = await import('./contact-core-store.js');
@@ -425,6 +425,9 @@ export async function hydrateConversationsFromSecrets() {
         ? peerKey.split('::')[0]
         : peerKey
     );
+    // Skip contacts not present in D1 to prevent resurrecting deleted contacts
+    // from stale vault backup secrets.
+    if (knownD1Digests && digest && !knownD1Digests.has(digest)) continue;
     const peerDeviceId = normalizePeerDeviceId(
       info?.peerDeviceId
       || (typeof peerKey === 'string' && peerKey.includes('::') ? peerKey.split('::')[1] : null)

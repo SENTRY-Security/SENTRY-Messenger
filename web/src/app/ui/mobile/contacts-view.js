@@ -967,7 +967,23 @@ export function initContactsView(options) {
         }
       }
     }
-    try { await hydrateConversationsFromSecrets(); } catch { }
+    try { await hydrateConversationsFromSecrets({ knownD1Digests: d1Digests }); } catch { }
+    // Clean stale secrets not present in D1 to prevent vault backup from
+    // resurrecting deleted contacts on next login.
+    if (d1Digests.size > 0 && secretMap instanceof Map) {
+      const staleKeys = [];
+      for (const [peerKey] of secretMap.entries()) {
+        const dig = normalizeAccountDigest(peerKey?.split?.('::')?.[0] || peerKey);
+        if (dig && !d1Digests.has(dig)) staleKeys.push(peerKey);
+      }
+      for (const key of staleKeys) deleteContactSecret(key);
+      if (staleKeys.length > 0) {
+        log({ staleSecretsRemoved: staleKeys.length });
+        triggerContactSecretsBackup('stale-secret-cleanup', { force: true }).catch((err) => {
+          log({ staleSecretCleanupBackupError: err?.message || err });
+        });
+      }
+    }
     renderContacts();
     presenceManager.sendPresenceSubscribe();
     updateContactCount();
