@@ -2606,7 +2606,9 @@ export function setupShareController(options) {
         reason: 'invite-consume'
       });
     } catch (err) {
+      console.error('[share-controller] sendContactShare failed', err);
       log({ contactInitShareError: err?.message || err, peerAccountDigest: peerDigest });
+      throw err;
     }
 
     // [FIX] Backup contact-secrets (incl. DR state) to server immediately

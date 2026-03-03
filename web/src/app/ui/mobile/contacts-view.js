@@ -3,7 +3,7 @@ import { invitesStatus } from '../../api/invites.js';
 import { sessionStore, restorePendingInvites, listPendingInvites, persistPendingInvites } from './session-store.js';
 import { normalizeNickname } from '../../features/profile.js';
 import { escapeHtml } from './ui-utils.js';
-import { deleteContactSecret, getContactSecret, restoreContactSecrets, isContactTombstoned } from '../../core/contact-secrets.js';
+import { deleteContactSecret, getContactSecret, restoreContactSecrets, isContactTombstoned, clearContactTombstone } from '../../core/contact-secrets.js';
 import { triggerContactSecretsBackup } from '../../features/contact-backup.js';
 import { hydrateConversationsFromSecrets } from './session-store.js';
 import { bootstrapDrFromGuestBundle } from '../../features/dr-session.js';
@@ -1380,6 +1380,8 @@ export function initContactsView(options) {
       deletedContacts.delete(accountOnly);
       deletedContacts.delete(accountOnly.toUpperCase());
       deletedContacts.delete(accountOnly.toLowerCase());
+      // Clear the persistent tombstone so the contact survives page refresh
+      clearContactTombstone(accountOnly);
     }
     // Also clear recently-removed guard for all keys matching this digest
     for (const key of recentlyRemovedPeers.keys()) {

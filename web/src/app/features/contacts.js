@@ -19,7 +19,7 @@ import {
 import { ensureDrSession } from './dr-session.js';
 import { normalizeNickname } from './profile.js';
 import { decryptContactPayload, encryptContactPayload, isContactShareEnvelope } from './contact-share.js';
-import { getContactSecret, setContactSecret } from '../core/contact-secrets.js';
+import { getContactSecret, setContactSecret, clearContactTombstone } from '../core/contact-secrets.js';
 import { log, logCapped } from '../core/log.js';
 import { upsertContactCore, findContactCoreByAccountDigest, resolveContactAvatarUrl, listContactCoreEntries } from '../ui/mobile/contact-core-store.js';
 import { restorePendingInvites, persistPendingInvites } from '../ui/mobile/session-store.js';
@@ -379,6 +379,9 @@ export async function applyContactShareFromCommit({
   } else {
     if (DEBUG.contactsA1) console.log('[contacts] diff check: no existing entry for', digest);
   }
+
+  // Clear persistent deletion tombstone so re-added contact survives page refresh
+  clearContactTombstone(digest);
 
   try {
     upsertContactCore(corePayload, sourceTag);
