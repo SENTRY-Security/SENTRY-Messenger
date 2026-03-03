@@ -22,7 +22,7 @@
   z-index: 1;
   width: min(640px, 92vw);
   max-height: 78vh;
-  background: linear-gradient(165deg, rgba(30, 41, 59, 0.98), rgba(15, 23, 42, 0.96));
+  background: linear-gradient(165deg, #1e293b, #0f172a);
   border: 1px solid var(--line);
   border-radius: 18px;
   box-shadow: 0 22px 64px rgba(0, 0, 0, 0.45), 0 12px 28px rgba(0, 0, 0, 0.25);
@@ -40,8 +40,7 @@
   padding: 14px 18px;
   border-bottom: 1px solid var(--line);
   gap: 12px;
-  background: rgba(30, 41, 59, 0.92);
-  backdrop-filter: blur(12px);
+  background: #1e293b;
 }
 
 .modal-title {
