@@ -1109,18 +1109,22 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
     }
     structuredVersion = structured.version || null;
     structuredGeneratedAt = structured.generatedAt || null;
+    const tombstones = loadTombstones();
     for (const entry of structured.entries) {
       try {
+        const entryDigest = normalizeAccountDigest(
+          entry?.peerAccountDigest || entry?.peer_account_digest || entry?.accountDigest || entry?.account_digest || entry?.peerKey || entry?.peer_key || entry?.peer || null
+        );
+        if (entryDigest && tombstones.has(entryDigest)) {
+          debugLog('restore-skip-tombstoned', { digest: entryDigest, source: reason });
+          continue;
+        }
         const normalized = normalizeStructuredEntry(entry, { source: reason });
         if (!normalized) {
-          const rawDigest = normalizeAccountDigest(
-            entry?.peerAccountDigest || entry?.peer_account_digest || entry?.accountDigest || entry?.account_digest || entry?.peerKey || entry?.peer_key || entry?.peer || null
-          );
-          const rawDevice = normalizePeerDeviceId(entry?.peerDeviceId || entry?.peer_device_id || null);
           logContactSecretsRestoreTrace({
             reason: 'normalize-entry-failed',
-            peerAccountDigest: rawDigest || null,
-            peerDeviceId: rawDevice || null,
+            peerAccountDigest: entryDigest || null,
+            peerDeviceId: normalizePeerDeviceId(entry?.peerDeviceId || entry?.peer_device_id || null),
             source: reason || null
           });
           continue;
@@ -2222,7 +2226,62 @@ export function deleteContactSecret(peerAccountDigest) {
   if (map.delete(key)) {
     clearContactAliases(key);
     persistContactSecrets();
+    // Mark as tombstoned so vault backup restore cannot resurrect this contact
+    const digest = key.includes('::') ? key.split('::')[0] : key;
+    if (digest) addContactDeleteTombstone(digest);
   }
+}
+
+// --- Contact deletion tombstones ---
+// Persisted in localStorage to survive page refresh.  Prevents stale vault
+// backups from resurrecting a contact the user already deleted locally.
+const TOMBSTONE_KEY = 'contactDeleteTombstones';
+const TOMBSTONE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+function loadTombstones() {
+  try {
+    const raw = (getLocalStorageSafe() || getSessionStorageSafe())?.getItem(TOMBSTONE_KEY);
+    if (!raw) return new Map();
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return new Map();
+    const now = Date.now();
+    const map = new Map();
+    for (const [digest, ts] of arr) {
+      if (typeof digest === 'string' && typeof ts === 'number' && now - ts < TOMBSTONE_TTL_MS) {
+        map.set(digest.toUpperCase(), ts);
+      }
+    }
+    return map;
+  } catch { return new Map(); }
+}
+
+function saveTombstones(map) {
+  try {
+    const arr = Array.from(map.entries());
+    const json = JSON.stringify(arr);
+    const local = getLocalStorageSafe();
+    if (local) local.setItem(TOMBSTONE_KEY, json);
+    const session = getSessionStorageSafe();
+    if (session) session.setItem(TOMBSTONE_KEY, json);
+  } catch { /* best-effort */ }
+}
+
+export function addContactDeleteTombstone(digest) {
+  if (!digest) return;
+  const map = loadTombstones();
+  map.set(String(digest).toUpperCase(), Date.now());
+  saveTombstones(map);
+}
+
+export function isContactTombstoned(digest) {
+  if (!digest) return false;
+  return loadTombstones().has(String(digest).toUpperCase());
+}
+
+export function clearContactTombstone(digest) {
+  if (!digest) return;
+  const map = loadTombstones();
+  if (map.delete(String(digest).toUpperCase())) saveTombstones(map);
 }
 
 /**

@@ -14,7 +14,7 @@ export function normalizeUidHex(value) {
 
 export function normalizeAccountDigest(value) {
   if (!value) return null;
-  const cleaned = String(value).replace(/[^0-9A-F]/g, '').toUpperCase();
+  const cleaned = String(value).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
   return AccountDigestRegex.test(cleaned) ? cleaned : null;
 }
 

@@ -3,7 +3,7 @@ import { invitesStatus } from '../../api/invites.js';
 import { sessionStore, restorePendingInvites, listPendingInvites, persistPendingInvites } from './session-store.js';
 import { normalizeNickname } from '../../features/profile.js';
 import { escapeHtml } from './ui-utils.js';
-import { deleteContactSecret, getContactSecret, restoreContactSecrets } from '../../core/contact-secrets.js';
+import { deleteContactSecret, getContactSecret, restoreContactSecrets, isContactTombstoned } from '../../core/contact-secrets.js';
 import { triggerContactSecretsBackup } from '../../features/contact-backup.js';
 import { hydrateConversationsFromSecrets } from './session-store.js';
 import { bootstrapDrFromGuestBundle } from '../../features/dr-session.js';
@@ -823,10 +823,15 @@ export function initContactsView(options) {
       };
     };
 
+    const isDeletedDigest = (digest) => {
+      if (!digest) return false;
+      return deletedContacts.has(digest) || isContactTombstoned(digest);
+    };
+
     for (const entry of fetched) {
       const digest = normalizeAccountDigest(entry?.peerAccountDigest ?? entry?.accountDigest ?? entry);
-      if (digest && deletedContacts.has(digest)) {
-        log({ contactSkipDeleted: digest });
+      if (isDeletedDigest(digest)) {
+        log({ contactSkipDeleted: digest, source: 'fetched' });
         continue;
       }
       const payload = resolveCorePayload(entry, 'contacts-view:fetched');
@@ -844,7 +849,7 @@ export function initContactsView(options) {
     for (const [key, entry] of localCache.entries()) {
       if (processed.has(key)) continue;
       const digest = normalizeAccountDigest(entry?.peerAccountDigest ?? entry?.accountDigest ?? entry);
-      if (digest && deletedContacts.has(digest)) continue;
+      if (isDeletedDigest(digest)) continue;
       const payload = resolveCorePayload(entry, 'contacts-view:local-cache');
       if (!payload) continue;
       stageEntry(payload, 'contacts-view:local-cache');
@@ -856,7 +861,7 @@ export function initContactsView(options) {
     if (secretMap instanceof Map) {
       for (const [peerKey, record] of secretMap.entries()) {
         const digest = normalizeAccountDigest(peerKey?.split?.('::')?.[0] || peerKey);
-        if (digest && deletedContacts.has(digest)) continue;
+        if (isDeletedDigest(digest)) continue;
         if (digest && !d1Digests.has(digest) && !localCache.has(peerKey)) continue;
         const payload = resolveCorePayload({ ...record, peerAccountDigest: peerKey }, 'contacts-view:secrets');
         if (!payload) continue;
