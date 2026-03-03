@@ -464,6 +464,9 @@ export function initContactsView(options) {
       } finally {
         contactsRefreshing = false;
         resetContactsPull({ animate: true });
+        // Reset scroll position and controller state after refresh
+        if (contactsScrollEl) contactsScrollEl.scrollTop = 0;
+        if (scrollController) scrollController.restoreBars();
       }
     } else {
       resetContactsPull({ animate: true });

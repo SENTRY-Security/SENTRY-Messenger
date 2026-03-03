@@ -184,6 +184,8 @@ export function createContactsScrollController({
     if (tabEl) tabEl.style.paddingBottom = '';
     scrollEl.style.paddingBottom = '';
     if (searchWrap) searchWrap.classList.remove('search-floating');
+    // Restore header visibility (opacity/visibility set by applyHeaderOpacity)
+    if (headerEl) { headerEl.style.opacity = ''; headerEl.style.visibility = ''; }
     barsHidden = false;
     upwardAccum = 0;
     prevScrollTop = scrollEl.scrollTop;
