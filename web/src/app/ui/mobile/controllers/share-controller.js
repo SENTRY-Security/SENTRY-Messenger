@@ -2414,8 +2414,28 @@ export function setupShareController(options) {
         policy = 'A';
         action = (existingPeerDeviceId && existingPeerDeviceId !== peerDeviceId) ? 'migrate' : 'create';
       } else {
-        policy = 'B';
-        action = 'hardblock';
+        // Single entry with mismatched conv/token — stale from a previous
+        // relationship (e.g. re-add after delete).  Clean it up and allow
+        // fresh creation instead of hardblocking.
+        const staleKey = existingMatch?.peerKey;
+        if (staleKey) {
+          removeContactCore(staleKey, 'contact-init:readd-cleanup');
+        }
+        if (existingPeerDeviceId) {
+          clearDrState(
+            { peerAccountDigest: peerDigest, peerDeviceId: existingPeerDeviceId },
+            { __drDebugTag: 'contact-init:readd-cleanup-dr' }
+          );
+        }
+        logCapped('contactCoreReaddCleanup', {
+          inviteId,
+          peerAccountDigest: peerDigest,
+          stalePeerKey: staleKey || null,
+          stalePeerDeviceId: existingPeerDeviceId || null
+        }, 5);
+        // Proceed as fresh create
+        policy = 'C';
+        action = 'create';
       }
     }
     logCapped('contactCoreMismatchTrace', {
@@ -2714,12 +2734,9 @@ export function setupShareController(options) {
           error: err?.message || String(err)
         })}`);
         setInviteActionState({ hasInvite: !!invite, expired: false, loading: false });
-        // Always close modals even on error so the user isn't stuck
+        // Show error to user so they know something went wrong
         if (pairingState.open) {
-          closePairingCodeModal();
-        }
-        if (shareState.open && source !== 'manual') {
-          closeShareModal();
+          setPairingStatus(err?.message || '取回邀請失敗，請重試', { isError: true });
         }
         throw err;
       }
