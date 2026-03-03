@@ -285,19 +285,34 @@ body.messages-fullscreen .messages-scroll {
   display: block;
 }
 
+/* ── Navbar: floating glass pill ─────────────────────────────────── */
 .navbar {
   position: fixed;
   bottom: 0;
   left: 0;
   right: 0;
-  border-top: 1px solid rgba(148,163,184,0.12);
-  background: rgba(15,23,42,0.92);
+  z-index: 10;
   display: flex;
-  justify-content: space-around;
-  padding: 6px 0 calc(6px + env(safe-area-inset-bottom, 0px));
-  box-shadow: 0 -6px 20px rgba(0,0,0,0.3);
-  backdrop-filter: saturate(180%) blur(8px);
+  justify-content: center;
+  padding: 8px 16px calc(8px + env(safe-area-inset-bottom, 0px));
+  background: none;
+  border: none;
+  box-shadow: none;
+  pointer-events: none;
   will-change: transform;
+}
+
+.navbar-pill {
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 22px;
+  background: rgba(15, 23, 42, 0.62);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  pointer-events: auto;
 }
 
 .navbtn {
@@ -307,17 +322,40 @@ body.messages-fullscreen .messages-scroll {
   align-items: center;
   gap: 2px;
   border: none;
-  background: none;
-  padding: 8px 10px;
-  color: rgba(148,163,184,0.7);
-  font-size: 11px;
-  min-width: 72px;
+  background: transparent;
+  padding: 6px 14px;
+  color: rgba(148, 163, 184, 0.6);
+  font-size: 10px;
+  min-width: 62px;
+  border-radius: 18px;
+  transition: background 0.25s ease, color 0.25s ease, box-shadow 0.25s ease;
+  touch-action: manipulation;
+}
+
+.navbtn i {
+  font-size: 22px;
+  color: currentColor;
+  transition: color 0.25s ease;
+}
+
+.navbtn.active {
+  background: rgba(30, 41, 59, 0.6);
+  color: #e0f2fe;
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.2),
+              0 0 12px rgba(56, 189, 248, 0.06);
+}
+
+.navbtn.active i {
+  background: linear-gradient(135deg, #38bdf8, #6366f1);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
 }
 
 .nav-badge {
   position: absolute;
-  top: 2px;
-  right: 12px;
+  top: 0;
+  right: 8px;
   min-width: 18px;
   padding: 1px 4px;
   border-radius: 999px;
@@ -336,22 +374,7 @@ body.messages-fullscreen .messages-scroll {
   justify-content: center;
 }
 
-.navbtn.active,
-.navbtn:focus {
-  color: #e0f2fe;
-}
-
-.navbtn i {
-  color: currentColor;
-}
-
-.navbtn.active i {
-  background: linear-gradient(135deg, #38bdf8, #6366f1);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
-}
-
+/* Drive tab: cloud + lock stacked icon */
 .nav-icon-stack {
   position: relative;
   width: 22px;
@@ -376,7 +399,6 @@ body.messages-fullscreen .messages-scroll {
   bottom: -3px;
   right: -6px;
   color: #0ea5e9;
-  text-shadow: 0 0 0 transparent;
 }
 
 .navbtn.active .nav-icon-stack .nav-icon-base {
@@ -388,10 +410,6 @@ body.messages-fullscreen .messages-scroll {
 
 .navbtn.active .nav-icon-stack .nav-icon-lock {
   color: #2563eb;
-}
-
-.navbtn {
-  touch-action: manipulation;
 }
 
 .orientation-overlay {
