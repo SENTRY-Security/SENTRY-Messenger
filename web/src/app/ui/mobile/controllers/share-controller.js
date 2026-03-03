@@ -1472,6 +1472,13 @@ export function setupShareController(options) {
       if (!resolvedOwnerDigest) throw new Error('owner digest 不完整，請重試');
       if (!resolvedOwnerDeviceId) throw new Error('owner device 不完整，請重試');
 
+      // Clear deletion guards so re-added contact can render in UI
+      try {
+        document.dispatchEvent(new CustomEvent('contacts:readded', {
+          detail: { peerAccountDigest: resolvedOwnerDigest }
+        }));
+      } catch { }
+
       // [FIX] Check for existing contact with this account digest
       const existingContacts = findContactCoreByAccountDigest(resolvedOwnerDigest);
       if (existingContacts.length > 0) {
@@ -2643,6 +2650,12 @@ export function setupShareController(options) {
           guestBundle: normalized.guestBundle,
           guestProfile: normalized.guestProfile
         };
+        // Clear deletion guards before consuming so re-added contacts can render
+        try {
+          document.dispatchEvent(new CustomEvent('contacts:readded', {
+            detail: { peerAccountDigest: normalized.guestAccountDigest }
+          }));
+        } catch { }
         const initResult = await handleContactInitEvent(msg, { inviteId: id });
         const refreshMeta = {
           inviteId: id,
@@ -2701,6 +2714,13 @@ export function setupShareController(options) {
           error: err?.message || String(err)
         })}`);
         setInviteActionState({ hasInvite: !!invite, expired: false, loading: false });
+        // Always close modals even on error so the user isn't stuck
+        if (pairingState.open) {
+          closePairingCodeModal();
+        }
+        if (shareState.open && source !== 'manual') {
+          closeShareModal();
+        }
         throw err;
       }
     })();

@@ -1369,6 +1369,26 @@ export function initContactsView(options) {
     if (!peer) return;
     removeContactState(peer, { notifyPeer: false });
   });
+  // When a previously deleted contact is re-added, clear the deletion guards
+  // so the contact can appear in the UI again.
+  document.addEventListener('contacts:readded', (event) => {
+    const detail = event?.detail || {};
+    const digest = detail.peerAccountDigest || detail.peer || detail.peerDigest || null;
+    if (!digest) return;
+    const accountOnly = digest.includes('::') ? digest.split('::')[0] : digest;
+    if (accountOnly) {
+      deletedContacts.delete(accountOnly);
+      deletedContacts.delete(accountOnly.toUpperCase());
+      deletedContacts.delete(accountOnly.toLowerCase());
+    }
+    // Also clear recently-removed guard for all keys matching this digest
+    for (const key of recentlyRemovedPeers.keys()) {
+      const keyDigest = key.includes('::') ? key.split('::')[0] : key;
+      if (keyDigest === accountOnly || keyDigest === accountOnly.toUpperCase() || keyDigest === accountOnly.toLowerCase()) {
+        recentlyRemovedPeers.delete(key);
+      }
+    }
+  });
   document.addEventListener('contacts:pending-invites-updated', () => {
     try { renderContacts(); } catch (err) { log({ contactsRenderError: err?.message || err, source: 'pending-invites' }); }
   });
