@@ -358,12 +358,11 @@ export function initContactsView(options) {
   }
 
   function applyContactsPullTransition(enable) {
-    const transition = enable ? 'transform 120ms ease-out' : 'none';
     if (contactsRefreshEl) {
       contactsRefreshEl.style.transition = enable ? 'transform 120ms ease-out, opacity 120ms ease-out' : 'none';
     }
     if (contactsScrollEl) {
-      contactsScrollEl.style.transition = transition;
+      contactsScrollEl.style.transition = enable ? 'transform 120ms ease-out' : '';
     }
   }
 
@@ -389,7 +388,7 @@ export function initContactsView(options) {
       }
     }
     if (contactsScrollEl) {
-      contactsScrollEl.style.transform = `translateY(${clamped}px)`;
+      contactsScrollEl.style.transform = clamped > 0 ? `translateY(${clamped}px)` : '';
     }
     if (contactsRefreshLabel) contactsRefreshLabel.textContent = progress >= 1 ? '鬆開更新聯絡人' : '下拉更新聯絡人';
   }

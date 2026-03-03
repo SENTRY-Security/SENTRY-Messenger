@@ -614,12 +614,11 @@ export class ConversationListController extends BaseController {
      * Apply pull transition animation.
      */
     applyConversationPullTransition(enable) {
-        const transition = enable ? 'transform 120ms ease-out, opacity 120ms ease-out' : 'none';
         if (this.elements.conversationRefreshEl) {
-            this.elements.conversationRefreshEl.style.transition = transition;
+            this.elements.conversationRefreshEl.style.transition = enable ? 'transform 120ms ease-out, opacity 120ms ease-out' : 'none';
         }
         if (this.elements.conversationList) {
-            this.elements.conversationList.style.transition = enable ? 'transform 120ms ease-out' : 'none';
+            this.elements.conversationList.style.transition = enable ? 'transform 120ms ease-out' : '';
         }
     }
 
@@ -648,7 +647,7 @@ export class ConversationListController extends BaseController {
             }
         }
         if (this.elements.conversationList) {
-            this.elements.conversationList.style.transform = `translateY(${clamped}px)`;
+            this.elements.conversationList.style.transform = clamped > 0 ? `translateY(${clamped}px)` : '';
         }
     }
 
