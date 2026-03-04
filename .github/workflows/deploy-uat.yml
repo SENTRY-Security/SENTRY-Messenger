@@ -1,0 +1,241 @@
+name: Deploy to UAT
+
+on:
+  push:
+    branches-ignore:
+      - main
+
+jobs:
+  # ── Detect which projects have changes ──────────────────────────────
+  changes:
+    runs-on: ubuntu-latest
+    name: Detect Changes
+    outputs:
+      worker: ${{ steps.filter.outputs.worker }}
+      web: ${{ steps.filter.outputs.web }}
+      backend: ${{ steps.filter.outputs.backend }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check changed paths
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            worker:
+              - 'data-worker/**'
+            web:
+              - 'web/**'
+            backend:
+              - 'src/**'
+              - 'package.json'
+              - 'package-lock.json'
+
+  # ── Data Worker (Cloudflare Worker — UAT) ──────────────────────────
+  deploy-worker:
+    runs-on: ubuntu-latest
+    name: Deploy Data Worker (UAT)
+    needs: changes
+    if: needs.changes.outputs.worker == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Check Wrangler Authentication
+        run: npx wrangler@4 whoami
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.UAT_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_EMAIL: ${{ secrets.UAT_CLOUDFLARE_EMAIL }}
+          CLOUDFLARE_API_KEY: ${{ secrets.UAT_CLOUDFLARE_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.UAT_CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Apply D1 Migrations (UAT)
+        working-directory: data-worker
+        run: |
+          echo "Applying D1 migrations to UAT database..."
+          npx wrangler@4 d1 migrations apply message_db_uat --remote || echo "No pending migrations or error applying migrations"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.UAT_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_EMAIL: ${{ secrets.UAT_CLOUDFLARE_EMAIL }}
+          CLOUDFLARE_API_KEY: ${{ secrets.UAT_CLOUDFLARE_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.UAT_CLOUDFLARE_ACCOUNT_ID }}
+          CI: true
+
+      - name: Deploy Worker (UAT)
+        working-directory: data-worker
+        run: |
+          echo "Deploying Cloudflare Worker (UAT)..."
+          npx wrangler@4 deploy --name message-data-uat \
+            --var D1_DATABASE_ID:${{ secrets.UAT_D1_DATABASE_ID }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.UAT_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_EMAIL: ${{ secrets.UAT_CLOUDFLARE_EMAIL }}
+          CLOUDFLARE_API_KEY: ${{ secrets.UAT_CLOUDFLARE_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.UAT_CLOUDFLARE_ACCOUNT_ID }}
+          CI: true
+
+  # ── Web (Cloudflare Pages — UAT Preview) ───────────────────────────
+  deploy-pages:
+    runs-on: ubuntu-latest
+    name: Deploy Web Pages (UAT)
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Root Dependencies
+        run: npm install
+
+      - name: Install Web Dependencies
+        working-directory: web
+        run: npm install
+
+      - name: Build Web
+        working-directory: web
+        run: |
+          echo "Starting web build..."
+          npm run build
+        env:
+          CI: true
+
+      - name: Copy Functions to Dist
+        working-directory: web
+        run: |
+          if [ -d "functions" ]; then
+            echo "Copying functions to dist/functions..."
+            mkdir -p dist/functions
+            cp -r functions/* dist/functions/
+          else
+            echo "Functions directory not found, skipping copy."
+          fi
+
+      - name: Deploy to Cloudflare Pages (UAT Preview)
+        working-directory: web
+        run: |
+          echo "Deploying to Cloudflare Pages (UAT Preview, branch: ${{ github.ref_name }})..."
+          npx wrangler@4 pages deploy ./dist \
+            --project-name message-web-hybrid \
+            --branch=${{ github.ref_name }} \
+            --commit-dirty=true \
+            --commit-message="UAT Deploy $(date) [${{ github.ref_name }}]"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.UAT_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_EMAIL: ${{ secrets.UAT_CLOUDFLARE_EMAIL }}
+          CLOUDFLARE_API_KEY: ${{ secrets.UAT_CLOUDFLARE_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.UAT_CLOUDFLARE_ACCOUNT_ID }}
+          CI: true
+
+  # ── Node.js Backend (SSH + PM2 — UAT) ──────────────────────────────
+  deploy-backend:
+    runs-on: ubuntu-latest
+    name: Deploy Node.js Backend (UAT)
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    steps:
+      - name: Deploy via SSH (UAT)
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.UAT_SSH_HOST }}
+          username: ${{ secrets.UAT_SSH_USERNAME }}
+          password: ${{ secrets.UAT_SSH_PASSWORD }}
+          envs: BACKEND_ENV
+          script: |
+            cd service
+            echo "Pulling latest code..."
+            git fetch origin
+            BRANCH="${{ github.ref_name }}"
+            git checkout "$BRANCH" || git checkout -b "$BRANCH"
+            git reset --hard "origin/$BRANCH"
+
+            echo "Writing .env from GitHub Secrets..."
+            printf '%s\n' "$BACKEND_ENV" > .env
+            chmod 600 .env
+
+            echo "Installing dependencies..."
+            npm install --production
+
+            echo "Managing PM2 services (UAT)..."
+            if npx pm2 list | grep -q "message-api-uat"; then
+              echo "Reloading existing PM2 process..."
+              npx pm2 reload message-api-uat
+            else
+              echo "Starting new PM2 process..."
+              npx pm2 start src/server.js --name message-api-uat
+              npx pm2 save
+            fi
+        env:
+          BACKEND_ENV: |
+            # ==============================================================================
+            # Auto-generated by GitHub Actions (UAT) — DO NOT edit manually
+            # ==============================================================================
+            NODE_ENV=uat
+            SERVICE_NAME=message-api-uat
+            SERVICE_VERSION=0.1.0
+            PORT=${{ secrets.UAT_PORT }}
+            ADMIN_IP_ALLOW=${{ secrets.UAT_ADMIN_IP_ALLOW }}
+            REMOTE_CONSOLE_ENABLED=1
+            CORS_ORIGIN=${{ secrets.UAT_CORS_ORIGIN }}
+            # Cloudflare
+            CLOUDFLARE_ACCOUNT_ID=${{ secrets.UAT_CLOUDFLARE_ACCOUNT_ID }}
+            CLOUDFLARE_EMAIL=${{ secrets.UAT_CLOUDFLARE_EMAIL }}
+            CLOUDFLARE_API_KEY=${{ secrets.UAT_CLOUDFLARE_API_KEY }}
+            CLOUDFLARE_API_TOKEN=${{ secrets.UAT_CLOUDFLARE_API_TOKEN }}
+            # Data API
+            DATA_API_URL=${{ secrets.UAT_DATA_API_URL }}
+            DATA_API_HMAC=${{ secrets.UAT_DATA_API_HMAC }}
+            ACCOUNT_HMAC_KEY=${{ secrets.UAT_ACCOUNT_HMAC_KEY }}
+            INVITE_TOKEN_KEY=${{ secrets.UAT_INVITE_TOKEN_KEY }}
+            # OPAQUE Auth
+            OPAQUE_OPRF_SEED=${{ secrets.UAT_OPAQUE_OPRF_SEED }}
+            OPAQUE_AKE_PRIV_B64=${{ secrets.UAT_OPAQUE_AKE_PRIV_B64 }}
+            OPAQUE_AKE_PUB_B64=${{ secrets.UAT_OPAQUE_AKE_PUB_B64 }}
+            OPAQUE_SERVER_ID=${{ secrets.UAT_OPAQUE_SERVER_ID }}
+            # NTAG424
+            NTAG424_KM=${{ secrets.UAT_NTAG424_KM }}
+            NTAG424_KDF=${{ secrets.UAT_NTAG424_KDF }}
+            NTAG424_SALT=${{ secrets.UAT_NTAG424_SALT }}
+            NTAG424_INFO=${{ secrets.UAT_NTAG424_INFO }}
+            NTAG424_KVER=${{ secrets.UAT_NTAG424_KVER }}
+            # Portal
+            PORTAL_HMAC_SECRET=${{ secrets.UAT_PORTAL_HMAC_SECRET }}
+            PORTAL_API_ORIGIN=${{ secrets.UAT_PORTAL_API_ORIGIN }}
+            # WebSocket
+            WS_TOKEN_SECRET=${{ secrets.UAT_WS_TOKEN_SECRET }}
+            # S3 / R2
+            S3_ENDPOINT=${{ secrets.UAT_S3_ENDPOINT }}
+            S3_REGION=${{ secrets.UAT_S3_REGION }}
+            S3_BUCKET=${{ secrets.UAT_S3_BUCKET }}
+            S3_ACCESS_KEY=${{ secrets.UAT_S3_ACCESS_KEY }}
+            S3_SECRET_KEY=${{ secrets.UAT_S3_SECRET_KEY }}
+            SIGNED_PUT_TTL=${{ secrets.UAT_SIGNED_PUT_TTL }}
+            SIGNED_GET_TTL=${{ secrets.UAT_SIGNED_GET_TTL }}
+            # Upload
+            UPLOAD_MAX_BYTES=${{ secrets.UAT_UPLOAD_MAX_BYTES }}
+            UPLOAD_ALLOWED_TYPES=${{ secrets.UAT_UPLOAD_ALLOWED_TYPES }}
+            # TURN / SFU
+            TURN_TTL_SECONDS=${{ secrets.UAT_TURN_TTL_SECONDS }}
+            CLOUDFLARE_TURN_TOKEN_ID=${{ secrets.UAT_CLOUDFLARE_TURN_TOKEN_ID }}
+            CLOUDFLARE_TURN_TOKEN_KEY=${{ secrets.UAT_CLOUDFLARE_TURN_TOKEN_KEY }}
+            CLOUDFLARE_SFU_TOKEN_ID=${{ secrets.UAT_CLOUDFLARE_SFU_TOKEN_ID }}
+            CLOUDFLARE_SFU_TOKEN_KEY=${{ secrets.UAT_CLOUDFLARE_SFU_TOKEN_KEY }}
+            # Auth Keys
+            PRIVATE_KEY_PUBLIC_PEM=${{ secrets.UAT_PRIVATE_KEY_PUBLIC_PEM }}
