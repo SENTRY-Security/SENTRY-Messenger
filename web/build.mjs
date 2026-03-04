@@ -264,11 +264,20 @@ try {
   gitDirty = execSync('git status --porcelain', { encoding: 'utf8' }).trim().length > 0;
 } catch { /* not a git repo or git not available */ }
 
-// Inject commit hash into app.html and login.html for version display
+// Determine environment: main branch = production, everything else = uat
+const appEnv = gitBranch === 'main' ? 'production' : 'uat';
+console.log(`APP_ENV = '${appEnv}' (branch: ${gitBranch})`);
+
+// Inject commit hash + APP_ENV into app.html and login.html for version display
 // (must happen BEFORE manifest generation so hashes are final)
 for (const htmlPath of [appHtmlPath, loginHtmlPath]) {
   try {
     let html = readFileSync(htmlPath, 'utf8');
+    // Override APP_ENV with build-time value
+    html = html.replace(
+      /window\.APP_ENV\s*=\s*'[^']*'/,
+      `window.APP_ENV = '${appEnv}'`
+    );
     html = html.replace(
       /window\.APP_BUILD_AT\s*=/,
       `window.APP_BUILD_COMMIT = '${gitCommit.slice(0, 8)}';\n    window.APP_BUILD_AT =`

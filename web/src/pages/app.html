@@ -50,6 +50,10 @@
     #appLoadingModal.morph-authorizing .loading-enter-label{letter-spacing:2px}
     #appLoadingModal.morph-success .loading-bar-fill{background:linear-gradient(90deg,#22c55e,#15803d)!important}
     #appLoadingModal.morph-success .loading-bar-track{animation:none;box-shadow:0 0 25px rgba(34,197,94,0.5),0 0 60px rgba(34,197,94,0.2)}
+    /* ── UAT Environment Badge ── */
+    .uat-badge{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:100000;display:none;padding:4px 18px;border-radius:6px;font-size:13px;font-weight:800;letter-spacing:3px;color:#000;background:linear-gradient(90deg,#facc15,#fb923c);box-shadow:0 0 16px rgba(250,204,21,0.5),0 2px 8px rgba(0,0,0,0.4);animation:uat-pulse 2s ease-in-out infinite;pointer-events:none;user-select:none;font-family:system-ui,sans-serif}
+    .uat-badge.visible{display:block}
+    @keyframes uat-pulse{0%,100%{box-shadow:0 0 16px rgba(250,204,21,0.5),0 2px 8px rgba(0,0,0,0.4)}50%{box-shadow:0 0 28px rgba(250,204,21,0.8),0 2px 12px rgba(0,0,0,0.5)}}
   </style>
   <!-- Async CSS — non-render-blocking -->
   <link rel="stylesheet" href="/assets/app-bundle.css" media="print" onload="this.media='all'" />
@@ -65,11 +69,14 @@
   </script>
   <script>
     window.APP_VERSION = '0.1.21-atomic-fix';
+    window.APP_ENV = 'uat';
     window.APP_BUILD_AT = (function () { try { return new Date(document.lastModified).toISOString(); } catch { return new Date().toISOString(); } })();
   </script>
 </head>
 
 <body>
+  <div id="uatBadge" class="uat-badge">U A T</div>
+  <script>if(window.APP_ENV&&window.APP_ENV!=='production'){document.getElementById('uatBadge').classList.add('visible')}</script>
   <!-- Loading Modal — visible instantly, dismissed after hydration -->
   <div id="appLoadingModal">
     <canvas class="app-tm-canvas" id="appTmCanvas"></canvas>

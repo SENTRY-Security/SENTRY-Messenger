@@ -20,6 +20,7 @@
         }
       } catch {}
       window.APP_VERSION = '0.1.10';
+      window.APP_ENV = 'uat';
       window.APP_BUILD_AT = (function(){ try { return new Date(document.lastModified).toISOString(); } catch { return new Date().toISOString(); } })();
     </script>
     <style>
@@ -318,9 +319,15 @@
       html.no-anim #loginStage .tm-bar-scan{animation:none}
       html.no-anim .login-shell.panel-exit{animation:none}
       html.no-anim .login-shell.panel-enter{animation:none}
+      /* ── UAT Environment Badge ── */
+      .uat-badge{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:100000;display:none;padding:4px 18px;border-radius:6px;font-size:13px;font-weight:800;letter-spacing:3px;color:#000;background:linear-gradient(90deg,#facc15,#fb923c);box-shadow:0 0 16px rgba(250,204,21,0.5),0 2px 8px rgba(0,0,0,0.4);animation:uat-pulse 2s ease-in-out infinite;pointer-events:none;user-select:none;font-family:system-ui,sans-serif}
+      .uat-badge.visible{display:block}
+      @keyframes uat-pulse{0%,100%{box-shadow:0 0 16px rgba(250,204,21,0.5),0 2px 8px rgba(0,0,0,0.4)}50%{box-shadow:0 0 28px rgba(250,204,21,0.8),0 2px 12px rgba(0,0,0,0.5)}}
     </style>
   </head>
   <body>
+    <div id="uatBadge" class="uat-badge">U A T</div>
+    <script>if(window.APP_ENV&&window.APP_ENV!=='production'){document.getElementById('uatBadge').classList.add('visible')}</script>
     <div id="loginSplash">
       <img class="splash-logo" src="/assets/images/logo.svg" alt="" />
       <div class="splash-brand">SENTRY MESSENGER</div>
