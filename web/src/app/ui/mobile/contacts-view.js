@@ -1030,6 +1030,18 @@ export function initContactsView(options) {
               changed = true;
             }
             shouldReload = true;
+          } else {
+            // [FIX] Even when session material exists, the pending invite must be
+            // removed once consumed.  The guest prepared conversation context during
+            // the scan, but the real contact is only committed after the host's
+            // contact-share message arrives (or after a contacts reload from D1).
+            // Without this, the pending invite stays as a permanent "syncing"
+            // placeholder — especially after delete-then-readd flows where the
+            // contact-share DR message may fail to decrypt due to stale state.
+            if (store.delete(inviteId)) {
+              changed = true;
+            }
+            shouldReload = true;
           }
         }
       }
@@ -1391,8 +1403,33 @@ export function initContactsView(options) {
       }
     }
   });
+  // [FIX] Periodically poll pending invite status after new invites are created.
+  // The guest side has no WS notification when the host consumes the invite, so
+  // we schedule deferred status checks to detect CONSUMED and trigger reload.
+  let pendingInviteCheckTimer = null;
+  const schedulePendingInviteCheck = () => {
+    if (pendingInviteCheckTimer) return; // already scheduled
+    const delays = [8_000, 15_000, 30_000, 60_000];
+    let idx = 0;
+    const tick = () => {
+      pendingInviteCheckTimer = null;
+      const pending = Array.isArray(listPendingInvites())
+        ? listPendingInvites().filter((entry) => entry?.inviteId)
+        : [];
+      if (!pending.length) return; // no more pending invites
+      refreshPendingInviteStatus({ source: 'deferred-check' }).catch((err) => {
+        log({ pendingInviteStatusDeferredCheckError: err?.message || err });
+      });
+      idx += 1;
+      if (idx < delays.length) {
+        pendingInviteCheckTimer = setTimeout(tick, delays[idx]);
+      }
+    };
+    pendingInviteCheckTimer = setTimeout(tick, delays[0]);
+  };
   document.addEventListener('contacts:pending-invites-updated', () => {
     try { renderContacts(); } catch (err) { log({ contactsRenderError: err?.message || err, source: 'pending-invites' }); }
+    schedulePendingInviteCheck();
   });
 
   return {
