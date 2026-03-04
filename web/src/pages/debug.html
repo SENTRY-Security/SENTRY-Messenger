@@ -131,7 +131,11 @@
     </main>
 
     <script>
-      window.API_ORIGIN = 'https://api.message.sentry.red';
+      window.API_ORIGIN = (() => {
+        const h = location.hostname;
+        if (h.includes('uat')) return 'https://uat.api.message.sentry.red';
+        return 'https://api.message.sentry.red';
+      })();
       (function loadDebugModule(){
         const stamp = window.APP_BUILD_AT || window.APP_VERSION || String(Date.now());
         const script = document.createElement('script');

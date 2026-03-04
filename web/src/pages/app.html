@@ -685,7 +685,11 @@
     <div class="cover-spinner" aria-hidden="true"></div>
   </div>
   <script>
-    window.API_ORIGIN = 'https://api.message.sentry.red';
+    window.API_ORIGIN = (() => {
+      const h = location.hostname;
+      if (h.includes('uat')) return 'https://uat.api.message.sentry.red';
+      return 'https://api.message.sentry.red';
+    })();
     (function () {
       const overlay = document.getElementById('orientationOverlay');
       const docEl = document.documentElement;
