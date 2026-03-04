@@ -1,3 +1,4 @@
+# ── Production (default) ─────────────────────────────────────────
 name = "message-data"
 main = "src/worker.js"
 compatibility_date = "2025-09-17"
@@ -7,3 +8,12 @@ compatibility_flags = ["nodejs_compat"]
 binding = "DB"
 database_name = "message_db"
 database_id = "99728586-d8a9-4525-a1af-e68e84594047"
+
+# ── UAT Environment ─────────────────────────────────────────────
+[env.uat]
+name = "message-data-uat"
+
+[[env.uat.d1_databases]]
+binding = "DB"
+database_name = "message_db_uat"
+database_id = "362f2681-29fc-45bf-9e2a-09b9021e6019"

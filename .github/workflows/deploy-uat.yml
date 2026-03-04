@@ -63,7 +63,7 @@ jobs:
         working-directory: data-worker
         run: |
           echo "Applying D1 migrations to UAT database..."
-          npx wrangler@4 d1 migrations apply message_db_uat --remote || echo "No pending migrations or error applying migrations"
+          npx wrangler@4 d1 migrations apply message_db_uat --remote --env uat || echo "No pending migrations or error applying migrations"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.UAT_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_EMAIL: ${{ secrets.UAT_CLOUDFLARE_EMAIL }}
@@ -75,8 +75,7 @@ jobs:
         working-directory: data-worker
         run: |
           echo "Deploying Cloudflare Worker (UAT)..."
-          npx wrangler@4 deploy --name message-data-uat \
-            --var D1_DATABASE_ID:${{ secrets.UAT_D1_DATABASE_ID }}
+          npx wrangler@4 deploy --env uat
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.UAT_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_EMAIL: ${{ secrets.UAT_CLOUDFLARE_EMAIL }}
@@ -128,13 +127,13 @@ jobs:
             echo "Functions directory not found, skipping copy."
           fi
 
-      - name: Deploy to Cloudflare Pages (UAT Preview)
+      - name: Deploy to Cloudflare Pages (UAT)
         working-directory: web
         run: |
-          echo "Deploying to Cloudflare Pages (UAT Preview, branch: ${{ github.ref_name }})..."
+          echo "Deploying to Cloudflare Pages (UAT project: message-web-hybrid-uat)..."
           npx wrangler@4 pages deploy ./dist \
-            --project-name message-web-hybrid \
-            --branch=${{ github.ref_name }} \
+            --project-name message-web-hybrid-uat \
+            --branch=main \
             --commit-dirty=true \
             --commit-message="UAT Deploy $(date) [${{ github.ref_name }}]"
         env:
