@@ -580,16 +580,16 @@ r.post('/media/copy-chunked', asyncH(async (req, res) => {
 
   // Copy manifest + all chunks in parallel
   const copyTasks = [];
-  // Manifest
+  // Manifest (stored as /m)
   copyTasks.push(copyObject({
-    sourceKey: `${input.source_base_key}/manifest`,
-    destinationKey: `${destBaseKey}/manifest`
+    sourceKey: `${input.source_base_key}/m`,
+    destinationKey: `${destBaseKey}/m`
   }));
-  // Chunks 0..N-1
+  // Chunks 0..N-1 (stored as /c/0, /c/1, ...)
   for (let i = 0; i < input.chunk_count; i++) {
     copyTasks.push(copyObject({
-      sourceKey: `${input.source_base_key}/${i}`,
-      destinationKey: `${destBaseKey}/${i}`
+      sourceKey: `${input.source_base_key}/c/${i}`,
+      destinationKey: `${destBaseKey}/c/${i}`
     }));
   }
   await Promise.all(copyTasks);
