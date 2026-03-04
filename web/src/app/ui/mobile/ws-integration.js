@@ -550,6 +550,52 @@ export function createWsIntegration({ deps }) {
       }
       return;
     }
+    if (type === 'conversation-deleted') {
+      if (!isTargetingThisDevice(msg)) return;
+      const conversationId = String(msg?.conversationId || '').trim();
+      const senderDigest = normalizeAccountDigest(
+        msg?.senderAccountDigest || msg?.peerAccountDigest || ''
+      );
+      if (!conversationId) return;
+      let clearTimestamp = Number(msg?.clearTimestamp) || 0;
+      if (!clearTimestamp) clearTimestamp = Math.floor(Date.now() / 1000);
+      // Perform local cleanup: set deletion cursor, clear history, update threads
+      (async () => {
+        try {
+          const [{ setDeletionCursor }, { clearConversationHistory }, { appendUserMessage }] = await Promise.all([
+            import('../../features/soft-deletion/deletion-api.js'),
+            import('../../features/messages/cache.js'),
+            import('../../features/timeline-store.js')
+          ]);
+          await setDeletionCursor(conversationId, clearTimestamp).catch(() => {});
+          clearConversationHistory(conversationId, clearTimestamp);
+          // Remove thread from conversation list
+          sessionStore.conversationThreads?.delete?.(conversationId);
+          sessionStore.deletedConversations?.add?.(conversationId);
+          // Append tombstone so the UI shows the deletion marker
+          appendUserMessage(conversationId, {
+            messageId: `tombstone-deleted-${conversationId}`,
+            msgType: 'conversation-deleted',
+            subtype: 'conversation-deleted',
+            text: '',
+            direction: 'incoming',
+            ts: clearTimestamp,
+            tsMs: clearTimestamp * 1000,
+            conversationId,
+            senderDigest: senderDigest || null
+          });
+          // Dispatch DOM event for UI cleanup
+          document.dispatchEvent(new CustomEvent('sentry:conversation-deleted', {
+            detail: { conversationId, clearTimestamp, senderDigest }
+          }));
+          // Refresh conversation list
+          if (typeof window !== 'undefined') window.__refreshContacts?.();
+        } catch (err) {
+          log({ wsConversationDeletedError: err?.message || err, conversationId });
+        }
+      })();
+      return;
+    }
     if (type === 'invite-delivered') {
       if (!isTargetingThisDevice(msg)) return;
       const inviteId = msg?.inviteId || null;

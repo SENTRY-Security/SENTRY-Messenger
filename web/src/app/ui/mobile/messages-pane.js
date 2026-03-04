@@ -1185,6 +1185,26 @@ export function initMessagesPane({
             } catch (err) {
               console.warn('[messages-pane] bi-directional delete incomplete', err);
             }
+
+            // [FIX] Send a direct WS conversation-deleted notification as a reliable
+            // backup alongside the encrypted DR message. The DR path may silently fail
+            // (missing session state, token issues, etc.) and the peer would never know.
+            // The WS server already forwards this message type to the target account.
+            try {
+              const selfDeviceId = ensureDeviceId();
+              if (selfDeviceId && peerDeviceId) {
+                wsSendFn({
+                  type: 'conversation-deleted',
+                  conversationId,
+                  targetAccountDigest: key,
+                  senderDeviceId: selfDeviceId,
+                  targetDeviceId: peerDeviceId,
+                  clearTimestamp: clearTimestamp || Math.floor(Date.now() / 1000)
+                });
+              }
+            } catch (wsErr) {
+              console.warn('[messages-pane] ws conversation-deleted send failed', wsErr?.message || wsErr);
+            }
           }
 
           // 2. Clear Local View (Immediate UI Feedback)
