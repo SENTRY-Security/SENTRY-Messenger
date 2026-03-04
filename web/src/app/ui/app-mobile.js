@@ -126,6 +126,7 @@ import { createSubscriptionModule } from './mobile/modals/subscription-modal.js'
 import { createSettingsModule } from './mobile/modals/settings-modal.js';
 import { createPasswordModal } from './mobile/modals/password-modal.js';
 import { createWsIntegration } from './mobile/ws-integration.js';
+import { isIosWebKitLikeBrowser } from './mobile/browser-detection.js';
 
 // --- Loading Modal: report JS modules loaded ---
 window.__updateLoadingProgress?.('scripts');
@@ -2472,6 +2473,7 @@ function updateProfileStats() {
 // resolve without false-positive logouts.  The handler also re-checks
 // document.hidden before executing.
 const BACKGROUND_LOGOUT_DELAY_MS = 2000;
+const _isIOS = isIosWebKitLikeBrowser();
 
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
@@ -2539,7 +2541,14 @@ if (typeof window !== 'undefined') {
     }
   });
   // blur event — treat as background transition and trigger auto-logout.
+  // On iOS Safari, blur fires for many foreground interactions (keyboard
+  // dismiss, address bar tap, share sheet, system dialogs), so skip it
+  // and rely on visibilitychange/pagehide instead.
   window.addEventListener('blur', () => {
+    if (_isIOS) {
+      log({ autoLogoutSkip: 'blur-ios-ignored' });
+      return;
+    }
     log({ autoLogoutBlur: true });
     if (backgroundLogoutTimer) {
       clearTimeout(backgroundLogoutTimer);
