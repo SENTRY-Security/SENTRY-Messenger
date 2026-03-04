@@ -5,6 +5,14 @@ export const onRequest: PagesFunction<{ ORIGIN_API: string }> = async ({ request
     return next();
   }
 
+  // Handle CORS preflight
+  if (request.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      headers: corsHeaders(request),
+    });
+  }
+
   const originApi = env.ORIGIN_API || 'https://api.message.sentry.red';
   if (!originApi) {
     return json({ error: 'ConfigError', message: 'ORIGIN_API is not configured' }, 500, request);
@@ -23,8 +31,18 @@ export const onRequest: PagesFunction<{ ORIGIN_API: string }> = async ({ request
   const targetUrl = new URL(targetPath + url.search, upstreamBase);
   console.log('[Proxy] Forwarding', { original: request.url, search: url.search, target: targetUrl.toString() });
 
-  const upstreamRequest = new Request(targetUrl.toString(), request);
-  const response = await fetch(upstreamRequest, { cf: { cacheTtl: 0 } });
+  let response: Response;
+  try {
+    const upstreamRequest = new Request(targetUrl.toString(), request);
+    response = await fetch(upstreamRequest, { cf: { cacheTtl: 0 } });
+  } catch (err) {
+    console.error('[Proxy] upstream fetch failed:', err);
+    return json(
+      { error: 'BadGateway', message: 'Upstream service unavailable' },
+      502,
+      request,
+    );
+  }
 
   const upgrade = response.headers.get('Upgrade');
   if (upgrade && upgrade.toLowerCase() === 'websocket') {
@@ -46,12 +64,21 @@ export const onRequest: PagesFunction<{ ORIGIN_API: string }> = async ({ request
 
 
 
+function corsHeaders(req?: Request): Record<string, string> {
+  return {
+    'access-control-allow-origin': req?.headers.get('Origin') || '*',
+    'access-control-allow-credentials': 'true',
+    'access-control-allow-methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
+    'access-control-allow-headers': req?.headers.get('Access-Control-Request-Headers') || '*',
+    'access-control-max-age': '86400',
+  };
+}
+
 function json(obj: unknown, status = 200, req?: Request) {
   const headers: Record<string, string> = {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
-    'access-control-allow-origin': req?.headers.get('Origin') || '*',
-    'access-control-allow-credentials': 'true'
+    ...corsHeaders(req),
   };
   return new Response(JSON.stringify(obj), { status, headers });
 }
