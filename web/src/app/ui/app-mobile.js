@@ -2536,13 +2536,17 @@ if (typeof window !== 'undefined') {
       }, BACKGROUND_LOGOUT_DELAY_MS);
     }
   });
-  // NOTE: The 'blur' event is NOT used for auto-logout.  On iOS Safari,
-  // blur fires in many foreground scenarios (alert dialogs, share sheets,
-  // browser extension overlays, system permissions prompts) that do not
-  // mean the user left the app.  The visibilitychange and pagehide
-  // handlers are sufficient for detecting actual background transitions.
+  // blur event — treat as background transition and trigger auto-logout.
   window.addEventListener('blur', () => {
-    log({ autoLogoutSkip: 'blur-no-logout' });
+    log({ autoLogoutBlur: true });
+    if (backgroundLogoutTimer) {
+      clearTimeout(backgroundLogoutTimer);
+      backgroundLogoutTimer = null;
+    }
+    backgroundLogoutTimer = setTimeout(() => {
+      backgroundLogoutTimer = null;
+      handleBackgroundAutoLogout('視窗失去焦點，已自動登出');
+    }, BACKGROUND_LOGOUT_DELAY_MS);
   });
   window.addEventListener('beforeunload', () => {
     disposeCallMediaSession();
