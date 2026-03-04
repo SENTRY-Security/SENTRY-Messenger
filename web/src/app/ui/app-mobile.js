@@ -2022,7 +2022,7 @@ profileInitPromise
 
 
 
-function handleBackgroundAutoLogout(reason = '畫面已移至背景，已自動登出') {
+function handleBackgroundAutoLogout(reason = '畫面已移至背景，已自動登出', { skipVisibilityCheck = false } = {}) {
   if (logoutInProgress || _autoLoggedOut) {
     log({ autoLogoutSkip: 'logout-in-progress', logoutInProgress, _autoLoggedOut });
     return;
@@ -2034,7 +2034,9 @@ function handleBackgroundAutoLogout(reason = '畫面已移至背景，已自動�
   // Re-check visibility: on iOS Safari, transient hidden states (keyboard
   // dismiss, share sheet, system overlay) may have already resolved by the
   // time the deferred timer fires.  Bail out if the page is visible again.
-  if (typeof document !== 'undefined' && !document.hidden) {
+  // Skip this check for blur-triggered logout since blur doesn't change
+  // document.hidden.
+  if (!skipVisibilityCheck && typeof document !== 'undefined' && !document.hidden) {
     log({ autoLogoutSkip: 'visible-at-fire', reason });
     return;
   }
@@ -2048,7 +2050,7 @@ function handleBackgroundAutoLogout(reason = '畫面已移至背景，已自動�
       .then(() => {
         // Re-check after settings load completes
         if (logoutInProgress || _autoLoggedOut) return;
-        if (typeof document !== 'undefined' && !document.hidden) return;
+        if (!skipVisibilityCheck && typeof document !== 'undefined' && !document.hidden) return;
         const settings = getEffectiveSettingsState();
         if (!settings.autoLogoutOnBackground) {
           log({ autoLogoutSkip: 'setting-disabled-after-hydrate' });
@@ -2545,7 +2547,7 @@ if (typeof window !== 'undefined') {
     }
     backgroundLogoutTimer = setTimeout(() => {
       backgroundLogoutTimer = null;
-      handleBackgroundAutoLogout('視窗失去焦點，已自動登出');
+      handleBackgroundAutoLogout('視窗失去焦點，已自動登出', { skipVisibilityCheck: true });
     }, BACKGROUND_LOGOUT_DELAY_MS);
   });
   window.addEventListener('beforeunload', () => {
