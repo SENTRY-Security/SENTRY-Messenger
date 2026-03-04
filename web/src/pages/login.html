@@ -614,11 +614,9 @@
 
     <script>
       const params = new URLSearchParams(location.search);
-      window.API_ORIGIN = params.get('api') || (() => {
-        const h = location.hostname;
-        if (h.includes('uat')) return 'https://uat-api.message.sentry.red';
-        return 'https://api.message.sentry.red';
-      })();
+      // Route all API requests through the Cloudflare Pages proxy (relative paths).
+      // For local dev, override via ?api=https://... query parameter.
+      window.API_ORIGIN = params.get('api') || '';
       (function(){
         const overlay = document.getElementById('orientationOverlay');
         const docEl = document.documentElement;
