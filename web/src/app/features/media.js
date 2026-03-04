@@ -48,16 +48,17 @@ const EXT_CONTENT_TYPE = new Map([
 ]);
 
 /**
- * Retry a fetch-based operation on network errors (TypeError: Failed to fetch).
+ * Retry a fetch-based operation on network errors (TypeError: Failed to fetch / Load failed).
  * Uses exponential backoff: 1s, 2s, 4s. Only retries on TypeError (network-level
- * failures); server errors (4xx/5xx) are returned immediately for caller handling.
+ * failures, including CORS-blocked 502s); server errors (4xx/5xx) are returned
+ * immediately for caller handling.
  */
 async function fetchWithRetry(fn, maxRetries = 3) {
   for (let attempt = 0; ; attempt++) {
     try {
       return await fn();
     } catch (err) {
-      const isNetworkError = err instanceof TypeError && /fetch/i.test(err.message);
+      const isNetworkError = err instanceof TypeError && /fetch|load failed/i.test(err.message);
       if (!isNetworkError || attempt >= maxRetries) throw err;
       const delay = 1000 * Math.pow(2, attempt); // 1s, 2s, 4s
       console.warn(`[saveToDrive] network error, retrying in ${delay}ms (${attempt + 1}/${maxRetries})`, err.message);
