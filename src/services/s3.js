@@ -25,7 +25,12 @@ export const s3 = new S3Client({
   credentials: {
     accessKeyId: process.env.S3_ACCESS_KEY,
     secretAccessKey: process.env.S3_SECRET_KEY
-  }
+  },
+  // R2 compatibility: disable automatic CRC32 checksums that SDK v3.729+
+  // adds by default — R2 doesn't fully support them, and the extra signed
+  // headers break browser presigned-URL uploads (CORS preflight mismatch).
+  requestChecksumCalculation: 'WHEN_REQUIRED',
+  responseChecksumValidation: 'WHEN_REQUIRED'
 });
 
 // Create a presigned PUT URL for direct upload
