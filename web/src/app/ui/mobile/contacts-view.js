@@ -878,24 +878,34 @@ export function initContactsView(options) {
         scheduleDrBootstrap(payload.peerKey, { dr_init: payload.conversation.dr_init, peerDeviceId: payload.peerDeviceId });
       }
     }
+    // D1 is the server-side source of truth for contacts.  Compute the set
+    // of known digests BEFORE the local-cache and secrets loops so both can
+    // filter against it.
+    const d1Digests = new Set(fetched.map(e => normalizeAccountDigest(e?.peerAccountDigest)).filter(Boolean));
+
     // 保留本地已存在但伺服器未返回的聯絡人，避免刷新後消失
+    // [FIX] When D1 returned meaningful data, skip contacts whose digest is
+    // not in D1.  Without this check the localCache acted as a resurrection
+    // mechanism: if B went offline while A deleted B, B's reconnection would
+    // keep A in the contact list because A was still in localCache.
     for (const [key, entry] of localCache.entries()) {
       if (processed.has(key)) continue;
       const digest = normalizeAccountDigest(entry?.peerAccountDigest ?? entry?.accountDigest ?? entry);
       if (isDeletedDigest(digest)) continue;
+      if (d1Digests.size > 0 && digest && !d1Digests.has(digest)) continue;
+      if (isRecentlyRemoved(key)) continue;
       const payload = resolveCorePayload(entry, 'contacts-view:local-cache');
       if (!payload) continue;
       stageEntry(payload, 'contacts-view:local-cache');
     }
     // contact-secrets 還原聯絡人（含 peerDeviceId/token）
-    // Only supplement contacts already known from D1 or local cache; don't create
-    // new entries purely from secrets to avoid resurrecting deleted contacts.
-    const d1Digests = new Set(fetched.map(e => normalizeAccountDigest(e?.peerAccountDigest)).filter(Boolean));
+    // Only supplement contacts already known from D1; don't create new entries
+    // purely from secrets or localCache to avoid resurrecting deleted contacts.
     if (secretMap instanceof Map) {
       for (const [peerKey, record] of secretMap.entries()) {
         const digest = normalizeAccountDigest(peerKey?.split?.('::')?.[0] || peerKey);
         if (isDeletedDigest(digest)) continue;
-        if (digest && !d1Digests.has(digest) && !localCache.has(peerKey)) continue;
+        if (digest && !d1Digests.has(digest)) continue;
         const payload = resolveCorePayload({ ...record, peerAccountDigest: peerKey }, 'contacts-view:secrets');
         if (!payload) continue;
         if (processed.has(payload.peerKey)) continue;
