@@ -47,6 +47,25 @@ const EXT_CONTENT_TYPE = new Map([
   ['7z', 'application/x-7z-compressed']
 ]);
 
+/**
+ * Retry a fetch-based operation on network errors (TypeError: Failed to fetch).
+ * Uses exponential backoff: 1s, 2s, 4s. Only retries on TypeError (network-level
+ * failures); server errors (4xx/5xx) are returned immediately for caller handling.
+ */
+async function fetchWithRetry(fn, maxRetries = 3) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const isNetworkError = err instanceof TypeError && /fetch/i.test(err.message);
+      if (!isNetworkError || attempt >= maxRetries) throw err;
+      const delay = 1000 * Math.pow(2, attempt); // 1s, 2s, 4s
+      console.warn(`[saveToDrive] network error, retrying in ${delay}ms (${attempt + 1}/${maxRetries})`, err.message);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+}
+
 function guessContentTypeFromName(name) {
   if (!name) return 'application/octet-stream';
   const idx = String(name).lastIndexOf('.');
@@ -638,12 +657,12 @@ export async function saveChatMediaToDrive({ media, driveDir } = {}) {
     const chunkCount = media.chunkCount || media.totalChunks || 0;
     if (!chunkCount) throw new Error('chunkCount missing for chunked media');
 
-    const { r, data } = await copyChunkedMedia({
+    const { r, data } = await fetchWithRetry(() => copyChunkedMedia({
       sourceBaseKey: media.baseKey,
       chunkCount,
       destConvId: driveConvId,
       destDir: storageDirHash || undefined
-    });
+    }));
     if (!r.ok) throw new Error('copy-chunked failed: ' + JSON.stringify(data));
     const destBaseKey = data.dest_base_key;
 
@@ -676,7 +695,7 @@ export async function saveChatMediaToDrive({ media, driveDir } = {}) {
         })))
       }
     });
-    const { r: rMsg, data: msgData } = await apiCreateMsg(msgBody);
+    const { r: rMsg, data: msgData } = await fetchWithRetry(() => apiCreateMsg(msgBody));
     if (!rMsg.ok) throw new Error('drive index failed: ' + JSON.stringify(msgData));
 
     return { ok: true, destBaseKey };
@@ -685,11 +704,11 @@ export async function saveChatMediaToDrive({ media, driveDir } = {}) {
     const sourceKey = media.objectKey;
     if (!sourceKey) throw new Error('objectKey missing for single-file media');
 
-    const { r, data } = await copyMedia({
+    const { r, data } = await fetchWithRetry(() => copyMedia({
       sourceKey,
       destConvId: driveConvId,
       destDir: storageDirHash || undefined
-    });
+    }));
     if (!r.ok) throw new Error('copy failed: ' + JSON.stringify(data));
     const destKey = data.dest_key;
 
@@ -738,7 +757,7 @@ export async function saveChatMediaToDrive({ media, driveDir } = {}) {
         })))
       }
     });
-    const { r: rMsg, data: msgData } = await apiCreateMsg(msgBody);
+    const { r: rMsg, data: msgData } = await fetchWithRetry(() => apiCreateMsg(msgBody));
     if (!rMsg.ok) throw new Error('drive index failed: ' + JSON.stringify(msgData));
 
     // Cache envelope locally for the new key

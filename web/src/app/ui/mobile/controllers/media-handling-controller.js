@@ -983,7 +983,9 @@ export class MediaHandlingController extends BaseController {
             this.deps.showToast?.('已存到雲端硬碟');
         } catch (err) {
             console.error('[saveToDrive] failed:', err);
-            this.deps.showToast?.(`存到雲端失敗：${err?.message || err}`);
+            const isNetwork = err instanceof TypeError && /fetch/i.test(err?.message);
+            const msg = isNetwork ? '網路連線失敗，請檢查網路後再試' : (err?.message || err);
+            this.deps.showToast?.(`存到雲端失敗：${msg}`);
         }
     }
 
