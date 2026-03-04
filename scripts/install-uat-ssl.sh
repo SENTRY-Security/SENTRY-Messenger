@@ -86,7 +86,7 @@ cat > /etc/nginx/sites-available/uat-api <<'NGINX_CONF'
 # UAT API — Cloudflare Origin SSL → Node.js backend
 server {
     listen 443 ssl;
-    server_name uat.api.message.sentry.red;
+    server_name uat-api.message.sentry.red;
 
     # Cloudflare Origin Certificate
     ssl_certificate     /etc/ssl/cloudflare/origin-cert.pem;
@@ -115,7 +115,7 @@ server {
 # Redirect HTTP → HTTPS (optional, Cloudflare handles this)
 server {
     listen 80;
-    server_name uat.api.message.sentry.red;
+    server_name uat-api.message.sentry.red;
     return 301 https://$host$request_uri;
 }
 NGINX_CONF
@@ -173,7 +173,7 @@ echo "  架構："
 echo "  Client → Cloudflare (edge SSL) → Nginx:443 (origin SSL) → Node.js:3001"
 echo ""
 echo "  測試："
-echo "  curl -I https://uat.api.message.sentry.red/health"
+echo "  curl -I https://uat-api.message.sentry.red/health"
 echo ""
 
 # 清理本地憑證檔案（已安裝到伺服器，不需要保留在 repo 裡）

@@ -237,7 +237,7 @@ set_secret "UAT_INVITE_TOKEN_KEY"           "$INVITE_TOKEN_KEY"
 set_secret "UAT_OPAQUE_OPRF_SEED"           "$OPAQUE_OPRF_SEED"
 set_secret "UAT_OPAQUE_AKE_PRIV_B64"        "$OPAQUE_AKE_PRIV_B64"
 set_secret "UAT_OPAQUE_AKE_PUB_B64"         "$OPAQUE_AKE_PUB_B64"
-set_secret "UAT_OPAQUE_SERVER_ID"           "uat.api.message.sentry.red"
+set_secret "UAT_OPAQUE_SERVER_ID"           "uat-api.message.sentry.red"
 
 # UAT NTAG424
 set_secret "UAT_NTAG424_KM"                "$NTAG424_KM"
