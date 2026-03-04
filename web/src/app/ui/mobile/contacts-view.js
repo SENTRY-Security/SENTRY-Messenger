@@ -290,6 +290,12 @@ export function initContactsView(options) {
       mutated = true;
     }
     const existingCore = getContactCore(key);
+    // [FIX] Extract conversation metadata BEFORE removing the core entry,
+    // so we can tombstone the conversation and fully clear DR state.
+    // Without this, WS-triggered deletions left stale DR sessions and
+    // un-tombstoned conversations that interfered with re-adding contacts.
+    const convId = existingCore?.conversationId || existingCore?.conversation?.conversation_id || existingCore?.conversation?.id || null;
+    const peerDeviceId = existingCore?.peerDeviceId || existingCore?.conversation?.peerDeviceId || null;
     if (existingCore) {
       removeContactCore(key, 'contacts-view:remove-contact');
       mutated = true;
@@ -300,6 +306,27 @@ export function initContactsView(options) {
       triggerContactSecretsBackup('contact-deleted', { force: true }).catch((err) => {
         log({ contactDeleteBackupError: err?.message || err, peerAccountDigest: key });
       });
+      // [FIX] Tombstone the old conversation so it is not resurrected on reload.
+      // The manual delete path (confirmDeleteContact) already does this, but
+      // the WS-triggered path was missing it.
+      if (convId) {
+        try { markConversationTombstone(convId); } catch (err) {
+          log({ conversationTombstoneError: err?.message || err, peerAccountDigest: key });
+        }
+      }
+      // [FIX] Fully clear DR session state (ratchet keys etc.) from _DR_SESS.
+      // resetSecureConversation only resets the conversation manager metadata
+      // (pendingPromise, attempts, status) but leaves the actual DR ratchet
+      // state intact.  Stale DR state prevents re-added contacts from
+      // establishing a fresh DR session and decrypting the contact-share message.
+      try {
+        clearDrState(
+          { peerAccountDigest: key, peerDeviceId },
+          { __drDebugTag: 'contacts-view:remove-contact-state' }
+        );
+      } catch (err) {
+        log({ clearDrStateError: err?.message || err, peerAccountDigest: key });
+      }
       try {
         resetSecureConversation(key, { reason: 'contact-removed', source: 'contacts-view' });
       } catch (err) {
