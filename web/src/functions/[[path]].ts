@@ -1,5 +1,18 @@
+// IP whitelist for restricted pages (debug / NTAG424 simulator)
+const DEBUG_ALLOWED_IPS = ['60.248.6.250'];
+const RESTRICTED_PATHS = ['/pages/debug.html', '/debug.html', '/debug'];
+
 export const onRequest: PagesFunction<{ ORIGIN_API: string }> = async ({ request, env, next }) => {
   const url = new URL(request.url);
+
+  // --- IP restriction for debug page ---
+  const normalised = url.pathname.replace(/\/$/, '') || '/';
+  if (RESTRICTED_PATHS.some(p => normalised === p || normalised.startsWith(p + '?'))) {
+    const clientIp = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For')?.split(',')[0]?.trim() || '';
+    if (!DEBUG_ALLOWED_IPS.includes(clientIp)) {
+      return new Response('403 Forbidden', { status: 403, headers: { 'Content-Type': 'text/plain' } });
+    }
+  }
 
   if (!url.pathname.startsWith('/api/')) {
     return next();
