@@ -127,4 +127,54 @@ r.post('/admin/purge-account', async (req, res) => {
   return res.json(result);
 });
 
+// POST /admin/set-brand — external admin system sets brand for accounts
+r.post('/admin/set-brand', async (req, res) => {
+  if (!DATA_API || !HMAC_SECRET) {
+    return res.status(500).json({ error: 'ConfigError', message: 'DATA_API or HMAC_SECRET missing' });
+  }
+  if (!verifyIncomingHmac(req)) {
+    return res.status(401).json({ error: 'Unauthorized', message: 'invalid admin signature' });
+  }
+
+  const { brand, accountDigest, account_digest, uidDigest, uid_digest, uidHex, uid_hex } = req.body || {};
+  if (brand === undefined) {
+    return res.status(400).json({ error: 'BadRequest', message: 'brand field required (string or null to clear)' });
+  }
+
+  const payload = {
+    brand: brand || null,
+    accountDigest: accountDigest || account_digest || undefined,
+    uidDigest: uidDigest || uid_digest || undefined,
+    uidHex: uidHex || uid_hex || undefined
+  };
+  const bodyStr = JSON.stringify(payload);
+  const path = '/d1/accounts/set-brand';
+  const sig = signHmac(path, bodyStr, HMAC_SECRET);
+
+  let workerRes;
+  try {
+    workerRes = await fetch(`${DATA_API}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-auth': sig },
+      body: bodyStr
+    });
+  } catch (err) {
+    return res.status(502).json({ error: 'UpstreamError', message: err?.message || 'fetch failed' });
+  }
+
+  let workerJson;
+  try {
+    const txt = await workerRes.text();
+    workerJson = txt ? JSON.parse(txt) : null;
+  } catch {
+    workerJson = null;
+  }
+
+  if (!workerRes.ok) {
+    return res.status(workerRes.status).json(workerJson || { error: 'UpstreamError', message: 'worker set-brand failed' });
+  }
+
+  return res.json(workerJson);
+});
+
 export default r;

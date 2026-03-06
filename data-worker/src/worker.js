@@ -5186,6 +5186,69 @@ async function handleAccountsRoutes(req, env) {
     });
   }
 
+  // POST /d1/accounts/set-brand — admin sets brand for account(s)
+  if (req.method === 'POST' && url.pathname === '/d1/accounts/set-brand') {
+    await ensureDataTables(env);
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+
+    const brand = body?.brand !== undefined ? (body.brand || null) : undefined;
+    if (brand === undefined) {
+      return json({ error: 'BadRequest', message: 'brand field required (string or null to clear)' }, { status: 400 });
+    }
+
+    // Support single or batch: accountDigest / uidDigest / uidHex, or arrays
+    const toArray = (v) => Array.isArray(v) ? v : (v ? [v] : []);
+    const accountDigests = toArray(body?.accountDigest || body?.account_digest).map(normalizeAccountDigest).filter(Boolean);
+    const uidDigests = toArray(body?.uidDigest || body?.uid_digest).map(normalizeAccountDigest).filter(Boolean);
+    const uidHexes = toArray(body?.uidHex || body?.uid_hex).map(v => String(v || '').trim().toUpperCase()).filter(v => v.length >= 14);
+
+    // Resolve uidDigests → accountDigests
+    for (const ud of uidDigests) {
+      const row = await env.DB.prepare(
+        `SELECT account_digest FROM accounts WHERE uid_digest=?1`
+      ).bind(ud).first();
+      if (row?.account_digest) {
+        const ad = normalizeAccountDigest(row.account_digest);
+        if (ad && !accountDigests.includes(ad)) accountDigests.push(ad);
+      }
+    }
+
+    // Resolve uidHexes → accountDigests (via uid_hex column)
+    for (const uh of uidHexes) {
+      const row = await env.DB.prepare(
+        `SELECT account_digest FROM accounts WHERE uid_hex=?1`
+      ).bind(uh).first();
+      if (row?.account_digest) {
+        const ad = normalizeAccountDigest(row.account_digest);
+        if (ad && !accountDigests.includes(ad)) accountDigests.push(ad);
+      }
+    }
+
+    if (!accountDigests.length) {
+      return json({ error: 'BadRequest', message: 'no matching accounts found; provide accountDigest, uidDigest, or uidHex' }, { status: 400 });
+    }
+
+    const updated = [];
+    const failed = [];
+    for (const ad of accountDigests) {
+      try {
+        await env.DB.prepare(
+          `UPDATE accounts SET brand=?1 WHERE account_digest=?2`
+        ).bind(brand, ad).run();
+        updated.push(ad);
+      } catch (err) {
+        failed.push({ accountDigest: ad, error: err?.message || String(err) });
+      }
+    }
+
+    return json({ ok: true, brand, updated, failed: failed.length ? failed : undefined });
+  }
+
   return null;
 }
 
