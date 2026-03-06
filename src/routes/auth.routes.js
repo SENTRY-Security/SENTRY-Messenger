@@ -265,7 +265,8 @@ r.post('/auth/sdm/exchange', async (req, res) => {
       account_token: accountToken,
       account_digest: accountDigest.toUpperCase(),
       uid_digest: uidDigest || null,
-      opaque_server_id: OPAQUE_SERVER_ID || null
+      opaque_server_id: OPAQUE_SERVER_ID || null,
+      brand: data.brand || undefined
     });
   } catch (e) {
     return res.status(400).json({ error: 'BadRequest', message: e?.message || 'invalid input' });

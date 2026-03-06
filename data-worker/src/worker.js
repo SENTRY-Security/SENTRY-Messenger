@@ -1049,7 +1049,7 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
   let accountRow = null;
   if (lookupDigest) {
     const rows = await db.prepare(
-      `SELECT account_digest, account_token, uid_digest, last_ctr, wrapped_mk_json
+      `SELECT account_digest, account_token, uid_digest, last_ctr, wrapped_mk_json, brand
          FROM accounts
         WHERE account_digest=?1`
     ).bind(lookupDigest).all();
@@ -1058,7 +1058,7 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
 
   if (!accountRow && uidDigest) {
     const rows = await db.prepare(
-      `SELECT account_digest, account_token, uid_digest, last_ctr, wrapped_mk_json
+      `SELECT account_digest, account_token, uid_digest, last_ctr, wrapped_mk_json, brand
          FROM accounts
         WHERE uid_digest=?1`
     ).bind(uidDigest).all();
@@ -1075,6 +1075,7 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
       uid_digest: accountRow.uid_digest,
       last_ctr: Number(accountRow.last_ctr || 0),
       wrapped_mk_json: accountRow.wrapped_mk_json,
+      brand: accountRow.brand || null,
       newly_created: false
     };
   }
@@ -1118,13 +1119,14 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
       uid_digest: acctUidDigest,
       last_ctr: 0,
       wrapped_mk_json: null,
+      brand: null,
       newly_created: true
     };
   } catch (err) {
     const msg = String(err?.message || '');
     if (msg.includes('UNIQUE constraint failed')) {
       const rows = await db.prepare(
-        `SELECT account_digest, account_token, uid_digest, last_ctr, wrapped_mk_json
+        `SELECT account_digest, account_token, uid_digest, last_ctr, wrapped_mk_json, brand
            FROM accounts
           WHERE account_digest=?1 OR uid_digest=?2`
       ).bind(acctDigest, acctUidDigest).all();
@@ -1136,6 +1138,7 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
           uid_digest: row.uid_digest,
           last_ctr: Number(row.last_ctr || 0),
           wrapped_mk_json: row.wrapped_mk_json,
+          brand: row.brand || null,
           newly_created: false
         };
       }
@@ -1217,6 +1220,17 @@ async function ensureDataTables(env) {
       }
     } catch (repairErr) {
       console.warn('ensureDataTables: deletion_cursors ms repair failed', repairErr?.message);
+    }
+    // Auto-add brand column to accounts (multi-brand support)
+    try {
+      await env.DB.prepare(`SELECT brand FROM accounts LIMIT 0`).all();
+    } catch {
+      try {
+        await env.DB.prepare(`ALTER TABLE accounts ADD COLUMN brand TEXT`).run();
+        console.log('ensureDataTables: added brand column to accounts');
+      } catch (alterErr) {
+        console.warn('ensureDataTables: brand column add failed (may already exist)', alterErr?.message);
+      }
     }
     // Auto-add pairing_code + prekey_bundle_json columns to invite_dropbox
     try {
@@ -1315,7 +1329,8 @@ async function handleTagsRoutes(req, env) {
       account_token: account.account_token,
       account_digest: account.account_digest,
       uid_digest: account.uid_digest,
-      newly_created: account.newlyCreated
+      newly_created: account.newlyCreated,
+      brand: account.brand || undefined
     });
   }
 
