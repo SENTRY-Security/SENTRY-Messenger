@@ -9,7 +9,7 @@
     <meta http-equiv="Expires" content="0" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
     <meta name="color-scheme" content="light" />
-    <title>SENTRY MESSENGER — Login</title>
+    <title data-brand-title>SENTRY MESSENGER — Login</title>
     <link rel="icon" href="/assets/favicon.ico" type="image/x-icon" />
     <script>
       // e2e: query ?e2e=1 以停用動畫
@@ -402,7 +402,7 @@
         <img id="loginBrandLogo" src="/assets/images/logo.svg" alt="SENTRY MESSENGER" />
         <h1 id="loginBrandName">SENTRY MESSENGER</h1>
       </div>
-      <p class="subtitle" id="loginSubtitle">感應 SENTRY MESSENGER 晶片後輸入密碼即可登入。</p>
+      <p class="subtitle" id="loginSubtitle">感應 <span data-brand-name>SENTRY MESSENGER</span> 晶片後輸入密碼即可登入。</p>
 
       <div autocomplete="off" data-1p-ignore="true" data-lpignore="true">
         <div class="uid-card" id="uidCard" aria-label="晶片識別圖">
@@ -468,7 +468,7 @@
         <button id="btnUnlock" type="button" class="primary" disabled>登入</button>
       </div>
 
-      <p class="notice"><span class="notice-icon" aria-hidden="true">🔒</span><span class="notice-text">SENTRY MESSENGER 採用 E2EE 端對端加密技術，所有加解密均於前端計算，伺服器端僅儲存加密過的資訊，所有敏感資訊僅保留於記憶體，並於畫面切換時即刻清除。</span></p>
+      <p class="notice"><span class="notice-icon" aria-hidden="true">🔒</span><span class="notice-text"><span data-brand-name>SENTRY MESSENGER</span> 採用 E2EE 端對端加密技術，所有加解密均於前端計算，伺服器端僅儲存加密過的資訊，所有敏感資訊僅保留於記憶體，並於畫面切換時即刻清除。</span></p>
     </div>
   </main>
     <script>
@@ -483,10 +483,11 @@
           var el = document.getElementById(ids[i]);
           if (el) el.textContent = bn;
         }
-        var sub = document.getElementById('loginSubtitle');
-        if (sub) sub.textContent = sub.textContent.replace(/SENTRY MESSENGER/g, bn);
-        var notice = document.querySelector('.notice-text');
-        if (notice) notice.textContent = notice.textContent.replace(/SENTRY MESSENGER/g, bn);
+        // Update all [data-brand-name] spans
+        var spans = document.querySelectorAll('[data-brand-name]');
+        for (var i = 0; i < spans.length; i++) spans[i].textContent = bn;
+        // Update title
+        if (document.title) document.title = document.title.replace(/SENTRY MESSENGER/g, bn);
         var tmb = document.getElementById('tmBrand');
         if (tmb) tmb.setAttribute('aria-label', bn);
       }

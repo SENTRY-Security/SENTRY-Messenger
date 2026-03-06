@@ -54,8 +54,8 @@ export function resolveBrand(key, overrides) {
     base.name = overrides.brandName;
     // Derive shortName from first word of name
     base.shortName = overrides.brandName.split(/\s+/)[0] || base.shortName;
-    // Update subtitle with dynamic brand name
-    base.subtitle = base.subtitle.replace(/SENTRY MESSENGER/g, overrides.brandName);
+    // Note: brand names in text are wrapped in <span data-brand-name> elements,
+    // so subtitle text does not need string replacement here.
   }
   if (overrides?.brandLogo) {
     base.logo = overrides.brandLogo;

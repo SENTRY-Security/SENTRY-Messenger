@@ -2,6 +2,9 @@
 // core/brand-apply.js
 // Utility to apply brand config to the current page's DOM elements.
 // Works on login.html, app.html, and logout.html.
+//
+// Brand names in text are wrapped in <span data-brand-name> elements
+// so they can be targeted individually (important for future i18n).
 
 import { resolveBrand } from './brand-config.js';
 import { getBrandKey, getBrandName, getBrandLogo } from './store.js';
@@ -42,7 +45,7 @@ export function applyBrand(brandKey) {
     faviconEl.href = brand.favicon;
   }
 
-  // --- Logo images: any img whose src includes the default logo path ---
+  // --- Logo images ---
   const logoSelectors = [
     '.splash-logo',
     '.tm-logo',
@@ -56,14 +59,13 @@ export function applyBrand(brandKey) {
     if (el && el.tagName === 'IMG') {
       el.src = brand.logo;
       if (el.alt) el.alt = brand.name;
-      // Remove monochrome filter for external (colored) logos
       if (externalLogo) {
         el.style.filter = 'none';
       }
     }
   }
 
-  // --- Brand text elements ---
+  // --- Brand text elements (elements whose entire content is the brand name) ---
   const brandTextSelectors = [
     '.splash-brand',
     '.brand h1',
@@ -76,16 +78,16 @@ export function applyBrand(brandKey) {
     if (el) el.textContent = brand.name;
   }
 
+  // --- All [data-brand-name] spans (brand name embedded in sentences) ---
+  const brandNameSpans = document.querySelectorAll('[data-brand-name]');
+  for (const span of brandNameSpans) {
+    span.textContent = brand.name;
+  }
+
   // --- aria-label on tmBrand (login transition) ---
   const tmBrand = document.getElementById('tmBrand');
   if (tmBrand) {
     tmBrand.setAttribute('aria-label', brand.name);
-  }
-
-  // --- Subtitle on login page ---
-  const subtitle = document.querySelector('.subtitle');
-  if (subtitle && brand.subtitle) {
-    subtitle.textContent = brand.subtitle;
   }
 
   // --- E2EE sublabel ---
@@ -93,12 +95,6 @@ export function applyBrand(brandKey) {
   for (const sel of e2eeSelectors) {
     const el = document.querySelector(sel);
     if (el && brand.e2eeLabel) el.textContent = brand.e2eeLabel;
-  }
-
-  // --- Notice text (login page privacy notice) ---
-  const noticeText = document.querySelector('.notice-text');
-  if (noticeText) {
-    noticeText.textContent = noticeText.textContent.replace(/SENTRY MESSENGER/g, brand.name);
   }
 
   // --- Store brand info on window for inline scripts (scramble animation etc.) ---
