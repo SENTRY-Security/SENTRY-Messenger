@@ -77,13 +77,34 @@
 <body>
   <div id="uatBadge" class="uat-badge">U A T</div>
   <script>if(window.APP_ENV&&window.APP_ENV!=='production'){document.getElementById('uatBadge').classList.add('visible')}</script>
+  <script>
+  // Early brand hydration: read brand from sessionStorage to update loading screen before modules load
+  (function(){
+    try {
+      var bk = sessionStorage.getItem('brand');
+      if (!bk) return;
+      // Brand config mirror (lightweight, only for pre-module rendering)
+      var brands = {
+        sentry: { name: 'SENTRY MESSENGER', logo: '/assets/images/logo.svg', favicon: '/assets/favicon.ico' }
+        // Add more brands here as needed (must match brand-config.js)
+      };
+      var b = brands[bk];
+      if (!b) return;
+      window.__BRAND_NAME = b.name;
+      window.__BRAND_LOGO = b.logo;
+      if (document.title) document.title = document.title.replace(/SENTRY MESSENGER/g, b.name);
+      var fav = document.querySelector('link[rel="icon"]');
+      if (fav && b.favicon) fav.href = b.favicon;
+    } catch(e){}
+  })();
+  </script>
   <!-- Loading Modal — visible instantly, dismissed after hydration -->
   <div id="appLoadingModal">
     <canvas class="app-tm-canvas" id="appTmCanvas"></canvas>
     <div class="app-tm-overlay"></div>
     <div class="app-tm-content">
-      <img class="loading-logo" src="/assets/images/logo.svg" alt="" />
-      <div class="loading-brand">SENTRY MESSENGER</div>
+      <img class="loading-logo" id="appLoadingLogo" src="/assets/images/logo.svg" alt="" />
+      <div class="loading-brand" id="appLoadingBrand">SENTRY MESSENGER</div>
       <div class="loading-sublabel">END-TO-END ENCRYPTED</div>
       <div class="loading-bar-track" id="appEnterBtn">
         <div id="appLoadingBar" class="loading-bar-fill"></div>
@@ -95,6 +116,27 @@
       <button id="appLoadingSkip" class="loading-skip">稍後再說</button>
     </div>
   </div>
+  <script>
+  // Apply brand to loading modal and header elements
+  (function(){
+    var bn = window.__BRAND_NAME;
+    var bl = window.__BRAND_LOGO;
+    if (bn) {
+      var els = ['appLoadingBrand'];
+      for (var i = 0; i < els.length; i++) {
+        var e = document.getElementById(els[i]);
+        if (e) e.textContent = bn;
+      }
+    }
+    if (bl) {
+      var imgs = ['appLoadingLogo'];
+      for (var i = 0; i < imgs.length; i++) {
+        var e = document.getElementById(imgs[i]);
+        if (e) e.src = bl;
+      }
+    }
+  })();
+  </script>
   <script>
   /* ── App Loading: Matrix Rain ── */
   (function(){
@@ -296,8 +338,8 @@
   </div>
   <header class="topbar">
     <div class="title">
-      <img class="brand" src="/assets/images/logo.svg" alt="SENTRY MESSENGER" />
-      <span>SENTRY</span>
+      <img class="brand" id="appHeaderLogo" src="/assets/images/logo.svg" alt="SENTRY MESSENGER" />
+      <span id="appHeaderBrandName">SENTRY</span>
       <span id="connectionIndicator" class="connection-indicator" aria-live="polite" data-ws-path="/api/ws"
         data-ws-host=""><span class="dot" aria-hidden="true"></span>離線</span>
     </div>
@@ -326,6 +368,24 @@
       </div>
     </div>
   </header>
+  <script>
+  // Apply brand to app header (runs after header is in DOM)
+  (function(){
+    var bn = window.__BRAND_NAME;
+    var bl = window.__BRAND_LOGO;
+    if (bn) {
+      var h = document.getElementById('appHeaderBrandName');
+      // Header shows shortName — derive from full name (first word)
+      if (h) h.textContent = bn.split(' ')[0];
+      var logo = document.getElementById('appHeaderLogo');
+      if (logo) logo.alt = bn;
+    }
+    if (bl) {
+      var logo = document.getElementById('appHeaderLogo');
+      if (logo) logo.src = bl;
+    }
+  })();
+  </script>
 
   <main class="content">
     <section id="tab-contacts" class="tab">

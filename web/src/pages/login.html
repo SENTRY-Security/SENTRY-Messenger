@@ -553,7 +553,7 @@
 
     /* ── Brand Text Scramble/Decrypt Animation ── */
     (function(){
-      var BRAND = 'SENTRY MESSENGER';
+      var BRAND = (window.__BRAND_NAME || 'SENTRY MESSENGER');
       var GLYPHS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%&!?<>{}[]';
       var el, chars, resolved, frame, raf, running;
 
@@ -606,8 +606,8 @@
       window.__tmScrambleStop = function(){
         running = false;
         if(raf) cancelAnimationFrame(raf);
-        // Show final text
-        if(el) el.textContent = BRAND;
+        // Show final text (use dynamic brand name if available)
+        if(el) el.textContent = window.__BRAND_NAME || BRAND;
       };
     })();
     </script>

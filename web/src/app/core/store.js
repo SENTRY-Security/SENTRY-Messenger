@@ -33,7 +33,9 @@ const _DEVICE_PRIV_WAITERS = new Set();
 const _DR_SESS = new Map(); // peerKey (accountDigest::deviceId) -> { rk, ckS, ckR, Ns, Nr, PN, myRatchetPriv, myRatchetPub, theirRatchetPub }
 const _DR_PEER_ALIASES = null; // legacy unused
 let _OPAQUE_SERVER_ID = null;
+let _BRAND_KEY = null;
 const DEVICE_ID_STORAGE_KEY = 'device_id';
+const BRAND_STORAGE_KEY = 'brand';
 const DEVICE_COUNTER_PREFIX = 'device_counter::';
 
 function ensureDrHolderDebugId(holder) {
@@ -606,3 +608,28 @@ export function getOpaqueServerId() { return _OPAQUE_SERVER_ID; }
 export function setOpaqueServerId(v) {
   _OPAQUE_SERVER_ID = v ? String(v) : null;
 }
+
+export function getBrandKey() { return _BRAND_KEY; }
+export function setBrandKey(v) {
+  _BRAND_KEY = v ? String(v) : null;
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      if (_BRAND_KEY) {
+        sessionStorage.setItem(BRAND_STORAGE_KEY, _BRAND_KEY);
+      } else {
+        sessionStorage.removeItem(BRAND_STORAGE_KEY);
+      }
+    }
+  } catch { /* ignore */ }
+}
+
+// Restore brand from sessionStorage on load
+(function restoreBrandFromStorage() {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    const stored = sessionStorage.getItem(BRAND_STORAGE_KEY);
+    if (stored && typeof stored === 'string' && stored.trim()) {
+      _BRAND_KEY = stored.trim();
+    }
+  } catch { /* ignore */ }
+})();

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-    <title>已登出 | SENTRY MESSENGER</title>
+    <title id="logoutTitle">已登出 | SENTRY MESSENGER</title>
     <link rel="icon" type="image/svg+xml" href="../assets/favicon.ico" />
     <style>
       :root { color-scheme: dark; }
@@ -93,10 +93,29 @@
   </head>
   <body>
     <main class="logout-stage" aria-labelledby="logoutMessage">
-      <img class="logout-logo" src="../assets/images/logo.svg" alt="" />
-      <div class="logout-brand">SENTRY MESSENGER</div>
+      <img class="logout-logo" id="logoutLogo" src="../assets/images/logo.svg" alt="" />
+      <div class="logout-brand" id="logoutBrand">SENTRY MESSENGER</div>
       <div class="logout-sublabel">END-TO-END ENCRYPTED</div>
       <p id="logoutMessage" class="logout-message">系統已登出，所有本機資料已清除。</p>
     </main>
+    <script>
+    // Apply brand from sessionStorage (if set before logout cleared session)
+    (function(){
+      try {
+        var bk = sessionStorage.getItem('brand');
+        if (!bk) return;
+        var brands = {
+          sentry: { name: 'SENTRY MESSENGER', logo: '../assets/images/logo.svg', favicon: '../assets/images/../favicon.ico' }
+        };
+        var b = brands[bk];
+        if (!b) return;
+        if (document.title) document.title = document.title.replace(/SENTRY MESSENGER/g, b.name);
+        var logo = document.getElementById('logoutLogo');
+        if (logo && b.logo) logo.src = b.logo;
+        var brand = document.getElementById('logoutBrand');
+        if (brand) brand.textContent = b.name;
+      } catch(e){}
+    })();
+    </script>
   </body>
 </html>

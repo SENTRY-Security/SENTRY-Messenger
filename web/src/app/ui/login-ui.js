@@ -37,6 +37,7 @@ import { loadArgon2 } from '../crypto/kdf.js';
 import { generateInitialBundle } from '../crypto/prekeys.js';
 import { generateSimExchange, upsertSimTag, setSimConfig } from '../../libs/ntag424-sim.js';
 import { isIosVersionTooOld } from './mobile/browser-detection.js';
+import { applyBrand } from '../core/brand-apply.js';
 
 function summarizeMkForLog(mkRaw) {
   const summary = { mkLen: mkRaw instanceof Uint8Array ? mkRaw.length : 0, mkHash12: null };
@@ -796,6 +797,7 @@ async function onSdmExchange() {
     if (newAccount) welcomeAcknowledged = false;
     applyAccountMode();
     markVerifiedUI();
+    applyBrand();
   } catch (e) {
     log({ exchangeError: String(e?.message || e) });
   }
@@ -817,6 +819,8 @@ async function onSdmExchange() {
       if (newAccount) welcomeAcknowledged = false;
       applyAccountMode();
       markVerifiedUI();
+      // Apply brand styling based on backend response
+      applyBrand();
     }
   } catch (e) {
     log({ exchangeError: String(e?.message || e) });
