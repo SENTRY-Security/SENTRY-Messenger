@@ -187,7 +187,6 @@ jobs:
             SERVICE_VERSION=0.1.0
             PORT=${{ secrets.PORT }}
             ADMIN_IP_ALLOW=${{ secrets.ADMIN_IP_ALLOW }}
-            REMOTE_CONSOLE_ENABLED=1
             CORS_ORIGIN=${{ secrets.CORS_ORIGIN }}
             # Cloudflare
             CLOUDFLARE_ACCOUNT_ID=${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

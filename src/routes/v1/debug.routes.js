@@ -8,7 +8,6 @@ import { normalizeAccountDigest, AccountDigestRegex } from '../../utils/account-
 
 const router = Router();
 
-const REMOTE_CONSOLE_ENABLED = /^(1|true|yes)$/i.test(process.env.REMOTE_CONSOLE_ENABLED || '');
 const CONSOLE_ENDPOINT_PATH = '/api/v1/debug/console';
 const REMOTE_CONSOLE_LOG_PATH = process.env.REMOTE_CONSOLE_LOG
   ? path.resolve(process.env.REMOTE_CONSOLE_LOG)
@@ -45,16 +44,10 @@ function respondAccountError(res, err, fallback = 'authorization failed') {
 }
 
 router.get('/debug/config', (req, res) => {
-  if (!REMOTE_CONSOLE_ENABLED) {
-    return res.status(200).json({ enabled: false });
-  }
   return res.status(200).json({ enabled: true, endpoint: CONSOLE_ENDPOINT_PATH });
 });
 
 router.post('/debug/console', async (req, res) => {
-  if (!REMOTE_CONSOLE_ENABLED) {
-    return res.status(403).json({ error: 'Disabled', message: 'remote console relay disabled by server config' });
-  }
   const parsed = ConsolePayloadSchema.safeParse(req.body || {});
   if (!parsed.success) {
     return res.status(400).json({ error: 'BadRequest', details: parsed.error.issues });

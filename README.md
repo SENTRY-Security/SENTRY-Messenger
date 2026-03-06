@@ -1537,7 +1537,6 @@ cd web && npm run verify:cdn     # CDN 完整性驗證（含 verbose）
 
 | 變數 | 說明 | 範例 |
 |------|------|------|
-| `REMOTE_CONSOLE_ENABLED` | 啟用遠端 Console 日誌 | `true` |
 | `REMOTE_CONSOLE_LOG` | 遠端 Console 日誌路徑 | `/var/log/remote-console.log` |
 
 ---
