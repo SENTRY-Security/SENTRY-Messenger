@@ -653,7 +653,11 @@ export function setBrandLogo(v) {
   } catch { /* ignore */ }
 }
 
-// Restore brand from sessionStorage on load
+// Restore brand from sessionStorage on module load.
+// This only matters for the login→app page transition within the same tab:
+// SDM exchange sets brand in sessionStorage on login.html, then app.html
+// picks it up here. On login.html itself this is always empty (cleared on
+// logout, and we assume each login may be on a different device).
 (function restoreBrandFromStorage() {
   try {
     if (typeof sessionStorage === 'undefined') return;

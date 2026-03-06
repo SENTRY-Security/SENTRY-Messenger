@@ -98,39 +98,8 @@
       <div class="logout-sublabel">END-TO-END ENCRYPTED</div>
       <p id="logoutMessage" class="logout-message">系統已登出，所有本機資料已清除。</p>
     </main>
-    <script>
-    // Apply brand from sessionStorage (if set before logout cleared session)
-    (function(){
-      try {
-        var bk = sessionStorage.getItem('brand');
-        if (!bk) return;
-        // Read dynamic brand info from sessionStorage (set during SDM exchange)
-        var bn = sessionStorage.getItem('brand_name');
-        var bl = sessionStorage.getItem('brand_logo');
-        // Fall back to built-in brand config
-        if (!bn && !bl) {
-          var brands = {
-            sentry: { name: 'SENTRY MESSENGER', logo: '../assets/images/logo.svg', favicon: '../assets/favicon.ico' }
-          };
-          var b = brands[bk];
-          if (!b) return;
-          bn = b.name;
-          bl = b.logo;
-        }
-        if (bn) {
-          if (document.title) document.title = document.title.replace(/SENTRY MESSENGER/g, bn);
-          var brand = document.getElementById('logoutBrand');
-          if (brand) brand.textContent = bn;
-        }
-        if (bl) {
-          var logo = document.getElementById('logoutLogo');
-          if (logo) {
-            logo.src = bl;
-            if (/^https?:\/\//i.test(bl)) logo.style.filter = 'none';
-          }
-        }
-      } catch(e){}
-    })();
-    </script>
+    <!-- Brand info is not available on logout page — sessionStorage/localStorage
+         are cleared on logout, and we assume every login may be on a different device.
+         Logout page always shows the default SENTRY brand. -->
   </body>
 </html>
