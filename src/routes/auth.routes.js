@@ -266,7 +266,9 @@ r.post('/auth/sdm/exchange', async (req, res) => {
       account_digest: accountDigest.toUpperCase(),
       uid_digest: uidDigest || null,
       opaque_server_id: OPAQUE_SERVER_ID || null,
-      brand: data.brand || undefined
+      brand: data.brand || undefined,
+      brand_name: data.brand_name || undefined,
+      brand_logo: data.brand_logo || undefined
     });
   } catch (e) {
     return res.status(400).json({ error: 'BadRequest', message: e?.message || 'invalid input' });

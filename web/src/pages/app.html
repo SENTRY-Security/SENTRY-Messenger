@@ -78,23 +78,37 @@
   <div id="uatBadge" class="uat-badge">U A T</div>
   <script>if(window.APP_ENV&&window.APP_ENV!=='production'){document.getElementById('uatBadge').classList.add('visible')}</script>
   <script>
-  // Early brand hydration: read brand from sessionStorage to update loading screen before modules load
+  // Early brand hydration: read brand info from sessionStorage before modules load.
+  // brand_name and brand_logo come from the backend (via admin set-brand API) and
+  // were persisted to sessionStorage during SDM exchange on the login page.
   (function(){
     try {
       var bk = sessionStorage.getItem('brand');
       if (!bk) return;
-      // Brand config mirror (lightweight, only for pre-module rendering)
-      var brands = {
-        sentry: { name: 'SENTRY MESSENGER', logo: '/assets/images/logo.svg', favicon: '/assets/favicon.ico' }
-        // Add more brands here as needed (must match brand-config.js)
-      };
-      var b = brands[bk];
-      if (!b) return;
-      window.__BRAND_NAME = b.name;
-      window.__BRAND_LOGO = b.logo;
-      if (document.title) document.title = document.title.replace(/SENTRY MESSENGER/g, b.name);
+      var bn = sessionStorage.getItem('brand_name');
+      var bl = sessionStorage.getItem('brand_logo');
+      // Fall back to built-in brand config if no dynamic name/logo
+      if (!bn && !bl) {
+        var brands = {
+          sentry: { name: 'SENTRY MESSENGER', logo: '/assets/images/logo.svg', favicon: '/assets/favicon.ico' }
+        };
+        var b = brands[bk];
+        if (!b) return;
+        bn = b.name;
+        bl = b.logo;
+      }
+      if (bn) window.__BRAND_NAME = bn;
+      if (bl) {
+        window.__BRAND_LOGO = bl;
+        window.__BRAND_LOGO_EXTERNAL = /^https?:\/\//i.test(bl);
+      }
+      if (bn && document.title) document.title = document.title.replace(/SENTRY MESSENGER/g, bn);
       var fav = document.querySelector('link[rel="icon"]');
-      if (fav && b.favicon) fav.href = b.favicon;
+      if (fav) {
+        var brands2 = { sentry: { favicon: '/assets/favicon.ico' } };
+        var bf = brands2[bk];
+        if (bf && bf.favicon) fav.href = bf.favicon;
+      }
     } catch(e){}
   })();
   </script>
@@ -121,6 +135,7 @@
   (function(){
     var bn = window.__BRAND_NAME;
     var bl = window.__BRAND_LOGO;
+    var ext = window.__BRAND_LOGO_EXTERNAL;
     if (bn) {
       var els = ['appLoadingBrand'];
       for (var i = 0; i < els.length; i++) {
@@ -132,7 +147,10 @@
       var imgs = ['appLoadingLogo'];
       for (var i = 0; i < imgs.length; i++) {
         var e = document.getElementById(imgs[i]);
-        if (e) e.src = bl;
+        if (e) {
+          e.src = bl;
+          if (ext) e.style.filter = 'none';
+        }
       }
     }
   })();
@@ -382,7 +400,10 @@
     }
     if (bl) {
       var logo = document.getElementById('appHeaderLogo');
-      if (logo) logo.src = bl;
+      if (logo) {
+        logo.src = bl;
+        if (window.__BRAND_LOGO_EXTERNAL) logo.style.filter = 'none';
+      }
     }
   })();
   </script>

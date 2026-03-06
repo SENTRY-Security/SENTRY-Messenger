@@ -1049,7 +1049,7 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
   let accountRow = null;
   if (lookupDigest) {
     const rows = await db.prepare(
-      `SELECT account_digest, account_token, uid_digest, last_ctr, wrapped_mk_json, brand
+      `SELECT account_digest, account_token, uid_digest, last_ctr, wrapped_mk_json, brand, brand_name, brand_logo
          FROM accounts
         WHERE account_digest=?1`
     ).bind(lookupDigest).all();
@@ -1058,7 +1058,7 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
 
   if (!accountRow && uidDigest) {
     const rows = await db.prepare(
-      `SELECT account_digest, account_token, uid_digest, last_ctr, wrapped_mk_json, brand
+      `SELECT account_digest, account_token, uid_digest, last_ctr, wrapped_mk_json, brand, brand_name, brand_logo
          FROM accounts
         WHERE uid_digest=?1`
     ).bind(uidDigest).all();
@@ -1076,6 +1076,8 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
       last_ctr: Number(accountRow.last_ctr || 0),
       wrapped_mk_json: accountRow.wrapped_mk_json,
       brand: accountRow.brand || null,
+      brand_name: accountRow.brand_name || null,
+      brand_logo: accountRow.brand_logo || null,
       newly_created: false
     };
   }
@@ -1120,13 +1122,15 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
       last_ctr: 0,
       wrapped_mk_json: null,
       brand: null,
+      brand_name: null,
+      brand_logo: null,
       newly_created: true
     };
   } catch (err) {
     const msg = String(err?.message || '');
     if (msg.includes('UNIQUE constraint failed')) {
       const rows = await db.prepare(
-        `SELECT account_digest, account_token, uid_digest, last_ctr, wrapped_mk_json, brand
+        `SELECT account_digest, account_token, uid_digest, last_ctr, wrapped_mk_json, brand, brand_name, brand_logo
            FROM accounts
           WHERE account_digest=?1 OR uid_digest=?2`
       ).bind(acctDigest, acctUidDigest).all();
@@ -1139,6 +1143,8 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
           last_ctr: Number(row.last_ctr || 0),
           wrapped_mk_json: row.wrapped_mk_json,
           brand: row.brand || null,
+          brand_name: row.brand_name || null,
+          brand_logo: row.brand_logo || null,
           newly_created: false
         };
       }
@@ -1230,6 +1236,18 @@ async function ensureDataTables(env) {
         console.log('ensureDataTables: added brand column to accounts');
       } catch (alterErr) {
         console.warn('ensureDataTables: brand column add failed (may already exist)', alterErr?.message);
+      }
+    }
+    // Auto-add brand_name + brand_logo columns to accounts (white-label display metadata)
+    try {
+      await env.DB.prepare(`SELECT brand_name FROM accounts LIMIT 0`).all();
+    } catch {
+      try {
+        await env.DB.prepare(`ALTER TABLE accounts ADD COLUMN brand_name TEXT`).run();
+        await env.DB.prepare(`ALTER TABLE accounts ADD COLUMN brand_logo TEXT`).run();
+        console.log('ensureDataTables: added brand_name + brand_logo columns to accounts');
+      } catch (alterErr) {
+        console.warn('ensureDataTables: brand_name/brand_logo columns add failed (may already exist)', alterErr?.message);
       }
     }
     // Auto-add pairing_code + prekey_bundle_json columns to invite_dropbox
@@ -1330,7 +1348,9 @@ async function handleTagsRoutes(req, env) {
       account_digest: account.account_digest,
       uid_digest: account.uid_digest,
       newly_created: account.newlyCreated,
-      brand: account.brand || undefined
+      brand: account.brand || undefined,
+      brand_name: account.brand_name || undefined,
+      brand_logo: account.brand_logo || undefined
     });
   }
 
@@ -5200,6 +5220,8 @@ async function handleAccountsRoutes(req, env) {
     if (brand === undefined) {
       return json({ error: 'BadRequest', message: 'brand field required (string or null to clear)' }, { status: 400 });
     }
+    const brandName = body?.brandName || body?.brand_name || null;
+    const brandLogo = body?.brandLogo || body?.brand_logo || null;
 
     // Support single or batch: accountDigest / uidDigest / uidHex, or arrays
     const toArray = (v) => Array.isArray(v) ? v : (v ? [v] : []);
@@ -5218,14 +5240,19 @@ async function handleAccountsRoutes(req, env) {
       }
     }
 
-    // Resolve uidHexes → accountDigests (via uid_hex column)
+    // Resolve uidHexes → accountDigests (hash uidHex to uid_digest first)
     for (const uh of uidHexes) {
-      const row = await env.DB.prepare(
-        `SELECT account_digest FROM accounts WHERE uid_hex=?1`
-      ).bind(uh).first();
-      if (row?.account_digest) {
-        const ad = normalizeAccountDigest(row.account_digest);
-        if (ad && !accountDigests.includes(ad)) accountDigests.push(ad);
+      try {
+        const uidDigest = await hashUidToDigest(env, uh);
+        const row = await env.DB.prepare(
+          `SELECT account_digest FROM accounts WHERE uid_digest=?1`
+        ).bind(uidDigest).first();
+        if (row?.account_digest) {
+          const ad = normalizeAccountDigest(row.account_digest);
+          if (ad && !accountDigests.includes(ad)) accountDigests.push(ad);
+        }
+      } catch (err) {
+        console.warn('set-brand: uidHex lookup failed for', uh, err?.message);
       }
     }
 
@@ -5238,15 +5265,15 @@ async function handleAccountsRoutes(req, env) {
     for (const ad of accountDigests) {
       try {
         await env.DB.prepare(
-          `UPDATE accounts SET brand=?1 WHERE account_digest=?2`
-        ).bind(brand, ad).run();
+          `UPDATE accounts SET brand=?1, brand_name=?2, brand_logo=?3 WHERE account_digest=?4`
+        ).bind(brand, brandName, brandLogo, ad).run();
         updated.push(ad);
       } catch (err) {
         failed.push({ accountDigest: ad, error: err?.message || String(err) });
       }
     }
 
-    return json({ ok: true, brand, updated, failed: failed.length ? failed : undefined });
+    return json({ ok: true, brand, brandName, brandLogo, updated, failed: failed.length ? failed : undefined });
   }
 
   return null;

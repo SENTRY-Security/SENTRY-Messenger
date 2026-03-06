@@ -4,7 +4,17 @@
 // Works on login.html, app.html, and logout.html.
 
 import { resolveBrand } from './brand-config.js';
-import { getBrandKey } from './store.js';
+import { getBrandKey, getBrandName, getBrandLogo } from './store.js';
+
+/**
+ * Check if a logo URL is an external (absolute) URL.
+ * External logos should NOT have the brightness(0) invert(1) filter applied
+ * since they are full-color images, not monochrome SVGs.
+ */
+function isExternalLogo(url) {
+  if (!url) return false;
+  return /^https?:\/\//i.test(url);
+}
 
 /**
  * Apply brand styling to the current page.
@@ -14,11 +24,15 @@ import { getBrandKey } from './store.js';
  */
 export function applyBrand(brandKey) {
   const key = brandKey || getBrandKey() || null;
-  const brand = resolveBrand(key);
+  const overrides = {
+    brandName: getBrandName() || null,
+    brandLogo: getBrandLogo() || null
+  };
+  const brand = resolveBrand(key, overrides);
+  const externalLogo = isExternalLogo(brand.logo);
 
   // --- Document title ---
   if (document.title) {
-    // Replace "SENTRY MESSENGER" in title with brand name
     document.title = document.title.replace(/SENTRY MESSENGER/g, brand.name);
   }
 
@@ -42,6 +56,10 @@ export function applyBrand(brandKey) {
     if (el && el.tagName === 'IMG') {
       el.src = brand.logo;
       if (el.alt) el.alt = brand.name;
+      // Remove monochrome filter for external (colored) logos
+      if (externalLogo) {
+        el.style.filter = 'none';
+      }
     }
   }
 
@@ -83,10 +101,11 @@ export function applyBrand(brandKey) {
     noticeText.textContent = noticeText.textContent.replace(/SENTRY MESSENGER/g, brand.name);
   }
 
-  // --- Store brand key on window for inline scripts (scramble animation etc.) ---
+  // --- Store brand info on window for inline scripts (scramble animation etc.) ---
   try {
     window.__BRAND_NAME = brand.name;
     window.__BRAND_LOGO = brand.logo;
+    window.__BRAND_LOGO_EXTERNAL = externalLogo;
   } catch { /* ignore */ }
 }
 
@@ -94,5 +113,8 @@ export function applyBrand(brandKey) {
  * Get current brand config (resolved from store).
  */
 export function getCurrentBrand() {
-  return resolveBrand(getBrandKey());
+  return resolveBrand(getBrandKey(), {
+    brandName: getBrandName() || null,
+    brandLogo: getBrandLogo() || null
+  });
 }

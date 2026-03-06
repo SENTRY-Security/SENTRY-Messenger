@@ -136,13 +136,15 @@ r.post('/admin/set-brand', async (req, res) => {
     return res.status(401).json({ error: 'Unauthorized', message: 'invalid admin signature' });
   }
 
-  const { brand, accountDigest, account_digest, uidDigest, uid_digest, uidHex, uid_hex } = req.body || {};
+  const { brand, brandName, brand_name, brandLogo, brand_logo, accountDigest, account_digest, uidDigest, uid_digest, uidHex, uid_hex } = req.body || {};
   if (brand === undefined) {
     return res.status(400).json({ error: 'BadRequest', message: 'brand field required (string or null to clear)' });
   }
 
   const payload = {
     brand: brand || null,
+    brandName: brandName || brand_name || undefined,
+    brandLogo: brandLogo || brand_logo || undefined,
     accountDigest: accountDigest || account_digest || undefined,
     uidDigest: uidDigest || uid_digest || undefined,
     uidHex: uidHex || uid_hex || undefined

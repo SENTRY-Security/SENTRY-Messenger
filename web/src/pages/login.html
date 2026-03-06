@@ -328,13 +328,47 @@
   <body>
     <div id="uatBadge" class="uat-badge">U A T</div>
     <script>if(window.APP_ENV&&window.APP_ENV!=='production'){document.getElementById('uatBadge').classList.add('visible')}</script>
+    <script>
+    // Early brand hydration: read brand info from sessionStorage before modules load
+    // to avoid flash of default brand on the splash screen and transition stage.
+    (function(){
+      try {
+        var bk = sessionStorage.getItem('brand');
+        if (!bk) return;
+        var bn = sessionStorage.getItem('brand_name');
+        var bl = sessionStorage.getItem('brand_logo');
+        if (bn) window.__BRAND_NAME = bn;
+        if (bl) {
+          window.__BRAND_LOGO = bl;
+          window.__BRAND_LOGO_EXTERNAL = /^https?:\/\//i.test(bl);
+        }
+      } catch(e){}
+    })();
+    </script>
     <div id="loginSplash">
-      <img class="splash-logo" src="/assets/images/logo.svg" alt="" />
-      <div class="splash-brand">SENTRY MESSENGER</div>
+      <img class="splash-logo" id="loginSplashLogo" src="/assets/images/logo.svg" alt="" />
+      <div class="splash-brand" id="loginSplashBrand">SENTRY MESSENGER</div>
       <div class="splash-spinner" aria-hidden="true"></div>
       <div class="splash-text">載入中…</div>
     </div>
     <script>
+      // Apply brand to splash screen immediately
+      (function(){
+        var bn = window.__BRAND_NAME;
+        var bl = window.__BRAND_LOGO;
+        if (bn) {
+          var el = document.getElementById('loginSplashBrand');
+          if (el) el.textContent = bn;
+          if (document.title) document.title = document.title.replace(/SENTRY MESSENGER/g, bn);
+        }
+        if (bl) {
+          var img = document.getElementById('loginSplashLogo');
+          if (img) {
+            img.src = bl;
+            if (window.__BRAND_LOGO_EXTERNAL) img.style.filter = 'none';
+          }
+        }
+      })();
       window.__hideLoginSplash = function(){
         var el = document.getElementById('loginSplash');
         if (!el) return;
@@ -348,7 +382,7 @@
       <canvas class="tm-canvas" id="tmCanvas"></canvas>
       <div class="tm-overlay"></div>
       <div class="tm-content">
-        <img class="tm-logo" src="/assets/images/logo.svg" alt="" />
+        <img class="tm-logo" id="loginTmLogo" src="/assets/images/logo.svg" alt="" />
         <div class="tm-brand" id="tmBrand" aria-label="SENTRY MESSENGER"></div>
         <div class="tm-sublabel">END-TO-END ENCRYPTED</div>
         <div class="tm-bar-track">
@@ -365,10 +399,10 @@
     </div>
     <main class="login-shell">
       <div class="brand" id="loginBrand">
-        <img src="/assets/images/logo.svg" alt="SENTRY MESSENGER" />
-        <h1>SENTRY MESSENGER</h1>
+        <img id="loginBrandLogo" src="/assets/images/logo.svg" alt="SENTRY MESSENGER" />
+        <h1 id="loginBrandName">SENTRY MESSENGER</h1>
       </div>
-      <p class="subtitle">感應 SENTRY MESSENGER 晶片後輸入密碼即可登入。</p>
+      <p class="subtitle" id="loginSubtitle">感應 SENTRY MESSENGER 晶片後輸入密碼即可登入。</p>
 
       <div autocomplete="off" data-1p-ignore="true" data-lpignore="true">
         <div class="uid-card" id="uidCard" aria-label="晶片識別圖">
@@ -437,6 +471,37 @@
       <p class="notice"><span class="notice-icon" aria-hidden="true">🔒</span><span class="notice-text">SENTRY MESSENGER 採用 E2EE 端對端加密技術，所有加解密均於前端計算，伺服器端僅儲存加密過的資訊，所有敏感資訊僅保留於記憶體，並於畫面切換時即刻清除。</span></p>
     </div>
   </main>
+    <script>
+    // Apply early brand to login shell and transition stage elements
+    (function(){
+      var bn = window.__BRAND_NAME;
+      var bl = window.__BRAND_LOGO;
+      var ext = window.__BRAND_LOGO_EXTERNAL;
+      if (bn) {
+        var ids = ['loginBrandName'];
+        for (var i = 0; i < ids.length; i++) {
+          var el = document.getElementById(ids[i]);
+          if (el) el.textContent = bn;
+        }
+        var sub = document.getElementById('loginSubtitle');
+        if (sub) sub.textContent = sub.textContent.replace(/SENTRY MESSENGER/g, bn);
+        var notice = document.querySelector('.notice-text');
+        if (notice) notice.textContent = notice.textContent.replace(/SENTRY MESSENGER/g, bn);
+        var tmb = document.getElementById('tmBrand');
+        if (tmb) tmb.setAttribute('aria-label', bn);
+      }
+      if (bl) {
+        var imgs = ['loginBrandLogo', 'loginTmLogo'];
+        for (var i = 0; i < imgs.length; i++) {
+          var img = document.getElementById(imgs[i]);
+          if (img) {
+            img.src = bl;
+            if (ext) img.style.filter = 'none';
+          }
+        }
+      }
+    })();
+    </script>
     <div id="welcomeModal" class="modal welcome-modal hidden" aria-hidden="true">
       <div class="modal-backdrop"></div>
       <div class="modal-panel" role="dialog" aria-modal="true">

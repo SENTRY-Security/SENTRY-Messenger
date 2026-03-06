@@ -22,7 +22,8 @@ import {
   getAccountDigest, setAccountDigest,
   getOpaqueServerId, setOpaqueServerId,
   getDeviceId, setDeviceId,
-  getBrandKey, setBrandKey
+  getBrandKey, setBrandKey,
+  setBrandName, setBrandLogo
 } from '../core/store.js';
 
 // crypto deps
@@ -212,6 +213,12 @@ export async function exchangeSDM(p) {
   }
   if (data.brand) {
     setBrandKey(data.brand);
+  }
+  if (data.brand_name) {
+    setBrandName(data.brand_name);
+  }
+  if (data.brand_logo) {
+    setBrandLogo(data.brand_logo);
   }
 
   emitIdentityTrace({

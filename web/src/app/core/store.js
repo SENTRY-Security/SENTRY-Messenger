@@ -34,8 +34,12 @@ const _DR_SESS = new Map(); // peerKey (accountDigest::deviceId) -> { rk, ckS, c
 const _DR_PEER_ALIASES = null; // legacy unused
 let _OPAQUE_SERVER_ID = null;
 let _BRAND_KEY = null;
+let _BRAND_NAME = null;
+let _BRAND_LOGO = null;
 const DEVICE_ID_STORAGE_KEY = 'device_id';
 const BRAND_STORAGE_KEY = 'brand';
+const BRAND_NAME_STORAGE_KEY = 'brand_name';
+const BRAND_LOGO_STORAGE_KEY = 'brand_logo';
 const DEVICE_COUNTER_PREFIX = 'device_counter::';
 
 function ensureDrHolderDebugId(holder) {
@@ -610,6 +614,8 @@ export function setOpaqueServerId(v) {
 }
 
 export function getBrandKey() { return _BRAND_KEY; }
+export function getBrandName() { return _BRAND_NAME; }
+export function getBrandLogo() { return _BRAND_LOGO; }
 export function setBrandKey(v) {
   _BRAND_KEY = v ? String(v) : null;
   try {
@@ -622,6 +628,30 @@ export function setBrandKey(v) {
     }
   } catch { /* ignore */ }
 }
+export function setBrandName(v) {
+  _BRAND_NAME = v ? String(v) : null;
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      if (_BRAND_NAME) {
+        sessionStorage.setItem(BRAND_NAME_STORAGE_KEY, _BRAND_NAME);
+      } else {
+        sessionStorage.removeItem(BRAND_NAME_STORAGE_KEY);
+      }
+    }
+  } catch { /* ignore */ }
+}
+export function setBrandLogo(v) {
+  _BRAND_LOGO = v ? String(v) : null;
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      if (_BRAND_LOGO) {
+        sessionStorage.setItem(BRAND_LOGO_STORAGE_KEY, _BRAND_LOGO);
+      } else {
+        sessionStorage.removeItem(BRAND_LOGO_STORAGE_KEY);
+      }
+    }
+  } catch { /* ignore */ }
+}
 
 // Restore brand from sessionStorage on load
 (function restoreBrandFromStorage() {
@@ -630,6 +660,14 @@ export function setBrandKey(v) {
     const stored = sessionStorage.getItem(BRAND_STORAGE_KEY);
     if (stored && typeof stored === 'string' && stored.trim()) {
       _BRAND_KEY = stored.trim();
+    }
+    const storedName = sessionStorage.getItem(BRAND_NAME_STORAGE_KEY);
+    if (storedName && typeof storedName === 'string' && storedName.trim()) {
+      _BRAND_NAME = storedName.trim();
+    }
+    const storedLogo = sessionStorage.getItem(BRAND_LOGO_STORAGE_KEY);
+    if (storedLogo && typeof storedLogo === 'string' && storedLogo.trim()) {
+      _BRAND_LOGO = storedLogo.trim();
     }
   } catch { /* ignore */ }
 })();
