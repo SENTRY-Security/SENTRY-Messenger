@@ -214,6 +214,32 @@ r.post('/auth/sdm/debug-kit', (req, res) => {
   }
 });
 
+// GET /api/v1/auth/brand?uid=<hex>  （快速品牌查詢，splash 用）
+r.get('/auth/brand', async (req, res) => {
+  if (!DATA_API || !HMAC_SECRET) {
+    return res.status(500).json({ error: 'ConfigError' });
+  }
+  const uid = (req.query.uid || '').replace(/[^0-9a-f]/gi, '').toUpperCase();
+  if (!uid || uid.length < 14) {
+    return res.status(400).json({ error: 'BadRequest', message: 'uid required (14+ hex)' });
+  }
+  const path = `/d1/accounts/brand?uid=${encodeURIComponent(uid)}`;
+  const sig = signHmac(path, '', HMAC_SECRET);
+  try {
+    const workerRes = await fetch(`${DATA_API}${path}`, {
+      headers: { 'x-auth': sig }
+    });
+    const data = await workerRes.json();
+    return res.json({
+      brand: data.brand || null,
+      brand_name: data.brand_name || null,
+      brand_logo: data.brand_logo || null
+    });
+  } catch (err) {
+    return res.status(502).json({ error: 'UpstreamError', message: err?.message || 'fetch failed' });
+  }
+});
+
 // POST /api/v1/auth/sdm/exchange  （開頁背景自動打）
 r.post('/auth/sdm/exchange', async (req, res) => {
   if (!DATA_API || !HMAC_SECRET) {

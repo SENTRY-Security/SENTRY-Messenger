@@ -5206,6 +5206,33 @@ async function handleAccountsRoutes(req, env) {
     });
   }
 
+  // GET /d1/accounts/brand?uid=<hex> — lightweight brand lookup by UID
+  // Returns brand info without requiring full SDM exchange.
+  // Used by frontend to show brand on splash screen while exchange is in progress.
+  if (req.method === 'GET' && url.pathname === '/d1/accounts/brand') {
+    const uidHex = normalizeUid(url.searchParams.get('uid'));
+    if (!uidHex) {
+      return json({ error: 'BadRequest', message: 'uid query parameter required (14+ hex)' }, { status: 400 });
+    }
+    try {
+      await ensureDataTables(env);
+      const uidDigest = await hashUidToDigest(env, uidHex);
+      const row = await env.DB.prepare(
+        `SELECT brand, brand_name, brand_logo FROM accounts WHERE uid_digest=?1`
+      ).bind(uidDigest).first();
+      if (!row) {
+        return json({ brand: null, brand_name: null, brand_logo: null });
+      }
+      return json({
+        brand: row.brand || null,
+        brand_name: row.brand_name || null,
+        brand_logo: row.brand_logo || null
+      });
+    } catch (err) {
+      return json({ error: 'LookupFailed', message: err?.message || 'brand lookup failed' }, { status: 500 });
+    }
+  }
+
   // POST /d1/accounts/set-brand — admin sets brand for account(s)
   if (req.method === 'POST' && url.pathname === '/d1/accounts/set-brand') {
     await ensureDataTables(env);

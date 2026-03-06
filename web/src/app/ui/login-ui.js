@@ -15,7 +15,8 @@ import {
   getAccountDigest, setAccountDigest,
   getDevicePriv, ensureDeviceId,
   resetAll, clearSecrets,
-  setOpaqueServerId
+  setOpaqueServerId,
+  setBrandKey, setBrandName, setBrandLogo
 } from '../core/store.js';
 import { exchangeSDM, unlockAndInit } from '../features/login-flow.js';
 import { exchangeFromURLIfPresent, exchangeWithParams, parseSdmParams } from '../features/sdm.js';
@@ -38,6 +39,7 @@ import { generateInitialBundle } from '../crypto/prekeys.js';
 import { generateSimExchange, upsertSimTag, setSimConfig } from '../../libs/ntag424-sim.js';
 import { isIosVersionTooOld } from './mobile/browser-detection.js';
 import { applyBrand } from '../core/brand-apply.js';
+import { brandLookup } from '../api/auth.js';
 
 function summarizeMkForLog(mkRaw) {
   const summary = { mkLen: mkRaw instanceof Uint8Array ? mkRaw.length : 0, mkHash12: null };
@@ -807,8 +809,26 @@ async function onSdmExchange() {
 // auto-exchange from URL if params present (via features/sdm)
 (async function autoExchangeFromURL() {
   try {
-    const hasParams = !!parseSdmParams();
+    const sdmParams = parseSdmParams();
+    const hasParams = !!sdmParams;
     if (hasParams) setUidVerifyingState(true);
+
+    // Fire brand lookup in parallel with SDM exchange so we can show brand
+    // on the splash screen while the full exchange is still in progress.
+    // Brand lookup is a fast GET by UID; SDM exchange is a heavier POST.
+    let brandApplied = false;
+    if (hasParams && sdmParams.uidHex) {
+      brandLookup(sdmParams.uidHex).then(info => {
+        if (brandApplied) return; // SDM exchange already applied brand
+        if (info && (info.brand || info.brand_name || info.brand_logo)) {
+          if (info.brand) setBrandKey(info.brand);
+          if (info.brand_name) setBrandName(info.brand_name);
+          if (info.brand_logo) setBrandLogo(info.brand_logo);
+          applyBrand();
+        }
+      }).catch(() => { /* brand lookup is best-effort */ });
+    }
+
     const res = await exchangeFromURLIfPresent();
     if (res && res.performed) {
       // prefill inputs for visibility
@@ -819,7 +839,8 @@ async function onSdmExchange() {
       if (newAccount) welcomeAcknowledged = false;
       applyAccountMode();
       markVerifiedUI();
-      // Apply brand styling based on backend response
+      // Apply brand styling based on backend response (authoritative)
+      brandApplied = true;
       applyBrand();
     }
   } catch (e) {

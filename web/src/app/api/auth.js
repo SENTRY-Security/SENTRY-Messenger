@@ -4,7 +4,7 @@
 // Front-end API wrappers for authentication flows.
 // ESM only; depends on core/http. No UI logic here.
 
-import { fetchJSON } from '../core/http.js';
+import { fetchJSON, fetchWithTimeout } from '../core/http.js';
 
 /**
  * SDM Exchange — verify NTAG424 SDM (server-side) and obtain one-time session.
@@ -22,6 +22,19 @@ export async function sdmExchange({ uid, sdmmac, sdmcounter, nonce = 'n/a' }) {
  * @param {{uidHex?:string}} [p]
  * @returns {Promise<{ r: Response, data: any }>}
  */
+/**
+ * Brand lookup — fast, pre-auth query to get brand info for a UID.
+ * Used to show brand logo/name on splash screen while SDM exchange runs.
+ * @param {string} uid - UID hex (14+ chars)
+ * @returns {Promise<{brand:string|null, brand_name:string|null, brand_logo:string|null}>}
+ */
+export async function brandLookup(uid) {
+  const hex = String(uid || '').replace(/[^0-9a-f]/gi, '').toUpperCase();
+  const r = await fetchWithTimeout(`/api/v1/auth/brand?uid=${encodeURIComponent(hex)}`, {}, 5000);
+  if (!r.ok) return { brand: null, brand_name: null, brand_logo: null };
+  return await r.json();
+}
+
 export async function sdmDebugKit({ uidHex } = {}) {
   const payload = {};
   if (uidHex) payload.uid_hex = uidHex;
