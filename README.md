@@ -310,7 +310,6 @@ SENTRY-Messenger/
 │   │       ├── message-key-vault.routes.js # 訊息金鑰保險庫 CRUD
 │   │       ├── subscription.routes.js #   訂閱管理（兌換/驗證/掃描上傳）
 │   │       ├── admin.routes.js       #   管理員操作（帳號清除）
-│   │       └── debug.routes.js       #   除錯端點（遠端 Console）
 │   │
 │   ├── controllers/                  # 業務邏輯層
 │   │   ├── messages.controller.js    # 訊息建立/原子發送/狀態查詢/刪除
@@ -1187,13 +1186,6 @@ media_objects         # 媒體物件追蹤
 |------|------|------|
 | `/admin/purge-account` | POST | 清除帳號資料（需 HMAC `x-auth` header） |
 
-### 除錯 (`/api/v1/debug/`)
-
-| 端點 | 方法 | 說明 |
-|------|------|------|
-| `/debug/config` | GET | 取得除錯設定（遠端 Console 啟用狀態） |
-| `/debug/console` | POST | 轉送前端 Console 日誌 |
-
 ### 其他
 
 | 端點 | 方法 | 說明 |
@@ -1532,12 +1524,6 @@ cd web && npm run verify:cdn     # CDN 完整性驗證（含 verbose）
 | `CALL_LOCK_TTL_MS` | 通話鎖定逾時 (毫秒, 最小 30s) | `120000` |
 | `CALL_SESSION_TTL_SECONDS` | 通話 Session 過期時間 | `90` |
 | `CALL_EXTRA_STUN_URIS` | 額外 STUN 伺服器 | `stun:stun.l.google.com:19302` |
-
-### 除錯與遠端 Console
-
-| 變數 | 說明 | 範例 |
-|------|------|------|
-| `REMOTE_CONSOLE_LOG` | 遠端 Console 日誌路徑 | `/var/log/remote-console.log` |
 
 ---
 
