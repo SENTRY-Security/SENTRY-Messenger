@@ -99,7 +99,7 @@ if (cssResult.metafile) {
 }
 
 // --- Copy static assets ---
-const staticDirs = ['pages', 'assets', 'libs', 'shared'];
+const staticDirs = ['pages', 'assets', 'libs', 'shared', 'locales'];
 for (const dir of staticDirs) {
   cpSync(resolve(src, dir), resolve(dist, dir), { recursive: true });
 }

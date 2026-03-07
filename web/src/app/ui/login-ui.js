@@ -40,6 +40,12 @@ import { generateSimExchange, upsertSimTag, setSimConfig } from '../../libs/ntag
 import { isIosVersionTooOld } from './mobile/browser-detection.js';
 import { applyBrand } from '../core/brand-apply.js';
 import { brandLookup } from '../api/auth.js';
+import { initI18n, t, applyDOMTranslations } from '/locales/index.js';
+
+// --- i18n: load language pack early (non-blocking) ---
+const i18nReady = initI18n().catch(err => {
+  console.warn('[i18n] Init failed, using fallback keys:', err);
+});
 
 function summarizeMkForLog(mkRaw) {
   const summary = { mkLen: mkRaw instanceof Uint8Array ? mkRaw.length : 0, mkHash12: null };

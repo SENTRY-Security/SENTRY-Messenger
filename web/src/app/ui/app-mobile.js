@@ -130,9 +130,15 @@ import { createSettingsModule } from './mobile/modals/settings-modal.js';
 import { createPasswordModal } from './mobile/modals/password-modal.js';
 import { createWsIntegration } from './mobile/ws-integration.js';
 import { isIosWebKitLikeBrowser } from './mobile/browser-detection.js';
+import { initI18n, t, applyDOMTranslations, setLang, getCurrentLang } from '/locales/index.js';
 
 // --- Loading Modal: report JS modules loaded ---
 window.__updateLoadingProgress?.('scripts');
+
+// --- i18n: load language pack early (non-blocking) ---
+const i18nReady = initI18n().catch(err => {
+  console.warn('[i18n] Init failed, using fallback keys:', err);
+});
 
 function summarizeMkForLog(mkRaw) {
   const summary = { mkLen: mkRaw instanceof Uint8Array ? mkRaw.length : 0, mkHash12: null };
