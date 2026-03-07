@@ -5,23 +5,48 @@
 //
 // Brand names in text are wrapped in <span data-brand-name> elements
 // so they can be targeted individually (important for future i18n).
+//
+// Logo rendering uses logo-mono.js: SVG logos are fetched and rewritten
+// to monochrome white for dark backgrounds; non-SVG logos are shown as-is.
 
 import { resolveBrand } from './brand-config.js';
 import { getBrandKey, getBrandName, getBrandLogo } from './store.js';
+import { applyMonoLogo, applyMonoLogoSync, looksLikeSvg } from './logo-mono.js';
+
+// Drop-shadow presets matching the CSS keyframe animations on each page.
+// Logos that use pulsing glow animations define the shadow in CSS @keyframes,
+// so we only need to supply the shadow for the initial static render here.
+const GLOW_SHADOW = 'drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25))';
 
 /**
- * Check if a logo URL is an external (absolute) URL.
- * External logos should NOT have the brightness(0) invert(1) filter applied
- * since they are full-color images, not monochrome SVGs.
+ * Logo selectors and their drop-shadow configuration.
+ * `glow: true` means the element has a pulsing glow animation — apply
+ * the GLOW_SHADOW on initial render (CSS animation will take over).
  */
-function isExternalLogo(url) {
-  if (!url) return false;
-  return /^https?:\/\//i.test(url);
-}
+const LOGO_SELECTORS = [
+  // login.html
+  { sel: '.splash-logo',                  glow: false },
+  { sel: '.tm-logo',                      glow: true  },
+  { sel: '.brand img',                    glow: false },
+  // app.html
+  { sel: 'img.brand',                     glow: false },  // topbar logo (img WITH class, not img INSIDE .brand)
+  { sel: '.loading-logo',                 glow: true  },
+  { sel: '#appLoadingModal .loading-logo', glow: true  },
+  // logout.html
+  { sel: '.logout-logo',                  glow: true  },
+  // video viewer
+  { sel: '.vv-buffering-logo',            glow: false },
+  { sel: '.vv-seekbar-thumb-logo',        glow: false }
+];
 
 /**
  * Apply brand styling to the current page.
  * Call this after SDM exchange (login page) or on page load (app/logout).
+ *
+ * Logo handling:
+ *   - SVG logos are fetched, parsed, and rewritten to monochrome white.
+ *   - Non-SVG logos (PNG/JPG) are shown in original colors.
+ *   - On fetch failure, falls back to CSS brightness(0) invert(1).
  *
  * @param {string|null} [brandKey] - brand key; defaults to store value
  */
@@ -32,7 +57,6 @@ export function applyBrand(brandKey) {
     brandLogo: getBrandLogo() || null
   };
   const brand = resolveBrand(key, overrides);
-  const externalLogo = isExternalLogo(brand.logo);
 
   // --- Document title ---
   if (document.title) {
@@ -46,23 +70,16 @@ export function applyBrand(brandKey) {
   }
 
   // --- Logo images ---
-  const logoSelectors = [
-    '.splash-logo',
-    '.tm-logo',
-    '.brand img',
-    '.loading-logo',
-    '.logout-logo',
-    '#appLoadingModal .loading-logo'
-  ];
-  for (const sel of logoSelectors) {
+  for (const { sel, glow } of LOGO_SELECTORS) {
     const el = document.querySelector(sel);
-    if (el && el.tagName === 'IMG') {
-      el.src = brand.logo;
-      if (el.alt) el.alt = brand.name;
-      if (externalLogo) {
-        el.style.filter = 'none';
-      }
-    }
+    if (!el || el.tagName !== 'IMG') continue;
+    if (el.alt) el.alt = brand.name;
+
+    const shadow = glow ? GLOW_SHADOW : '';
+    // Synchronous: set src + CSS filter immediately (no flash of unstyled logo)
+    applyMonoLogoSync(el, brand.logo, { dropShadow: shadow });
+    // Async: fetch SVG → rewrite to white → replace src with data URI
+    applyMonoLogo(el, brand.logo, { dropShadow: shadow });
   }
 
   // --- Brand text elements (elements whose entire content is the brand name) ---
@@ -101,7 +118,7 @@ export function applyBrand(brandKey) {
   try {
     window.__BRAND_NAME = brand.name;
     window.__BRAND_LOGO = brand.logo;
-    window.__BRAND_LOGO_EXTERNAL = externalLogo;
+    window.__BRAND_LOGO_EXTERNAL = !looksLikeSvg(brand.logo);
   } catch { /* ignore */ }
 }
 

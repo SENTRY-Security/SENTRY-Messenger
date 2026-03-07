@@ -37,6 +37,10 @@
   display: block;
   filter: brightness(0) invert(1);
 }
+.topbar .title img.brand.mono-done,
+.topbar .title img.brand.color-logo {
+  filter: none;
+}
 
 .connection-indicator {
   display: inline-flex;

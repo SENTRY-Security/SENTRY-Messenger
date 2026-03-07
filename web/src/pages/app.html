@@ -29,6 +29,9 @@
     #appLoadingModal .loading-bar-scan{position:absolute;top:0;height:100%;width:40px;background:linear-gradient(90deg,transparent,rgba(56,189,248,0.6),transparent);animation:app-scan 2s linear infinite}
     #appLoadingModal .loading-label{font-size:12px;color:rgba(148,163,184,0.7);letter-spacing:1px}
     @keyframes app-pulse{0%,100%{filter:brightness(0) invert(1) drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25))}50%{filter:brightness(0) invert(1) drop-shadow(0 0 28px rgba(56,189,248,0.7)) drop-shadow(0 0 60px rgba(99,102,241,0.4))}}
+    @keyframes app-pulse-mono{0%,100%{filter:drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25))}50%{filter:drop-shadow(0 0 28px rgba(56,189,248,0.7)) drop-shadow(0 0 60px rgba(99,102,241,0.4))}}
+    #appLoadingModal .loading-logo.mono-done{filter:drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25));animation-name:app-pulse-mono}
+    #appLoadingModal .loading-logo.color-logo{filter:drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25));animation-name:app-pulse-mono}
     @keyframes app-scan{0%{left:-40px}100%{left:calc(100% + 40px)}}
     /* ── Morph: progress bar → enter button ── */
     #appLoadingModal .loading-bar-track{transition:width .6s cubic-bezier(.4,0,.2,1),height .6s cubic-bezier(.4,0,.2,1),border-radius .6s ease,box-shadow .6s ease,transform .15s ease}
@@ -101,7 +104,9 @@
       if (bn) window.__BRAND_NAME = bn;
       if (bl) {
         window.__BRAND_LOGO = bl;
-        window.__BRAND_LOGO_EXTERNAL = /^https?:\/\//i.test(bl);
+        window.__BRAND_LOGO_SVG = /\.svg(?:[?#]|$)/i.test(bl);
+        // Legacy compat — external means "not a local monochrome SVG"
+        window.__BRAND_LOGO_EXTERNAL = !window.__BRAND_LOGO_SVG;
       }
       if (bn && document.title) document.title = document.title.replace(/SENTRY MESSENGER/g, bn);
       var fav = document.querySelector('link[rel="icon"]');
@@ -112,6 +117,46 @@
       }
     } catch(e){}
   })();
+  // Shared inline helper: fetch an SVG, rewrite all colors to white, set as data URI.
+  // Used by early hydration scripts before ES modules are available.
+  window.__monoLogo = function(img, url, shadow) {
+    try {
+      fetch(url).then(function(r) {
+        if (!r.ok) return;
+        var ct = r.headers.get('content-type') || '';
+        if (!ct.match(/svg|xml/i)) { img.classList.add('color-logo'); return; }
+        return r.text();
+      }).then(function(txt) {
+        if (!txt) return;
+        var doc = new DOMParser().parseFromString(txt, 'image/svg+xml');
+        if (doc.querySelector('parsererror')) return;
+        var svg = doc.documentElement;
+        // Rewrite inline fill/stroke attributes
+        var els = svg.querySelectorAll('*');
+        for (var i = 0; i < els.length; i++) {
+          var attrs = ['fill', 'stroke'];
+          for (var j = 0; j < attrs.length; j++) {
+            if (els[i].hasAttribute(attrs[j])) {
+              var v = els[i].getAttribute(attrs[j]).trim().toLowerCase();
+              if (v === 'none' || v === 'transparent' || v.indexOf('url(') === 0) continue;
+              els[i].setAttribute(attrs[j], '#ffffff');
+            }
+          }
+        }
+        // Rewrite <style> blocks
+        var styles = svg.querySelectorAll('style');
+        for (var i = 0; i < styles.length; i++) {
+          styles[i].textContent = styles[i].textContent
+            .replace(/fill\s*:\s*(?!none|transparent|url\()[^;}\s]+/gi, 'fill: #ffffff')
+            .replace(/stroke\s*:\s*(?!none|transparent|url\()[^;}\s]+/gi, 'stroke: #ffffff');
+        }
+        if (!svg.hasAttribute('fill') && !(svg.style && svg.style.fill)) svg.setAttribute('fill', '#ffffff');
+        var out = new XMLSerializer().serializeToString(doc);
+        img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(out);
+        img.classList.add('mono-done');
+      }).catch(function(){});
+    } catch(e){}
+  };
   </script>
   <!-- Loading Modal — visible instantly, dismissed after hydration -->
   <div id="appLoadingModal">
@@ -132,25 +177,29 @@
     </div>
   </div>
   <script>
-  // Apply brand to loading modal and header elements
+  // Apply brand to loading modal elements.
+  // SVG logos: sync brightness(0) invert(1) first, then async fetch+rewrite to white.
+  // Non-SVG logos: show as-is (no filter).
   (function(){
     var bn = window.__BRAND_NAME;
     var bl = window.__BRAND_LOGO;
-    var ext = window.__BRAND_LOGO_EXTERNAL;
+    var isSvg = window.__BRAND_LOGO_SVG;
+    var GLOW = 'drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25))';
     if (bn) {
-      var els = ['appLoadingBrand'];
-      for (var i = 0; i < els.length; i++) {
-        var e = document.getElementById(els[i]);
-        if (e) e.textContent = bn;
-      }
+      var e = document.getElementById('appLoadingBrand');
+      if (e) e.textContent = bn;
     }
     if (bl) {
-      var imgs = ['appLoadingLogo'];
-      for (var i = 0; i < imgs.length; i++) {
-        var e = document.getElementById(imgs[i]);
-        if (e) {
-          e.src = bl;
-          if (ext) e.style.filter = 'none';
+      var img = document.getElementById('appLoadingLogo');
+      if (img) {
+        img.src = bl;
+        if (isSvg) {
+          // Sync: CSS brightness(0) invert(1) already from stylesheet @keyframes.
+          // Async: fetch SVG, rewrite fills to white, replace as data URI.
+          window.__monoLogo(img, bl, GLOW);
+        } else {
+          // Non-SVG: assume full-color, use glow-only animation
+          img.classList.add('color-logo');
         }
       }
     }
@@ -392,9 +441,9 @@
   (function(){
     var bn = window.__BRAND_NAME;
     var bl = window.__BRAND_LOGO;
+    var isSvg = window.__BRAND_LOGO_SVG;
     if (bn) {
       var h = document.getElementById('appHeaderBrandName');
-      // Header shows shortName — derive from full name (first word)
       if (h) h.textContent = bn.split(' ')[0];
       var logo = document.getElementById('appHeaderLogo');
       if (logo) logo.alt = bn;
@@ -403,7 +452,12 @@
       var logo = document.getElementById('appHeaderLogo');
       if (logo) {
         logo.src = bl;
-        if (window.__BRAND_LOGO_EXTERNAL) logo.style.filter = 'none';
+        if (isSvg) {
+          logo.style.filter = 'brightness(0) invert(1)';
+          window.__monoLogo(logo, bl, '');
+        } else {
+          logo.style.filter = 'none';
+        }
       }
     }
   })();

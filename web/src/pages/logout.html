@@ -39,7 +39,7 @@
         gap: 0;
         padding: 32px;
       }
-      /* logo with breathing glow */
+      /* logo with breathing glow — default uses brightness(0) invert(1) for dark SVGs */
       .logout-logo {
         width: 52px;
         height: 52px;
@@ -60,6 +60,28 @@
             drop-shadow(0 0 28px rgba(56,189,248,0.7))
             drop-shadow(0 0 60px rgba(99,102,241,0.4));
         }
+      }
+      /* After SVG rewrite to white: drop-shadow only (no brightness/invert needed) */
+      .logout-logo.mono-done {
+        filter: drop-shadow(0 0 18px rgba(56,189,248,0.45))
+          drop-shadow(0 0 40px rgba(99,102,241,0.25));
+        animation: logo-pulse-mono 3s ease-in-out infinite;
+      }
+      @keyframes logo-pulse-mono {
+        0%, 100% {
+          filter: drop-shadow(0 0 18px rgba(56,189,248,0.45))
+            drop-shadow(0 0 40px rgba(99,102,241,0.25));
+        }
+        50% {
+          filter: drop-shadow(0 0 28px rgba(56,189,248,0.7))
+            drop-shadow(0 0 60px rgba(99,102,241,0.4));
+        }
+      }
+      /* Non-SVG logos: no brightness/invert, keep glow */
+      .logout-logo.color-logo {
+        filter: drop-shadow(0 0 18px rgba(56,189,248,0.45))
+          drop-shadow(0 0 40px rgba(99,102,241,0.25));
+        animation: logo-pulse-mono 3s ease-in-out infinite;
       }
       /* brand text */
       .logout-brand {
@@ -119,19 +141,55 @@
         if (bn) {
           var brandEl = document.getElementById('logoutBrand');
           if (brandEl) brandEl.textContent = bn;
-          var titleEl = document.getElementById('logoutTitle');
-          if (titleEl) document.title = document.title.replace('SENTRY MESSENGER', bn);
+          document.title = document.title.replace('SENTRY MESSENGER', bn);
         }
 
-        // Apply brand logo
+        // Apply brand logo with monochrome SVG handling
         if (bl) {
           var logoEl = document.getElementById('logoutLogo');
           if (logoEl) {
+            var isSvg = /\.svg(?:[?#]|$)/i.test(bl);
             logoEl.src = bl;
-            // External (absolute URL) logos are full-color — disable invert filter
-            if (/^https?:\/\//i.test(bl)) {
-              logoEl.style.filter = 'drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25))';
-              logoEl.style.animation = 'none';
+            if (isSvg) {
+              // Sync: CSS brightness(0) invert(1) already applied via stylesheet.
+              // Async: fetch SVG → rewrite fills to white → replace as data URI.
+              try {
+                fetch(bl).then(function(r) {
+                  if (!r.ok) return;
+                  var ct = r.headers.get('content-type') || '';
+                  if (!ct.match(/svg|xml/i)) { logoEl.classList.add('color-logo'); return; }
+                  return r.text();
+                }).then(function(txt) {
+                  if (!txt) return;
+                  var doc = new DOMParser().parseFromString(txt, 'image/svg+xml');
+                  if (doc.querySelector('parsererror')) return;
+                  var svg = doc.documentElement;
+                  var els = svg.querySelectorAll('*');
+                  for (var i = 0; i < els.length; i++) {
+                    var attrs = ['fill', 'stroke'];
+                    for (var j = 0; j < attrs.length; j++) {
+                      if (els[i].hasAttribute(attrs[j])) {
+                        var v = els[i].getAttribute(attrs[j]).trim().toLowerCase();
+                        if (v === 'none' || v === 'transparent' || v.indexOf('url(') === 0) continue;
+                        els[i].setAttribute(attrs[j], '#ffffff');
+                      }
+                    }
+                  }
+                  var styles = svg.querySelectorAll('style');
+                  for (var i = 0; i < styles.length; i++) {
+                    styles[i].textContent = styles[i].textContent
+                      .replace(/fill\s*:\s*(?!none|transparent|url\()[^;}\s]+/gi, 'fill: #ffffff')
+                      .replace(/stroke\s*:\s*(?!none|transparent|url\()[^;}\s]+/gi, 'stroke: #ffffff');
+                  }
+                  if (!svg.hasAttribute('fill') && !(svg.style && svg.style.fill)) svg.setAttribute('fill', '#ffffff');
+                  var out = new XMLSerializer().serializeToString(doc);
+                  logoEl.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(out);
+                  logoEl.classList.add('mono-done');
+                }).catch(function(){});
+              } catch(e) {}
+            } else {
+              // Non-SVG (PNG/JPG): assume full-color, keep glow but remove invert
+              logoEl.classList.add('color-logo');
             }
           }
         }
