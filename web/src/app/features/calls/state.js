@@ -573,7 +573,7 @@ export function setCallPeerDeviceId(peerDeviceId, { callId = null } = {}) {
 
 export function updateCallSessionStatus(nextStatus, { error = null, callId = null } = {}) {
   if (!Object.values(CALL_SESSION_STATUS).includes(nextStatus)) {
-    throw new Error(`未知的 call session 狀態：${nextStatus}`);
+    throw new Error(t('calls.unknownState', { state: nextStatus }));
   }
   activeSession.status = nextStatus;
   if (callId) activeSession.callId = callId;

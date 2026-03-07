@@ -221,12 +221,12 @@ async function buildKeyContext({ session, envelope, saltBytes = null }) {
   const salt = saltBytes || b64ToBytes(envelope?.cmkSalt || '');
   if (!salt || !salt.length) throw new Error(t('callKeys.missingCallKeySalt'));
   const epoch = Number.isFinite(envelope?.epoch) ? envelope.epoch : 0;
-  if (!callId) throw new Error('callId 無效');
+  if (!callId) throw new Error(t('callKeys.invalidCallId'));
   const role = toRole(session?.direction);
   const masterKey = await deriveMasterKey(baseSecret, salt, callId, epoch);
   const proofB64 = await computeProof(masterKey, callId, epoch);
   if (envelope?.cmkProof && envelope.cmkProof !== proofB64) {
-    throw new Error('call master key proof 驗證失敗');
+    throw new Error(t('callKeys.proofVerifyFailed'));
   }
   const labels = ROLE_KEY_LABELS[role] || ROLE_KEY_LABELS.caller;
   const keys = {

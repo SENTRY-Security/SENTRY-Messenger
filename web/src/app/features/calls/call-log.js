@@ -23,13 +23,13 @@ function formatReason(reason, viewerRole) {
 
 export function formatCallLogDuration(seconds) {
   const total = Number(seconds);
-  if (!Number.isFinite(total) || total <= 0) return '0秒';
+  if (!Number.isFinite(total) || total <= 0) return t('calls.durationZeroSeconds');
   const mins = Math.floor(total / 60);
   const secs = total % 60;
   if (mins > 0) {
-    return `${mins}分${secs.toString().padStart(2, '0')}秒`;
+    return t('calls.durationMinSec', { min: mins, sec: secs.toString().padStart(2, '0') });
   }
-  return `${secs}秒`;
+  return t('calls.durationSec', { sec: secs });
 }
 
 export function normalizeCallLogPayload(payload = {}, meta = {}) {

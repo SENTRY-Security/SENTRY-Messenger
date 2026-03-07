@@ -666,11 +666,11 @@ export function setupShareController(options) {
     }
     pairingState.confirming = true;
     if (btnPairingConfirm) btnPairingConfirm.disabled = true;
-    setPairingStatus('正在查詢配對碼…');
+    setPairingStatus(t('share.queryingPairingCode'));
     try {
       const data = await invitesLookupCode({ pairingCode: code });
       if (!data?.invite_id || !data?.owner_public_key_b64 || !data?.prekey_bundle) {
-        throw new Error('配對碼資料不完整');
+        throw new Error(t('share.pairingDataIncomplete'));
       }
       setPairingStatus('配對成功，正在建立連線…', { isSuccess: true });
       // Construct the same invite object that handleInviteScan expects

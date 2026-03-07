@@ -968,15 +968,15 @@ export function initDrivePane({
 
   function friendlyContentType(ct) {
     const s = String(ct || '').toLowerCase();
-    if (s.startsWith('image/')) return s.replace('image/', '').toUpperCase() + ' 圖片';
-    if (s.startsWith('video/')) return s.replace('video/', '').toUpperCase() + ' 影片';
-    if (s.startsWith('audio/')) return s.replace('audio/', '').toUpperCase() + ' 音檔';
-    if (s === 'application/pdf') return 'PDF 文件';
-    if (s.includes('word') || s.includes('document')) return 'Word 文件';
+    if (s.startsWith('image/')) return s.replace('image/', '').toUpperCase() + ' ' + t('drive.typeImage');
+    if (s.startsWith('video/')) return s.replace('video/', '').toUpperCase() + ' ' + t('drive.typeVideo');
+    if (s.startsWith('audio/')) return s.replace('audio/', '').toUpperCase() + ' ' + t('drive.typeAudio');
+    if (s === 'application/pdf') return t('drive.typePdf');
+    if (s.includes('word') || s.includes('document')) return t('drive.typeWord');
     if (s.includes('sheet') || s.includes('excel')) return t('drive.spreadsheet');
     if (s.includes('presentation') || s.includes('powerpoint')) return t('drive.presentation');
     if (s.includes('zip') || s.includes('compressed') || s.includes('archive') || s.includes('rar') || s.includes('7z') || s.includes('tar') || s.includes('gzip')) return t('drive.archive');
-    if (s.startsWith('text/')) return s.replace('text/', '').toUpperCase() + ' 文字';
+    if (s.startsWith('text/')) return s.replace('text/', '').toUpperCase() + ' ' + t('drive.typeText');
     if (s === 'application/octet-stream') return t('common.file');
     if (s === 'application/json') return 'JSON';
     return s;
@@ -990,15 +990,15 @@ export function initDrivePane({
     const diffSec = Math.floor(diffMs / 1000);
     if (diffSec < 60) return t('common.justNow');
     const diffMin = Math.floor(diffSec / 60);
-    if (diffMin < 60) return `${diffMin} 分鐘前`;
+    if (diffMin < 60) return t('drive.minutesAgo', { count: diffMin });
     const diffHr = Math.floor(diffMin / 60);
-    if (diffHr < 24) return `${diffHr} 小時前`;
+    if (diffHr < 24) return t('drive.hoursAgo', { count: diffHr });
     const diffDay = Math.floor(diffHr / 24);
-    if (diffDay < 7) return `${diffDay} 天前`;
+    if (diffDay < 7) return t('drive.daysAgo', { count: diffDay });
     const y = date.getFullYear();
     const m = date.getMonth() + 1;
     const d = date.getDate();
-    if (y === now.getFullYear()) return `${m}月${d}日`;
+    if (y === now.getFullYear()) return t('drive.monthDay', { month: m, day: d });
     return `${y}/${m}/${d}`;
   }
 
