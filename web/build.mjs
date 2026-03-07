@@ -22,7 +22,7 @@ const dist = resolve(__dirname, 'dist');
 const absolutePathPlugin = {
   name: 'absolute-paths',
   setup(b) {
-    b.onResolve({ filter: /^\/(shared|libs)\// }, (args) => ({
+    b.onResolve({ filter: /^\/(shared|libs|locales)\// }, (args) => ({
       path: resolve(src, args.path.slice(1))
     }));
   }
