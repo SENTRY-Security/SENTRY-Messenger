@@ -328,17 +328,17 @@ export function createSubscriptionModule({ deps }) {
             <button type="button" class="channel-card" data-channel="qr">
               <div class="channel-icon"><i class='bx bx-qr-scan'></i></div>
               <div class="channel-body">
-                <div class="channel-title">QRCode 儲值</div>
-                <div class="channel-sub">使用憑證 QR 展期，支援掃描與圖檔上傳。</div>
+                <div class="channel-title">${t('subscription.qrTopUp')}</div>
+                <div class="channel-sub">${t('subscription.qrTopUpDesc')}</div>
               </div>
             </button>
             <div class="channel-card disabled" data-channel="ecpay">
               <div class="channel-icon"><i class='bx bx-credit-card'></i></div>
               <div class="channel-body">
-                <div class="channel-title">綠界金流</div>
-                <div class="channel-sub">即將開放，敬請期待。</div>
+                <div class="channel-title">${t('subscription.ecpayTitle')}</div>
+                <div class="channel-sub">${t('subscription.ecpayDesc')}</div>
               </div>
-              <span class="channel-badge">即將開放</span>
+              <span class="channel-badge">${t('subscription.comingSoon')}</span>
             </div>
           </div>
         `;
