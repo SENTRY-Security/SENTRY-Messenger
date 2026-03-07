@@ -440,7 +440,36 @@
     "updated": "已更新",
     "checkVoucherValidity": "請確認憑證是否有效或已使用",
     "accountExpiredPleaseTopUp": "帳號已到期，請儲值後再聊天",
-    "qrVoucher": "QR 憑證"
+    "qrVoucher": "QR 憑證",
+    "remainingDays": "剩餘 {days} 天",
+    "remainingHours": "剩餘 {hours} 小時",
+    "remainingMinutes": "剩餘 {minutes} 分鐘",
+    "querySubscriptionFailed": "訂閱查詢失敗：{error}",
+    "fileParseError": "檔案解析失敗：{error}",
+    "accountExpiredMessage": "帳號已到期，請儲值。",
+    "clickToTopUp": "立即儲值",
+    "subscriptionStatusTab": "訂閱狀態",
+    "topUpTab": "儲值 / 展期",
+    "currentStatus": "目前狀態",
+    "querying": "查詢中…",
+    "activationRecords": "開通 / 儲值紀錄",
+    "refresh": "刷新",
+    "selectChannel": "選擇管道",
+    "scanUpload": "掃描 / 上傳",
+    "result": "結果",
+    "noRecords": "尚無開通/儲值紀錄",
+    "qrTopUp": "QRCode 儲值",
+    "qrTopUpDesc": "使用憑證 QR 展期，支援掃描及圖片上傳。",
+    "ecpayTitle": "綠界支付",
+    "ecpayDesc": "即將開放，敬請期待。",
+    "comingSoon": "即將推出",
+    "centerQrVoucher": "將憑證 QR 對準框線",
+    "uploadQrImage": "上傳 QRCode 圖片",
+    "parseFailed": "解析失敗：{error}",
+    "cameraFailed": "相機啟動失敗：{error}",
+    "topUpAgain": "再次儲值",
+    "viewSubscriptionStatus": "查看訂閱狀態",
+    "voucherPrefix": "憑證 {id}"
   },
   "share": {
     "missingDomRef": "分享控制器缺少必要的 DOM 參照",
@@ -770,6 +799,7 @@
   },
   "misc": {
     "backToConversationList": "返回對話列表",
+    "urlOnlyHttps": "僅接受 HTTPS 網址",
     "invalidUrl": "請輸入有效的 http/https 網址，或改選預設登出頁面。"
   }
 }
