@@ -760,7 +760,7 @@ export function initDrivePane({
     const { items, truncated } = await fetchDriveMessages({ convId });
     const deduped = dedupeMessagesByObject(items);
     if (truncated) {
-      log({ driveListWarning: '列表已截斷，僅顯示最新項目', convId, items: items.length });
+      log({ driveListWarning: t('drive.listTruncated'), convId, items: items.length });
     }
     driveState.currentMessages = deduped;
     driveState.currentConvId = convId;
@@ -809,8 +809,8 @@ export function initDrivePane({
       const fileCount = Number(summary?.files || 0);
       const folderCount = summary?.subfolders instanceof Set ? summary.subfolders.size : 0;
       const parts = [];
-      if (folderCount > 0) parts.push(`${folderCount} 個資料夾`);
-      if (fileCount > 0) parts.push(`${fileCount} 個檔案`);
+      if (folderCount > 0) parts.push(t('drive.folderCount', { count: folderCount }));
+      if (fileCount > 0) parts.push(t('drive.fileCount', { count: fileCount }));
       const subLabel = parts.length ? parts.join(' · ') : t('common.emptyFolder');
       const li = document.createElement('li');
       li.className = 'file-item folder' + (isSystem ? ' system-folder' : '');

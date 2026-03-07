@@ -593,20 +593,20 @@ function ensureOverlayElements() {
       <div class="call-actions">
         <button type="button" class="call-btn reject" data-call-action="reject"><i class='bx bx-x'></i>${t('calls.reject')}</button>
         <button type="button" class="call-btn accept" data-call-action="accept"><i class='bx bx-phone'></i>${t('calls.accept')}</button>
-        <button type="button" class="call-btn cancel" data-call-action="cancel"><i class='bx bx-phone-off'></i>取消</button>
+        <button type="button" class="call-btn cancel" data-call-action="cancel"><i class='bx bx-phone-off'></i>${t('calls.cancel')}</button>
       </div>
       <div class="call-controls hidden" aria-label="${t('calls.controls')}">
         <button type="button" class="call-btn toggle" data-call-action="camera" aria-pressed="false" style="display:none">
-          <i class='bx bx-video'></i><span>鏡頭</span>
+          <i class='bx bx-video'></i><span>${t('calls.camera')}</span>
         </button>
         <button type="button" class="call-btn toggle" data-call-action="mute" aria-pressed="false">
-          <i class='bx bx-microphone-off'></i><span>靜音</span>
+          <i class='bx bx-microphone-off'></i><span>${t('calls.mute')}</span>
         </button>
         <button type="button" class="call-btn hangup" data-call-action="hangup">
-          <i class='bx bx-phone-off'></i><span>掛斷</span>
+          <i class='bx bx-phone-off'></i><span>${t('calls.hangup')}</span>
         </button>
         <button type="button" class="call-btn toggle" data-call-action="flip-camera" style="display:none">
-          <i class='bx bx-refresh'></i><span>翻轉</span>
+          <i class='bx bx-refresh'></i><span>${t('calls.flipCamera')}</span>
         </button>
       </div>
       <button type="button" class="call-blur-mode-btn" data-call-action="blur-mode" data-blur-mode="face">
@@ -1426,7 +1426,7 @@ export function initCallOverlay({ showToast }) {
 
       // Incoming video call: change accept button text
       if (ui.acceptBtn && incoming) {
-        ui.acceptBtn.innerHTML = "<i class='bx bx-video'></i>接聽視訊";
+        ui.acceptBtn.innerHTML = `<i class='bx bx-video'></i>${t('calls.acceptVideoCall')}`;
       }
     } else {
       // Reset video elements when not video

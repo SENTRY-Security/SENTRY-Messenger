@@ -607,7 +607,7 @@ export function setupShareController(options) {
       await ensureOwnerPrekeys({ force: false, reason: 'pairing-code' });
       const invite = await invitesCreate({ wantPairingCode: true });
       if (!invite?.invite_id || !invite?.pairing_code || !invite?.expires_at) {
-        throw new Error('伺服器回傳內容不完整');
+        throw new Error(t('share.serverResponseIncomplete'));
       }
       pairingState.currentInvite = {
         inviteId: String(invite.invite_id),
@@ -625,7 +625,7 @@ export function setupShareController(options) {
       setPairingStatus('');
       console.log('[share-controller] pairing code generated', { pairingCode: invite.pairing_code, inviteId: invite.invite_id });
     } catch (err) {
-      setPairingStatus(err?.message || '配對碼產生失敗', { isError: true });
+      setPairingStatus(err?.message || t('share.pairingCodeFailed'), { isError: true });
       console.error('[share-controller] pairing code generation failed', err);
     }
   }
@@ -645,7 +645,7 @@ export function setupShareController(options) {
     if (pairingState.inputMode) {
       // Switch to input mode
       clearPairingDigits();
-      if (btnPairingToggle) btnPairingToggle.textContent = '顯示我的配對碼';
+      if (btnPairingToggle) btnPairingToggle.textContent = t('share.showMyPairingCode');
       if (btnPairingConfirm) btnPairingConfirm.style.display = '';
       setPairingStatus('');
     } else {

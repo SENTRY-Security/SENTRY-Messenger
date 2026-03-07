@@ -415,8 +415,8 @@ export function createSubscriptionModule({ deps }) {
             scanner.start().then(() => {
               scannerActive = true;
               if (scanStatus) scanStatus.textContent = t('subscription.pointCameraAtQR');
-            }).catch((err) => { if (scanStatus) scanStatus.textContent = `相機無法啟動：${err?.message || err}`; });
-          } catch (err) { if (scanStatus) scanStatus.textContent = `相機無法啟動：${err?.message || err}`; }
+            }).catch((err) => { if (scanStatus) scanStatus.textContent = t('subscription.cameraFailed', { error: err?.message || err }); });
+          } catch (err) { if (scanStatus) scanStatus.textContent = t('subscription.cameraFailed', { error: err?.message || err }); }
         }
         return;
       }
@@ -426,12 +426,12 @@ export function createSubscriptionModule({ deps }) {
           <div class="result-title">${wizard.result?.ok ? t('subscription.topUpComplete') : t('subscription.topUpFailedTitle')}</div>
           <div class="result-meta">
             ${wizard.result?.ok
-          ? `最新到期：${wizard.result?.expiresAt ? fmt(wizard.result.expiresAt) : '已更新'}`
+          ? t('subscription.latestExpiry', { date: wizard.result?.expiresAt ? fmt(wizard.result.expiresAt) : t('subscription.updated') })
           : (wizard.result?.message || t('subscription.checkVoucherValidity'))}
           </div>
           <div class="result-actions">
-            <button type="button" class="secondary" id="subscriptionWizardRetry">再儲值一次</button>
-            <button type="button" class="primary" id="subscriptionWizardViewStatus">查看訂閱狀態</button>
+            <button type="button" class="secondary" id="subscriptionWizardRetry">${t('subscription.topUpAgain')}</button>
+            <button type="button" class="primary" id="subscriptionWizardViewStatus">${t('subscription.viewSubscriptionStatus')}</button>
           </div>
         </div>
       `;
