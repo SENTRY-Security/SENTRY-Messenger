@@ -1,6 +1,7 @@
 // Share controller (Signal-style): QR carries inviteId + owner metadata + prekey bundle.
 // Flow: generate invite -> scan -> sealed dropbox deliver -> owner consume (X3DH).
 
+import { t } from '/locales/index.js';
 import { invitesCreate, invitesDeliver, invitesConsume, invitesConfirm, invitesStatus, invitesLookupCode } from '../../../api/invites.js';
 import { prekeysPublish } from '../../../api/prekeys.js';
 import { devkeysStore } from '../../../api/devkeys.js';
@@ -110,7 +111,7 @@ export function setupShareController(options) {
     wsSend
   } = options;
 
-  if (!dom) throw new Error('分享控制器缺少必要的 DOM 參照');
+  if (!dom) throw new Error(t('share.missingDomRef'));
 
   const notifyToast = typeof showToastOption === 'function' ? showToastOption : null;
   let wsTransport = typeof wsSend === 'function' ? wsSend : null;
@@ -580,7 +581,7 @@ export function setupShareController(options) {
     if (remaining <= 0) {
       // Auto-refresh on expiry
       clearPairingCountdown();
-      setPairingStatus('配對碼已過期，正在刷新…');
+      setPairingStatus(t('share.pairingCodeExpired'));
       refreshPairingCode();
       return;
     }
@@ -594,10 +595,10 @@ export function setupShareController(options) {
     const ownerAccountDigest = currentOwnerDigest();
     const ownerDeviceId = ensureDeviceId();
     if (!ownerAccountDigest || !ownerDeviceId) {
-      setPairingStatus('尚未登入，無法產生配對碼。', { isError: true });
+      setPairingStatus(t('share.notLoggedInPairing'), { isError: true });
       return;
     }
-    setPairingStatus('正在產生配對碼…');
+    setPairingStatus(t('share.generatingPairingCode'));
     if (pairingCountdownEl) {
       pairingCountdownEl.textContent = '';
       pairingCountdownEl.classList.add('is-loading');

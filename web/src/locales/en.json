@@ -283,7 +283,17 @@
     "backgroundBlur": "Background blur",
     "blurOff": "Off",
     "reject": "Reject",
-    "accept": "Accept"
+    "accept": "Accept",
+    "cancel": "Cancel",
+    "camera": "Camera",
+    "mute": "Mute",
+    "hangup": "Hang up",
+    "flipCamera": "Flip",
+    "acceptVideoCall": "Answer video",
+    "durationZeroSeconds": "0s",
+    "durationMinSec": "{min}m{sec}s",
+    "durationSec": "{sec}s",
+    "unknownState": "Unknown call session state: {state}"
   },
   "callEncryption": {
     "keyPending": "Establishing encryption key…",
@@ -301,7 +311,9 @@
     "missingFriendDigest": "Missing friend account digest",
     "missingFriendKey": "Missing friend key, please re-sync contacts",
     "cannotParseFriendKey": "Cannot parse friend key",
-    "missingCallKeySalt": "Missing call key salt"
+    "missingCallKeySalt": "Missing call key salt",
+    "invalidCallId": "Invalid callId",
+    "proofVerifyFailed": "Call master key proof verification failed"
   },
   "callMedia": {
     "cannotStartCamera": "Cannot start camera",
@@ -310,7 +322,8 @@
     "connectionUnstable": "Call connection unstable",
     "connectionLost": "Call connection lost",
     "cameraFallbackToVoice": "Cannot access camera, switching to voice call",
-    "cannotAccessMic": "Cannot access microphone: "
+    "cannotAccessMic": "Cannot access microphone: ",
+    "loadConfigFailed": "Cannot load call config ({status})"
   },
   "settings": {
     "title": "Settings",

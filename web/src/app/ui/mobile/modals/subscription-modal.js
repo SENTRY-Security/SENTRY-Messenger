@@ -356,12 +356,12 @@ export function createSubscriptionModule({ deps }) {
           <div class="scan-pane">
             <div class="scan-video-wrap">
               <video id="subscriptionScanVideo" class="scan-video" muted playsinline></video>
-              <div class="scan-overlay">請將 QR 憑證置中</div>
+              <div class="scan-overlay">${t('subscription.centerQrVoucher')}</div>
             </div>
             <div class="scan-actions">
               <input id="subscriptionFileInput" type="file" accept="image/*" style="display:none" />
               <button id="subscriptionUploadBtn" type="button" class="wide-btn" ${wizard.busy ? 'disabled' : ''}>
-                <i class='bx bx-upload'></i> 點擊上傳 QRCode 圖像
+                <i class='bx bx-upload'></i> ${t('subscription.uploadQrImage')}
               </button>
               <div id="subscriptionScanStatus" class="sub-meta">${t('subscription.startingCamera')}</div>
             </div>
@@ -379,7 +379,7 @@ export function createSubscriptionModule({ deps }) {
           uploadBtn.disabled = true;
           if (scanStatus) scanStatus.textContent = t('subscription.uploadAndParsing');
           const tokenRes = await handleFile([file], {
-            onError: (err) => { wizard.result = { ok: false, message: `解析失敗：${err?.message || err}` }; wizard.step = 3; renderWizard(); }
+            onError: (err) => { wizard.result = { ok: false, message: t('subscription.parseFailed', { error: err?.message || err }) }; wizard.step = 3; renderWizard(); }
           });
           wizard.busy = false;
           uploadBtn.disabled = false;

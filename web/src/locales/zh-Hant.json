@@ -283,7 +283,17 @@
     "backgroundBlur": "背景馬賽克",
     "blurOff": "關閉",
     "reject": "拒接",
-    "accept": "接聽"
+    "accept": "接聽",
+    "cancel": "取消",
+    "camera": "鏡頭",
+    "mute": "靜音",
+    "hangup": "掛斷",
+    "flipCamera": "翻轉",
+    "acceptVideoCall": "接聽視訊",
+    "durationZeroSeconds": "0秒",
+    "durationMinSec": "{min}分{sec}秒",
+    "durationSec": "{sec}秒",
+    "unknownState": "未知的 call session 狀態：{state}"
   },
   "callEncryption": {
     "keyPending": "建立加密金鑰…",
@@ -301,7 +311,9 @@
     "missingFriendDigest": "缺少好友 account digest",
     "missingFriendKey": "缺少好友密鑰，請重新同步聯絡人",
     "cannotParseFriendKey": "無法解析好友密鑰",
-    "missingCallKeySalt": "缺少通話金鑰 salt"
+    "missingCallKeySalt": "缺少通話金鑰 salt",
+    "invalidCallId": "callId 無效",
+    "proofVerifyFailed": "call master key proof 驗證失敗"
   },
   "callMedia": {
     "cannotStartCamera": "無法啟動攝影機",
@@ -310,7 +322,8 @@
     "connectionUnstable": "通話連線不穩定",
     "connectionLost": "通話連線中斷",
     "cameraFallbackToVoice": "無法存取攝影機，改為語音通話",
-    "cannotAccessMic": "無法存取麥克風："
+    "cannotAccessMic": "無法存取麥克風：",
+    "loadConfigFailed": "無法載入通話設定 ({status})"
   },
   "settings": {
     "title": "設定",
