@@ -1814,9 +1814,9 @@ export function initDrivePane({
 
       if (element) closeSwipe?.(element);
       showConfirmModal?.({
-        title: '確認刪除',
+        title: t('drive.confirmDelete'),
         message: `確定刪除「${escapeHtml(name || key)}」？`,
-        confirmLabel: '刪除',
+        confirmLabel: t('drive.deleteAriaLabel'),
         onConfirm: async () => {
           try {
             await performDelete({ keys: [key], ids });
@@ -1864,11 +1864,11 @@ export function initDrivePane({
 
     if (element) closeSwipe?.(element);
     showConfirmModal?.({
-      title: '確認刪除',
+      title: t('drive.confirmDelete'),
       message: visibleCount > 0
         ? `刪除資料夾「${escapeHtml(folderName)}」及其 ${visibleCount} 個檔案？`
         : `刪除資料夾「${escapeHtml(folderName)}」（空資料夾）？`,
-      confirmLabel: '刪除',
+      confirmLabel: t('drive.deleteAriaLabel'),
       onConfirm: async () => {
         try {
           await performDelete({ keys, ids });
