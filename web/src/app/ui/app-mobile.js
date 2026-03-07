@@ -30,7 +30,10 @@ import {
   getDeviceId,
   ensureDeviceId,
   clearDrState,
-  setBeforeClearDrStateHook
+  setBeforeClearDrStateHook,
+  getBrandKey,
+  getBrandName,
+  getBrandLogo
 } from '../core/store.js';
 import {
   persistContactSecrets,
@@ -480,6 +483,13 @@ async function secureLogout(message = '已登出', { auto = false } = {}) {
 
   const safeMessage = message || '已登出';
   let logoutRedirectTarget = '/pages/logout.html';
+
+  // Capture brand info before storage is cleared so it can be forwarded
+  // to the logout page via query parameters.
+  const _bk = getBrandKey();
+  const _bn = getBrandName();
+  const _bl = getBrandLogo();
+
   try {
     const settingsSnapshot = getEffectiveSettingsState();
     const logoutRedirectInfo = getLogoutRedirectInfo(settingsSnapshot);
@@ -641,6 +651,18 @@ async function secureLogout(message = '已登出', { auto = false } = {}) {
 
   if (!auto) {
     try { showToast?.(safeMessage); } catch { }
+  }
+
+  // Append brand info as query params so the logout page can display
+  // the correct brand even though all storage has been cleared.
+  if (logoutRedirectTarget === '/pages/logout.html' && (_bk || _bn || _bl)) {
+    try {
+      const u = new URL(logoutRedirectTarget, location.origin);
+      if (_bk) u.searchParams.set('bk', _bk);
+      if (_bn) u.searchParams.set('bn', _bn);
+      if (_bl) u.searchParams.set('bl', _bl);
+      logoutRedirectTarget = u.pathname + u.search;
+    } catch { /* keep original target */ }
   }
 
   setTimeout(() => {
@@ -1052,11 +1074,20 @@ function flushContactSecretsLocal(reason = 'manual') {
     // secureLogout may be blocked if logoutInProgress is already true
     // (e.g. from enforceReloadLogoutOnLoad). Use a direct redirect as fallback.
     if (logoutInProgress) {
+      let _guardTarget = '/pages/logout.html';
+      try {
+        const u = new URL(_guardTarget, location.origin);
+        const _gbk = getBrandKey(); const _gbn = getBrandName(); const _gbl = getBrandLogo();
+        if (_gbk) u.searchParams.set('bk', _gbk);
+        if (_gbn) u.searchParams.set('bn', _gbn);
+        if (_gbl) u.searchParams.set('bl', _gbl);
+        _guardTarget = u.pathname + u.search;
+      } catch { /* keep default */ }
       try { resetAll(); } catch { try { clearSecrets(); } catch { } }
       try { sessionStorage.clear(); } catch { }
       try { sessionStorage.setItem(LOGOUT_MESSAGE_KEY, '登入資訊已失效，請重新感應晶片'); } catch { }
       setTimeout(() => {
-        try { location.replace('/pages/logout.html'); } catch { location.href = '/pages/logout.html'; }
+        try { location.replace(_guardTarget); } catch { location.href = _guardTarget; }
       }, 60);
     } else {
       secureLogout('登入資訊已失效，請重新感應晶片', { auto: true });

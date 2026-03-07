@@ -3,7 +3,7 @@
 // Uses core modules (http/log/store). Does not depend on window globals from app.js.
 
 import { log, setLogSink } from '../core/log.js';
-import { resetAll, getAccountDigest, getMkRaw, setDeviceId, clearSecrets } from '../core/store.js';
+import { resetAll, getAccountDigest, getMkRaw, setDeviceId, clearSecrets, getBrandKey, getBrandName, getBrandLogo } from '../core/store.js';
 import { encryptAndPut, signGet, downloadAndDecrypt } from '../features/media.js';
 import { messagesFlowFacade } from '../features/messages-flow-facade.js';
 import { ensureDrSession, sendDrText } from '../features/dr-session.js';
@@ -104,12 +104,23 @@ function isSimStorageKey(key) {
     log({ devicePrivRestoreError: err?.message || err });
   }
 })();
+function buildBrandedLogoutUrl() {
+  try {
+    const u = new URL('/pages/logout.html', location.origin);
+    const bk = getBrandKey(); const bn = getBrandName(); const bl = getBrandLogo();
+    if (bk) u.searchParams.set('bk', bk);
+    if (bn) u.searchParams.set('bn', bn);
+    if (bl) u.searchParams.set('bl', bl);
+    return u.pathname + u.search;
+  } catch { return '/pages/logout.html'; }
+}
 // If still not unlocked after restoration, redirect back to Login
 (function ensureUnlockedOrRedirect() {
   try {
     if (!getMkRaw()) {
       log('Not unlocked: redirecting to /pages/logout.html …');
-      setTimeout(() => location.replace('/pages/logout.html'), 200);
+      const target = buildBrandedLogoutUrl();
+      setTimeout(() => location.replace(target), 200);
     }
   } catch (e) {
     log({ redirectGuardError: String(e?.message || e) });
@@ -173,6 +184,8 @@ if (btnHealth) btnHealth.onclick = async () => {
 const btnLogout = $('#btnLogout');
 if (btnLogout) btnLogout.onclick = onLogout;
 async function onLogout() {
+  // Capture brand info before storage is cleared
+  const _logoutUrl = buildBrandedLogoutUrl();
   // ── 不需要在登出時推送 contact-secrets backup ──
   // 接收鏈在收訊時已透過 Vault Put 保存 message key 並推進 DR 計數器 (Nr)。
   // 即使登出前備份失敗，下次登入的自癒迴圈會自動修復：
@@ -213,7 +226,7 @@ async function onLogout() {
     resetAll();
   } catch { try { clearSecrets(); } catch { } }
   // navigate to logout page
-  try { location.replace('/pages/logout.html'); } catch { location.href = '/pages/logout.html'; }
+  try { location.replace(_logoutUrl); } catch { location.href = _logoutUrl; }
 }
 
 // ---- Encrypt & Upload ----

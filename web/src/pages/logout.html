@@ -98,8 +98,45 @@
       <div class="logout-sublabel">END-TO-END ENCRYPTED</div>
       <p id="logoutMessage" class="logout-message">系統已登出，所有本機資料已清除。</p>
     </main>
-    <!-- Brand info is not available on logout page — sessionStorage/localStorage
-         are cleared on logout, and we assume every login may be on a different device.
-         Logout page always shows the default SENTRY brand. -->
+    <!-- Brand info is forwarded from the app via query parameters (bk, bn, bl)
+         since sessionStorage/localStorage are cleared before the redirect. -->
+    <script>
+    (function(){
+      try {
+        var p = new URLSearchParams(location.search);
+        var bn = p.get('bn');  // brand name
+        var bl = p.get('bl');  // brand logo URL
+        var bk = p.get('bk');  // brand key (for built-in brands)
+
+        // Resolve brand name/logo from built-in brands if only key is provided
+        if (bk && !bn && !bl) {
+          var brands = { sentry: { name: 'SENTRY MESSENGER', logo: '../assets/images/logo.svg' } };
+          var b = brands[bk];
+          if (b) { bn = b.name; bl = b.logo; }
+        }
+
+        // Apply brand name
+        if (bn) {
+          var brandEl = document.getElementById('logoutBrand');
+          if (brandEl) brandEl.textContent = bn;
+          var titleEl = document.getElementById('logoutTitle');
+          if (titleEl) document.title = document.title.replace('SENTRY MESSENGER', bn);
+        }
+
+        // Apply brand logo
+        if (bl) {
+          var logoEl = document.getElementById('logoutLogo');
+          if (logoEl) {
+            logoEl.src = bl;
+            // External (absolute URL) logos are full-color — disable invert filter
+            if (/^https?:\/\//i.test(bl)) {
+              logoEl.style.filter = 'drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25))';
+              logoEl.style.animation = 'none';
+            }
+          }
+        }
+      } catch(e) {}
+    })();
+    </script>
   </body>
 </html>
