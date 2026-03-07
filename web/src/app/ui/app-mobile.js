@@ -2500,10 +2500,10 @@ function updateProfileStats() {
 // Grace period before background auto-logout fires (milliseconds).
 // iOS Safari can briefly set document.hidden = true during transient system
 // events (keyboard dismiss, share sheet, Control Center swipe, app-switcher
-// peek gesture).  A 2-second grace period allows these transient states to
+// peek gesture).  A 0.5-second grace period allows these transient states to
 // resolve without false-positive logouts.  The handler also re-checks
 // document.hidden before executing.
-const BACKGROUND_LOGOUT_DELAY_MS = 2000;
+const BACKGROUND_LOGOUT_DELAY_MS = 500;
 const _isIOS = isIosWebKitLikeBrowser();
 
 if (typeof document !== 'undefined') {
