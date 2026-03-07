@@ -406,7 +406,7 @@ export class MessageSendingController extends BaseController {
                     if (err instanceof UnsupportedVideoFormatError || err?.name === 'UnsupportedVideoFormatError') {
                         const msg = this._findTimelineMessageById(state.conversationId, localMsg.id);
                         if (msg) this.removeLocalMessageById(localMsg.id);
-                        this.deps.showToast?.(err.message || '不支援此影片格式');
+                        this.deps.showToast?.(err.message || t('mediaHandling.unsupportedVideoFormat'));
                         continue;
                     }
 

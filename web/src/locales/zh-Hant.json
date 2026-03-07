@@ -115,7 +115,8 @@
     "clearFailed": "清除失敗",
     "invalidContact": "無效的聯絡人",
     "conversationNotFound": "找不到對話",
-    "missingAccountDigest": "缺少 accountDigest"
+    "missingAccountDigest": "缺少 accountDigest",
+    "persistentConnectionError": "偵測到持續性的連線或加密錯誤，為確保安全，請重新登入以修復連線。\n\n錯誤詳情: {message}"
   },
   "contacts": {
     "title": "聯絡人",
@@ -147,7 +148,9 @@
     "addedSuccessfully": "已成功加入好友",
     "unknownDeviceUpdate": "收到未知裝置的聯絡更新，請請好友重新掃碼",
     "deviceMismatch": "對方裝置資訊不符，請請好友重新掃描 QR",
-    "avatarChanged": "對方已更改頭像"
+    "avatarChanged": "對方已更改頭像",
+    "confirmDelete": "確定要刪除「{name}」？",
+    "friendFallback": "好友 {id}"
   },
   "messages": {
     "title": "訊息",
@@ -174,7 +177,11 @@
     "deleteConversationAriaLabel": "刪除對話",
     "networkSendFailed": "網路傳送失敗，點擊重試",
     "onlyTextRetrySupported": "目前僅支援文字訊息重試",
-    "callLogSendFailed": "通話記錄傳送失敗"
+    "callLogSendFailed": "通話記錄傳送失敗",
+    "loadFailed": "(載入失敗)",
+    "notDecrypted": "訊息尚未解密🔐",
+    "confirmDeleteConversation": "確定要刪除與「{name}」的對話？此操作也會從對方的對話列表中移除。",
+    "decrypting": "解密中…"
   },
   "encryption": {
     "decryptFailed": "無法解密",
@@ -194,7 +201,8 @@
     "missingSessionState": "缺少安全會話狀態，請重新同步好友或重新建立邀請",
     "corruptNeedResync": "狀態損壞，需要重新同步/重新邀請",
     "selectSecureFriend": "請先選擇已建立安全對話的好友",
-    "clearedConversationHistory": "已清除上方對話紀錄"
+    "clearedConversationHistory": "已清除上方對話紀錄",
+    "currentSessionState": "當前最新的加密會話狀態"
   },
   "calls": {
     "title": "通話",
@@ -245,7 +253,9 @@
     "returnToCall": "回到通話視窗",
     "faceBlur": "人臉馬賽克",
     "backgroundBlur": "背景馬賽克",
-    "blurOff": "關閉"
+    "blurOff": "關閉",
+    "reject": "拒接",
+    "accept": "接聽"
   },
   "callEncryption": {
     "keyPending": "建立加密金鑰…",
@@ -656,7 +666,18 @@
     "buildCommit": "建置版號",
     "frontendBuild": "前端建置",
     "frontendLoaded": "前端載入",
-    "updateTime": "更新時間"
+    "updateTime": "更新時間",
+    "loadFailed": "載入失敗：",
+    "noData": "無資料",
+    "copy": "複製",
+    "copyAriaLabel": "複製 {key} 的內容",
+    "totalEntries": "共 {count} 筆，約 {size}",
+    "error": "錯誤：",
+    "viewAriaLabel": "檢視 {label}",
+    "noDataAvailable": "無可用資料",
+    "frontendStorage": "前端儲存資訊",
+    "total": "總計：",
+    "loading": "載入版本資訊…"
   },
   "modal": {
     "confirm": "確定",
@@ -680,7 +701,8 @@
     "actions": "操作",
     "simulateLogin": "模擬登入（新分頁）",
     "resetCounter": "重置 counter",
-    "deleteChip": "刪除 chip"
+    "deleteChip": "刪除 chip",
+    "viewHeaderJson": "檢視 Header JSON"
   },
   "nav": {
     "contacts": "聯絡人",

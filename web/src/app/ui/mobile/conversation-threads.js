@@ -20,6 +20,7 @@ import { listSecureMessages } from '../../api/messages.js';
 import { buildDrAadFromHeader } from '../../crypto/dr.js';
 import { b64u8 } from '../../crypto/nacl.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
+import { t } from '/locales/index.js';
 
 /**
  * Create conversation threads manager.
@@ -277,7 +278,7 @@ export function createConversationThreadsManager(deps) {
                         includeKeys: true
                     });
                     if (!r?.ok) {
-                        updateThreadPreview(thread, { text: '(載入失敗)' });
+                        updateThreadPreview(thread, { text: t('messages.loadFailed') });
                         return;
                     }
                     const items = Array.isArray(data?.items) ? data.items : [];
@@ -325,7 +326,7 @@ export function createConversationThreadsManager(deps) {
 
                     let text;
                     if (msgType === 'conversation-deleted') {
-                        text = '尚無訊息';
+                        text = t('messages.noMessages');
                         updateThreadPreview(thread, { text, ts, messageId, direction, msgType: 'conversation-deleted' }, { force: true });
                         thread.unreadCount = 0;
                         thread.offlineUnreadCount = 0;
@@ -335,7 +336,7 @@ export function createConversationThreadsManager(deps) {
                     if (rawText && typeof rawText === 'string' && rawText.trim()) {
                         text = resolveMessagePreview({ text: rawText, msgType });
                     } else {
-                        text = '訊息尚未解密🔐';
+                        text = t('messages.notDecrypted');
                     }
 
                     const updated = updateThreadPreview(thread, { text, ts, messageId, direction, msgType });
@@ -346,7 +347,7 @@ export function createConversationThreadsManager(deps) {
                         thread.unreadCount = 0;
                     }
                 } catch (err) {
-                    updateThreadPreview(thread, { text: '(載入失敗)' });
+                    updateThreadPreview(thread, { text: t('messages.loadFailed') });
                     log({ conversationPreviewError: err?.message || err, conversationId: thread?.conversationId });
                 } finally {
                     thread.needsRefresh = false;

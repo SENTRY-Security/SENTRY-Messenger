@@ -195,10 +195,10 @@ export function initProfileCard(options) {
     const currentSrc = profileAvatarImg?.src || '/assets/images/avatar.png';
     body.innerHTML = `
       <div class="avatar-upload">
-        <div class="avatar-preview"><img id="avatarPreviewImg" src="${escapeHtml(currentSrc)}" alt="頭像預覽" /></div>
+        <div class="avatar-preview"><img id="avatarPreviewImg" src="${escapeHtml(currentSrc)}" alt="${escapeHtml(t('profile.avatarPreviewAlt'))}" /></div>
         <div class="avatar-actions">
-          <button type="button" id="avatarPreviewClose" class="secondary">關閉</button>
-          <button type="button" id="avatarPreviewEdit" class="primary">更換頭像</button>
+          <button type="button" id="avatarPreviewClose" class="secondary">${escapeHtml(t('common.close'))}</button>
+          <button type="button" id="avatarPreviewEdit" class="primary">${escapeHtml(t('profile.changeAvatar'))}</button>
         </div>
       </div>`;
     modal.openModal();
@@ -257,10 +257,10 @@ export function initProfileCard(options) {
         </div>
         <div class="avatar-toolbar">
           <div class="avatar-actions-row">
-            <button type="button" id="avatarChooseBtn" class="secondary">選擇圖片</button>
-            <button type="button" id="avatarSubmit" class="primary upload-primary" disabled>上傳</button>
+            <button type="button" id="avatarChooseBtn" class="secondary">${escapeHtml(t('profile.chooseImage'))}</button>
+            <button type="button" id="avatarSubmit" class="primary upload-primary" disabled>${escapeHtml(t('common.upload'))}</button>
           </div>
-          <p class="avatar-hint">拖曳或縮放裁切，支援雙指或滑鼠滾輪。</p>
+          <p class="avatar-hint">${escapeHtml(t('profile.avatarCropHint'))}</p>
         </div>
         <input id="avatarFileInput" type="file" accept="image/*" style="display:none" />
         <div id="avatarStatus" class="avatar-hint" style="text-align:center"></div>
@@ -368,7 +368,7 @@ export function initProfileCard(options) {
         submitBtn?.removeAttribute('disabled');
       } catch (err) {
         submitBtn?.setAttribute('disabled', 'disabled');
-        setStatus(`圖片讀取失敗：${err?.message || err}`);
+        setStatus(`${t('profile.imageReadFailed')}${err?.message || err}`);
       }
     });
 
@@ -379,7 +379,7 @@ export function initProfileCard(options) {
       }
       submitBtn?.setAttribute('disabled', 'disabled');
       chooseBtn?.setAttribute('disabled', 'disabled');
-      setStatus('上傳中… 0%');
+      setStatus(t('upload.uploading', { percent: 0 }));
       try {
         const canvas = cropper.getCroppedCanvas({ width: 512, height: 512, imageSmoothingEnabled: true, imageSmoothingQuality: 'high' });
         if (!canvas) throw new Error(t('profile.cropFailed'));
@@ -396,7 +396,7 @@ export function initProfileCard(options) {
           thumbDataUrl,
           onProgress: (p) => {
             const percent = p?.percent ?? Math.round((p.loaded / (p.total || file.size || 1)) * 100);
-            setStatus(`上傳中… ${percent}%`);
+            setStatus(t('upload.uploading', { percent }));
           }
         });
         const prevVersion = Number(sessionStore.profileState?.profileVersion) || 0;
@@ -429,7 +429,7 @@ export function initProfileCard(options) {
         restoreShareButton();
       } catch (err) {
         log({ profileAvatarUploadError: err?.message || err });
-        setStatus(`上傳失敗：${err?.message || err}`);
+        setStatus(`${t('profile.uploadFailed')}${err?.message || err}`);
         submitBtn?.removeAttribute('disabled');
         chooseBtn?.removeAttribute('disabled');
       }

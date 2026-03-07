@@ -1283,7 +1283,7 @@ export function initDrivePane({
         return;
       }
       if (isReservedDir(safeName)) {
-        if (errorEl) errorEl.textContent = '此名稱為系統保留資料夾，請改用其他名稱。';
+        if (errorEl) errorEl.textContent = t('drive.reservedFolderName');
         input?.focus();
         input?.select?.();
         return;
@@ -1295,18 +1295,18 @@ export function initDrivePane({
       driveState.cwd = [...targetPath];
       ensureSafeCwd();
       closeModal?.();
-      showModalLoading?.('建立資料夾中…');
-      updateLoadingModal?.({ percent: 12, text: '準備建立資料夾…' });
+      showModalLoading?.(t('drive.creatingFolder'));
+      updateLoadingModal?.({ percent: 12, text: t('drive.preparingCreateFolder') });
       try {
         await createFolderPlaceholder(targetPath);
-        updateLoadingModal?.({ percent: 55, text: '同步資料夾…' });
+        updateLoadingModal?.({ percent: 55, text: t('drive.syncingFolder') });
         await refreshDriveList();
-        updateLoadingModal?.({ percent: 95, text: '完成' });
+        updateLoadingModal?.({ percent: 95, text: t('drive.done') });
         setTimeout(() => closeModal?.(), 120);
       } catch (err) {
         log({ driveListError: String(err?.message || err) });
         closeModal?.();
-        showBlockingModal('建立資料夾失敗，請稍後再試。', { title: '建立失敗' });
+        showBlockingModal(t('drive.createFolderFailed'), { title: t('errors.createFailed') });
       }
     }, { once: true });
   }
@@ -1328,13 +1328,13 @@ export function initDrivePane({
       if (!Number.isFinite(size)) continue;
       projected += size;
       if (quotaBytes && projected > quotaBytes) {
-        showBlockingModal('雲端空間容量不足，請刪除檔案後再上傳。', { title: '空間不足' });
+        showBlockingModal(t('drive.cloudSpaceInsufficient'), { title: t('drive.spaceInsufficient') });
         return;
       }
     }
     const acct = (getAccountDigest() || '').toUpperCase();
     if (!acct) {
-      showBlockingModal('尚未登入，請重新登入後再試。', { title: '尚未登入' });
+      showBlockingModal(t('drive.notLoggedInRelogin'), { title: t('drive.notLoggedIn') });
       return;
     }
     const convId = driveState.currentConvId || `drive-${acct}`;
@@ -1349,7 +1349,7 @@ export function initDrivePane({
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (titleEl) titleEl.textContent = file.name || '檔案';
-        if (subtitleEl) subtitleEl.textContent = files.length > 1 ? `檔案 ${i + 1} / ${files.length}` : '上傳中…';
+        if (subtitleEl) subtitleEl.textContent = files.length > 1 ? `檔案 ${i + 1} / ${files.length}` : t('drive.uploading');
         if (innerEl) innerEl.style.width = '0%';
         if (pctEl) pctEl.innerHTML = '0<span>%</span>';
         if (textEl) textEl.textContent = '';

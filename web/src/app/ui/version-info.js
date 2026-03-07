@@ -384,10 +384,10 @@ function renderModalContent(container, info) {
     <div class="version-modal">
       ${commitRow}
       ${rows.map(([label, value]) => `<div class="version-row"><span class="version-label">${escapeHtml(label)}</span><span class="version-value">${escapeHtml(value)}</span></div>`).join('')}
-      <div class="version-section-title">前端儲存資訊</div>
+      <div class="version-section-title">${escapeHtml(t('versionInfo.frontendStorage'))}</div>
       <div class="version-storage-list">
         ${storageRows}
-        <div class="version-row version-storage-total"><span class="version-label">總計</span><span class="version-value">${formatBytes(totalBytes)}</span></div>
+        <div class="version-row version-storage-total"><span class="version-label">${escapeHtml(t('versionInfo.total'))}</span><span class="version-value">${formatBytes(totalBytes)}</span></div>
       </div>
     </div>`;
   attachStorageDetailHandlers(container);
@@ -414,7 +414,7 @@ export async function showVersionModal({ openModal, closeModal, showAlertModal: 
     'pdf-modal'
   );
   if (title) title.textContent = t('versionInfo.title');
-  body.innerHTML = `<div class="version-modal loading"><div class="loading-spinner"></div><div class="version-loading-text">載入版本資訊…</div></div>`;
+  body.innerHTML = `<div class="version-modal loading"><div class="loading-spinner"></div><div class="version-loading-text">${escapeHtml(t('versionInfo.loading'))}</div></div>`;
   openModal?.();
   const info = { fetchedAt: new Date().toISOString() };
   renderModalContent(body, info);
@@ -448,7 +448,7 @@ export function initVersionInfoButton({ buttonId, popupId, openModal, closeModal
       closePopup(popup);
       return;
     }
-    popup.innerHTML = `<strong>${t('versionInfo.title')}</strong><div>載入中…</div>`;
+    popup.innerHTML = `<strong>${t('versionInfo.title')}</strong><div>${escapeHtml(t('versionInfo.loading'))}</div>`;
     popup.setAttribute('aria-hidden', 'false');
     popup.dataset.open = 'true';
     const info = { fetchedAt: new Date().toISOString() };

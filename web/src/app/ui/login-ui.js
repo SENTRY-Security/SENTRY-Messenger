@@ -1186,30 +1186,30 @@ const ERROR_CODE_MESSAGES = {
 };
 
 const ERROR_PATTERNS = [
-  { pattern: /uid hex \(14\) required/i, message: '尚未偵測到晶片 UID，請重新感應。' },
-  { pattern: /sdm mac \(16\) required/i, message: 'MAC 資料缺失，請重新感應晶片。' },
-  { pattern: /password required/i, message: '請輸入解鎖密碼。' },
-  { pattern: /請輸入密碼。?/i, message: '請輸入密碼。' },
-  { pattern: /密碼至少需 6 個字元/i, message: '密碼至少需 6 個字元。' },
-  { pattern: /兩次輸入的密碼不一致/i, message: '兩次輸入的密碼不一致。' },
-  { pattern: /sdm exchange required/i, message: '請先完成晶片驗證。' },
-  { pattern: /uid not set/i, message: '尚未偵測到晶片 UID，請重新感應。' },
-  { pattern: /wrong password or envelope mismatch/i, message: '密碼不正確，請重新輸入。' },
+  { pattern: /uid hex \(14\) required/i, message: t('errors.uidNotDetected') },
+  { pattern: /sdm mac \(16\) required/i, message: t('errors.macMissing') },
+  { pattern: /password required/i, message: t('errors.enterUnlockPassword') },
+  { pattern: /請輸入密碼。?/i, message: t('auth.enterPassword') },
+  { pattern: /密碼至少需 6 個字元/i, message: t('auth.passwordTooShort') },
+  { pattern: /兩次輸入的密碼不一致/i, message: t('auth.passwordMismatch') },
+  { pattern: /sdm exchange required/i, message: t('errors.completeChipVerification') },
+  { pattern: /uid not set/i, message: t('errors.uidNotDetected') },
+  { pattern: /wrong password or envelope mismatch/i, message: t('errors.passwordIncorrect') },
   { pattern: /unlock failed/i, message: PASSWORD_ERROR_MESSAGE },
-  { pattern: /enter a password first/i, message: '請輸入解鎖密碼。' },
-  { pattern: /run sdm exchange first/i, message: '請先感應晶片並完成驗證。' },
-  { pattern: /mk\.store failed/i, message: '儲存主金鑰失敗，請稍後再試。' },
-  { pattern: /initialize mk failed/i, message: '初始化主金鑰失敗，請稍後再試。' },
-  { pattern: /devkeys\.fetch failed/i, message: '讀取裝置備份失敗，請稍後再試。' },
-  { pattern: /keys\.publish.*failed/i, message: '同步裝置金鑰失敗，請稍後再試。' },
-  { pattern: /devkeys\.store.*failed/i, message: '儲存裝置備份失敗，請稍後再試。' },
-  { pattern: /prekeys initialization failed/i, message: '初始化預共享金鑰失敗，請稍後再試。' },
-  { pattern: /prekeys re-initialization failed/i, message: '重新建置預共享金鑰失敗，請稍後再試。' },
-  { pattern: /prekeys replenish failed/i, message: '補貨預共享金鑰失敗，請稍後再試。' },
-  { pattern: /please re-tap the tag/i, message: '驗證已逾時，請重新感應卡片。' },
-  { pattern: /counter must be strictly increasing/i, message: '偵測到晶片計數器重複，請關閉頁面後重新感應。' },
-  { pattern: /uid mismatch/i, message: '驗證資料不一致，請重新感應卡片。' },
-  { pattern: /sdm verify failed/i, message: '晶片驗證失敗，請重新感應卡片。' },
+  { pattern: /enter a password first/i, message: t('errors.enterUnlockPassword') },
+  { pattern: /run sdm exchange first/i, message: t('errors.completeChipScanFirst') },
+  { pattern: /mk\.store failed/i, message: t('errors.masterKeyStoreFailed') },
+  { pattern: /initialize mk failed/i, message: t('errors.masterKeyInitFailed') },
+  { pattern: /devkeys\.fetch failed/i, message: t('errors.deviceBackupReadFailed') },
+  { pattern: /keys\.publish.*failed/i, message: t('errors.deviceKeySyncFailed') },
+  { pattern: /devkeys\.store.*failed/i, message: t('errors.deviceBackupStoreFailed') },
+  { pattern: /prekeys initialization failed/i, message: t('errors.prekeysInitFailed') },
+  { pattern: /prekeys re-initialization failed/i, message: t('errors.prekeysReinitFailed') },
+  { pattern: /prekeys replenish failed/i, message: t('errors.prekeysReplenishFailed') },
+  { pattern: /please re-tap the tag/i, message: t('errors.sessionExpired') },
+  { pattern: /counter must be strictly increasing/i, message: t('errors.replay') },
+  { pattern: /uid mismatch/i, message: t('errors.sessionMismatch') },
+  { pattern: /sdm verify failed/i, message: t('errors.chipVerifyFailed') },
   { pattern: /opaque login.*failed/i, message: PASSWORD_ERROR_MESSAGE },
   { pattern: /opaque.*password/i, message: PASSWORD_ERROR_MESSAGE },
   { pattern: /OpaqueLoginFinishFailed/i, message: PASSWORD_ERROR_MESSAGE },
@@ -1299,7 +1299,7 @@ function translateString(str) {
     }
   }
   if (trimmed.includes('please re-tap the tag')) return ERROR_CODE_MESSAGES.SessionExpired;
-  if (trimmed.includes('counter must be strictly increasing')) return '偵測到晶片計數器重複，請關閉頁面後重新感應。';
+  if (trimmed.includes('counter must be strictly increasing')) return t('errors.replay');
 
   const patternMsg = findPatternMessage(trimmed);
   if (patternMsg) return patternMsg;
@@ -1333,7 +1333,7 @@ function shouldShowModal(line) {
   try {
     if (typeof line === 'string') {
       const lower = line.toLowerCase();
-      if (lower.includes('error') || lower.includes('fail') || lower.includes('失敗')) return true;
+      if (lower.includes('error') || lower.includes('fail') || lower.includes('failed') || lower.includes('失敗')) return true;
       const obj = JSON.parse(line);
       if (obj && (obj.error || obj.errors || obj.status >= 400)) return true;
       return false;

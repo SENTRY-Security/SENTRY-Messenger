@@ -211,7 +211,7 @@ export class ComposerController extends BaseController {
 
         const actionType = type;
         const contactEntry = this.sessionStore.contactIndex?.get?.(state.activePeerDigest) || null;
-        const fallbackName = `好友 ${state.activePeerDigest.slice(-4)}`;
+        const fallbackName = `${t('common.friend')} ${state.activePeerDigest.slice(-4)}`;
         const displayName = contactEntry?.nickname || contactEntry?.profile?.nickname || fallbackName;
         const avatarUrl = resolveContactAvatarUrl(contactEntry);
 
@@ -324,7 +324,7 @@ export class ComposerController extends BaseController {
         const callerSummary = getSelfProfileSummary() || {};
         const fallbackCallerName = (() => {
             const digest = getAccountDigest();
-            return digest ? `好友 ${digest.slice(-4)}` : null;
+            return digest ? `${t('common.friend')} ${digest.slice(-4)}` : null;
         })();
         const callerDisplayName = callerSummary.displayName || fallbackCallerName || null;
         const callerAvatarUrl = callerSummary.avatarUrl || this.sessionStore.currentAvatarUrl || null;

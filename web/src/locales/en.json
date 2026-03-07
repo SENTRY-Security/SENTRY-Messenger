@@ -76,7 +76,10 @@
     "ntagMac": "NTAG MAC (16 hex)",
     "nonceOptional": "Nonce (optional)",
     "chipIdImage": "Chip identification image",
-    "showVersionInfo": "Show version info"
+    "showVersionInfo": "Show version info",
+    "iosVersionTooOld": "iOS version too old",
+    "iosVersionRequired": "This app requires <strong style=\"color:#fff;\">iOS {version}</strong> or later to function properly.",
+    "iosUpdateInstructions": "Please go to Settings > General > Software Update to update your device."
   },
   "welcome": {
     "title": "Welcome to a new era of private messaging!",
@@ -94,7 +97,8 @@
     "restoreFailed": "Restore failed",
     "existingNicknameAvatar": "Existing nickname/avatar",
     "existingAvatar": "Existing avatar",
-    "deviceBackupNotFound": "No device backup found"
+    "deviceBackupNotFound": "No device backup found",
+    "contactRestoreSuccess": "Restored {count} contacts"
   },
   "errors": {
     "fallbackError": "An unknown error occurred, please try again later.",
@@ -115,7 +119,8 @@
     "clearFailed": "Clear failed",
     "invalidContact": "Invalid contact",
     "conversationNotFound": "Conversation not found",
-    "missingAccountDigest": "Missing accountDigest"
+    "missingAccountDigest": "Missing accountDigest",
+    "persistentConnectionError": "Persistent connection or encryption errors detected. For security, please re-login to repair the connection.\n\nError details: {message}"
   },
   "contacts": {
     "title": "Contacts",
@@ -147,7 +152,9 @@
     "addedSuccessfully": "Friend added successfully",
     "unknownDeviceUpdate": "Received update from unknown device, please ask friend to re-scan",
     "deviceMismatch": "Peer device info mismatch, please ask friend to re-scan QR",
-    "avatarChanged": "Avatar has been changed"
+    "avatarChanged": "Avatar has been changed",
+    "confirmDelete": "Are you sure you want to delete \"{name}\"?",
+    "friendFallback": "Friend {id}"
   },
   "messages": {
     "title": "Messages",
@@ -174,7 +181,11 @@
     "deleteConversationAriaLabel": "Delete conversation",
     "networkSendFailed": "Network send failed, click to retry",
     "onlyTextRetrySupported": "Only text message retry is supported currently",
-    "callLogSendFailed": "Call log send failed"
+    "callLogSendFailed": "Call log send failed",
+    "loadFailed": "(Load failed)",
+    "notDecrypted": "Message not yet decrypted\uD83D\uDD10",
+    "confirmDeleteConversation": "Are you sure you want to delete the conversation with \"{name}\"? This will also remove it from the other party's conversation list.",
+    "decrypting": "Decrypting…"
   },
   "encryption": {
     "decryptFailed": "Cannot decrypt",
@@ -194,7 +205,8 @@
     "missingSessionState": "Missing secure session state, please re-sync friend or re-create invite",
     "corruptNeedResync": "Status corrupted, needs re-sync/re-invite",
     "selectSecureFriend": "Please select a friend with an established secure conversation",
-    "clearedConversationHistory": "Cleared conversation history above"
+    "clearedConversationHistory": "Cleared conversation history above",
+    "currentSessionState": "Current latest encryption session state"
   },
   "calls": {
     "title": "Call",
@@ -245,7 +257,9 @@
     "returnToCall": "Return to call window",
     "faceBlur": "Face blur",
     "backgroundBlur": "Background blur",
-    "blurOff": "Off"
+    "blurOff": "Off",
+    "reject": "Reject",
+    "accept": "Accept"
   },
   "callEncryption": {
     "keyPending": "Establishing encryption key…",
@@ -656,7 +670,18 @@
     "buildCommit": "Build commit",
     "frontendBuild": "Frontend build",
     "frontendLoaded": "Frontend loaded",
-    "updateTime": "Update time"
+    "updateTime": "Update time",
+    "loadFailed": "Load failed: ",
+    "noData": "No data",
+    "copy": "Copy",
+    "copyAriaLabel": "Copy content of {key}",
+    "totalEntries": "{count} entries, approx. {size}",
+    "error": "Error: ",
+    "viewAriaLabel": "View {label}",
+    "noDataAvailable": "No data available",
+    "frontendStorage": "Frontend Storage",
+    "total": "Total: ",
+    "loading": "Loading version info…"
   },
   "modal": {
     "confirm": "Confirm",
@@ -680,7 +705,8 @@
     "actions": "Actions",
     "simulateLogin": "Simulate login (new tab)",
     "resetCounter": "Reset counter",
-    "deleteChip": "Delete chip"
+    "deleteChip": "Delete chip",
+    "viewHeaderJson": "View Header JSON"
   },
   "nav": {
     "contacts": "Contacts",
