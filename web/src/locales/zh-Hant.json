@@ -680,7 +680,8 @@
     "encryptedUpload": "加密上傳",
     "videoContainer": "影片封裝",
     "fragmentedVideoError": "已分片的影片格式無法正確解析",
-    "calculating": "計算中…"
+    "calculating": "計算中…",
+    "uploading": "上傳中… {percent}%"
   },
   "video": {
     "cannotLoadVideoModule": "無法載入影片處理模組：",

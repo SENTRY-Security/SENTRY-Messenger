@@ -931,7 +931,7 @@ export function initDrivePane({
         <i class='bx bx-cloud-upload' aria-hidden="true"></i>
         <p class="empty-state-title">這裡還沒有檔案</p>
         <p class="empty-state-hint">上傳檔案或建立資料夾開始使用</p>
-        <button type="button" class="empty-state-btn">上傳檔案</button>`;
+        <button type="button" class="empty-state-btn">${t('drive.uploadFileTitle')}</button>`;
       emptyLi.querySelector('.empty-state-btn')?.addEventListener('click', () => openUploadModal());
       driveListEl.appendChild(emptyLi);
     }
@@ -1202,7 +1202,7 @@ export function initDrivePane({
       }
       const oversized = files.filter((file) => Number(file?.size || 0) > MAX_UPLOAD_BYTES);
       if (oversized.length) {
-        const msg = `單檔上限 1GB：${escapeHtml(oversized[0].name || '檔案')} 超過限制`;
+        const msg = `單檔上限 1GB：${escapeHtml(oversized[0].name || t('common.file'))} 超過限制`;
         if (errorEl) errorEl.textContent = msg;
         showBlockingModal(msg, { title: t('drive.fileTooLarge') });
         input.value = '';
@@ -1232,7 +1232,7 @@ export function initDrivePane({
       }
       const oversized = files.filter((file) => Number(file?.size || 0) > MAX_UPLOAD_BYTES);
       if (oversized.length) {
-        const msg = `單檔上限 1GB：${escapeHtml(oversized[0].name || '檔案')} 超過限制`;
+        const msg = `單檔上限 1GB：${escapeHtml(oversized[0].name || t('common.file'))} 超過限制`;
         if (errorEl) errorEl.textContent = msg;
         showBlockingModal(msg, { title: t('drive.fileTooLarge') });
         return;
@@ -1316,8 +1316,8 @@ export function initDrivePane({
     if (!files.length) return;
     const oversized = files.filter((file) => Number(file?.size || 0) > MAX_UPLOAD_BYTES);
     if (oversized.length) {
-      const name = escapeHtml(oversized[0].name || '檔案');
-      showBlockingModal(`無法上傳：${name} 超過 1GB 單檔限制`, { title: '檔案過大' });
+      const name = escapeHtml(oversized[0].name || t('common.file'));
+      showBlockingModal(`${t('drive.cannotUpload')}：${name} 超過 1GB 單檔限制`, { title: t('drive.fileTooLarge') });
       return;
     }
     const quotaBytes = resolveDriveQuotaBytes();
@@ -1338,7 +1338,7 @@ export function initDrivePane({
       return;
     }
     const convId = driveState.currentConvId || `drive-${acct}`;
-    showProgressModal?.(files.length === 1 ? (files[0].name || '檔案') : `${files.length} 個檔案`);
+    showProgressModal?.(files.length === 1 ? (files[0].name || t('common.file')) : `${files.length} 個檔案`);
     await new Promise((resolve) => setTimeout(resolve, 0));
     const titleEl = document.querySelector('.progress-wrap .progress-title');
     const subtitleEl = document.querySelector('.progress-wrap .progress-subtitle');
@@ -1348,7 +1348,7 @@ export function initDrivePane({
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        if (titleEl) titleEl.textContent = file.name || '檔案';
+        if (titleEl) titleEl.textContent = file.name || t('common.file');
         if (subtitleEl) subtitleEl.textContent = files.length > 1 ? `檔案 ${i + 1} / ${files.length}` : t('drive.uploading');
         if (innerEl) innerEl.style.width = '0%';
         if (pctEl) pctEl.innerHTML = '0<span>%</span>';

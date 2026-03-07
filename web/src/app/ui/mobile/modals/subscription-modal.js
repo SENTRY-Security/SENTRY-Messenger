@@ -33,7 +33,7 @@ export function createSubscriptionModule({ deps }) {
       const status = typeof log?.status === 'string' ? log.status : (extendDays ? 'used' : 'active');
       const tokenId = log?.token_id || log?.tokenId || log?.voucher_id || log?.jti || `token-${idx + 1}`;
       let channel = log?.channel || log?.gateway || null;
-      if (!channel && (log?.key_id || log?.keyId)) channel = `憑證 ${log?.key_id || log?.keyId}`;
+      if (!channel && (log?.key_id || log?.keyId)) channel = t('subscription.voucherPrefix', { id: log?.key_id || log?.keyId });
       if (!channel) channel = t('subscription.qrVoucher');
       const type = extendDays > 0 ? 'extend' : 'activate';
       return { tokenId, extendDays, expiresAfter, usedAt, issuedAt, status, channel, type };
@@ -48,9 +48,9 @@ export function createSubscriptionModule({ deps }) {
     const days = Math.floor(diff / 86400);
     const hours = Math.floor((diff % 86400) / 3600);
     const mins = Math.floor((diff % 3600) / 60);
-    if (days > 0) return { expired: false, text: `剩餘 ${days} 天`, seconds: diff };
-    if (hours > 0) return { expired: false, text: `剩餘 ${hours} 小時`, seconds: diff };
-    return { expired: false, text: `剩餘 ${Math.max(mins, 1)} 分鐘`, seconds: diff };
+    if (days > 0) return { expired: false, text: t('subscription.remainingDays', { days }), seconds: diff };
+    if (hours > 0) return { expired: false, text: t('subscription.remainingHours', { hours }), seconds: diff };
+    return { expired: false, text: t('subscription.remainingMinutes', { minutes: Math.max(mins, 1) }), seconds: diff };
   }
 
   async function refreshStatus({ silent = false } = {}) {
@@ -74,7 +74,7 @@ export function createSubscriptionModule({ deps }) {
         if (!state.logs.length) state.accountCreatedAt = state.accountCreatedAt || null;
       }
     } catch (err) {
-      if (!silent) showToast?.(`查詢訂閱失敗：${err?.message || err}`, { variant: 'error' });
+      if (!silent) showToast?.(t('subscription.querySubscriptionFailed', { error: err?.message || err }), { variant: 'error' });
       state.found = false;
       state.expiresAt = null;
       state.expired = true;
@@ -165,7 +165,7 @@ export function createSubscriptionModule({ deps }) {
       return { ok: true, data };
     } catch (err) {
       if (hooks?.onError) hooks.onError(err);
-      else showToast?.(`檔案解析失敗：${err?.message || err}`, { variant: 'error' });
+      else showToast?.(t('subscription.fileParseError', { error: err?.message || err }), { variant: 'error' });
       return { ok: false, error: err };
     }
   }
@@ -181,10 +181,10 @@ export function createSubscriptionModule({ deps }) {
     modal.classList.add('confirm-modal', 'subscription-modal-shell');
     if (title) title.textContent = t('subscription.expiredTitle');
     body.innerHTML = `
-      <div class="confirm-message">帳號已到期，請進行儲值。</div>
+      <div class="confirm-message">${t('subscription.accountExpiredMessage')}</div>
       <div class="confirm-actions">
-        <button type="button" class="secondary" id="subscriptionGateClose">關閉</button>
-        <button type="button" class="primary" id="subscriptionGateOpen">點我儲值</button>
+        <button type="button" class="secondary" id="subscriptionGateClose">${t('common.close')}</button>
+        <button type="button" class="primary" id="subscriptionGateOpen">${t('subscription.clickToTopUp')}</button>
       </div>
     `;
     openModal();
@@ -205,30 +205,30 @@ export function createSubscriptionModule({ deps }) {
     body.innerHTML = `
       <div class="subscription-modal">
         <div class="sub-tabs" role="tablist">
-          <button type="button" class="sub-tab active" data-tab="status" aria-selected="true" role="tab">訂閱狀態</button>
-          <button type="button" class="sub-tab" data-tab="topup" aria-selected="false" role="tab">儲值 / 展期</button>
+          <button type="button" class="sub-tab active" data-tab="status" aria-selected="true" role="tab">${t('subscription.subscriptionStatusTab')}</button>
+          <button type="button" class="sub-tab" data-tab="topup" aria-selected="false" role="tab">${t('subscription.topUpTab')}</button>
         </div>
         <div class="sub-tabpanel" data-tabpanel="status" role="tabpanel">
           <div class="subscription-hero">
             <div class="hero-text">
-              <div class="hero-label">目前狀態</div>
-              <div id="subscriptionStatusText" class="sub-status">查詢中…</div>
+              <div class="hero-label">${t('subscription.currentStatus')}</div>
+              <div id="subscriptionStatusText" class="sub-status">${t('subscription.querying')}</div>
               <div class="sub-meta" id="subscriptionMeta"></div>
             </div>
           </div>
           <div class="sub-table-block">
             <div class="sub-table-head">
-              <div class="sub-table-title">開通 / 儲值紀錄</div>
-              <button type="button" class="ghost-btn" id="subscriptionRefreshBtn"><i class='bx bx-sync'></i> 重新整理</button>
+              <div class="sub-table-title">${t('subscription.activationRecords')}</div>
+              <button type="button" class="ghost-btn" id="subscriptionRefreshBtn"><i class='bx bx-sync'></i> ${t('subscription.refresh')}</button>
             </div>
             <div class="sub-table" id="subscriptionCombinedTable"></div>
           </div>
         </div>
         <div class="sub-tabpanel" data-tabpanel="topup" role="tabpanel" hidden>
           <div class="sub-steps" id="subscriptionWizardSteps">
-            <div class="sub-step" data-step="1"><span class="step-number">1</span><small>選擇管道</small></div>
-            <div class="sub-step" data-step="2"><span class="step-number">2</span><small>掃描 / 上傳</small></div>
-            <div class="sub-step" data-step="3"><span class="step-number">3</span><small>結果</small></div>
+            <div class="sub-step" data-step="1"><span class="step-number">1</span><small>${t('subscription.selectChannel')}</small></div>
+            <div class="sub-step" data-step="2"><span class="step-number">2</span><small>${t('subscription.scanUpload')}</small></div>
+            <div class="sub-step" data-step="3"><span class="step-number">3</span><small>${t('subscription.result')}</small></div>
           </div>
           <div id="subscriptionWizardContent" class="sub-wizard-content"></div>
         </div>
@@ -270,7 +270,7 @@ export function createSubscriptionModule({ deps }) {
       const sorted = [...baseRows, ...(Array.isArray(logs) ? logs : [])].sort((a, b) => {
         return (Number(b.usedAt || b.issuedAt || 0)) - (Number(a.usedAt || a.issuedAt || 0));
       });
-      if (!sorted.length) { table.innerHTML = `<div class="sub-empty">尚無開通/儲值紀錄</div>`; return; }
+      if (!sorted.length) { table.innerHTML = `<div class="sub-empty">${t('subscription.noRecords')}</div>`; return; }
       table.innerHTML = sorted.map((log) => {
         const statusLabel = (() => {
           if (log.status === 'used' || log.status === 'active') return t('subscription.statusUsed');
