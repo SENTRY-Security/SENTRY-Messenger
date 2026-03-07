@@ -819,7 +819,7 @@ export function initDrivePane({
       li.setAttribute('role', 'button');
       li.tabIndex = 0;
       const badge = isSystem
-        ? `<span class="badge badge-system" style="margin-left:6px;padding:2px 8px;border-radius:10px;background:#e0f2ff;color:#0b6bcb;font-weight:600;font-size:12px;">系統資料夾</span>`
+        ? `<span class="badge badge-system" style="margin-left:6px;padding:2px 8px;border-radius:10px;background:#e0f2ff;color:#0b6bcb;font-weight:600;font-size:12px;">${t('drive.systemFolder')}</span>`
         : '';
       li.innerHTML = `
         <div class="item-content">
@@ -929,8 +929,8 @@ export function initDrivePane({
       emptyLi.className = 'empty-state';
       emptyLi.innerHTML = `
         <i class='bx bx-cloud-upload' aria-hidden="true"></i>
-        <p class="empty-state-title">這裡還沒有檔案</p>
-        <p class="empty-state-hint">上傳檔案或建立資料夾開始使用</p>
+        <p class="empty-state-title">${t('drive.noFilesYet')}</p>
+        <p class="empty-state-hint">${t('drive.emptyStateHint')}</p>
         <button type="button" class="empty-state-btn">${t('drive.uploadFileTitle')}</button>`;
       emptyLi.querySelector('.empty-state-btn')?.addEventListener('click', () => openUploadModal());
       driveListEl.appendChild(emptyLi);

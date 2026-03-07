@@ -651,7 +651,7 @@ export function setupShareController(options) {
     } else {
       // Switch back to show mode
       renderPairingDigits(pairingState.pairingCode || '');
-      if (btnPairingToggle) btnPairingToggle.textContent = '輸入對方配對碼';
+      if (btnPairingToggle) btnPairingToggle.textContent = t('share.enterPeerPairingCode');
       if (btnPairingConfirm) btnPairingConfirm.style.display = 'none';
       setPairingStatus('');
     }
@@ -661,7 +661,7 @@ export function setupShareController(options) {
     if (pairingState.confirming) return;
     const code = getPairingInput();
     if (!/^\d{6}$/.test(code)) {
-      setPairingStatus('請輸入完整的 6 位配對碼', { isError: true });
+      setPairingStatus(t('share.enterComplete6DigitCode'), { isError: true });
       return;
     }
     pairingState.confirming = true;

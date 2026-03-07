@@ -1441,7 +1441,7 @@ export function initCallOverlay({ showToast }) {
       if (ui.blurModeBtn) ui.blurModeBtn.style.display = 'none';
       // Reset accept button for voice
       if (ui.acceptBtn && incoming) {
-        ui.acceptBtn.innerHTML = "<i class='bx bx-phone'></i>接聽";
+        ui.acceptBtn.innerHTML = `<i class='bx bx-phone'></i>${t('calls.accept')}`;
       }
     }
   }
