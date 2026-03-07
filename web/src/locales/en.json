@@ -327,7 +327,16 @@
     "customLogoutHint": "Only HTTPS (https://) URLs accepted. You will be redirected to this page on logout. Please ensure it is a trusted URL.",
     "noSafeUrlSet": "No safe URL set",
     "openUserMenu": "Open user menu",
-    "userAvatar": "User avatar"
+    "userAvatar": "User avatar",
+    "invalidUrlError": "Please enter a valid http/https URL, e.g. https://example.com.",
+    "customLogoutPageDesc": "Redirect to a specified HTTPS URL, trusted pages only.",
+    "setUrl": "Set URL",
+    "showOnlineStatus": "Show online status",
+    "showOnlineStatusDesc": "Show your online status to friends",
+    "autoLogoutOnBackground": "Auto logout on background",
+    "autoLogoutOnBackgroundDesc": "Automatically log out when the app moves to background",
+    "defaultLogoutPage": "Default logout page",
+    "defaultLogoutPageDesc": "Use the built-in default logout page"
   },
   "password": {
     "title": "Change Password",
