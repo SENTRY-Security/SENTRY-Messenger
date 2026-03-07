@@ -34,45 +34,53 @@ import { sessionStore } from './session-store.js';
 import { CALL_MEDIA_STATE_STATUS } from '../../../shared/calls/schemas.js';
 import { createCallAudioManager } from './call-audio.js';
 import { getCallAudioConstraints } from './browser-detection.js';
+import { t } from '/locales/index.js';
 
-const STATUS_LABEL = {
-  [CALL_SESSION_STATUS.OUTGOING]: '撥號中…',
-  [CALL_SESSION_STATUS.INCOMING]: '來電中',
-  [CALL_SESSION_STATUS.CONNECTING]: '正在接通…',
-  [CALL_SESSION_STATUS.IN_CALL]: '通話中'
-};
+function getStatusLabel() {
+  return {
+    [CALL_SESSION_STATUS.OUTGOING]: t('calls.dialing'),
+    [CALL_SESSION_STATUS.INCOMING]: t('calls.incoming'),
+    [CALL_SESSION_STATUS.CONNECTING]: t('calls.connectingCall'),
+    [CALL_SESSION_STATUS.IN_CALL]: t('calls.inCall')
+  };
+}
 
-const MEDIA_STATUS_LABEL = {
-  [CALL_MEDIA_STATE_STATUS.KEY_PENDING]: '建立加密金鑰…',
-  [CALL_MEDIA_STATE_STATUS.ROTATING]: '加密金鑰輪換中…',
-  [CALL_MEDIA_STATE_STATUS.FAILED]: '加密失敗，請稍後再試'
-};
+function getMediaStatusLabel() {
+  return {
+    [CALL_MEDIA_STATE_STATUS.KEY_PENDING]: t('callEncryption.keyPending'),
+    [CALL_MEDIA_STATE_STATUS.ROTATING]: t('callEncryption.rotating'),
+    [CALL_MEDIA_STATE_STATUS.FAILED]: t('callEncryption.encryptionFailed')
+  };
+}
 
-const ENCRYPTION_STATUS_LABEL = {
-  [CALL_MEDIA_STATE_STATUS.READY]: '端到端加密已啟動',
-  [CALL_MEDIA_STATE_STATUS.KEY_PENDING]: '正在建立端到端加密',
-  [CALL_MEDIA_STATE_STATUS.ROTATING]: '加密金鑰輪換中…',
-  [CALL_MEDIA_STATE_STATUS.FAILED]: '無法保護此通話',
-  [CALL_MEDIA_STATE_STATUS.SKIPPED]: '通話未加密'
-};
+function getEncryptionStatusLabel() {
+  return {
+    [CALL_MEDIA_STATE_STATUS.READY]: t('callEncryption.e2eeActive'),
+    [CALL_MEDIA_STATE_STATUS.KEY_PENDING]: t('callEncryption.e2eePending'),
+    [CALL_MEDIA_STATE_STATUS.ROTATING]: t('callEncryption.rotating'),
+    [CALL_MEDIA_STATE_STATUS.FAILED]: t('callEncryption.cannotProtectCall'),
+    [CALL_MEDIA_STATE_STATUS.SKIPPED]: t('callEncryption.callUnencrypted')
+  };
+}
 
 const BUBBLE_SIZE = 76;
 const BUBBLE_MARGIN = 16;
 const MIN_DRAG_DISTANCE = 6;
 
 function describeStatus(session) {
-  if (!session) return '連線中…';
+  if (!session) return t('status.connecting');
   const mediaStatus = session.mediaState?.status || null;
-  if (mediaStatus && MEDIA_STATUS_LABEL[mediaStatus]) {
-    return MEDIA_STATUS_LABEL[mediaStatus];
+  const mediaLabels = getMediaStatusLabel();
+  if (mediaStatus && mediaLabels[mediaStatus]) {
+    return mediaLabels[mediaStatus];
   }
-  return STATUS_LABEL[session.status] || '連線中…';
+  return getStatusLabel()[session.status] || t('status.connecting');
 }
 
 function describeSecureStatus(session) {
-  if (!session) return '準備端到端加密…';
+  if (!session) return t('callEncryption.preparingE2ee');
   const mediaStatus = session.mediaState?.status;
-  return ENCRYPTION_STATUS_LABEL[mediaStatus] || '準備端到端加密…';
+  return getEncryptionStatusLabel()[mediaStatus] || t('callEncryption.preparingE2ee');
 }
 
 function formatDuration(ms) {
@@ -567,27 +575,27 @@ function ensureOverlayElements() {
   root.setAttribute('aria-hidden', 'true');
   root.innerHTML = `
     <div class="call-card" role="dialog" aria-live="assertive">
-      <button type="button" class="call-minify-btn" data-call-action="minify" aria-label="縮小通話視窗">
+      <button type="button" class="call-minify-btn" data-call-action="minify" aria-label="${t('calls.minimizeWindow')}">
         <i class='bx bx-chevron-down'></i>
       </button>
       <div class="call-peer">
         <div class="call-avatar" aria-hidden="true"></div>
         <div class="call-meta">
-          <strong class="call-peer-name">好友</strong>
-          <span class="call-status-label">撥號中…</span>
+          <strong class="call-peer-name">${t('common.friend')}</strong>
+          <span class="call-status-label">${t('calls.dialing')}</span>
           <span class="call-timer-label" aria-live="off"></span>
         </div>
       </div>
       <div class="call-security">
         <span class="dot" aria-hidden="true"></span>
-        <span class="call-secure-label">建立加密金鑰…</span>
+        <span class="call-secure-label">${t('callEncryption.keyPending')}</span>
       </div>
       <div class="call-actions">
         <button type="button" class="call-btn reject" data-call-action="reject"><i class='bx bx-x'></i>拒接</button>
         <button type="button" class="call-btn accept" data-call-action="accept"><i class='bx bx-phone'></i>接聽</button>
         <button type="button" class="call-btn cancel" data-call-action="cancel"><i class='bx bx-phone-off'></i>取消</button>
       </div>
-      <div class="call-controls hidden" aria-label="通話控制">
+      <div class="call-controls hidden" aria-label="${t('calls.controls')}">
         <button type="button" class="call-btn toggle" data-call-action="camera" aria-pressed="false" style="display:none">
           <i class='bx bx-video'></i><span>鏡頭</span>
         </button>
@@ -602,27 +610,27 @@ function ensureOverlayElements() {
         </button>
       </div>
       <button type="button" class="call-blur-mode-btn" data-call-action="blur-mode" data-blur-mode="face">
-        <i class='bx bx-face'></i><span>人臉馬賽克</span>
+        <i class='bx bx-face'></i><span>${t('calls.faceBlur')}</span>
       </button>
       <audio id="callRemoteAudio" autoplay playsinline style="display:none"></audio>
       <video class="call-remote-video" autoplay playsinline muted style="display:none"></video>
       <div class="call-video-waiting" style="display:none">
         <div class="call-avatar" aria-hidden="true"></div>
-        <div class="vw-name">好友</div>
-        <div class="vw-status">撥號中…</div>
+        <div class="vw-name">${t('common.friend')}</div>
+        <div class="vw-status">${t('calls.dialing')}</div>
       </div>
       <div class="call-video-top-bar" style="display:none">
         <div class="call-avatar" aria-hidden="true"></div>
         <div>
-          <div class="vt-name">好友</div>
-          <div class="vt-status">通話中</div>
+          <div class="vt-name">${t('common.friend')}</div>
+          <div class="vt-status">${t('calls.inCall')}</div>
         </div>
       </div>
       <div class="call-local-pip" style="display:none">
         <video autoplay playsinline muted></video>
       </div>
     </div>
-    <div class="call-mini-bubble" role="button" aria-label="回到通話視窗" tabindex="0">
+    <div class="call-mini-bubble" role="button" aria-label="${t('calls.returnToCall')}" tabindex="0">
       <div class="call-mini-avatar" aria-hidden="true"></div>
       <video class="call-mini-video" autoplay playsinline muted></video>
       <video class="call-mini-local-video" autoplay playsinline muted></video>
@@ -669,7 +677,7 @@ function ensureOverlayElements() {
 function resolveUiPeerProfile(session) {
   if (!session) {
     return {
-      name: '好友',
+      name: t('common.friend'),
       avatarUrl: null,
       source: 'fallback',
       peerKey: null,
@@ -683,7 +691,7 @@ function resolveUiPeerProfile(session) {
     peerKey: session.peerKey || null,
     displayNameFallback: session.remoteDisplayName || session.peerDisplayName || null
   });
-  const name = profile.nickname || profile.placeholderName || profile.fallbackName || '好友';
+  const name = profile.nickname || profile.placeholderName || profile.fallbackName || t('common.friend');
   const avatarUrl = profile.avatarUrl || null;
   return {
     ...profile,
@@ -930,16 +938,16 @@ export function initCallOverlay({ showToast }) {
   }
 
   const BLUR_MODE_CYCLE = [BLUR_MODE.FACE, BLUR_MODE.BACKGROUND, BLUR_MODE.OFF];
-  const BLUR_MODE_UI = {
-    [BLUR_MODE.FACE]:       { icon: 'bx-face',  label: '人臉馬賽克' },
-    [BLUR_MODE.BACKGROUND]: { icon: 'bx-image',  label: '背景馬賽克' },
-    [BLUR_MODE.OFF]:        { icon: 'bx-show',   label: '關閉' }
-  };
+  function getBlurModeUi() { return {
+    [BLUR_MODE.FACE]:       { icon: 'bx-face',  label: t('calls.faceBlur') },
+    [BLUR_MODE.BACKGROUND]: { icon: 'bx-image',  label: t('calls.backgroundBlur') },
+    [BLUR_MODE.OFF]:        { icon: 'bx-show',   label: t('calls.blurOff') }
+  }; }
 
   function syncBlurModeBtn() {
     if (!ui.blurModeBtn) return;
     const mode = getFaceBlurMode();
-    const info = BLUR_MODE_UI[mode] || BLUR_MODE_UI[BLUR_MODE.FACE];
+    const info = getBlurModeUi()[mode] || getBlurModeUi()[BLUR_MODE.FACE];
     ui.blurModeBtn.setAttribute('data-blur-mode', mode);
     const icon = ui.blurModeBtn.querySelector('i');
     const span = ui.blurModeBtn.querySelector('span');
@@ -1128,9 +1136,9 @@ export function initCallOverlay({ showToast }) {
 
   function updateBubbleDetails(profile) {
     if (!ui.bubble) return;
-    const safeProfile = profile || { name: '好友', peerAccountDigest: null, avatarUrl: null };
-    const labelName = safeProfile.name || '好友';
-    ui.bubble.setAttribute('aria-label', `回到與 ${labelName} 的通話`);
+    const safeProfile = profile || { name: t('common.friend'), peerAccountDigest: null, avatarUrl: null };
+    const labelName = safeProfile.name || t('common.friend');
+    ui.bubble.setAttribute('aria-label', `${t('calls.returnToCall')}`);
     renderAvatarContent(ui.bubbleAvatar, safeProfile);
   }
 
@@ -1248,7 +1256,7 @@ export function initCallOverlay({ showToast }) {
     setVisibility(true);
     const profile = resolveUiPeerProfile(session);
     maybeLogPeerProfile(session, profile, state);
-    if (ui.nameLabel) ui.nameLabel.textContent = profile.name || '好友';
+    if (ui.nameLabel) ui.nameLabel.textContent = profile.name || t('common.friend');
     if (ui.statusLabel) ui.statusLabel.textContent = describeStatus(session);
     if (ui.secureLabel) ui.secureLabel.textContent = describeSecureStatus(session);
     updateAvatar(ui.avatar, profile);
@@ -1305,9 +1313,9 @@ export function initCallOverlay({ showToast }) {
         ui.videoWaiting.style.display = showWaiting ? 'flex' : 'none';
         if (showWaiting) {
           renderAvatarContent(ui.videoWaitingAvatar, profile);
-          if (ui.videoWaitingName) ui.videoWaitingName.textContent = profile.name || '好友';
+          if (ui.videoWaitingName) ui.videoWaitingName.textContent = profile.name || t('common.friend');
           if (ui.videoWaitingStatus) {
-            const videoStatusText = incoming ? '視訊來電' : '視訊撥號中…';
+            const videoStatusText = incoming ? t('calls.videoIncoming') : t('calls.videoDialing');
             ui.videoWaitingStatus.textContent = videoStatusText;
           }
         }
@@ -1378,7 +1386,7 @@ export function initCallOverlay({ showToast }) {
         ui.videoTopBar.style.display = (inCall || connecting) ? 'flex' : 'none';
         if (inCall || connecting) {
           renderAvatarContent(ui.videoTopBarAvatar, profile);
-          if (ui.videoTopBarName) ui.videoTopBarName.textContent = profile.name || '好友';
+          if (ui.videoTopBarName) ui.videoTopBarName.textContent = profile.name || t('common.friend');
           if (ui.videoTopBarStatus) ui.videoTopBarStatus.textContent = describeSecureStatus(session);
         }
       }
@@ -1442,7 +1450,7 @@ export function initCallOverlay({ showToast }) {
     const session = getCallSessionSnapshot();
     if (!session?.callId || state.actionBusy) return;
     if (!session.peerAccountDigest) {
-      showToast?.('缺少通話對象', { variant: 'error' });
+      showToast?.(t('calls.missingCallTarget'), { variant: 'error' });
       return;
     }
     state.actionBusy = true;
@@ -1471,7 +1479,7 @@ export function initCallOverlay({ showToast }) {
       }
       if (!mediaStream) {
         log({ callAnswerMediaPermissionDenied: mediaErr?.message || mediaErr, callId: session.callId });
-        showToast?.('需要麥克風權限才能接聽通話', { variant: 'error' });
+        showToast?.(t('calls.micPermissionRequiredToAnswer'), { variant: 'error' });
         // Treat permission denial as rejecting the call
         try {
           if (session.peerAccountDigest) {
@@ -1510,7 +1518,7 @@ export function initCallOverlay({ showToast }) {
       await acceptIncomingCallMedia({ callId: session.callId, peerAccountDigest: session.peerAccountDigest });
     } catch (err) {
       log({ callAcceptError: err?.message || err });
-      showToast?.('接聽失敗', { variant: 'error' });
+      showToast?.(t('calls.answerFailed'), { variant: 'error' });
     } finally {
       state.actionBusy = false;
       render();
@@ -1561,7 +1569,7 @@ export function initCallOverlay({ showToast }) {
       completeCallSession({ reason: 'cancelled' });
     } catch (err) {
       log({ callCancelError: err?.message || err });
-      showToast?.('無法結束通話', { variant: 'error' });
+      showToast?.(t('calls.endCallFailed'), { variant: 'error' });
     } finally {
       state.actionBusy = false;
       render();
@@ -1588,7 +1596,7 @@ export function initCallOverlay({ showToast }) {
       completeCallSession({ reason: 'hangup' });
     } catch (err) {
       log({ callHangupError: err?.message || err });
-      showToast?.('無法結束通話', { variant: 'error' });
+      showToast?.(t('calls.endCallFailed'), { variant: 'error' });
     } finally {
       state.actionBusy = false;
       render();
@@ -1685,7 +1693,7 @@ export function initCallOverlay({ showToast }) {
     subscribeCallEvent(CALL_EVENT.STATE, ({ session }) => {
       render(session);
       if (session?.mediaState?.status === CALL_MEDIA_STATE_STATUS.FAILED) {
-        showToast?.('無法建立加密通道', { variant: 'error' });
+        showToast?.(t('calls.cannotCreateEncryptedChannel'), { variant: 'error' });
       }
     }),
     subscribeCallEvent(CALL_EVENT.SIGNAL, ({ signal }) => {
@@ -1693,7 +1701,7 @@ export function initCallOverlay({ showToast }) {
       render();
     }),
     subscribeCallEvent(CALL_EVENT.ERROR, () => {
-      showToast?.('通話發生錯誤', { variant: 'error' });
+      showToast?.(t('calls.callError'), { variant: 'error' });
       render();
     })
   ];

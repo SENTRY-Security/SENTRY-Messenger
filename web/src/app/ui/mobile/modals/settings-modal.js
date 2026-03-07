@@ -1,6 +1,7 @@
 // System settings modal (online status, auto-logout, logout redirect, change password)
 
 import { escapeHtml } from '../ui-utils.js';
+import { t } from '/locales/index.js';
 
 const LOGOUT_REDIRECT_DEFAULT_URL = '/pages/logout.html';
 const LOGOUT_REDIRECT_PLACEHOLDER = 'https://example.com/logout';
@@ -127,13 +128,13 @@ export function createSettingsModule({ deps }) {
     if (errorEl) errorEl.textContent = '';
     const originalLabel = saveBtn.textContent;
     saveBtn.disabled = true;
-    saveBtn.textContent = '儲存中…';
+    saveBtn.textContent = t('settings.saving');
     try {
       await customLogoutCtx.onSubmit(sanitized);
       closeCustomLogoutModal();
     } catch (err) {
       log({ customLogoutSaveError: err?.message || err });
-      if (errorEl) errorEl.textContent = err?.userMessage || err?.message || '儲存設定失敗，請稍後再試。';
+      if (errorEl) errorEl.textContent = err?.userMessage || err?.message || t('errors.saveSettingsFailed');
     } finally {
       saveBtn.disabled = false;
       saveBtn.textContent = originalLabel;
@@ -163,7 +164,7 @@ export function createSettingsModule({ deps }) {
     input.placeholder = LOGOUT_REDIRECT_PLACEHOLDER;
     if (errorEl) errorEl.textContent = '';
     saveBtn.disabled = false;
-    saveBtn.textContent = '儲存';
+    saveBtn.textContent = t('settings.saved');
     modal.style.display = 'flex';
     modal.setAttribute('aria-hidden', 'false');
     setTimeout(() => { try { input.focus({ preventScroll: true }); } catch { input.focus(); } }, 30);
@@ -216,8 +217,8 @@ export function createSettingsModule({ deps }) {
     if (!modalElement || !body) return;
     resetModalVariants(modalElement);
     modalElement.classList.add('settings-modal');
-    if (title) title.textContent = '系統設定';
-    const customSummaryValue = sanitizeUrl(current.autoLogoutCustomUrl) || '尚未設定安全網址';
+    if (title) title.textContent = t('settings.systemSettings');
+    const customSummaryValue = sanitizeUrl(current.autoLogoutCustomUrl) || t('settings.noSafeUrlSet');
     const autoLogoutDetailsVisible = !!current.autoLogoutOnBackground;
     body.innerHTML = `
       <div id="systemSettings" class="settings-form">
@@ -287,7 +288,7 @@ export function createSettingsModule({ deps }) {
       event.preventDefault();
       openChangePasswordModal().catch((err) => {
         log({ changePasswordModalError: err?.message || err });
-        if (typeof showAlertModal === 'function') showAlertModal({ title: '操作失敗', message: '目前無法開啟變更密碼視窗，請稍後再試。' });
+        if (typeof showAlertModal === 'function') showAlertModal({ title: t('errors.operationFailed'), message: t('settings.cannotOpenPasswordModal') });
       });
     });
 
@@ -303,7 +304,7 @@ export function createSettingsModule({ deps }) {
     };
     const refreshSummary = () => {
       if (!logoutSummaryEl) return;
-      logoutSummaryEl.textContent = sanitizeUrl(getEffective().autoLogoutCustomUrl) || '尚未設定安全網址';
+      logoutSummaryEl.textContent = sanitizeUrl(getEffective().autoLogoutCustomUrl) || t('settings.noSafeUrlSet');
     };
     const launchCustomModal = (invoker) => {
       openCustomLogoutModal({
@@ -328,7 +329,7 @@ export function createSettingsModule({ deps }) {
       logoutDefaultRadio.disabled = true;
       logoutCustomRadio && (logoutCustomRadio.disabled = true);
       try { await persistPatch({ autoLogoutRedirectMode: 'default', autoLogoutCustomUrl: null }); refreshSummary(); }
-      catch (err) { log({ logoutRedirectModeSaveError: err?.message || err, mode: 'default' }); if (typeof showAlertModal === 'function') showAlertModal({ title: '儲存失敗', message: '儲存設定失敗，請稍後再試。' }); }
+      catch (err) { log({ logoutRedirectModeSaveError: err?.message || err, mode: 'default' }); if (typeof showAlertModal === 'function') showAlertModal({ title: t('errors.saveFailed'), message: t('errors.saveSettingsFailed') }); }
       finally { logoutDefaultRadio.disabled = false; if (logoutCustomRadio) logoutCustomRadio.disabled = false; syncRadios(); }
     });
     logoutCustomRadio?.addEventListener('change', (event) => {
@@ -345,7 +346,7 @@ export function createSettingsModule({ deps }) {
         if (previous[key] === nextValue) return;
         input.disabled = true;
         try { await persistPatch({ [key]: nextValue }); if (key === 'autoLogoutOnBackground') _autoLoggedOut = false; }
-        catch (err) { log({ settingsAutoSaveError: err?.message || err }); if (typeof showAlertModal === 'function') showAlertModal({ title: '儲存失敗', message: '儲存設定失敗，請稍後再試。' }); input.checked = !!previous[key]; }
+        catch (err) { log({ settingsAutoSaveError: err?.message || err }); if (typeof showAlertModal === 'function') showAlertModal({ title: t('errors.saveFailed'), message: t('errors.saveSettingsFailed') }); input.checked = !!previous[key]; }
         finally { input.disabled = false; }
       });
     };
@@ -359,7 +360,7 @@ export function createSettingsModule({ deps }) {
         autoLogoutInput.disabled = true;
         setAutoLogoutVis(nextValue);
         try { await persistPatch({ autoLogoutOnBackground: nextValue }); _autoLoggedOut = false; }
-        catch (err) { log({ settingsAutoSaveError: err?.message || err }); if (typeof showAlertModal === 'function') showAlertModal({ title: '儲存失敗', message: '儲存設定失敗，請稍後再試。' }); autoLogoutInput.checked = prevValue; }
+        catch (err) { log({ settingsAutoSaveError: err?.message || err }); if (typeof showAlertModal === 'function') showAlertModal({ title: t('errors.saveFailed'), message: t('errors.saveSettingsFailed') }); autoLogoutInput.checked = prevValue; }
         finally { autoLogoutInput.disabled = false; const state = getEffective(); setAutoLogoutVis(!!state.autoLogoutOnBackground); syncRadios(); }
       });
     }

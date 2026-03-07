@@ -12,6 +12,7 @@ import { normalizeTimelineMessageId, extractMessageTimestampMs, normalizeMsgType
 import { getLocalProcessedCounter } from '../../../features/messages-flow/local-counter.js'; // [FIX] Import unread counter logic
 import { listSecureMessages as apiListSecureMessages } from '../../../api/messages.js';
 import { getMessagesUnreadCount } from '../../../features/messages-flow/server-api.js'; // [FIX] Backend Unread API
+import { t } from '/locales/index.js';
 
 const CONV_PULL_THRESHOLD = 60;
 const CONV_PULL_MAX = 100;
@@ -408,13 +409,13 @@ export class ConversationListController extends BaseController {
                         }
                     }
 
-                    let text = '尚無訊息';
+                    let text = t('messages.noMessages');
                     let type = null;
                     let ts = null;
                     let direction = null;
 
                     if (isDeleted) {
-                        text = '尚無訊息';
+                        text = t('messages.noMessages');
                         type = 'conversation-deleted';
                         // Use the tombstone's own timestamp (not messages[0] which may not exist after slicing)
                         ts = tombstoneIndex >= 0 ? extractMessageTimestampMs(messages[tombstoneIndex]) : extractMessageTimestampMs(messages[0] || {});
@@ -445,7 +446,7 @@ export class ConversationListController extends BaseController {
                         // senderDigest == MY_DIGEST -> Outgoing.
 
                         if (type === 'text') {
-                            text = payload.text || (previewMsg.ciphertext_b64 ? '🔒 加密訊息' : '文字訊息');
+                            text = payload.text || (previewMsg.ciphertext_b64 ? t('messages.encryptedMessage') : t('messages.textMessage'));
                         } else if (type === 'media') {
                             const mime = (payload.contentType || payload.mimeType || '').toLowerCase();
                             if (mime.startsWith('image/')) {
@@ -453,19 +454,19 @@ export class ConversationListController extends BaseController {
                             } else if (mime.startsWith('video/')) {
                                 text = '[影片]';
                             } else {
-                                text = `[檔案] ${payload.filename || payload.name || '附件'}`;
+                                text = `[檔案] ${payload.filename || payload.name || t('common.attachment')}`;
                             }
                         } else if (type === 'call_log' || type === 'call-log') {
                             const clKind = payload?.kind || previewMsg?.callLog?.kind || '';
                             text = clKind === 'video' ? '[視訊通話]' : '[語音通話]';
                         } else if (type === 'contact-share' || type === 'contact_share') {
                             const csReason = payload?.reason;
-                            if (csReason === 'nickname') text = '已更新暱稱';
-                            else if (csReason === 'avatar') text = '已更新頭像';
-                            else if (csReason === 'profile' || csReason === 'update' || csReason === 'manual') text = '已更新個人資料';
-                            else text = '已建立安全連線';
+                            if (csReason === 'nickname') text = t('profile.updatedNickname');
+                            else if (csReason === 'avatar') text = t('profile.updatedAvatar');
+                            else if (csReason === 'profile' || csReason === 'update' || csReason === 'manual') text = t('profile.updatedProfile');
+                            else text = t('messages.secureConnectionEstablished');
                         } else {
-                            text = previewMsg.ciphertext_b64 ? '🔒 加密訊息' : '新訊息';
+                            text = previewMsg.ciphertext_b64 ? t('messages.encryptedMessage') : t('messages.newMessage');
                         }
                     } else {
                         // Fallback logging
@@ -505,7 +506,7 @@ export class ConversationListController extends BaseController {
         const lastMsg = timeline[timeline.length - 1];
         const msgType = lastMsg.msgType || lastMsg.subtype || 'text';
         const text = msgType === 'conversation-deleted'
-            ? '尚無訊息'
+            ? t('messages.noMessages')
             : resolveMessagePreview(lastMsg);
         const ts = lastMsg.ts || Date.now();
 
@@ -608,7 +609,7 @@ export class ConversationListController extends BaseController {
         const yesterday = new Date(now);
         yesterday.setDate(yesterday.getDate() - 1);
         if (date.toDateString() === yesterday.toDateString()) {
-            return '昨天';
+            return t('common.yesterday');
         }
         return date.toLocaleDateString('zh-TW', { month: 'short', day: 'numeric' });
     }
@@ -642,10 +643,10 @@ export class ConversationListController extends BaseController {
             if (spinner && labelEl) {
                 if (this.conversationsRefreshing) {
                     spinner.classList.add('spin');
-                    labelEl.textContent = '刷新中…';
+                    labelEl.textContent = t('common.refreshing');
                 } else {
                     spinner.classList.remove('spin');
-                    labelEl.textContent = clamped >= CONV_PULL_THRESHOLD ? '鬆開更新對話列表' : '下拉更新對話';
+                    labelEl.textContent = clamped >= CONV_PULL_THRESHOLD ? t('messages.releaseToRefreshConversations') : t('messages.pullToRefreshConversations');
                 }
             }
         }
@@ -793,7 +794,7 @@ export class ConversationListController extends BaseController {
                     this.deps.resetMessageStateWithPlaceholders?.();
                     state = this.getMessageState();
                     if (!this.deps.isDesktopLayout?.()) state.viewMode = 'list';
-                    if (this.elements.peerName) this.elements.peerName.textContent = '選擇好友開始聊天';
+                    if (this.elements.peerName) this.elements.peerName.textContent = t('contacts.selectToChat');
                     this.deps.setMessagesStatus?.('');
                     this.deps.clearMessagesView?.();
                     this.deps.updateComposerAvailability?.();
@@ -824,7 +825,7 @@ export class ConversationListController extends BaseController {
         if (!threadEntries.length) {
             const li = document.createElement('li');
             li.className = 'conversation-item disabled';
-            li.innerHTML = `<div class="conversation-empty">尚未有任何訊息</div>`;
+            li.innerHTML = `<div class="conversation-empty">${t('messages.noMessages')}</div>`;
             this.elements.conversationList.appendChild(li);
             return;
         }
@@ -845,7 +846,7 @@ export class ConversationListController extends BaseController {
             if (isActivePeer && isActiveDevice) li.classList.add('active');
             if (openPeer && openPeer === peerDigest) li.classList.add('show-delete');
 
-            const nickname = thread.nickname || `好友 ${peerDigest.slice(-4)}`;
+            const nickname = thread.nickname || `${t('contacts.friendPrefix')}${peerDigest.slice(-4)}`;
             const initials = this._initialsFromName(nickname, peerDigest);
             const avatarSrc = thread.avatar?.thumbDataUrl || thread.avatar?.previewDataUrl || thread.avatar?.url || null;
             const timeLabel = this._formatConversationPreviewTime(thread.lastMessageTs);
@@ -862,12 +863,12 @@ export class ConversationListController extends BaseController {
               <span class="conversation-time">${escapeHtml(timeLabel)}</span>
             </div>
             <div class="conversation-row conversation-row-bottom">
-              <span class="conversation-snippet">${escapeHtml(snippet || '尚無訊息')}</span>
+              <span class="conversation-snippet">${escapeHtml(snippet || t('messages.noMessages'))}</span>
               ${unread > 0 ? `<span class="conversation-badge conversation-badge-small ${offlineUnread > 0 ? 'badge-offline-gap' : ''}">${escapeHtml(unread > 99 ? '99+' : String(unread))}</span>` : ''}
             </div>
           </div>
         </div>
-        <button type="button" class="item-delete" aria-label="刪除對話"><i class='bx bx-trash'></i></button>
+        <button type="button" class="item-delete" aria-label="${t('messages.deleteConversationAriaLabel')}"><i class='bx bx-trash'></i></button>
       `;
 
             const deleteBtn = li.querySelector('.item-delete');

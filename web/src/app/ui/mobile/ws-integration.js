@@ -10,6 +10,8 @@
 //   ws.send(payload);     // queue-safe send
 //   ws.close();           // teardown on logout
 
+import { t } from '/locales/index.js';
+
 export function createWsIntegration({ deps }) {
   const {
     log, logForensicsEvent, wsDebugEnabled,
@@ -68,7 +70,7 @@ export function createWsIntegration({ deps }) {
 
   async function getAuthToken({ force = false } = {}) {
     const accountDigest = getAccountDigest();
-    if (!accountDigest) throw new Error('缺少 accountDigest');
+    if (!accountDigest) throw new Error(t('errors.missingAccountDigest'));
     const nowSec = Math.floor(Date.now() / 1000);
     if (!force && wsAuthTokenInfo && wsAuthTokenInfo.token) {
       const exp = Number(wsAuthTokenInfo.expiresAt || 0);
@@ -123,8 +125,8 @@ export function createWsIntegration({ deps }) {
     } catch (err) {
       log({ wsTokenError: err?.message || err, status: err?.status, code: err?.code });
       if (err?.status === 409 || err?.code === 'StaleSession') {
-        showForcedLogoutModal('帳號已在其他裝置登入');
-        secureLogout('帳號已在其他裝置登入', { auto: true });
+        showForcedLogoutModal(t('auth.accountLoggedInElsewhere'));
+        secureLogout(t('auth.accountLoggedInElsewhere'), { auto: true });
         return;
       }
       scheduleReconnect(4000);
@@ -222,8 +224,8 @@ export function createWsIntegration({ deps }) {
       updateConnectionIndicator('offline');
       getPresenceManager()?.clearPresenceState?.();
       if (evt.code === 4409) {
-        showForcedLogoutModal('帳號已在其他裝置登入');
-        secureLogout('帳號已在其他裝置登入', { auto: true });
+        showForcedLogoutModal(t('auth.accountLoggedInElsewhere'));
+        secureLogout(t('auth.accountLoggedInElsewhere'), { auto: true });
         return;
       }
       if (evt.code === 4401) {
@@ -529,7 +531,7 @@ export function createWsIntegration({ deps }) {
       return;
     }
     if (type === 'force-logout') {
-      const reason = msg?.reason || '帳號已被清除';
+      const reason = msg?.reason || t('auth.accountCleared');
       showForcedLogoutModal(reason);
       secureLogout(reason, { auto: true });
       return;

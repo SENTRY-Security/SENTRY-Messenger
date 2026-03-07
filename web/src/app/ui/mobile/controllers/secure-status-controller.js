@@ -7,6 +7,7 @@ import { BaseController } from './base-controller.js';
 import { normalizePeerKey, isCoreVaultReady, resolveReadyContactCoreEntry } from '../contact-core-store.js';
 import { getSecureConversationStatus, SECURE_CONVERSATION_STATUS } from '../../../features/secure-conversation-manager.js';
 import { getMkRaw } from '../../../core/store.js';
+import { t } from '/locales/index.js';
 
 export class SecureStatusController extends BaseController {
     constructor(deps) {
@@ -147,8 +148,8 @@ export class SecureStatusController extends BaseController {
         if (shouldShow) {
             if (this.activeSecurityModalPeer !== key) {
                 showSecurityModal({
-                    title: '建立安全對話',
-                    message: '正在與好友建立安全對話，請稍候…'
+                    title: t('encryption.buildingSecureConversationTitle'),
+                    message: t('encryption.buildingSecureConversationMessage')
                 });
                 this.activeSecurityModalPeer = key;
             }
@@ -181,11 +182,11 @@ export class SecureStatusController extends BaseController {
         this.updateSecurityModalForPeer(key, statusInfo);
 
         if (status === SECURE_CONVERSATION_STATUS.PENDING) {
-            this.deps.setMessagesStatus?.('正在建立安全對話…');
+            this.deps.setMessagesStatus?.(t('encryption.buildingSecureConversationStatus'));
         } else if (status === SECURE_CONVERSATION_STATUS.FAILED) {
             const msg = statusInfo?.error
-                ? `建立安全對話失敗：${statusInfo.error}`
-                : '建立安全對話失敗，請稍後再試。';
+                ? `${t('encryption.buildSecureFailed')}${statusInfo.error}`
+                : t('encryption.buildSecureFailed');
             this.deps.setMessagesStatus?.(msg, true);
         } else if (status === SECURE_CONVERSATION_STATUS.READY) {
             this.deps.setMessagesStatus?.('');

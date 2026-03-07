@@ -479,15 +479,15 @@ function clearAllBrowserStorage(logoutMessage) {
   try { localStorage.clear?.(); } catch (err) { log({ secureLogoutLocalClearError: err?.message || err }); }
   try { sessionStorage.clear?.(); } catch (err) { log({ secureLogoutSessionClearError: err?.message || err }); }
 
-  try { sessionStorage.setItem(LOGOUT_MESSAGE_KEY, logoutMessage || '已登出'); } catch { }
+  try { sessionStorage.setItem(LOGOUT_MESSAGE_KEY, logoutMessage || t('auth.loggedOut')); } catch { }
 }
 
-async function secureLogout(message = '已登出', { auto = false } = {}) {
+async function secureLogout(message = t('auth.loggedOut'), { auto = false } = {}) {
   if (logoutInProgress) return;
   logoutInProgress = true;
   _autoLoggedOut = true;
 
-  const safeMessage = message || '已登出';
+  const safeMessage = message || t('auth.loggedOut');
   let logoutRedirectTarget = '/pages/logout.html';
 
   // Capture brand info before storage is cleared so it can be forwarded
@@ -676,7 +676,7 @@ async function secureLogout(message = '已登出', { auto = false } = {}) {
   }, 60);
 }
 
-function showForcedLogoutModal(message = '帳號已在其他裝置登入') {
+function showForcedLogoutModal(message = t('auth.accountLoggedInElsewhere')) {
   try {
     if (forcedLogoutOverlay && forcedLogoutOverlay.parentElement) {
       forcedLogoutOverlay.parentElement.removeChild(forcedLogoutOverlay);
@@ -705,13 +705,13 @@ function showForcedLogoutModal(message = '帳號已在其他裝置登入') {
     });
     const title = document.createElement('div');
     Object.assign(title.style, { fontSize: '16px', fontWeight: '700', marginBottom: '8px' });
-    title.textContent = '安全提示';
+    title.textContent = t('auth.securityAlert');
     const msg = document.createElement('div');
     Object.assign(msg.style, { fontSize: '14px', lineHeight: '1.6', marginBottom: '16px' });
     msg.textContent = message;
     const hint = document.createElement('div');
     Object.assign(hint.style, { fontSize: '12px', color: '#475569' });
-    hint.textContent = '將登出此裝置，請重新感應晶片登入。';
+    hint.textContent = t('auth.willLogoutDevice');
     panel.appendChild(title);
     panel.appendChild(msg);
     panel.appendChild(hint);
@@ -770,7 +770,7 @@ function isReloadNavigation() {
   return reloadNavigationMemo;
 }
 
-function forceReloadLogout(message = '重新整理後已自動登出') {
+function forceReloadLogout(message = t('auth.reloadAutoLogout')) {
   if (reloadLogoutTriggered) return;
   reloadLogoutTriggered = true;
   try {
@@ -1091,12 +1091,12 @@ function flushContactSecretsLocal(reason = 'manual') {
       } catch { /* keep default */ }
       try { resetAll(); } catch { try { clearSecrets(); } catch { } }
       try { sessionStorage.clear(); } catch { }
-      try { sessionStorage.setItem(LOGOUT_MESSAGE_KEY, '登入資訊已失效，請重新感應晶片'); } catch { }
+      try { sessionStorage.setItem(LOGOUT_MESSAGE_KEY, t('auth.loginInfoExpired')); } catch { }
       setTimeout(() => {
         try { location.replace(_guardTarget); } catch { location.href = _guardTarget; }
       }, 60);
     } else {
-      secureLogout('登入資訊已失效，請重新感應晶片', { auto: true });
+      secureLogout(t('auth.loginInfoExpired'), { auto: true });
     }
   }
 })();
@@ -1215,7 +1215,7 @@ userMenuSettingsBtn?.addEventListener('click', (event) => {
 userMenuLogoutBtn?.addEventListener('click', (event) => {
   event.preventDefault();
   setUserMenuOpen(false);
-  secureLogout('已登出');
+  secureLogout(t('auth.loggedOut'));
 });
 
 document.addEventListener('click', (event) => {
@@ -1333,7 +1333,7 @@ const updateConnectionIndicator = (state) => {
     const now = Date.now();
     if (now - _lastDegradedToastAt >= _DEGRADED_TOAST_COOLDOWN) {
       _lastDegradedToastAt = now;
-      showToast?.('網路連線不穩定', { variant: 'warning' });
+      showToast?.(t('status.unstableNetwork'), { variant: 'warning' });
     }
   }
 };
@@ -1799,7 +1799,7 @@ async function runPostLoginContactHydrate() {
     }
   }
   if (remoteResult?.corrupt || remoteResult?.corruptBackup) {
-    showToast?.('備份損壞，需重新同步/重新邀請', { variant: 'error' });
+    showToast?.(t('share.backupCorruptResync'), { variant: 'error' });
   }
   if (contactCoreVerbose) {
     try {
@@ -2060,7 +2060,7 @@ profileInitPromise
 
 
 
-function handleBackgroundAutoLogout(reason = '畫面已移至背景，已自動登出', { skipVisibilityCheck = false } = {}) {
+function handleBackgroundAutoLogout(reason = t('auth.backgroundAutoLogout'), { skipVisibilityCheck = false } = {}) {
   if (logoutInProgress || _autoLoggedOut) {
     log({ autoLogoutSkip: 'logout-in-progress', logoutInProgress, _autoLoggedOut });
     return;
@@ -2130,8 +2130,8 @@ function isFallbackProfileName(name, digest = null) {
   const normalized = normalizeProfileNickname(name);
   if (!normalized) return true;
   const trimmed = String(name).trim();
-  if (trimmed.startsWith('好友')) return true;
-  if (digest && trimmed === `好友 ${digest.slice(-4)}`) return true;
+  if (trimmed.startsWith(t('contacts.friendPrefix'))) return true;
+  if (digest && trimmed === `${t('contacts.friendPrefix')} ${digest.slice(-4)}`) return true;
   return false;
 }
 
@@ -2181,7 +2181,7 @@ function resolveLocalProfileSnapshot(peerDigest) {
 function applyProfileSnapshotToStores(peerDigest, profile) {
   const digest = toProfileDigest(peerDigest);
   if (!digest) return;
-  const nickname = normalizeProfileNickname(profile?.nickname || '') || `好友 ${digest.slice(-4)}`;
+  const nickname = normalizeProfileNickname(profile?.nickname || '') || `${t('contacts.friendPrefix')} ${digest.slice(-4)}`;
   const avatar = profile?.avatar || null;
   const updatedAt =
     Number.isFinite(profile?.updatedAt) ? Number(profile.updatedAt)
@@ -2460,14 +2460,14 @@ postLoginInitPromise
             log({ splashPermissionError: err?.message || err });
             window.__setSplashAuthorizing?.(false);
             window.__setSplashStatus?.(mediaPermissionMgr.describeError(err));
-            showToast?.('授權失敗，請再試一次', { variant: 'warning' });
+            showToast?.(t('mediaPermission.authFailed'), { variant: 'warning' });
             splashBusy = false;
           }
         };
         const handleSkip = () => {
           mediaPermissionMgr.warmUpAudio();
           try { sessionStorage.setItem(AUDIO_PERMISSION_KEY, 'granted'); } catch { }
-          showToast?.('未啟用麥克風，通話可能無法使用', { variant: 'warning' });
+          showToast?.(t('mediaPermission.micNotEnabled'), { variant: 'warning' });
           window.__hideLoadingModal?.();
         };
         enterBtn?.addEventListener('click', handleEnter);
@@ -2593,7 +2593,7 @@ if (typeof window !== 'undefined') {
     }
     backgroundLogoutTimer = setTimeout(() => {
       backgroundLogoutTimer = null;
-      handleBackgroundAutoLogout('視窗失去焦點，已自動登出', { skipVisibilityCheck: true });
+      handleBackgroundAutoLogout(t('auth.windowBlurAutoLogout'), { skipVisibilityCheck: true });
     }, BACKGROUND_LOGOUT_DELAY_MS);
   });
   window.addEventListener('beforeunload', () => {
@@ -2606,7 +2606,7 @@ import { unwrapDevicePrivWithMK } from '../crypto/prekeys.js';
 if (typeof document !== 'undefined') {
   document.addEventListener('sentry:outbox-fatal', (e) => {
     try {
-      const errorMsg = e.detail?.error || '連線發生嚴重錯誤';
+      const errorMsg = e.detail?.error || t('errors.fatalConnectionError');
       console.error('[App] Outbox Fatal Error:', errorMsg);
       showFatalErrorModal(errorMsg);
     } catch (err) {
@@ -2619,7 +2619,7 @@ if (typeof document !== 'undefined') {
  * Show a non-closable modal for fatal errors (e.g., persistent network failure).
  * User must re-login to restore consistency.
  */
-function showFatalErrorModal(message = '連線發生錯誤') {
+function showFatalErrorModal(message = t('errors.connectionError')) {
   try {
     // Reuse or replace existing overlay
     if (forcedLogoutOverlay && forcedLogoutOverlay.parentElement) {
@@ -2660,7 +2660,7 @@ function showFatalErrorModal(message = '連線發生錯誤') {
     // Title
     const title = document.createElement('div');
     Object.assign(title.style, { fontSize: '18px', fontWeight: '800', color: '#b91c1c' });
-    title.textContent = '無法傳送訊息';
+    title.textContent = t('modal.cannotSendMessage');
 
     // Body
     const msg = document.createElement('div');
@@ -2669,7 +2669,7 @@ function showFatalErrorModal(message = '連線發生錯誤') {
 
     // Action Button
     const btn = document.createElement('button');
-    btn.textContent = '重新登入';
+    btn.textContent = t('modal.reLogin');
     Object.assign(btn.style, {
       padding: '12px',
       borderRadius: '12px',
@@ -2686,7 +2686,7 @@ function showFatalErrorModal(message = '連線發生錯誤') {
     // Force logout on click
     btn.onclick = () => {
       btn.disabled = true;
-      btn.textContent = '正在登出...';
+      btn.textContent = t('modal.loggingOut');
       secureLogout('Fatal Error Reset', { auto: false });
     };
 

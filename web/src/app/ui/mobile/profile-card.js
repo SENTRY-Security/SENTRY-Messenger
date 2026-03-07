@@ -3,6 +3,7 @@ import Cropper from '../../lib/vendor/cropper.esm.js';
 import { loadLatestProfile, saveProfile, normalizeNickname, uploadAvatar, loadAvatarBlob, PROFILE_WRITE_SOURCE } from '../../features/profile.js';
 import { sessionStore } from './session-store.js';
 import { escapeHtml, blobToDataURL } from './ui-utils.js';
+import { t } from '/locales/index.js';
 
 export function initProfileCard(options) {
   const {
@@ -54,7 +55,7 @@ export function initProfileCard(options) {
 
   function updateProfileNicknameUI() {
     const nick = sessionStore.profileState?.nickname ? normalizeNickname(sessionStore.profileState.nickname) : '';
-    profileNicknameEl.textContent = nick || '尚未設定';
+    profileNicknameEl.textContent = nick || t('profile.notSet');
   }
 
   async function updateProfileAvatarUI() {
@@ -99,7 +100,7 @@ export function initProfileCard(options) {
     if (!modalElement || !body) return;
     modalElement.classList.remove('progress-modal', 'folder-modal', 'upload-modal', 'loading-modal', 'confirm-modal', 'nickname-modal');
     modalElement.classList.add('nickname-modal');
-    if (title) title.textContent = '編輯暱稱';
+    if (title) title.textContent = t('profile.editNickname');
     const current = sessionStore.profileState?.nickname || '';
     body.innerHTML = `
       <form id="nicknameForm" class="nickname-form">
@@ -144,7 +145,7 @@ export function initProfileCard(options) {
       const raw = input?.value || '';
       const normalized = normalizeNickname(raw);
       if (!normalized || normalized.length < 2) {
-        modal.showAlertModal({ title: '格式錯誤', message: '暱稱需至少 2 個字，且只能包含文字、數字、空格或 - _ .' });
+        modal.showAlertModal({ title: t('profile.nicknameFormatErrorTitle'), message: t('profile.nicknameFormatError') });
         input?.focus();
         return;
       }
@@ -176,7 +177,7 @@ export function initProfileCard(options) {
         restoreShareButton();
       } catch (err) {
         log({ profileNicknameError: err?.message || err });
-        modal.showAlertModal({ title: '更新失敗', message: '更新暱稱失敗，請稍後再試。' });
+        modal.showAlertModal({ title: t('profile.updateNicknameFailedTitle'), message: t('profile.updateNicknameFailed') });
       } finally {
         setSubmitLoading(false);
       }
@@ -190,7 +191,7 @@ export function initProfileCard(options) {
     if (!modalElement || !body) return;
     modalElement.classList.remove('progress-modal', 'folder-modal', 'upload-modal', 'loading-modal', 'confirm-modal', 'nickname-modal', 'avatar-modal', 'avatar-preview-modal');
     modalElement.classList.add('avatar-modal', 'avatar-preview-modal');
-    if (title) title.textContent = '頭像預覽';
+    if (title) title.textContent = t('profile.avatarPreview');
     const currentSrc = profileAvatarImg?.src || '/assets/images/avatar.png';
     body.innerHTML = `
       <div class="avatar-upload">
@@ -247,12 +248,12 @@ export function initProfileCard(options) {
     if (!modalElement || !body) return;
     modalElement.classList.remove('progress-modal', 'folder-modal', 'upload-modal', 'loading-modal', 'confirm-modal', 'nickname-modal', 'avatar-modal', 'avatar-preview-modal');
     modalElement.classList.add('avatar-modal');
-    if (title) title.textContent = '更新頭像';
+    if (title) title.textContent = t('profile.updateAvatar');
     const currentSrc = profileAvatarImg?.src || '/assets/images/avatar.png';
     body.innerHTML = `
       <div class="avatar-upload">
         <div class="avatar-cropper">
-          <img id="avatarCropImg" src="${escapeHtml(currentSrc)}" alt="頭像裁切" />
+          <img id="avatarCropImg" src="${escapeHtml(currentSrc)}" alt="${escapeHtml(t('profile.avatarCropAlt'))}" />
         </div>
         <div class="avatar-toolbar">
           <div class="avatar-actions-row">
@@ -334,7 +335,7 @@ export function initProfileCard(options) {
             : 1;
           if (ratio < 0.9) {
             cropperBox.classList.add('zoom-hint');
-            setStatus('提示：可雙指或滾輪放大，再拖曳置中。');
+            setStatus(t('profile.cropHint'));
             setTimeout(() => cropperBox.classList.remove('zoom-hint'), 3200);
           }
         }
@@ -355,11 +356,11 @@ export function initProfileCard(options) {
         return;
       }
       if (!file.type.startsWith('image/')) {
-        setStatus('僅支援圖片格式。');
+        setStatus(t('profile.imageFormatOnly'));
         submitBtn?.setAttribute('disabled', 'disabled');
         return;
       }
-      setStatus('正在準備圖片…');
+      setStatus(t('profile.preparingImage'));
       try {
         const { dataUrl } = await loadAndResizeImage(file, { maxSize: 2048 });
         await setupCropper(dataUrl);
@@ -373,7 +374,7 @@ export function initProfileCard(options) {
 
     submitBtn?.addEventListener('click', async () => {
       if (!cropper) {
-        setStatus('請先選擇並裁切圖片。');
+        setStatus(t('profile.selectAndCropFirst'));
         return;
       }
       submitBtn?.setAttribute('disabled', 'disabled');
@@ -381,11 +382,11 @@ export function initProfileCard(options) {
       setStatus('上傳中… 0%');
       try {
         const canvas = cropper.getCroppedCanvas({ width: 512, height: 512, imageSmoothingEnabled: true, imageSmoothingQuality: 'high' });
-        if (!canvas) throw new Error('裁切失敗，請重試');
+        if (!canvas) throw new Error(t('profile.cropFailed'));
         const uploadBlob = await new Promise((resolve, reject) => {
           canvas.toBlob((b) => {
             if (b) resolve(b);
-            else reject(new Error('裁切失敗，請重試'));
+            else reject(new Error(t('profile.cropFailed')));
           }, 'image/jpeg', 0.9);
         });
         const thumbDataUrl = canvas.toDataURL('image/jpeg', 0.85);
@@ -526,7 +527,7 @@ export function initProfileCard(options) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(reader.error || new Error('讀取檔案失敗'));
+      reader.onerror = () => reject(reader.error || new Error(t('profile.readFileFailed')));
       reader.readAsDataURL(file);
     });
   }
@@ -535,7 +536,7 @@ export function initProfileCard(options) {
     const img = new Image();
     const loadPromise = new Promise((resolve, reject) => {
       img.onload = () => resolve(null);
-      img.onerror = (err) => reject(err || new Error('圖片載入失敗'));
+      img.onerror = (err) => reject(err || new Error(t('profile.imageLoadFailed')));
     });
     img.src = src;
     if (typeof img.decode === 'function') {
