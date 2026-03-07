@@ -1467,11 +1467,11 @@ export function initDrivePane({
             const pct = total && total > 0 ? Math.round((loaded / total) * 100) : null;
             const percent = pct != null ? Math.min(95, Math.max(15, pct)) : 45;
             const text = pct != null
-              ? `下載加密檔案中… ${pct}% (${fmtSize(loaded)} / ${fmtSize(total)})`
-              : `下載加密檔案中… (${fmtSize(loaded)})`;
+              ? `${t('drive.downloadingEncryptedFile')} ${pct}% (${fmtSize(loaded)} / ${fmtSize(total)})`
+              : `${t('drive.downloadingEncryptedFile')} (${fmtSize(loaded)})`;
             updateLoadingModal?.({ percent, text });
           } else if (stage === 'decrypt') {
-            updateLoadingModal?.({ percent: 98, text: '解密檔案中…' });
+            updateLoadingModal?.({ percent: 98, text: t('drive.decryptingFile') });
           }
         }
       });
@@ -1565,7 +1565,7 @@ export function initDrivePane({
       } catch (err) {
         const msg = document.createElement('div');
         msg.className = 'preview-message';
-        msg.textContent = '無法顯示文字內容。';
+        msg.textContent = t('drive.cannotDisplayTextContent');
         wrap.appendChild(msg);
       }
     } else {
@@ -1576,7 +1576,7 @@ export function initDrivePane({
       const link = document.createElement('a');
       link.href = url;
       link.download = resolvedName;
-      link.textContent = '下載檔案';
+      link.textContent = t('drive.downloadFile');
       link.className = 'preview-download';
       wrap.appendChild(link);
     }
@@ -1605,13 +1605,13 @@ export function initDrivePane({
     if (!manifest.segment_aligned || !manifest.tracks) {
       // Non-segment-aligned: fall back to full download + blob URL
       const { downloadAllChunks } = await import('../../features/chunked-download.js');
-      showModalLoading?.('下載影片中…');
+      showModalLoading?.(t('drive.downloadingVideo'));
       const result = await downloadAllChunks({
         baseKey: chunkedMeta.baseKey,
         manifest,
         manifestEnvelope: chunkedMeta.manifestEnvelope,
         onProgress: ({ percent }) => {
-          updateLoadingModal?.({ percent: Math.min(95, percent), text: `下載影片中… ${percent}%` });
+          updateLoadingModal?.({ percent: Math.min(95, percent), text: `${t('drive.downloadingVideo')} ${percent}%` });
         }
       });
       doPreviewFromBlob(result.blob, result.contentType || contentType, result.name || name);
@@ -1679,7 +1679,7 @@ export function initDrivePane({
           const m = buildMimeFromCodecString(cs);
           if (m && !codecs.includes(m)) codecs.push(m);
         }
-        if (!codecs.length) throw new Error('無法偵測影片編碼格式');
+        if (!codecs.length) throw new Error(t('mediaHandling.cannotDetectVideoCodec'));
 
         for (let i = 0; i < codecs.length; i++) {
           try {

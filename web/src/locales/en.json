@@ -377,7 +377,14 @@
     "youUpdatedProfile": "You updated your profile",
     "peerUpdatedNickname": "{name} updated their nickname",
     "peerUpdatedAvatar": "{name} updated their avatar",
-    "peerUpdatedProfile": "{name} updated their profile"
+    "peerUpdatedProfile": "{name} updated their profile",
+    "newNickname": "New nickname",
+    "nicknameHint": "Nickname is stored in encrypted data only; the server cannot see it. Only letters, numbers, spaces, -, _, . allowed.",
+    "changeAvatar": "Change avatar",
+    "chooseImage": "Choose image",
+    "avatarCropHint": "Drag or zoom to crop; supports pinch or mouse wheel.",
+    "imageReadFailed": "Image read failed: ",
+    "uploadFailed": "Upload failed: "
   },
   "subscription": {
     "title": "Subscription / Top-up",
