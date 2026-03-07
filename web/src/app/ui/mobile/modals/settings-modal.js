@@ -1,7 +1,12 @@
 // System settings modal (online status, auto-logout, logout redirect, change password)
 
 import { escapeHtml } from '../ui-utils.js';
-import { t } from '/locales/index.js';
+import { t, getCurrentLang, setLang } from '/locales/index.js';
+
+const SUPPORTED_LANGUAGES = [
+  { code: 'zh-Hant', label: '繁體中文' },
+  { code: 'en', label: 'English' }
+];
 
 const LOGOUT_REDIRECT_DEFAULT_URL = '/pages/logout.html';
 const LOGOUT_REDIRECT_PLACEHOLDER = 'https://example.com/logout';
@@ -224,8 +229,8 @@ export function createSettingsModule({ deps }) {
       <div id="systemSettings" class="settings-form">
         <div class="settings-item">
           <div class="settings-text">
-            <strong>顯示我的上線狀態</strong>
-            <p>好友可以看到你目前是否在線上。</p>
+            <strong>${escapeHtml(t('settings.showOnlineStatus'))}</strong>
+            <p>${escapeHtml(t('settings.showOnlineStatusDesc'))}</p>
           </div>
           <label class="settings-switch">
             <input type="checkbox" id="settingsShowOnline" ${current.showOnlineStatus ? 'checked' : ''} />
@@ -234,8 +239,8 @@ export function createSettingsModule({ deps }) {
         </div>
         <div class="settings-item">
           <div class="settings-text">
-            <strong>當畫面不在前台時自動登出</strong>
-            <p>離開或縮小瀏覽器時自動清除登入狀態。</p>
+            <strong>${escapeHtml(t('settings.autoLogoutOnBackground'))}</strong>
+            <p>${escapeHtml(t('settings.autoLogoutOnBackgroundDesc'))}</p>
           </div>
           <label class="settings-switch">
             <input type="checkbox" id="settingsAutoLogout" ${current.autoLogoutOnBackground ? 'checked' : ''} />
@@ -246,8 +251,8 @@ export function createSettingsModule({ deps }) {
           <label class="settings-option">
             <input type="radio" name="autoLogoutRedirect" id="settingsLogoutDefault" value="default" ${current.autoLogoutRedirectMode !== 'custom' ? 'checked' : ''} />
           <div class="option-body">
-            <strong>預設登出頁面</strong>
-            <p>使用系統提供的安全登出頁面。</p>
+            <strong>${escapeHtml(t('settings.defaultLogoutPage'))}</strong>
+            <p>${escapeHtml(t('settings.defaultLogoutPageDesc'))}</p>
           </div>
         </label>
         <div class="settings-option custom-option">
@@ -262,13 +267,21 @@ export function createSettingsModule({ deps }) {
         </div>
         <div class="settings-item">
           <div class="settings-text">
-            <strong>變更密碼</strong>
-            <p>更新登入密碼，需輸入目前密碼與新密碼。</p>
+            <strong>${escapeHtml(t('settings.changePassword'))}</strong>
+            <p>${escapeHtml(t('password.newPasswordMinLength'))}</p>
           </div>
-          <button type="button" class="settings-link" id="settingsChangePassword">變更</button>
+          <button type="button" class="settings-link" id="settingsChangePassword">${escapeHtml(t('settings.changePassword'))}</button>
+        </div>
+        <div class="settings-item">
+          <div class="settings-text">
+            <strong>Language / 語言</strong>
+          </div>
+          <select id="settingsLanguage" class="settings-select" style="padding:6px 10px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;background:#fff;">
+            ${SUPPORTED_LANGUAGES.map(l => `<option value="${l.code}" ${l.code === getCurrentLang() ? 'selected' : ''}>${escapeHtml(l.label)}</option>`).join('')}
+          </select>
         </div>
         <div class="settings-actions">
-          <button type="button" class="secondary" id="settingsClose">關閉</button>
+          <button type="button" class="secondary" id="settingsClose">${escapeHtml(t('common.close'))}</button>
         </div>
       </div>`;
     openModal();
@@ -282,6 +295,15 @@ export function createSettingsModule({ deps }) {
     const logoutSummaryEl = body.querySelector('#settingsLogoutSummary');
     const logoutManageBtn = body.querySelector('#settingsLogoutManage');
     const changePasswordBtn = body.querySelector('#settingsChangePassword');
+
+    const languageSelect = body.querySelector('#settingsLanguage');
+    languageSelect?.addEventListener('change', async (e) => {
+      const newLang = e.target.value;
+      await setLang(newLang);
+      closeModal();
+      // Reload page to apply all translations
+      window.location.reload();
+    });
 
     closeBtn?.addEventListener('click', () => closeModal(), { once: true });
     changePasswordBtn?.addEventListener('click', (event) => {

@@ -24,6 +24,8 @@ const CANCEL_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none"
 
 const INFO_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>';
 
+import { t } from '/locales/index.js';
+
 const STEP_ICONS = {
     done: '<svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="7" fill="#22c55e"/><path d="M5 8l2 2 4-4" stroke="#fff" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     warn: '<svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="7" fill="#f59e0b"/><path d="M8 5v3" stroke="#fff" stroke-width="1.5" fill="none" stroke-linecap="round"/><circle cx="8" cy="11" r="0.8" fill="#fff"/></svg>',
@@ -100,7 +102,7 @@ export function isDownloadBusy() { return !!_download; }
  * @param {{ fileSize?: number }} [opts] - optional metadata
  */
 export function startUpload(name, onCancel, opts) {
-    _upload = { name: name || '檔案', percent: 0, onCancel };
+    _upload = { name: name || t('common.file'), percent: 0, onCancel };
     _uploadSteps = [];
     _detailExpanded = false;
     _uploadLoaded = 0;
@@ -199,7 +201,7 @@ export function updateUploadSteps(steps) {
  * @param {Function} onCancel - called when user clicks cancel
  */
 export function startDownload(name, onCancel) {
-    _download = { name: name || '檔案', percent: 0, onCancel };
+    _download = { name: name || t('common.file'), percent: 0, onCancel };
     _attachBar(_downloadBarEl, false);
     _updateBar(_downloadBarEl, _download);
     _updateVisibility();
@@ -251,7 +253,7 @@ function _updateBar(barEl, state) {
     const inner = barEl.querySelector('.transfer-bar-progress-inner');
     const pctEl = barEl.querySelector('.transfer-bar-pct');
     const pct = Math.min(100, Math.max(0, Math.round(state.percent || 0)));
-    if (nameEl) nameEl.textContent = state.name || '檔案';
+    if (nameEl) nameEl.textContent = state.name || t('common.file');
     if (inner) inner.style.width = `${pct}%`;
     if (pctEl) pctEl.textContent = `${pct}%`;
 }
@@ -449,7 +451,7 @@ function _updateStatsDisplay() {
     const totalStr = _uploadTotal > 0 ? _fmtBytes(_uploadTotal) : '—';
     const speedStr = speed > 0
         ? `${_fmtBytes(speed)}/s`
-        : (_uploadLoaded > 0 ? '計算中…' : '—');
+        : (_uploadLoaded > 0 ? t('upload.calculating') : '—');
 
     // Reuse existing child elements if possible (avoids flicker from innerHTML='')
     let line1 = _uploadStatsEl.firstElementChild;
@@ -511,7 +513,7 @@ function _createBarElement(type, onCancelThunk) {
     const cancelBtn = document.createElement('button');
     cancelBtn.type = 'button';
     cancelBtn.className = 'transfer-bar-cancel';
-    cancelBtn.title = '取消';
+    cancelBtn.title = t('transfer.cancelTitle');
     cancelBtn.innerHTML = CANCEL_ICON;
     // Single permanent listener — reads current callback via thunk at click-time
     cancelBtn.addEventListener('click', (e) => {

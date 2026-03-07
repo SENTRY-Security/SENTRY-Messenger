@@ -4,6 +4,7 @@
  */
 
 import { normalizeCounterValue } from '../parser.js';
+import { t } from '/locales/index.js';
 
 /**
  * Check if an error indicates CounterTooLow.
@@ -143,7 +144,7 @@ export function createOutboxStatusManager(deps) {
     function applyCounterTooLowReplaced(message, reasonCode = 'COUNTER_TOO_LOW_REPLACED') {
         if (!message) return;
         const err = buildCounterTooLowReplacementError();
-        applyOutgoingFailure(message, err, '傳送失敗', reasonCode);
+        applyOutgoingFailure(message, err, t('messages.sendFailed'), reasonCode);
     }
 
     return {

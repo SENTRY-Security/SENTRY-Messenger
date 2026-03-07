@@ -19,6 +19,7 @@ import {
 } from './state.js';
 import { CALL_MEDIA_STATE_STATUS } from '../../../shared/calls/schemas.js';
 import { buildCallPeerIdentity } from './identity.js';
+import { t } from '/locales/index.js';
 
 const encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
 const ZERO_SALT = new Uint8Array(32);
@@ -118,7 +119,7 @@ export async function prepareCallKeyEnvelope({
   capabilities = null,
   direction = null
 } = {}) {
-  if (!hasWebCrypto()) throw new Error('此瀏覽器不支援 WebCrypto');
+  if (!hasWebCrypto()) throw new Error(t('callKeys.webCryptoNotSupported'));
   if (!callId) throw new Error('callId required');
   const session = getCallSessionSnapshot();
   const digest = normalizeAccountDigest(peerAccountDigest || session?.peerAccountDigest || null);
@@ -196,7 +197,7 @@ async function deriveKeysFromEnvelope({ session, envelope, trigger }) {
 
 async function buildKeyContext({ session, envelope, saltBytes = null }) {
   const digest = normalizeAccountDigest(session?.peerAccountDigest || null);
-  if (!digest) throw new Error('缺少好友 account digest');
+  if (!digest) throw new Error(t('callKeys.missingFriendDigest'));
   const peerDeviceId = normalizePeerDeviceId(session?.peerDeviceId || null);
   if (!peerDeviceId) throw new Error('peerDeviceId required for call key');
   const identity = buildCallPeerIdentity({ peerAccountDigest: digest, peerDeviceId });
@@ -214,11 +215,11 @@ async function buildKeyContext({ session, envelope, saltBytes = null }) {
     }));
   } catch { }
   logCallKeyDerive({ callId, peerKey: identity.peerKey, hasSecret: !!secretB64 });
-  if (!secretB64) throw new Error('缺少好友密鑰，請重新同步聯絡人');
+  if (!secretB64) throw new Error(t('callKeys.missingFriendKey'));
   const baseSecret = b64UrlToBytes(secretB64);
-  if (!baseSecret || !baseSecret.length) throw new Error('無法解析好友密鑰');
+  if (!baseSecret || !baseSecret.length) throw new Error(t('callKeys.cannotParseFriendKey'));
   const salt = saltBytes || b64ToBytes(envelope?.cmkSalt || '');
-  if (!salt || !salt.length) throw new Error('缺少通話金鑰 salt');
+  if (!salt || !salt.length) throw new Error(t('callKeys.missingCallKeySalt'));
   const epoch = Number.isFinite(envelope?.epoch) ? envelope.epoch : 0;
   if (!callId) throw new Error('callId 無效');
   const role = toRole(session?.direction);

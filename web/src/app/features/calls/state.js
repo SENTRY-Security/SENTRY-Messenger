@@ -20,6 +20,7 @@ import {
   normalizePeerIdentity
 } from '../../core/store.js';
 import { buildCallPeerIdentity, logCallIdentitySet } from './identity.js';
+import { t } from '/locales/index.js';
 
 export const CALL_SESSION_STATUS = Object.freeze({
   IDLE: 'idle',
@@ -177,7 +178,7 @@ export function resolveCallPeerProfile({
   const conversationId = threadEntry?.conversationId
     || contactEntry?.conversation?.conversation_id
     || null;
-  const fallbackName = digest ? `好友 ${digest.slice(-4)}` : '好友';
+  const fallbackName = digest ? `${t('common.friend')} ${digest.slice(-4)}` : t('common.friend');
   const placeholderName = displayNameFallback || fallbackName;
   const source = (nickname || avatarUrl) ? 'snapshot' : 'fallback';
   return {

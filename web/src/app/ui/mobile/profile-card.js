@@ -104,12 +104,12 @@ export function initProfileCard(options) {
     const current = sessionStore.profileState?.nickname || '';
     body.innerHTML = `
       <form id="nicknameForm" class="nickname-form">
-        <label for="nicknameInput">新的暱稱</label>
+        <label for="nicknameInput">${escapeHtml(t('profile.newNickname'))}</label>
         <input id="nicknameInput" type="text" value="${escapeHtml(current)}" maxlength="48" autocomplete="off" spellcheck="false" />
-        <p class="nickname-hint">暱稱僅儲存在加密資料中，伺服器不會看到。僅限文字、數字、空格、-、_、.</p>
+        <p class="nickname-hint">${escapeHtml(t('profile.nicknameHint'))}</p>
         <div class="nickname-actions">
-          <button type="button" id="nicknameCancel" class="secondary">取消</button>
-          <button type="submit" class="primary">儲存</button>
+          <button type="button" id="nicknameCancel" class="secondary">${escapeHtml(t('common.cancel'))}</button>
+          <button type="submit" class="primary">${escapeHtml(t('common.save'))}</button>
         </div>
       </form>`;
     modal.openModal();
@@ -125,7 +125,7 @@ export function initProfileCard(options) {
         if (!submitBtn.dataset.originalHtml) submitBtn.dataset.originalHtml = submitBtn.innerHTML;
         submitBtn.disabled = true;
         submitBtn.classList.add('loading');
-        submitBtn.innerHTML = '<span class="btn-spinner" aria-hidden="true"></span><span class="btn-label">儲存中…</span>';
+        submitBtn.innerHTML = `<span class="btn-spinner" aria-hidden="true"></span><span class="btn-label">${escapeHtml(t('common.saving'))}</span>`;
       } else {
         submitBtn.disabled = false;
         submitBtn.classList.remove('loading');

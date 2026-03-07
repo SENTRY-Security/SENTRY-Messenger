@@ -7,6 +7,7 @@ import { getMkRaw, getAccountDigest, buildAccountPayload } from '../core/store.j
 import { encryptWithMK as aeadEncryptWithMK, decryptWithMK as aeadDecryptWithMK, b64, b64u8 } from '../crypto/aead.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
 import { encryptAndPutChunked, CHUNK_SIZE, UnsupportedVideoFormatError } from './chunked-upload.js';
+import { t } from '/locales/index.js';
 
 const encoder = new TextEncoder();
 export const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024; // 1 GB
@@ -522,7 +523,7 @@ export async function downloadAndDecrypt({ key, envelope, onStatus, onProgress, 
   }
   const infoTag = requireMediaInfoTag(meta.info_tag || meta.infoTag);
 
-  progress?.({ stage: 'sign', message: '取得下載授權…' });
+  progress?.({ stage: 'sign', message: t('mediaHandling.gettingDownloadAuth') });
   const { download } = await signGet({ key });
   if (!download?.url) throw new Error('sign-get returned no URL');
 
@@ -616,7 +617,7 @@ export async function downloadAndDecrypt({ key, envelope, onStatus, onProgress, 
     }
   }
 
-  progress?.({ stage: 'decrypt', message: '解密檔案中…' });
+  progress?.({ stage: 'decrypt', message: t('mediaHandling.decryptingFile') });
   const plain = await aeadDecryptWithMK(
     cipherU8,
     baseKey,

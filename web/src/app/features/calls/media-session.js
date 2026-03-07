@@ -25,6 +25,7 @@ import { normalizeAccountDigest, normalizePeerDeviceId, ensureDeviceId, getAccou
 import { getCallAudioConstraints } from '../../ui/mobile/browser-detection.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
 import { buildCallPeerIdentity } from './identity.js';
+import { t } from '/locales/index.js';
 
 let sendSignal = null;
 let showToast = () => { };
@@ -450,7 +451,7 @@ export async function toggleLocalVideo(enabled) {
       updateCallMedia({ controls: { videoEnabled: true, videoMuted: false } });
     } catch (err) {
       log({ callToggleVideoError: err?.message || err });
-      showToast?.('無法啟動攝影機', { variant: 'error' });
+      showToast?.(t('callMedia.cannotStartCamera'), { variant: 'error' });
     }
   } else {
     // Destroy face blur pipeline when video is turned off
@@ -505,7 +506,7 @@ export async function switchCamera() {
     }
   } catch (err) {
     log({ callSwitchCameraError: err?.message || err });
-    showToast?.('無法切換攝影機', { variant: 'error' });
+    showToast?.(t('callMedia.cannotSwitchCamera'), { variant: 'error' });
   }
 }
 
@@ -754,12 +755,12 @@ async function ensurePeerConnection() {
         hasRemoteDesc: !!peerConnection.remoteDescription,
         signalingState: peerConnection.signalingState
       });
-      showToast?.('通話連線失敗', { variant: 'error' });
+      showToast?.(t('callMedia.connectionFailed'), { variant: 'error' });
       completeCallSession({ reason: iceState, error: 'ice-connection-failed' });
       cleanupPeerConnection(iceState);
     } else if (iceState === 'disconnected') {
       log({ callIceDisconnected: true, callId: activeCallId });
-      showToast?.('通話連線不穩定', { variant: 'warning' });
+      showToast?.(t('callMedia.connectionUnstable'), { variant: 'warning' });
     }
   };
   peerConnection.onconnectionstatechange = () => {
@@ -774,12 +775,12 @@ async function ensurePeerConnection() {
       // skip cleanup here — the ICE handler owns the lifecycle and
       // will cleanup after stats are collected.
       if (iceFailureCollecting) return;
-      showToast?.('通話連線中斷', { variant: 'error' });
+      showToast?.(t('callMedia.connectionLost'), { variant: 'error' });
       completeCallSession({ reason: state, error: 'peer-connection-failed' });
       cleanupPeerConnection(state);
     } else if (state === 'disconnected') {
       log({ callConnectionDisconnected: true, callId: activeCallId });
-      showToast?.('通話連線不穩定', { variant: 'warning' });
+      showToast?.(t('callMedia.connectionUnstable'), { variant: 'warning' });
     } else if (state === 'closed') {
       cleanupPeerConnection(state);
     }
@@ -829,7 +830,7 @@ async function attachLocalMedia() {
       } catch (mediaErr) {
         if (wantVideo) {
           log({ callMediaCameraFallback: mediaErr?.message || mediaErr });
-          showToast?.('無法存取攝影機，改為語音通話', { variant: 'warning' });
+          showToast?.(t('callMedia.cameraFallbackToVoice'), { variant: 'warning' });
           freshStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
         } else {
           throw mediaErr;
@@ -885,7 +886,7 @@ async function attachLocalMedia() {
     updateCallMedia({ controls: { videoEnabled: hasVideo } });
     hydrateCallCapability({ video: hasVideo, insertableStreams: supportsInsertableStreams() });
   } catch (err) {
-    showToast?.('無法存取麥克風：' + (err?.message || err), { variant: 'error' });
+    showToast?.(t('callMedia.cannotAccessMic') + (err?.message || err), { variant: 'error' });
     log({ callMediaMicError: err?.message || err });
     failCall('microphone-access-failed', err);
   }

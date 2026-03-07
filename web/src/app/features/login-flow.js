@@ -39,6 +39,7 @@ import {
   generateOpksFrom
 } from '../crypto/prekeys.js';
 import { ensureOpaque } from './opaque.js';
+import { t } from '/locales/index.js';
 
 /** Convert any error to a readable message */
 function asMsg(e, fallback) {
@@ -305,7 +306,7 @@ export async function unlockAndInit({ password, onProgress, onMkReady, preBundle
   report('devkeys-fetch', 'start');
   const devkeysPromise = fetchDevkeys().then(
     (result) => {
-      if (!result) report('devkeys-fetch', 'info', '未找到裝置備份');
+      if (!result) report('devkeys-fetch', 'info', t('bootstrap.deviceBackupNotFound'));
       else report('devkeys-fetch', 'success');
       return result;
     },

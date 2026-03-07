@@ -22,6 +22,7 @@ import { prepareCallKeyEnvelope } from '../../../features/calls/key-manager.js';
 import { buildCallPeerIdentity } from '../../../features/calls/identity.js';
 import { getCallAudioConstraints } from '../browser-detection.js';
 import { getAccountDigest, normalizePeerIdentity } from '../../../core/store.js';
+import { t } from '/locales/index.js';
 
 import { sendDrText } from '../../../features/dr-session.js';
 import { getReplacementInfo } from '../../../features/messages/ui/outbox-hooks.js';
@@ -95,7 +96,7 @@ export class ComposerController extends BaseController {
         if (!this.elements.statusLabel) return;
         this.elements.statusLabel.textContent = message || '';
         this.elements.statusLabel.style.color = isError ? '#dc2626' : '#64748b';
-        if (this.pendingNewMessageHint && message !== '有新訊息') {
+        if (this.pendingNewMessageHint && message !== t('composer.hasNewMessage')) {
             this.pendingNewMessageHint = false;
         }
     }
@@ -177,15 +178,15 @@ export class ComposerController extends BaseController {
         this.elements.sendBtn.classList.toggle('disabled', !enabled);
         this.elements.sendBtn.setAttribute('aria-disabled', enabled ? 'false' : 'true');
 
-        let placeholder = '輸入訊息…';
+        let placeholder = t('composer.inputPlaceholder');
         if (!state.conversationToken || !state.activePeerDigest) {
-            placeholder = '選擇好友開始聊天';
+            placeholder = t('composer.selectSecureFriend');
         } else if (!subscriptionOk) {
-            placeholder = '帳號已到期，請儲值後再聊天';
+            placeholder = t('composer.accountExpiredTopUp');
         } else if (status === SECURE_CONVERSATION_STATUS.PENDING) {
-            placeholder = '正在建立安全對話…';
+            placeholder = t('composer.buildingSecureConversation');
         } else if (status === SECURE_CONVERSATION_STATUS.FAILED) {
-            placeholder = statusInfo?.error ? `安全對話失敗：${statusInfo.error}` : '安全對話建立失敗，請稍後再試。';
+            placeholder = statusInfo?.error ? t('composer.secureFailed', { error: statusInfo.error }) : t('composer.secureFailedGeneric');
         }
         // [UX] Recursive Gap Fill cleans up the placeholder override.
         // We no longer show "(同步中)" to keep the interface clean.
@@ -223,9 +224,9 @@ export class ComposerController extends BaseController {
 
         if (!peerAccountDigest || !peerDeviceId) {
             if (!peerDeviceId) {
-                this.showToast('缺少對端裝置資訊，請重新同步好友');
+                this.showToast(t('composer.missingPeerDeviceInfo'));
             } else {
-                this.showToast('找不到通話對象');
+                this.showToast(t('composer.callTargetNotFound'));
             }
             return;
         }
@@ -261,12 +262,12 @@ export class ComposerController extends BaseController {
                     }
                 } catch {
                     this.log({ callMediaPermissionDenied: mediaErr?.message || mediaErr });
-                    this.showToast('需要麥克風權限才能撥打通話');
+                    this.showToast(t('calls.micPermissionRequired'));
                     return;
                 }
             } else {
                 this.log({ callMediaPermissionDenied: mediaErr?.message || mediaErr });
-                this.showToast('需要麥克風權限才能撥打通話');
+                this.showToast(t('calls.micPermissionRequired'));
                 return;
             }
         }
@@ -286,11 +287,11 @@ export class ComposerController extends BaseController {
 
         if (!result?.ok) {
             if (result?.error === 'CALL_ALREADY_IN_PROGRESS') {
-                this.showToast('已有進行中的通話');
+                this.showToast(t('calls.alreadyInCall'));
             } else if (result?.error === 'MISSING_PEER') {
-                this.showToast('找不到通話對象');
+                this.showToast(t('composer.callTargetNotFound'));
             } else {
-                this.showToast(result?.error || '暫時無法啟動通話');
+                this.showToast(result?.error || t('calls.cannotStartCall'));
             }
             return;
         }
@@ -299,7 +300,7 @@ export class ComposerController extends BaseController {
         const callId = result.callId || snapshot?.callId || null;
         if (!callId) {
             this.log({ callInviteSignalSkipped: true, reason: 'missing-call-id', peerAccountDigest: state.activePeerDigest });
-            this.showToast('無法建立通話：缺少識別碼');
+            this.showToast(t('calls.cannotCreateCall'));
             return;
         }
 
@@ -352,7 +353,7 @@ export class ComposerController extends BaseController {
 
         if (!sent) {
             this.log({ callInviteSignalFailed: true, callId, peerAccountDigest: state.activePeerDigest });
-            this.showToast('通話信令傳送失敗');
+            this.showToast(t('calls.callSignalingFailed'));
             return;
         }
 
@@ -360,7 +361,7 @@ export class ComposerController extends BaseController {
             await startOutgoingCallMedia({ callId, peerAccountDigest: state.activePeerDigest });
         } catch (err) {
             this.log({ callMediaStartError: err?.message || err });
-            this.showToast('無法啟動通話媒體：' + (err?.message || err));
+            this.showToast(t('calls.cannotStartCallMedia') + (err?.message || err));
             return;
         }
     }
@@ -380,7 +381,7 @@ export class ComposerController extends BaseController {
     async handleComposerSubmit(event) {
         event.preventDefault();
         if (!this._requireSubscriptionActive()) {
-            this.setMessagesStatus('帳號已到期，請先儲值', true);
+            this.setMessagesStatus(t('calls.accountExpiredTopUp'), true);
             return;
         }
 
@@ -402,7 +403,7 @@ export class ComposerController extends BaseController {
         }
 
         if (!state.conversationToken || !state.activePeerDigest) {
-            this.setMessagesStatus('請先選擇已建立安全對話的好友', true);
+            this.setMessagesStatus(t('composer.selectSecureFriendForSend'), true);
             return;
         }
 
@@ -508,7 +509,7 @@ export class ComposerController extends BaseController {
                 }
 
                 if (replacementMsg) {
-                    this.deps.messageStatus?.applyOutgoingFailure(replacementMsg, err, '傳送失敗', 'COUNTER_TOO_LOW_REPAIR_FAILED');
+                    this.deps.messageStatus?.applyOutgoingFailure(replacementMsg, err, t('messages.sendFailed'), 'COUNTER_TOO_LOW_REPAIR_FAILED');
                 }
                 this.deps.updateMessagesUI?.({ preserveScroll: true, forceFullRender: true });
                 return;
@@ -520,9 +521,9 @@ export class ComposerController extends BaseController {
                 return;
             }
 
-            this.setMessagesStatus('傳送失敗：' + (err?.message || err), true);
+            this.setMessagesStatus(t('messages.sendFailed') + '：' + (err?.message || err), true);
             if (localMsg) {
-                this.deps.messageStatus?.applyOutgoingFailure(localMsg, err, '傳送失敗', 'UI_SEND_THROW');
+                this.deps.messageStatus?.applyOutgoingFailure(localMsg, err, t('messages.sendFailed'), 'UI_SEND_THROW');
                 this.deps.updateMessagesUI?.({ preserveScroll: true, forceFullRender: true });
             }
         } finally {

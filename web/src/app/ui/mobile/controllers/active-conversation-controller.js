@@ -13,6 +13,7 @@ import { normalizePeerIdentity } from '../../../core/store.js';
 import { MessageKeyVault } from '../../../features/message-key-vault.js';
 import { importContactSecretsSnapshot } from '../../../core/contact-secrets.js';
 import { migrateTimelineConversation } from '../../../features/timeline-store.js';
+import { t } from '/locales/index.js';
 
 export class ActiveConversationController extends BaseController {
     constructor(deps) {
@@ -48,7 +49,7 @@ export class ActiveConversationController extends BaseController {
      */
     updatePeerNameDisplay(name) {
         if (this.elements.peerName) {
-            this.elements.peerName.textContent = name || '選擇好友開始聊天';
+            this.elements.peerName.textContent = name || t('contacts.selectToChat');
         }
     }
 
@@ -103,7 +104,7 @@ export class ActiveConversationController extends BaseController {
         if (!key) return;
 
         const contactEntry = this.sessionStore.contactIndex?.get?.(key) || null;
-        const nickname = contactEntry?.nickname || fallbackName || `好友 ${key.slice(-4)}`;
+        const nickname = contactEntry?.nickname || fallbackName || `${t('common.friend')} ${key.slice(-4)}`;
         const avatar = contactEntry?.avatar || null;
 
         this.updatePeerNameDisplay(nickname);
@@ -140,7 +141,7 @@ export class ActiveConversationController extends BaseController {
         // Update active peer display if relevant
         const state = this.getMessageState();
         if (state.activePeerDigest === peerKey) {
-            const nickname = entry.nickname || `好友 ${peerKey.slice(-4)}`;
+            const nickname = entry.nickname || `${t('common.friend')} ${peerKey.slice(-4)}`;
             const avatar = entry.avatar || null;
             this.updatePeerNameDisplay(nickname);
             this.updatePeerAvatar(avatar);
@@ -154,7 +155,7 @@ export class ActiveConversationController extends BaseController {
     async setActiveConversation(peerAccountDigest, passedId = null, passedToken = null) {
         const peerKey = normalizePeerKey(peerAccountDigest);
         if (!peerKey) {
-            this.showToast('無效的聯絡人');
+            this.showToast(t('errors.invalidContact'));
             return;
         }
 
@@ -195,7 +196,7 @@ export class ActiveConversationController extends BaseController {
         }
 
         // Refresh metadata
-        const nickname = contactEntry?.nickname || `好友 ${peerKey.slice(-4)}`;
+        const nickname = contactEntry?.nickname || `${t('common.friend')} ${peerKey.slice(-4)}`;
         const avatar = contactEntry?.avatar || null;
         this.updatePeerNameDisplay(nickname);
         this.updatePeerAvatar(avatar);
@@ -237,7 +238,7 @@ export class ActiveConversationController extends BaseController {
             // New or pending contact, ensure empty state shows
             if (this.elements.messagesEmpty) {
                 this.elements.messagesEmpty.classList.remove('hidden');
-                this.elements.messagesEmpty.textContent = '尚無訊息';
+                this.elements.messagesEmpty.textContent = t('messages.noMessages');
             }
             this.deps.updateMessagesStatusUI?.();
         }
@@ -337,7 +338,7 @@ export class ActiveConversationController extends BaseController {
         }
 
         if (!conversationId) {
-            this.showToast('找不到對話');
+            this.showToast(t('errors.conversationNotFound'));
             return;
         }
 

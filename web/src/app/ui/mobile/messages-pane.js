@@ -34,6 +34,7 @@ import { setDeletionCursor, setPeerDeletionCursor } from '../../features/soft-de
 import { clearDrState, drState } from '../../core/store.js';
 import { sendDrPlaintext } from '../../features/dr-session.js';
 import { escapeHtml, fmtSize, shouldNotifyForMessage, escapeSelector } from './ui-utils.js';
+import { t } from '/locales/index.js';
 import {
   getContactCore,
   findContactCoreByAccountDigest,
@@ -374,7 +375,7 @@ export function initMessagesPane({
       scrollEl: !!elements.scrollEl
     });
     try {
-      if (typeof showAlertModal === 'function') showAlertModal({ title: '系統錯誤', message: 'Message UI Elements Missing. Please screenshot console.' });
+      if (typeof showAlertModal === 'function') showAlertModal({ title: t('errors.operationFailed'), message: 'Message UI Elements Missing. Please screenshot console.' });
     } catch { }
   }
 
@@ -718,19 +719,19 @@ export function initMessagesPane({
     if (next === 'hidden') {
       elements.loadMoreBtn.classList.add('hidden');
       elements.loadMoreBtn.classList.remove('loading');
-      if (elements.loadMoreLabel) elements.loadMoreLabel.textContent = '載入更多';
+      if (elements.loadMoreLabel) elements.loadMoreLabel.textContent = t('common.loadMore');
       return;
     }
     elements.loadMoreBtn.classList.remove('hidden');
     if (next === 'loading') {
       elements.loadMoreBtn.classList.add('loading');
-      if (elements.loadMoreLabel) elements.loadMoreLabel.textContent = '載入中…';
+      if (elements.loadMoreLabel) elements.loadMoreLabel.textContent = t('common.loading');
     } else if (next === 'armed') {
       elements.loadMoreBtn.classList.remove('loading');
-      if (elements.loadMoreLabel) elements.loadMoreLabel.textContent = '釋放以載入更多';
+      if (elements.loadMoreLabel) elements.loadMoreLabel.textContent = t('common.loadMore');
     } else {
       elements.loadMoreBtn.classList.remove('loading');
-      if (elements.loadMoreLabel) elements.loadMoreLabel.textContent = '載入更多';
+      if (elements.loadMoreLabel) elements.loadMoreLabel.textContent = t('common.loadMore');
     }
   }
 
@@ -1147,12 +1148,12 @@ export function initMessagesPane({
       contactEntry?.peerDeviceId ||
       null;
     showConfirmModal({
-      title: '刪除對話',
+      title: t('messages.deleteConversation'),
       message: `確定要刪除與「${escapeHtml(nickname)}」的對話？此操作也會從對方的對話列表中移除。`,
-      confirmLabel: '刪除',
+      confirmLabel: t('common.delete'),
       onConfirm: async () => {
         try {
-          if (!peerDeviceId) throw new Error('缺少對方 deviceId，請重新同步好友後再試');
+          if (!peerDeviceId) throw new Error(t('messages.missingPeerDeviceId'));
 
           const state = getMessageState();
           const lastMsg = state.messages && state.messages.length > 0 ? state.messages[state.messages.length - 1] : null;
@@ -1249,7 +1250,7 @@ export function initMessagesPane({
               sourceTag: 'messages-pane:delete-conversation'
             });
             resetMessageStateWithPlaceholders();
-            if (elements.peerName) elements.peerName.textContent = '選擇好友開始聊天';
+            if (elements.peerName) elements.peerName.textContent = t('contacts.selectToChat');
             clearMessagesView();
             hideSecurityModal();
             deps.updateComposerAvailability();
@@ -1262,7 +1263,7 @@ export function initMessagesPane({
           // We already sent the encrypted signal via sendDrPlaintext above.
         } catch (err) {
           log({ conversationDeleteError: err?.message || err });
-          if (typeof showAlertModal === 'function') showAlertModal({ title: '刪除失敗', message: err?.message || '刪除對話失敗，請稍後再試。' });
+          if (typeof showAlertModal === 'function') showAlertModal({ title: t('errors.deleteFailed'), message: err?.message || t('messages.deleteConversationFailed') });
         }
       },
       onCancel: () => { if (element) closeSwipe?.(element); }
@@ -1349,12 +1350,12 @@ export function initMessagesPane({
         // Trigger manual retry
         controllers.messageSending.retryMessage(msgId).catch(err => {
           console.error('Retry failed', err);
-          showToast?.('重試失敗', { variant: 'error' });
+          showToast?.(t('messages.retryFailed'), { variant: 'error' });
         });
         return;
       }
 
-      showToast?.('訊息傳送失敗，請重新發送', { variant: 'warning' });
+      showToast?.(t('messages.sendFailedPleaseResend'), { variant: 'warning' });
     });
 
     elements.loadMoreBtn?.addEventListener('click', () => {
@@ -1426,7 +1427,7 @@ export function initMessagesPane({
           });
         } catch (err) {
           console.error('[messages-pane] onSent:apply_error', err);
-          controllers.messageStatus.applyOutgoingFailure(message, err, '傳送失敗', 'OUTBOX_SENT_HOOK_ERROR');
+          controllers.messageStatus.applyOutgoingFailure(message, err, t('messages.sendFailed'), 'OUTBOX_SENT_HOOK_ERROR');
         }
 
         const state = getMessageState();
@@ -1462,7 +1463,7 @@ export function initMessagesPane({
         const reasonCode = isCounterTooLow
           ? 'COUNTER_TOO_LOW_REPLACED'
           : 'OUTBOX_FAILED_HOOK';
-        controllers.messageStatus.applyOutgoingFailure(message, failureErr, '傳送失敗', reasonCode);
+        controllers.messageStatus.applyOutgoingFailure(message, failureErr, t('messages.sendFailed'), reasonCode);
         const state = getMessageState();
         if (state.conversationId === convId) controllers.messageFlow.updateMessagesUI({ preserveScroll: true, forceFullRender: true });
       }

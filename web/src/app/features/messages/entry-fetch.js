@@ -48,6 +48,7 @@ import {
 import { isVaultPutNetworkError } from './vault.js';
 import { updateTimelineEntryStatusByCounter, appendUserMessage } from '../timeline-store.js';
 import { applyContactShareFromCommit } from '../contacts.js';
+import { t } from '/locales/index.js';
 import { decryptContactPayload, normalizeContactShareEnvelope } from '../contact-share.js';
 
 // Re-export constants if needed or just use them locally
@@ -190,7 +191,7 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
             // But existing logic returned control-state. Let's stick to generating a user message if possible.
         }
 
-        let friendlyText = '您已與對方成為好友';
+        let friendlyText = t('contacts.becomeFriends');
         let contact = null;
         try {
             contact = getContactCore(peerDigest);
@@ -260,7 +261,7 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
                             appendUserMessage(conversationId, {
                                 id: `${item.serverMessageId || counter}-sys-avatar`,
                                 msgType: 'system',
-                                text: '對方已更改頭像',
+                                text: t('contacts.avatarChanged'),
                                 ts: Date.now() / 1000,
                                 direction: 'incoming',
                                 status: 'sent'
@@ -327,7 +328,7 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
 
         if (isContactShare) {
             // Logic to build fallback message
-            let friendlyText = '您已與對方成為好友';
+            let friendlyText = t('contacts.becomeFriends');
             try {
                 const c = getContactCore(peerDigest);
                 if (c && c.nickname) friendlyText = `您已與 ${c.nickname} 成為好友`;

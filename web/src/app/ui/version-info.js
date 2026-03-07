@@ -1,6 +1,8 @@
 // /app/ui/version-info.js
 // Small helper to attach a floating version info button & popup.
 
+import { t } from '/locales/index.js';
+
 function formatBytes(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB'];
@@ -42,22 +44,22 @@ function collectStorageStats() {
     }
   };
 
-  addStats(window.localStorage, '本機儲存');
-  addStats(window.sessionStorage, '工作階段儲存');
+  addStats(window.localStorage, t('versionInfo.localStorage'));
+  addStats(window.sessionStorage, t('versionInfo.sessionStorage'));
   try {
-    const indexedDBSize = window.indexedDB ? '支援 IndexedDB' : '不支援 IndexedDB';
+    const indexedDBSize = window.indexedDB ? t('versionInfo.supportsIndexedDB') : t('versionInfo.noIndexedDB');
     results.push({
-      label: '資料庫',
+      label: t('versionInfo.database'),
       keyCount: 0,
       totalBytes: 0,
       note: indexedDBSize
     });
   } catch {
     results.push({
-      label: '資料庫',
+      label: t('versionInfo.database'),
       keyCount: 0,
       totalBytes: 0,
-      note: '不支援 IndexedDB'
+      note: t('versionInfo.noIndexedDB')
     });
   }
 
@@ -67,7 +69,7 @@ function collectStorageStats() {
 function collectStorageEntries(label) {
   if (typeof window === 'undefined') return { label, error: 'no-window' };
   const encoder = new TextEncoder();
-  const isSession = label && (label.includes('工作階段') || label.includes('sessionStorage'));
+  const isSession = label && (label.includes('工作階段') || label.includes('Session') || label.includes('sessionStorage'));
   const storage = isSession ? window.sessionStorage : window.localStorage;
   if (!storage) return { label, error: 'storage-unavailable' };
   try {
@@ -122,12 +124,12 @@ function renderStorageDetailModal(detail) {
   header.style.alignItems = 'center';
   header.style.padding = '12px 16px';
   header.style.borderBottom = '1px solid rgba(255,255,255,0.08)';
-  header.innerHTML = `<div style="font-weight:700;">${escapeHtml(detail.label || '儲存')}</div>`;
+  header.innerHTML = `<div style="font-weight:700;">${escapeHtml(detail.label || t('versionInfo.storage'))}</div>`;
   const btnRow = document.createElement('div');
   btnRow.style.display = 'flex';
   btnRow.style.gap = '8px';
   const clearBtn = document.createElement('button');
-  clearBtn.textContent = '清除此儲存';
+  clearBtn.textContent = t('versionInfo.clearStorage');
   Object.assign(clearBtn.style, {
     background: 'transparent',
     color: '#facc15',
@@ -144,11 +146,11 @@ function renderStorageDetailModal(detail) {
       // 清除後登出
       window.location.href = '/logout';
     } catch (err) {
-      if (typeof showAlertModal === 'function') showAlertModal({ title: '清除失敗', message: '清除失敗：' + (err?.message || err) });
+      if (typeof showAlertModal === 'function') showAlertModal({ title: t('errors.clearFailed'), message: t('errors.clearFailed') + '：' + (err?.message || err) });
     }
   });
   const closeBtn = document.createElement('button');
-  closeBtn.textContent = '關閉';
+  closeBtn.textContent = t('common.close');
   Object.assign(closeBtn.style, {
     background: 'transparent',
     color: '#e2e8f0',
@@ -166,9 +168,9 @@ function renderStorageDetailModal(detail) {
   body.style.maxHeight = 'calc(80vh - 60px)';
   body.style.overflow = 'auto';
   if (detail.error) {
-    body.innerHTML = `<div style="color:#f87171;">載入失敗：${escapeHtml(detail.error)}</div>`;
+    body.innerHTML = `<div style="color:#f87171;">${escapeHtml(t('versionInfo.loadFailed'))}${escapeHtml(detail.error)}</div>`;
   } else if (!detail.entries || !detail.entries.length) {
-    body.innerHTML = `<div style="color:#94a3b8;">無資料</div>`;
+    body.innerHTML = `<div style="color:#94a3b8;">${escapeHtml(t('versionInfo.noData'))}</div>`;
   } else {
     const total = detail.entries.reduce((sum, e) => sum + (e.sizeBytes || 0), 0);
     const formatValue = (value) => {
@@ -196,9 +198,9 @@ function renderStorageDetailModal(detail) {
               <span class="storage-key" style="font-weight:700;word-break:break-all;">${escapeHtml(entry.key)}</span>
               <div style="display:flex; align-items:center; gap:8px; margin-left:auto;">
                 <span class="storage-meta" style="color:#94a3b8;font-size:12px; white-space:nowrap;">${formatBytes(entry.sizeBytes || 0)}</span>
-                <button type="button" class="storage-copy" data-idx="${idx}" aria-label="複製 ${escapeHtml(entry.key)} 的內容" style="border:1px solid rgba(148,163,184,0.4); background:rgba(255,255,255,0.06); color:#e2e8f0; border-radius:8px; padding:6px 8px; font-size:11px; cursor:pointer; display:flex; align-items:center; gap:4px;">
+                <button type="button" class="storage-copy" data-idx="${idx}" aria-label="${escapeHtml(t('versionInfo.copyAriaLabel', { key: entry.key }))}" style="border:1px solid rgba(148,163,184,0.4); background:rgba(255,255,255,0.06); color:#e2e8f0; border-radius:8px; padding:6px 8px; font-size:11px; cursor:pointer; display:flex; align-items:center; gap:4px;">
                   <i class='bx bx-copy' aria-hidden="true"></i>
-                  <span class="sr-only">複製</span>
+                  <span class="sr-only">${escapeHtml(t('versionInfo.copy'))}</span>
                 </button>
               </div>
             </summary>
@@ -212,7 +214,7 @@ function renderStorageDetailModal(detail) {
       `;
     }).join('');
     body.innerHTML = `
-      <div style="margin-bottom:8px;color:#cbd5e1;">共 ${detail.entries.length} 筆，約 ${formatBytes(total)}</div>
+      <div style="margin-bottom:8px;color:#cbd5e1;">${escapeHtml(t('versionInfo.totalEntries', { count: detail.entries.length, size: formatBytes(total) }))}</div>
       <ul class="storage-entry-list" style="padding:0; margin:0;">${list}</ul>
     `;
     const copyButtons = Array.from(body.querySelectorAll('.storage-copy'));
@@ -232,11 +234,11 @@ function renderStorageDetailModal(detail) {
         }
         if (btn) {
           const old = btn.textContent;
-          btn.textContent = '已複製';
-          setTimeout(() => { btn.textContent = old || '複製內容'; }, 1200);
+          btn.textContent = t('common.copied');
+          setTimeout(() => { btn.textContent = old || t('common.copyContent'); }, 1200);
         }
       } catch {
-        if (typeof showAlertModal === 'function') showAlertModal({ title: '複製失敗', message: '複製失敗' });
+        if (typeof showAlertModal === 'function') showAlertModal({ title: t('common.copyFailed'), message: t('common.copyFailed') });
       }
     };
     copyButtons.forEach((btn) => {
@@ -264,8 +266,8 @@ function attachStorageDetailHandlers(root) {
       event.preventDefault();
       event.stopPropagation();
       const label = el.dataset.storageLabel || 'storage';
-      if (label.includes('資料庫') || label.toLowerCase().includes('indexeddb')) {
-        const message = window.indexedDB ? 'IndexedDB 資料由瀏覽器管理，目前僅顯示狀態。' : '此瀏覽器不支援 IndexedDB。';
+      if (label.includes('資料庫') || label.includes('Database') || label.toLowerCase().includes('indexeddb')) {
+        const message = window.indexedDB ? t('versionInfo.indexedDBManagedByBrowser') : t('versionInfo.browserNoIndexedDB');
         renderStorageDetailModal({ label, entries: [], error: null, note: message });
       } else {
         const detail = collectStorageEntries(label);
@@ -311,26 +313,26 @@ function renderPopup(popup, info) {
   const totalBytes = storageStats.reduce((sum, item) => sum + item.totalBytes, 0);
   const storageRows = storageStats.map((item) => {
     const detail = item.error
-      ? `<span style="color:#f87171;">錯誤：${escapeHtml(item.error)}</span>`
+      ? `<span style="color:#f87171;">${escapeHtml(t('versionInfo.error'))}${escapeHtml(item.error)}</span>`
       : `<span>${item.keyCount} keys / ${formatBytes(item.totalBytes)}</span>`;
     return `
-      <button type="button" class="version-storage-row" data-storage-label="${escapeHtml(item.label)}" aria-label="檢視 ${escapeHtml(item.label)}">
+      <button type="button" class="version-storage-row" data-storage-label="${escapeHtml(item.label)}" aria-label="${escapeHtml(t('versionInfo.viewAriaLabel', { label: item.label }))}">
         <span>${escapeHtml(item.label)}</span>
         ${detail}
       </button>`;
-  }).join('') || '<div class="version-storage-row">無可用資料</div>';
+  }).join('') || `<div class="version-storage-row">${escapeHtml(t('versionInfo.noDataAvailable'))}</div>`;
 
   popup.innerHTML = `
-    <strong>版本資訊</strong>
-    ${details.appBuildCommit ? `<div>建置版號：${buildCommitHtml(details.appBuildCommit)}</div>` : ''}
-    <div>前端建置：${details.appBuildAt}</div>
-    <div>前端載入：${details.clientLoadedAt}</div>
-    <div style="margin-top:10px;font-weight:600;">前端儲存資訊</div>
+    <strong>${t('versionInfo.title')}</strong>
+    ${details.appBuildCommit ? `<div>${t('versionInfo.buildCommit')}：${buildCommitHtml(details.appBuildCommit)}</div>` : ''}
+    <div>${t('versionInfo.frontendBuild')}：${details.appBuildAt}</div>
+    <div>${t('versionInfo.frontendLoaded')}：${details.clientLoadedAt}</div>
+    <div style="margin-top:10px;font-weight:600;">${escapeHtml(t('versionInfo.frontendStorage'))}</div>
     <div class="version-storage-list">
       ${storageRows}
     </div>
-    <div class="version-storage-total">總計：${formatBytes(totalBytes)}</div>
-    <div style="margin-top:6px; font-size:11px;">更新時間：${details.fetchedAt}</div>
+    <div class="version-storage-total">${escapeHtml(t('versionInfo.total'))}${formatBytes(totalBytes)}</div>
+    <div style="margin-top:6px; font-size:11px;">${t('versionInfo.updateTime')}：${details.fetchedAt}</div>
   `;
   popup.setAttribute('aria-hidden', 'false');
   popup.dataset.open = 'true';
@@ -338,8 +340,8 @@ function renderPopup(popup, info) {
 
 function renderError(popup, message) {
   popup.innerHTML = `
-    <strong>版本資訊</strong>
-    <div style="color:#fecaca;">載入失敗：${message}</div>
+    <strong>${t('versionInfo.title')}</strong>
+    <div style="color:#fecaca;">${escapeHtml(t('versionInfo.loadFailed'))}${escapeHtml(message)}</div>
   `;
   popup.setAttribute('aria-hidden', 'false');
   popup.dataset.open = 'true';
@@ -364,19 +366,19 @@ function renderModalContent(container, info) {
   const storageStats = collectStorageStats();
   const totalBytes = storageStats.reduce((sum, item) => sum + item.totalBytes, 0);
   const commitRow = details.appBuildCommit
-    ? `<div class="version-row"><span class="version-label">${escapeHtml('建置版號')}</span><span class="version-value">${buildCommitHtml(details.appBuildCommit)}</span></div>`
+    ? `<div class="version-row"><span class="version-label">${escapeHtml(t('versionInfo.buildCommit'))}</span><span class="version-value">${buildCommitHtml(details.appBuildCommit)}</span></div>`
     : '';
   const rows = [
-    ['前端建置', details.appBuildAt],
-    ['前端載入', details.clientLoadedAt],
-    ['更新時間', details.fetchedAt]
+    [t('versionInfo.frontendBuild'), details.appBuildAt],
+    [t('versionInfo.frontendLoaded'), details.clientLoadedAt],
+    [t('versionInfo.updateTime'), details.fetchedAt]
   ];
   const storageRows = storageStats.map((item) => {
     const detail = item.error
-      ? `<span class="version-value error">錯誤：${escapeHtml(item.error)}</span>`
+      ? `<span class="version-value error">${escapeHtml(t('versionInfo.error'))}${escapeHtml(item.error)}</span>`
       : `<span class="version-value">${item.keyCount} keys / ${formatBytes(item.totalBytes)}</span>`;
     return `<button type="button" class="version-row version-storage-button" data-storage-label="${escapeHtml(item.label)}"><span class="version-label">${escapeHtml(item.label)}</span>${detail}</button>`;
-  }).join('') || '<div class="version-row"><span class="version-label">儲存</span><span class="version-value">無可用資料</span></div>';
+  }).join('') || `<div class="version-row"><span class="version-label">${escapeHtml(t('versionInfo.storage'))}</span><span class="version-value">${escapeHtml(t('versionInfo.noDataAvailable'))}</span></div>`;
 
   container.innerHTML = `
     <div class="version-modal">
@@ -411,7 +413,7 @@ export async function showVersionModal({ openModal, closeModal, showAlertModal: 
     'settings-modal',
     'pdf-modal'
   );
-  if (title) title.textContent = '版本資訊';
+  if (title) title.textContent = t('versionInfo.title');
   body.innerHTML = `<div class="version-modal loading"><div class="loading-spinner"></div><div class="version-loading-text">載入版本資訊…</div></div>`;
   openModal?.();
   const info = { fetchedAt: new Date().toISOString() };
@@ -446,7 +448,7 @@ export function initVersionInfoButton({ buttonId, popupId, openModal, closeModal
       closePopup(popup);
       return;
     }
-    popup.innerHTML = `<strong>版本資訊</strong><div>載入中…</div>`;
+    popup.innerHTML = `<strong>${t('versionInfo.title')}</strong><div>載入中…</div>`;
     popup.setAttribute('aria-hidden', 'false');
     popup.dataset.open = 'true';
     const info = { fetchedAt: new Date().toISOString() };

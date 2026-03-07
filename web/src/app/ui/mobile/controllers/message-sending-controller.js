@@ -10,6 +10,7 @@ import { UnsupportedVideoFormatError, resolveContentType, MAX_UPLOAD_BYTES } fro
 import { escapeSelector } from '../ui-utils.js';
 import { normalizeCounterValue } from '../../../features/messages/parser.js';
 import { isUploadBusy, startUpload, updateUploadProgress, updateUploadSteps, endUpload } from '../../../features/transfer-progress.js';
+import { t } from '/locales/index.js';
 
 export class MessageSendingController extends BaseController {
     constructor(deps) {
@@ -152,14 +153,14 @@ export class MessageSendingController extends BaseController {
         if (!files.length) return;
 
         if (isUploadBusy()) {
-            this.deps.showToast?.('目前有檔案正在上傳，請稍候再試');
+            this.deps.showToast?.(t('fileSending.fileCurrentlyUploading'));
             if (input) input.value = '';
             return;
         }
 
         const state = this.getMessageState();
         if (!state.activePeerDigest || !state.conversationToken) {
-            this.deps.setMessagesStatus?.('請先選擇已建立安全對話的好友', true);
+            this.deps.setMessagesStatus?.(t('composer.selectSecureFriendForSend'), true);
             return;
         }
 
@@ -171,13 +172,13 @@ export class MessageSendingController extends BaseController {
                 // Early size guard: reject before loading the file into memory
                 if (typeof file.size === 'number' && file.size > MAX_UPLOAD_BYTES) {
                     const limitMB = Math.round(MAX_UPLOAD_BYTES / 1024 / 1024);
-                    this.deps.showToast?.(`無法上傳：${file.name || '檔案'} 超過 ${limitMB}MB 限制`);
+                    this.deps.showToast?.(t('fileSending.fileSizeExceeded', { name: file.name || t('common.file'), limit: limitMB }));
                     continue;
                 }
 
                 const localUrl = URL.createObjectURL(file);
                 const messageId = crypto.randomUUID();
-                const previewText = `[檔案] ${file.name || '附件'}`;
+                const previewText = `${t('fileSending.filePrefix')}${file.name || t('common.attachment')}`;
 
                 // For video files, don't block on thumbnail — let bubble appear instantly.
                 // Thumbnail is generated in the background and the bubble updates when ready.
@@ -191,7 +192,7 @@ export class MessageSendingController extends BaseController {
                     id: messageId,
                     msgType: 'media',
                     media: {
-                        name: file.name || '附件',
+                        name: file.name || t('common.attachment'),
                         size: typeof file.size === 'number' ? file.size : null,
                         contentType: resolvedType,
                         localUrl,
@@ -233,7 +234,7 @@ export class MessageSendingController extends BaseController {
                 localMsg.abortController = abortController;
 
                 // Show top progress bar
-                const fileName = file.name || '附件';
+                const fileName = file.name || t('common.attachment');
                 startUpload(fileName, () => {
                     try { abortController.abort(); } catch {}
                     this.removeLocalMessageById(localMsg.id);
@@ -335,7 +336,7 @@ export class MessageSendingController extends BaseController {
                         targetMsg.media = {
                             ...tm,
                             ...pm,
-                            name: (pm.name || tm.name || file.name || '附件'),
+                            name: (pm.name || tm.name || file.name || t('common.attachment')),
                             size: Number.isFinite(pm.size) ? pm.size : (typeof file.size === 'number' ? file.size : tm.size || null),
                             contentType: pm.contentType || tm.contentType || file.type || 'application/octet-stream',
                             // For videos: don't keep localUrl (blob), use previewUrl (thumbnail data URL) only
@@ -444,7 +445,7 @@ export class MessageSendingController extends BaseController {
                         }
 
                         if (replacementMsg) {
-                            messageStatus.applyOutgoingFailure(replacementMsg, err, '檔案傳送失敗', 'COUNTER_TOO_LOW_REPAIR_FAILED');
+                            messageStatus.applyOutgoingFailure(replacementMsg, err, t('fileSending.fileSendFailed'), 'COUNTER_TOO_LOW_REPAIR_FAILED');
                             this.applyUploadProgress(replacementMsg, { percent: replacementMsg.media?.progress ?? 0, error: err?.message || err });
                         }
                         this.updateMessagesUI({ preserveScroll: true, forceFullRender: true });
@@ -458,7 +459,7 @@ export class MessageSendingController extends BaseController {
                     }
 
                     if (msg) {
-                        messageStatus?.applyOutgoingFailure(msg, err, '檔案傳送失敗');
+                        messageStatus?.applyOutgoingFailure(msg, err, t('fileSending.fileSendFailed'));
                         this.applyUploadProgress(msg, { percent: 0, error: err?.message || err });
                         this.updateUploadOverlayUI(msg.id, msg.media);
                     }
@@ -471,7 +472,7 @@ export class MessageSendingController extends BaseController {
             } // end for loop
         } catch (err) {
             console.error('File selection error', err);
-            this.deps.showToast?.('檔案處理失敗');
+            this.deps.showToast?.(t('fileSending.fileProcessingFailed'));
         } finally {
             if (input) input.value = '';
         }
@@ -490,7 +491,7 @@ export class MessageSendingController extends BaseController {
 
         // Only support text retry for now
         if (msg.msgType !== 'text') {
-            throw new Error('目前僅支援文字訊息重試');
+            throw new Error(t('messages.onlyTextRetrySupported'));
         }
 
         const text = msg.text;
@@ -523,7 +524,7 @@ export class MessageSendingController extends BaseController {
         } catch (err) {
             // 4. Handle Failure (again)
             if (this.deps.messageStatus) {
-                this.deps.messageStatus.applyOutgoingFailure(newMsg, err, '重試失敗');
+                this.deps.messageStatus.applyOutgoingFailure(newMsg, err, t('messages.retryFailed'));
                 this.updateMessagesUI({ preserveScroll: true, forceFullRender: true });
             }
             throw err;

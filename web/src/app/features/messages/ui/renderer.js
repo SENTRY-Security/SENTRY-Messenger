@@ -18,11 +18,12 @@ import {
     PLACEHOLDER_TEXT,
     PLACEHOLDER_SHIMMER_MAX_ACTIVE
 } from '../../../ui/mobile/messages-ui-policy.js';
+import { t } from '/locales/index.js';
 
 const CALL_LOG_PHONE_ICON = '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.003 5.884l3.75-1.5a1 1 0 011.316.593l1.2 3.199a1 1 0 01-.232 1.036l-1.516 1.52a11.037 11.037 0 005.516 5.516l1.52-1.516a1 1 0 011.036-.232l3.2 1.2a1 1 0 01.593 1.316l-1.5 3.75a1 1 0 01-1.17.6c-2.944-.73-5.59-2.214-7.794-4.418-2.204-2.204-3.688-4.85-4.418-7.794a1 1 0 01.6-1.17z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
 
-const PLACEHOLDER_FAILED_TEXT = '無法解密';
-const PLACEHOLDER_BLOCKED_TEXT = '暫時無法解密';
+const PLACEHOLDER_FAILED_TEXT = t('encryption.decryptFailed');
+const PLACEHOLDER_BLOCKED_TEXT = t('encryption.decryptBlocked');
 
 export function formatTimestamp(ts) {
     if (!Number.isFinite(ts)) return '';
@@ -57,7 +58,7 @@ export function formatTimestamp(ts) {
 
         // Within 7 days
         if (diffDays < 7 && diffDays > 0) {
-            const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
+            const weekdays = [t('weekdays.sun'), t('weekdays.mon'), t('weekdays.tue'), t('weekdays.wed'), t('weekdays.thu'), t('weekdays.fri'), t('weekdays.sat')];
             return `週${weekdays[date.getDay()]} ${hours}:${minutes}`;
         }
 
@@ -412,7 +413,7 @@ export class MessageRenderer {
         } else {
             const generic = document.createElement('div');
             generic.className = 'message-file-preview-generic';
-            generic.textContent = '檔案';
+            generic.textContent = t('renderer.file');
             container.appendChild(generic);
         }
     }
@@ -454,7 +455,7 @@ export class MessageRenderer {
         if (existing && !media.error && existing.dataset.mode === 'uploading') {
             const label = existing.querySelector('[data-role="label"]');
             const bar = existing.querySelector('[data-role="bar"]');
-            if (label) label.textContent = pct != null ? `上傳中… ${pct}%` : '準備上傳…';
+            if (label) label.textContent = pct != null ? t('renderer.uploadingPercent', { pct }) : t('renderer.preparingUpload');
             if (bar) bar.style.width = `${pct != null ? pct : 10}%`;
             return;
         }
@@ -481,11 +482,11 @@ export class MessageRenderer {
         if (media.error) {
             overlay.dataset.mode = 'error';
             const label = document.createElement('div');
-            label.textContent = '上傳失敗';
+            label.textContent = t('renderer.uploadFailed');
             label.style.fontWeight = '600';
             overlay.appendChild(label);
             const detail = document.createElement('div');
-            detail.textContent = String(media.error || '').slice(0, 80) || '請稍後再試';
+            detail.textContent = String(media.error || '').slice(0, 80) || t('renderer.pleaseRetryLater');
             detail.style.fontSize = '12px';
             detail.style.opacity = '0.9';
             overlay.appendChild(detail);
@@ -493,7 +494,7 @@ export class MessageRenderer {
             overlay.dataset.mode = 'uploading';
             const label = document.createElement('div');
             label.dataset.role = 'label';
-            label.textContent = pct != null ? `上傳中… ${pct}%` : '準備上傳…';
+            label.textContent = pct != null ? t('renderer.uploadingPercent', { pct }) : t('renderer.preparingUpload');
             label.style.fontWeight = '600';
             overlay.appendChild(label);
             const barWrap = document.createElement('div');
@@ -512,7 +513,7 @@ export class MessageRenderer {
             overlay.appendChild(barWrap);
             const cancelBtn = document.createElement('button');
             cancelBtn.type = 'button';
-            cancelBtn.textContent = '取消上傳';
+            cancelBtn.textContent = t('renderer.cancelUpload');
             cancelBtn.className = 'upload-cancel-btn';
             Object.assign(cancelBtn.style, {
                 background: 'rgba(0,0,0,0.55)',
@@ -639,7 +640,7 @@ export class MessageRenderer {
         info.className = 'message-file-info';
         const nameEl = document.createElement('div');
         nameEl.className = 'message-file-name';
-        nameEl.textContent = media.name || '附件';
+        nameEl.textContent = media.name || t('common.attachment');
         const metaEl = document.createElement('div');
         metaEl.className = 'message-file-meta';
         metaEl.textContent = formatFileMeta(media);
@@ -753,20 +754,20 @@ export class MessageRenderer {
                 // Need to resolve sender name. 
                 // We have 'msg.senderDigest' or 'msg.header.sender_digest'.
                 const senderDigest = normalizeAccountDigest(msg.senderDigest || msg.header?.sender_digest);
-                let senderName = '對方';
-                if (isOutgoingFromSelf(msg, state.activePeerDigest)) { // Actually selfDigest not available in state directly? 
+                let senderName = t('common.other');
+                if (isOutgoingFromSelf(msg, state.activePeerDigest)) { // Actually selfDigest not available in state directly?
                     // Renderer doesn't know selfDigest easily without args.
-                    // But `isOutgoingFromSelf` is exported. We need `selfDigest`. 
+                    // But `isOutgoingFromSelf` is exported. We need `selfDigest`.
                     // It's not passed in render() options except maybe implicitly?
                     // Wait, render() has `contacts`.
                     // Let's use `msg.direction`.
-                    if (msg.direction === 'outgoing') senderName = '你';
+                    if (msg.direction === 'outgoing') senderName = t('common.you');
                     else {
                         const contact = contacts?.get(senderDigest);
                         if (contact?.nickname) senderName = contact.nickname;
                     }
                 } else if (msg.direction === 'outgoing') {
-                    senderName = '你';
+                    senderName = t('common.you');
                 }
 
                 // Timestamp – normalise: msg.ts may be seconds or milliseconds
@@ -785,7 +786,7 @@ export class MessageRenderer {
                 sep.className = 'message-separator';
                 sep.style.marginTop = '12px';
                 sep.style.marginBottom = '12px';
-                sep.textContent = msg.text || msg.content?.text || '更新了個人檔案';
+                sep.textContent = msg.text || msg.content?.text || t('renderer.updatedProfile');
                 this.listEl.appendChild(sep);
                 continue;
             }
@@ -807,17 +808,17 @@ export class MessageRenderer {
 
                 const csReason = csPayload?.reason || msg?.reason || 'invite-consume';
                 const contact = typeof contacts?.get === 'function' ? contacts.get(activePeerDigest || '') : null;
-                const name = escapeHtml(contact?.nickname || csPayload?.nickname || '對方');
+                const name = escapeHtml(contact?.nickname || csPayload?.nickname || t('common.other'));
                 const isOutgoing = msg?.direction === 'outgoing';
 
                 if (csReason === 'invite-consume' || csReason === 'invite-create') {
                   sep.textContent = `你已經與 ${name} 建立安全連線 🔐`;
                 } else if (csReason === 'nickname') {
-                  sep.textContent = isOutgoing ? '你已更新暱稱' : `${name} 已更新暱稱`;
+                  sep.textContent = isOutgoing ? t('profile.youUpdatedNickname') : t('profile.peerUpdatedNickname', { name });
                 } else if (csReason === 'avatar') {
-                  sep.textContent = isOutgoing ? '你已更新頭像' : `${name} 已更新頭像`;
+                  sep.textContent = isOutgoing ? t('profile.youUpdatedAvatar') : t('profile.peerUpdatedAvatar', { name });
                 } else {
-                  sep.textContent = isOutgoing ? '你已更新個人資料' : `${name} 已更新個人資料`;
+                  sep.textContent = isOutgoing ? t('profile.youUpdatedProfile') : t('profile.peerUpdatedProfile', { name });
                 }
                 this.listEl.appendChild(sep);
                 continue;
@@ -905,7 +906,7 @@ export class MessageRenderer {
                 const viewerRole = callLogObj.viewerRole || resolveViewerRole(callLogObj.authorRole, msg.direction);
                 const { label, subLabel } = describeCallLogForViewer(callLogObj, viewerRole);
 
-                main.textContent = label || '語音通話';
+                main.textContent = label || t('calls.voiceCall');
                 textGroup.appendChild(main);
 
                 if (subLabel) {
@@ -946,7 +947,7 @@ export class MessageRenderer {
                     : null;
 
                 const name = contact?.nickname || '';
-                const initials = name ? name.slice(0, 1) : '好友';
+                const initials = name ? name.slice(0, 1) : t('common.friend');
 
                 avatar.textContent = initials;
                 const avatarUrl = resolveContactAvatarUrl(contact);
@@ -1047,7 +1048,7 @@ export class MessageRenderer {
                         statusSpan.className = 'message-status failed retryable';
                         statusSpan.dataset.retry = 'true';
                         statusSpan.innerHTML = RETRY_ICON; // Use SVG
-                        statusSpan.title = '網路傳送失敗，點擊重試';
+                        statusSpan.title = t('messages.networkSendFailed');
                     } else {
                         statusSpan.className = 'message-status failed';
                         statusSpan.textContent = '!';

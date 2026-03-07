@@ -14,6 +14,7 @@ import {
 import { CALL_LOG_OUTCOME, describeCallLogForViewer, resolveViewerRole } from '../../../features/calls/call-log.js';
 import { sendDrCallLog } from '../../../features/dr-session.js';
 import { appendUserMessage } from '../../../features/timeline-store.js';
+import { t } from '/locales/index.js';
 
 export class CallLogController extends BaseController {
     constructor(deps) {
@@ -385,7 +386,7 @@ export class CallLogController extends BaseController {
                 try {
                     this.deps.applyOutgoingSent?.(localMessage, res, localMessage.ts || entry.ts);
                 } catch (err) {
-                    this.deps.applyOutgoingFailure?.(localMessage, err, '通話記錄傳送失敗');
+                    this.deps.applyOutgoingFailure?.(localMessage, err, t('messages.callLogSendFailed'));
                 }
                 this.deps.updateMessagesStatusUI?.();
             }
@@ -397,7 +398,7 @@ export class CallLogController extends BaseController {
                 if (replacementInfo || this.deps.isCounterTooLowError?.(err)) {
                     this.deps.applyCounterTooLowReplaced?.(localMessage);
                 } else {
-                    this.deps.applyOutgoingFailure?.(localMessage, err, '通話記錄傳送失敗');
+                    this.deps.applyOutgoingFailure?.(localMessage, err, t('messages.callLogSendFailed'));
                 }
                 this.deps.updateMessagesStatusUI?.();
             }

@@ -6,6 +6,7 @@ import { sessionStore } from './session-store.js';
 import { escapeHtml, fmtSize, safeJSON } from './ui-utils.js';
 import { b64 } from '../../crypto/aead.js';
 import { openImageViewer } from './viewers/image-viewer.js';
+import { t } from '/locales/index.js';
 import { importWithSRI } from '/shared/utils/sri.js';
 import { CDN_SRI } from '/shared/utils/cdn-integrity.js';
 
@@ -53,8 +54,8 @@ export function initDrivePane({
   const SYSTEM_DIR_SENT = '__SYS_SENT__';
   const SYSTEM_DIR_RECEIVED = '__SYS_RECV__';
   const SYSTEM_DIR_LABELS = Object.freeze({
-    [SYSTEM_DIR_SENT]: '已傳送',
-    [SYSTEM_DIR_RECEIVED]: '已接收'
+    [SYSTEM_DIR_SENT]: t('drive.sent'),
+    [SYSTEM_DIR_RECEIVED]: t('drive.received')
   });
   const RESERVED_DIRS = new Set([SYSTEM_DIR_SENT, SYSTEM_DIR_RECEIVED]);
   const DRIVE_PULL_THRESHOLD = 60;
@@ -121,10 +122,10 @@ export function initDrivePane({
       if (spinner && labelEl) {
         if (driveRefreshing) {
           spinner.classList.add('spin');
-          labelEl.textContent = '刷新中…';
+          labelEl.textContent = t('common.refreshing');
         } else {
           spinner.classList.remove('spin');
-          labelEl.textContent = clamped >= DRIVE_PULL_THRESHOLD ? '鬆開更新檔案' : '下拉更新檔案';
+          labelEl.textContent = clamped >= DRIVE_PULL_THRESHOLD ? t('drive.releaseToRefresh') : t('drive.pullToRefresh');
         }
       }
     }
@@ -265,10 +266,10 @@ export function initDrivePane({
     body.innerHTML = `
       <div class="pdf-viewer">
         <div class="pdf-toolbar">
-          <button type="button" class="pdf-btn" id="pdfCloseBtn" aria-label="關閉"><svg viewBox="0 0 16 16" fill="none"><path d="M3 8h10M8 3l-5 5 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+          <button type="button" class="pdf-btn" id="pdfCloseBtn" aria-label="${t('viewer.close')}"><svg viewBox="0 0 16 16" fill="none"><path d="M3 8h10M8 3l-5 5 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           <div class="pdf-title" title="${escapeHtml(name || 'PDF')}">${escapeHtml(name || 'PDF')}</div>
           <div class="pdf-actions">
-            <a class="pdf-btn" id="pdfDownload" href="${escapeHtml(url)}" download="${escapeHtml(name || 'file.pdf')}">下載</a>
+            <a class="pdf-btn" id="pdfDownload" href="${escapeHtml(url)}" download="${escapeHtml(name || 'file.pdf')}">${t('drive.download')}</a>
           </div>
         </div>
         <div class="pdf-stage">
@@ -280,9 +281,9 @@ export function initDrivePane({
         <div class="pdf-footer">
           <div class="pdf-actions-row">
             <div class="pdf-page-info">
-              <button type="button" class="pdf-btn" id="pdfPrev" aria-label="上一頁">‹</button>
+              <button type="button" class="pdf-btn" id="pdfPrev" aria-label="${t('viewer.prevPage')}">‹</button>
               <span id="pdfPageLabel">– / –</span>
-              <button type="button" class="pdf-btn" id="pdfNext" aria-label="下一頁">›</button>
+              <button type="button" class="pdf-btn" id="pdfNext" aria-label="${t('viewer.nextPage')}">›</button>
             </div>
           </div>
         </div>
@@ -369,13 +370,13 @@ export function initDrivePane({
       const proceed = () => triggerDownload(url, name || 'file.pdf');
       if (typeof showConfirmModal === 'function') {
         showConfirmModal({
-          title: '下載 PDF',
-          message: '下載後會在外部開啟，回到通訊軟體需重新感應。確定要下載嗎？',
-          confirmLabel: '下載',
+          title: t('drive.downloadPdf'),
+          message: t('drive.downloadPdfConfirm'),
+          confirmLabel: t('drive.download'),
           onConfirm: proceed
         });
       } else {
-        showConfirmModal?.({ title: '下載 PDF', message: '下載後會在外部開啟，回到通訊軟體需重新感應。確定要下載嗎？', confirmLabel: '下載', onConfirm: proceed });
+        showConfirmModal?.({ title: t('drive.downloadPdf'), message: t('drive.downloadPdfConfirm'), confirmLabel: t('drive.download'), onConfirm: proceed });
       }
     });
     body.querySelector('#pdfCloseBtn')?.addEventListener('click', () => activePdfCleanup?.());
@@ -474,7 +475,7 @@ export function initDrivePane({
   const PLACEHOLDER_NAME = '.empty-folder';
   const PLACEHOLDER_CT = 'application/x-empty-folder';
 
-  function showBlockingModal(message, { title = '無法上傳', confirmLabel = '知道了' } = {}) {
+  function showBlockingModal(message, { title = t('drive.cannotUpload'), confirmLabel = t('drive.understood') } = {}) {
     if (typeof showConfirmModal === 'function') {
       showConfirmModal({
         title,
@@ -650,7 +651,7 @@ export function initDrivePane({
   function renderCrumb() {
     if (!crumbEl) return;
     const cwd = ensureSafeCwd();
-    const parts = [{ name: '根目錄', path: '' }, ...cwd.map((seg, idx) => ({ name: displayFolderName(seg), path: cwd.slice(0, idx + 1).join('/') }))];
+    const parts = [{ name: t('drive.rootDir'), path: '' }, ...cwd.map((seg, idx) => ({ name: displayFolderName(seg), path: cwd.slice(0, idx + 1).join('/') }))];
     crumbEl.innerHTML = '';
     parts.forEach((p, i) => {
       const isLast = i === parts.length - 1;
@@ -664,7 +665,7 @@ export function initDrivePane({
           driveState.cwd = p.path ? p.path.split('/') : [];
           refreshDriveList().catch((err) => {
             log({ driveCrumbError: err?.message || err });
-            showBlockingModal('無法載入資料夾，請稍後再試。', { title: '載入失敗' });
+            showBlockingModal(t('drive.cannotLoadFolder'), { title: t('errors.loadFailed') });
           });
         });
       }
@@ -748,7 +749,7 @@ export function initDrivePane({
       await refreshDriveList();
     } catch (err) {
       log({ driveNavigateError: err?.message || err, cwd: driveState.cwd });
-      showBlockingModal('無法載入資料夾，請稍後再試。', { title: '載入失敗' });
+      showBlockingModal(t('drive.cannotLoadFolder'), { title: t('errors.loadFailed') });
     }
   }
 
@@ -810,7 +811,7 @@ export function initDrivePane({
       const parts = [];
       if (folderCount > 0) parts.push(`${folderCount} 個資料夾`);
       if (fileCount > 0) parts.push(`${fileCount} 個檔案`);
-      const subLabel = parts.length ? parts.join(' · ') : '空資料夾';
+      const subLabel = parts.length ? parts.join(' · ') : t('common.emptyFolder');
       const li = document.createElement('li');
       li.className = 'file-item folder' + (isSystem ? ' system-folder' : '');
       li.dataset.type = 'folder';
@@ -827,7 +828,7 @@ export function initDrivePane({
             <div class="sub">${subLabel}</div>
           </div>
         </div>
-        ${isSystem ? '' : `<button type="button" class="item-delete" aria-label="刪除"><i class='bx bx-trash'></i></button>`}`;
+        ${isSystem ? '' : `<button type="button" class="item-delete" aria-label="${t('drive.deleteAriaLabel')}"><i class='bx bx-trash'></i></button>`}`;
       const open = async () => {
         if (li.classList.contains('show-delete')) {
           closeSwipe?.(li);
@@ -887,7 +888,7 @@ export function initDrivePane({
             <div class="sub">${fmtSize(size)} · ${escapeHtml(friendlyCt)}${ts ? ` · ${escapeHtml(ts)}` : ''}</div>
           </div>
         </div>
-        <button type="button" class="item-delete" aria-label="刪除"><i class='bx bx-trash'></i></button>`;
+        <button type="button" class="item-delete" aria-label="${t('drive.deleteAriaLabel')}"><i class='bx bx-trash'></i></button>`;
       const preview = () => {
         if (li.classList.contains('show-delete')) {
           closeSwipe?.(li);
@@ -972,11 +973,11 @@ export function initDrivePane({
     if (s.startsWith('audio/')) return s.replace('audio/', '').toUpperCase() + ' 音檔';
     if (s === 'application/pdf') return 'PDF 文件';
     if (s.includes('word') || s.includes('document')) return 'Word 文件';
-    if (s.includes('sheet') || s.includes('excel')) return '試算表';
-    if (s.includes('presentation') || s.includes('powerpoint')) return '簡報';
-    if (s.includes('zip') || s.includes('compressed') || s.includes('archive') || s.includes('rar') || s.includes('7z') || s.includes('tar') || s.includes('gzip')) return '壓縮檔';
+    if (s.includes('sheet') || s.includes('excel')) return t('drive.spreadsheet');
+    if (s.includes('presentation') || s.includes('powerpoint')) return t('drive.presentation');
+    if (s.includes('zip') || s.includes('compressed') || s.includes('archive') || s.includes('rar') || s.includes('7z') || s.includes('tar') || s.includes('gzip')) return t('drive.archive');
     if (s.startsWith('text/')) return s.replace('text/', '').toUpperCase() + ' 文字';
-    if (s === 'application/octet-stream') return '檔案';
+    if (s === 'application/octet-stream') return t('common.file');
     if (s === 'application/json') return 'JSON';
     return s;
   }
@@ -987,7 +988,7 @@ export function initDrivePane({
     const now = new Date();
     const diffMs = now - date;
     const diffSec = Math.floor(diffMs / 1000);
-    if (diffSec < 60) return '剛剛';
+    if (diffSec < 60) return t('common.justNow');
     const diffMin = Math.floor(diffSec / 60);
     if (diffMin < 60) return `${diffMin} 分鐘前`;
     const diffHr = Math.floor(diffMin / 60);
@@ -1035,10 +1036,10 @@ export function initDrivePane({
     if (!modalEl || !body) return;
     modalEl.classList.remove('security-modal', 'progress-modal', 'upload-modal', 'nickname-modal', 'folder-modal', 'pdf-modal');
     modalEl.classList.add('nickname-modal');
-    if (title) title.textContent = type === 'folder' ? '重新命名資料夾' : '重新命名檔案';
+    if (title) title.textContent = type === 'folder' ? t('drive.renameFolder') : t('drive.renameFile');
     body.innerHTML = `
       <form id="renameForm" class="nickname-form">
-        <label for="renameInput">${type === 'folder' ? '資料夾名稱' : '檔案名稱'}</label>
+        <label for="renameInput">${type === 'folder' ? t('drive.folderName') : t('drive.fileName')}</label>
         <input id="renameInput" type="text" value="${escapeHtml(name || '')}" autocomplete="off" spellcheck="false" />
         <p class="nickname-hint">名稱不可為空。</p>
         <div class="nickname-actions">
@@ -1060,19 +1061,19 @@ export function initDrivePane({
         return;
       }
       closeModal?.();
-      showModalLoading?.('重新命名中…');
-      updateLoadingModal?.({ percent: 12, text: '準備重新命名…' });
+      showModalLoading?.(t('drive.renaming'));
+      updateLoadingModal?.({ percent: 12, text: t('drive.preparingRename') });
       try {
         if (type === 'folder') {
           await renameFolder(name, newName);
-          updateLoadingModal?.({ percent: 55, text: '同步資料夾名稱…' });
+          updateLoadingModal?.({ percent: 55, text: t('drive.syncingFolderName') });
         } else if (type === 'file') {
           await renameFile(key, newName);
-          updateLoadingModal?.({ percent: 55, text: '同步檔案名稱…' });
+          updateLoadingModal?.({ percent: 55, text: t('drive.syncingFileName') });
         }
-        updateLoadingModal?.({ percent: 85, text: '刷新列表…' });
+        updateLoadingModal?.({ percent: 85, text: t('drive.refreshingList') });
         await refreshDriveList();
-        updateLoadingModal?.({ percent: 98, text: '完成' });
+        updateLoadingModal?.({ percent: 98, text: t('drive.done') });
       } catch (err) {
         log({ renameError: err?.message || err });
       } finally {
@@ -1087,7 +1088,7 @@ export function initDrivePane({
     if (!acct) throw new Error('Account missing');
     const convId = driveState.currentConvId || `drive-${acct}`;
     const entry = findMessageEntryByKey(driveState.currentMessages, key);
-    if (!entry) throw new Error('找不到檔案，請重新整理');
+    if (!entry) throw new Error(t('drive.fileNotFound'));
     const header = { ...entry.header, name: newName };
     const ciphertext_b64 = buildCiphertextForRename({ msg: entry.msg, header });
     const messageId = crypto.randomUUID();
@@ -1101,7 +1102,7 @@ export function initDrivePane({
     };
     const body = buildAccountPayload({ overrides: msgPayload });
     const { r, data } = await createMessage(body);
-    if (!r.ok) throw new Error('重新命名失敗：' + JSON.stringify(data));
+    if (!r.ok) throw new Error(t('drive.renameFailed') + JSON.stringify(data));
   }
 
   async function renameFolder(oldName, newName) {
@@ -1143,7 +1144,7 @@ export function initDrivePane({
     for (const msgPayload of batch) {
       const body = buildAccountPayload({ overrides: msgPayload });
       const { r, data } = await createMessage(body);
-      if (!r.ok) throw new Error('重新命名失敗：' + JSON.stringify(data));
+      if (!r.ok) throw new Error(t('drive.renameFailed') + JSON.stringify(data));
     }
   }
 
@@ -1155,7 +1156,7 @@ export function initDrivePane({
     if (!modalEl || !body) return;
     modalEl.classList.remove('security-modal', 'progress-modal', 'folder-modal', 'nickname-modal', 'pdf-modal');
     modalEl.classList.add('upload-modal');
-    if (title) title.textContent = '上傳檔案';
+    if (title) title.textContent = t('drive.uploadFileTitle');
     body.innerHTML = `
       <form id="uploadForm" class="upload-form">
         <div class="upload-field">
@@ -1165,7 +1166,7 @@ export function initDrivePane({
             <span>點擊選擇檔案（可多選）</span>
           </label>
         </div>
-        <div id="uploadFileName" class="upload-name">尚未選擇檔案</div>
+        <div id="uploadFileName" class="upload-name">${t('drive.noFileSelected')}</div>
         <ul id="uploadFileList" class="upload-file-list"></ul>
         <p class="upload-hint">支援 iOS Safari：會開啟照片、檔案選擇器。</p>
         <p class="upload-error" role="alert"></p>
@@ -1183,7 +1184,7 @@ export function initDrivePane({
     const form = body.querySelector('#uploadForm');
 
     const formatUploadFileName = (name) => {
-      const safe = typeof name === 'string' && name.trim() ? name.trim() : '未命名';
+      const safe = typeof name === 'string' && name.trim() ? name.trim() : t('drive.unnamed');
       const max = 26;
       const tail = 8;
       if (safe.length <= max) return safe;
@@ -1194,7 +1195,7 @@ export function initDrivePane({
     input?.addEventListener('change', () => {
       const files = input?.files ? Array.from(input.files).filter(Boolean) : [];
       if (!files.length) {
-        if (nameEl) nameEl.textContent = '尚未選擇檔案';
+        if (nameEl) nameEl.textContent = t('drive.noFileSelected');
         if (listEl) listEl.innerHTML = '';
         if (errorEl) errorEl.textContent = '';
         return;
@@ -1203,9 +1204,9 @@ export function initDrivePane({
       if (oversized.length) {
         const msg = `單檔上限 1GB：${escapeHtml(oversized[0].name || '檔案')} 超過限制`;
         if (errorEl) errorEl.textContent = msg;
-        showBlockingModal(msg, { title: '檔案過大' });
+        showBlockingModal(msg, { title: t('drive.fileTooLarge') });
         input.value = '';
-        if (nameEl) nameEl.textContent = '尚未選擇檔案';
+        if (nameEl) nameEl.textContent = t('drive.noFileSelected');
         if (listEl) listEl.innerHTML = '';
         return;
       }
@@ -1226,14 +1227,14 @@ export function initDrivePane({
       e.preventDefault();
       const files = input?.files ? Array.from(input.files).filter(Boolean) : [];
       if (!files.length) {
-        if (errorEl) errorEl.textContent = '請先選擇要上傳的檔案。';
+        if (errorEl) errorEl.textContent = t('drive.selectFileFirst');
         return;
       }
       const oversized = files.filter((file) => Number(file?.size || 0) > MAX_UPLOAD_BYTES);
       if (oversized.length) {
         const msg = `單檔上限 1GB：${escapeHtml(oversized[0].name || '檔案')} 超過限制`;
         if (errorEl) errorEl.textContent = msg;
-        showBlockingModal(msg, { title: '檔案過大' });
+        showBlockingModal(msg, { title: t('drive.fileTooLarge') });
         return;
       }
       closeModal?.();
@@ -1253,10 +1254,10 @@ export function initDrivePane({
     if (!modalEl || !body) return;
     modalEl.classList.remove('security-modal', 'progress-modal', 'upload-modal', 'nickname-modal', 'pdf-modal');
     modalEl.classList.add('folder-modal');
-    if (title) title.textContent = '新增資料夾';
+    if (title) title.textContent = t('drive.newFolderTitle');
     body.innerHTML = `
       <form id="folderForm" class="folder-form">
-        <label for="folderNameInput">資料夾名稱</label>
+        <label for="folderNameInput">${t('drive.folderName')}</label>
         <input id="folderNameInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="例如：旅行紀錄 ✈️" />
         <p class="folder-hint">可輸入中文或 emoji，僅禁止使用 / 等分隔符號。</p>
         <p class="folder-error" role="alert"></p>
@@ -1276,7 +1277,7 @@ export function initDrivePane({
       e.preventDefault();
       const safeName = sanitizeFolderName(input?.value || '');
       if (!safeName) {
-        if (errorEl) errorEl.textContent = '資料夾名稱不可為空，且不可包含 / 或控制字元。';
+        if (errorEl) errorEl.textContent = t('drive.folderNameEmpty');
         input?.focus();
         input?.select?.();
         return;

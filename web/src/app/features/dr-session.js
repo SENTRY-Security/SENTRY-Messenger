@@ -56,6 +56,7 @@ const sendFailureCounter = new Map(); // peerDigest::deviceId -> count
 const transportCounterSeeded = new Set(); // conversationId::senderDeviceId
 const COUNTER_TOO_LOW_CODE = 'CounterTooLow';
 import { enqueueMediaMetaJob } from './queue/media.js';
+import { t } from '/locales/index.js';
 const SEND_PREFLIGHT_TRACE_LIMIT = 3;
 let sendPreflightTraceCount = 0;
 const DR_SNAPSHOT_REJECT_LIMIT = 3;
@@ -1812,7 +1813,7 @@ export async function sendDrPlaintextCore(params = {}) {
         throw err;
       }
     } else {
-      throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+      throw new Error(t('encryption.noSecureSession'));
     }
     state = drState({ peerAccountDigest: peer, peerDeviceId });
     hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
@@ -1852,7 +1853,7 @@ export async function sendDrPlaintextCore(params = {}) {
   }
 
   if (!hasDrState && !hasDrInit) {
-    throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+    throw new Error(t('encryption.noSecureSession'));
   }
   if (!state.baseKey) state.baseKey = {};
   if (conversationId && state.baseKey.conversationId !== conversationId) {
@@ -2813,14 +2814,14 @@ export async function sendDrMedia(params = {}) {
       try {
         await ensureDrSession({ peerAccountDigest: peer, peerDeviceId });
       } catch (err) {
-        if (!hasDrInit) throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+        if (!hasDrInit) throw new Error(t('encryption.noSecureSession'));
         throw new Error('DR 會話初始化失敗：' + (err?.message || err));
       }
       state = drState({ peerAccountDigest: peer, peerDeviceId });
       hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
     }
     if (!hasDrState && !hasDrInit) {
-      throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+      throw new Error(t('encryption.noSecureSession'));
     }
     // Assign ticket while holding the session lock — guarantees monotonic ordering.
     myTicket = mediaSendTicketCounter.get(queueKey) || 0;
@@ -3017,7 +3018,7 @@ export async function sendDrMediaCore(params = {}) {
         await ensureDrSession({ peerAccountDigest: peer, peerDeviceId });
       } catch (err) {
         if (!hasDrInit) {
-          throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+          throw new Error(t('encryption.noSecureSession'));
         }
         throw new Error('DR 會話初始化失敗：' + (err?.message || err));
       }
@@ -3026,7 +3027,7 @@ export async function sendDrMediaCore(params = {}) {
     }
 
     if (!hasDrState && !hasDrInit) {
-      throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+      throw new Error(t('encryption.noSecureSession'));
     }
 
     conversationId = convContext?.conversation_id || convContext?.conversationId || convId || null;
@@ -3101,7 +3102,7 @@ export async function sendDrMediaCore(params = {}) {
 
   const metadata = {
     type: 'media',
-    name: typeof file.name === 'string' && file.name ? file.name : '附件',
+    name: typeof file.name === 'string' && file.name ? file.name : t('common.attachment'),
     size: typeof file.size === 'number' ? file.size : uploadResult.size ?? uploadResult.totalSize ?? null,
     contentType: file.type || 'application/octet-stream',
     dir: Array.isArray(dir) && dir.length
@@ -3951,7 +3952,7 @@ export async function ensureDrReceiverState(params = {}) {
       return false;
     }
     secretInfo = { ...secretInfo, drState: null };
-    throw new Error('狀態損壞，需要重新同步/重新邀請');
+    throw new Error(t('encryption.corruptNeedResync'));
   }
   const snapshot = snapshotValidation.snapshot;
   secretInfo = { ...secretInfo, drState: snapshot };
@@ -4537,7 +4538,7 @@ export async function ensureDrReceiverState(params = {}) {
     return true;
   }
 
-  throw new Error('缺少安全會話狀態，請重新同步好友或重新建立邀請');
+  throw new Error(t('encryption.missingSessionState'));
 }
 
 export async function recoverDrState(params = {}) {
@@ -4559,7 +4560,7 @@ export function prepareDrForMessage(params = {}) {
   const deviceId = ensureDeviceId();
   const holder = stateOverride || drState({ peerAccountDigest: peer, peerDeviceId });
   if (!holder?.rk) {
-    throw new Error('缺少安全會話狀態，請重新同步好友或重新建立邀請');
+    throw new Error(t('encryption.missingSessionState'));
   }
   const stamp = Number(messageTs);
   const stampIsFinite = Number.isFinite(stamp);

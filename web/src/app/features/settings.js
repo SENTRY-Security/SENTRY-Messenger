@@ -5,6 +5,7 @@ import { listMessages } from '../api/messages.js';
 import { createMessage } from '../api/media.js';
 import { getMkRaw, getAccountDigest, buildAccountPayload, ensureDeviceId } from '../core/store.js';
 import { wrapWithMK_JSON, unwrapWithMK_JSON, assertEnvelopeStrict } from '../crypto/aead.js';
+import { t } from '/locales/index.js';
 
 const SETTINGS_INFO_TAG = 'settings/v1';
 const SETTINGS_ALLOWED_INFO_TAGS = new Set([SETTINGS_INFO_TAG]);
@@ -162,7 +163,7 @@ export async function saveSettings(settings) {
   const normalized = normalizeSettings(settings);
   if (normalized.autoLogoutRedirectMode === 'custom' && !normalized.autoLogoutCustomUrl) {
     const err = new Error('autoLogoutCustomUrl required for custom redirect');
-    err.userMessage = '請輸入有效的 http/https 網址，或改選預設登出頁面。';
+    err.userMessage = t('misc.invalidUrl');
     throw err;
   }
   const now = Date.now();

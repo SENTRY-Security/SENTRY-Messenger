@@ -12,6 +12,7 @@ import { log } from '../../../core/log.js';
 import Cropper from '../../../lib/vendor/cropper.esm.js';
 import { importWithSRI } from '/shared/utils/sri.js';
 import { CDN_SRI } from '/shared/utils/cdn-integrity.js';
+import { t } from '/locales/index.js';
 
 /* ── Fabric.js lazy loader (CDN, SRI-verified) ── */
 let fabricLibPromise = null;
@@ -43,12 +44,12 @@ export function cleanupImageViewer() {
 
 /* ── Colour presets for brush ── */
 const BRUSH_COLORS = [
-  { color: '#ffffff', label: '白' },
-  { color: '#ef4444', label: '紅' },
-  { color: '#facc15', label: '黃' },
-  { color: '#22c55e', label: '綠' },
-  { color: '#3b82f6', label: '藍' },
-  { color: '#0f172a', label: '黑' },
+  { color: '#ffffff', get label() { return t('viewer.colorWhite'); } },
+  { color: '#ef4444', get label() { return t('viewer.colorRed'); } },
+  { color: '#facc15', get label() { return t('viewer.colorYellow'); } },
+  { color: '#22c55e', get label() { return t('viewer.colorGreen'); } },
+  { color: '#3b82f6', get label() { return t('viewer.colorBlue'); } },
+  { color: '#0f172a', get label() { return t('viewer.colorBlack'); } },
 ];
 const BRUSH_SIZES = [
   { size: 3,  label: 'S' },
@@ -72,7 +73,7 @@ const BRUSH_SIZES = [
  */
 export async function openImageViewer(opts) {
   const {
-    url, blob, name = '圖片', contentType = 'image/png',
+    url, blob, name = t('common.image'), contentType = 'image/png',
     source = 'chat',
     onSendToChat, onSaveToDrive, onClose, originalKey
   } = opts;
@@ -87,15 +88,15 @@ export async function openImageViewer(opts) {
 
   overlay.innerHTML = `
     <div class="iv-toolbar">
-      <button type="button" class="iv-btn" data-action="close" aria-label="關閉">
+      <button type="button" class="iv-btn" data-action="close" aria-label="${t('viewer.close')}">
         <svg viewBox="0 0 24 24" fill="none"><path d="M15 19l-7-7 7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
       <div class="iv-title">${escHtml(name)}</div>
       <div class="iv-actions">
-        <button type="button" class="iv-btn" data-action="download" aria-label="下載">
+        <button type="button" class="iv-btn" data-action="download" aria-label="${t('viewer.downloadAriaLabel')}">
           <svg viewBox="0 0 24 24" fill="none"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2h16v-2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
-        <button type="button" class="iv-btn" data-action="edit" aria-label="編輯">
+        <button type="button" class="iv-btn" data-action="edit" aria-label="${t('viewer.editAriaLabel')}">
           <svg viewBox="0 0 24 24" fill="none"><path d="M15.232 5.232l3.536 3.536M9 13l-2 6 6-2 9.364-9.364a2.5 2.5 0 00-3.536-3.536L9 13z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
       </div>
@@ -107,15 +108,15 @@ export async function openImageViewer(opts) {
     <!-- Editor layer (hidden initially) -->
     <div class="iv-editor" style="display:none">
       <div class="iv-toolbar iv-editor-toolbar">
-        <button type="button" class="iv-btn" data-action="editor-close" aria-label="返回預覽">
+        <button type="button" class="iv-btn" data-action="editor-close" aria-label="${t('viewer.returnToPreview')}">
           <svg viewBox="0 0 24 24" fill="none"><path d="M15 19l-7-7 7-7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
-        <div class="iv-title">編輯</div>
+        <div class="iv-title">${t('viewer.editAriaLabel')}</div>
         <div class="iv-actions">
-          <button type="button" class="iv-btn" data-action="undo" aria-label="上一步" disabled>
+          <button type="button" class="iv-btn" data-action="undo" aria-label="${t('viewer.undo')}" disabled>
             <svg viewBox="0 0 24 24" fill="none"><path d="M3 10h13a4 4 0 010 8H9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 14L3 10l4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
-          <button type="button" class="iv-btn" data-action="reset" aria-label="取消所有變更">
+          <button type="button" class="iv-btn" data-action="reset" aria-label="${t('viewer.resetChanges')}">
             <svg viewBox="0 0 24 24" fill="none"><path d="M1 4v6h6M23 20v-6h-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M20.49 9A9 9 0 005.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 013.51 15" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
         </div>
@@ -134,31 +135,31 @@ export async function openImageViewer(opts) {
 
       <!-- Crop confirm bar (hidden unless cropping) -->
       <div class="iv-crop-bar" style="display:none">
-        <button type="button" class="iv-btn iv-crop-cancel" data-action="crop-cancel" aria-label="取消裁切">
+        <button type="button" class="iv-btn iv-crop-cancel" data-action="crop-cancel" aria-label="${t('viewer.cancelCrop')}">
           <svg viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
         <span class="iv-crop-label">調整裁切區域</span>
-        <button type="button" class="iv-btn iv-crop-confirm" data-action="crop-confirm" aria-label="確認裁切">
+        <button type="button" class="iv-btn iv-crop-confirm" data-action="crop-confirm" aria-label="${t('viewer.confirmCrop')}">
           <svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
       </div>
 
       <div class="iv-editor-footer">
         <div class="iv-tools">
-          <button type="button" class="iv-tool-btn" data-tool="crop" aria-label="裁切">
+          <button type="button" class="iv-tool-btn" data-tool="crop" aria-label="${t('viewer.crop')}">
             <svg viewBox="0 0 24 24" fill="none"><path d="M6 2v4H2v2h4v10h10v4h2v-4h4v-2H8V6h10v10" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
-          <button type="button" class="iv-tool-btn" data-tool="draw" aria-label="畫筆">
+          <button type="button" class="iv-tool-btn" data-tool="draw" aria-label="${t('viewer.draw')}">
             <svg viewBox="0 0 24 24" fill="none"><path d="M12 19l7-7 3 3-7 7-3-3z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6.5" cy="10.5" r="1.5" fill="currentColor"/></svg>
           </button>
-          <button type="button" class="iv-tool-btn" data-tool="zoom-in" aria-label="放大">
+          <button type="button" class="iv-tool-btn" data-tool="zoom-in" aria-label="${t('viewer.zoomIn')}">
             <svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="2"/><path d="M21 21l-4.35-4.35M11 8v6M8 11h6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
-          <button type="button" class="iv-tool-btn" data-tool="zoom-out" aria-label="縮小">
+          <button type="button" class="iv-tool-btn" data-tool="zoom-out" aria-label="${t('viewer.zoomOut')}">
             <svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="2"/><path d="M21 21l-4.35-4.35M8 11h6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
         </div>
-        <button type="button" class="iv-action-btn" data-action="save" style="display:none" aria-label="${source === 'chat' ? '發送' : '儲存'}">
+        <button type="button" class="iv-action-btn" data-action="save" style="display:none" aria-label="${source === 'chat' ? t('viewer.sendOrSave') : t('viewer.saveAction')}">
           ${source === 'chat'
             ? '<svg viewBox="0 0 24 24" fill="none"><path d="M22 2L11 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M22 2l-7 20-4-9-9-4 20-7z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
             : '<svg viewBox="0 0 24 24" fill="none"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 21v-8H7v8M7 3v5h8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'

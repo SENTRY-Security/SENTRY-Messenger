@@ -363,7 +363,7 @@ export function createSubscriptionModule({ deps }) {
               <button id="subscriptionUploadBtn" type="button" class="wide-btn" ${wizard.busy ? 'disabled' : ''}>
                 <i class='bx bx-upload'></i> 點擊上傳 QRCode 圖像
               </button>
-              <div id="subscriptionScanStatus" class="sub-meta">正在啟動相機…</div>
+              <div id="subscriptionScanStatus" class="sub-meta">${t('subscription.startingCamera')}</div>
             </div>
           </div>
         `;

@@ -8,6 +8,7 @@ import { renderPdfViewer, cleanupPdfViewer } from '../../../ui/mobile/viewers/pd
 import { openImageViewer } from '../../../ui/mobile/viewers/image-viewer.js';
 import { canPreviewMedia } from './renderer.js';
 import { escapeHtml, fmtSize } from '../../../ui/mobile/ui-utils.js';
+import { t } from '/locales/index.js';
 
 /**
  * Create media preview manager.
@@ -40,18 +41,18 @@ export function createMediaPreviewManager(deps) {
      */
     async function openMediaPreview(media) {
         if (!canPreviewMedia(media)) {
-            toast?.('無法預覽附件：缺少封套或檔案資訊。');
+            toast?.(t('mediaHandling.cannotPreviewAttachment'));
             return;
         }
         if (!showModalLoading || !openPreviewModal || !setModalObjectUrl) {
-            toast?.('預覽模組尚未就緒，請稍後再試。');
+            toast?.(t('mediaHandling.previewNotReady'));
             return;
         }
-        const displayName = media.name || '附件';
+        const displayName = media.name || t('common.attachment');
         try {
             let result = null;
             if (media.objectKey && media.envelope) {
-                showModalLoading('下載加密檔案中…');
+                showModalLoading(t('mediaHandling.downloadEncryptedFile'));
                 result = await downloadAndDecrypt({
                     key: media.objectKey,
                     envelope: media.envelope,
@@ -59,25 +60,25 @@ export function createMediaPreviewManager(deps) {
                     onStatus: ({ stage, loaded, total }) => {
                         if (!updateLoadingModal) return;
                         if (stage === 'sign') {
-                            updateLoadingModal({ percent: 5, text: '取得下載授權中…' });
+                            updateLoadingModal({ percent: 5, text: t('mediaHandling.gettingDownloadAuth') });
                         } else if (stage === 'download-start') {
-                            updateLoadingModal({ percent: 10, text: '下載加密檔案中…' });
+                            updateLoadingModal({ percent: 10, text: t('mediaHandling.downloadingEncrypted') });
                         } else if (stage === 'download') {
                             const pct = total && total > 0 ? Math.round((loaded / total) * 100) : null;
                             const percent = pct != null ? Math.min(95, Math.max(15, pct)) : 45;
                             const text = pct != null
-                                ? `下載加密檔案中… ${pct}% (${fmtSize(loaded)} / ${fmtSize(total)})`
-                                : `下載加密檔案中… (${fmtSize(loaded)})`;
+                                ? `${t('mediaHandling.downloadingEncrypted')} ${pct}% (${fmtSize(loaded)} / ${fmtSize(total)})`
+                                : `${t('mediaHandling.downloadingEncrypted')} (${fmtSize(loaded)})`;
                             updateLoadingModal({ percent, text });
                         } else if (stage === 'decrypt') {
-                            updateLoadingModal({ percent: 98, text: '解密檔案中…' });
+                            updateLoadingModal({ percent: 98, text: t('mediaHandling.decryptingFile') });
                         }
                     }
                 });
             } else {
                 showModalLoading(`準備 ${displayName}…`);
                 const response = await fetch(media.localUrl);
-                if (!response.ok) throw new Error('讀取本機預覽失敗');
+                if (!response.ok) throw new Error(t('mediaHandling.readLocalPreviewFailed'));
                 const blob = await response.blob();
                 result = {
                     blob,
@@ -109,7 +110,7 @@ export function createMediaPreviewManager(deps) {
         const title = document.getElementById('modalTitle');
         if (!modalEl || !body || !title) {
             closePreviewModal?.();
-            toast?.('無法顯示附件預覽');
+            toast?.(t('mediaHandling.cannotPreviewAttachment'));
             return;
         }
         cleanupPdfViewer();
@@ -126,7 +127,7 @@ export function createMediaPreviewManager(deps) {
         );
 
         body.innerHTML = '';
-        const resolvedName = name || '附件';
+        const resolvedName = name || t('common.attachment');
         title.textContent = resolvedName;
         title.setAttribute('title', resolvedName);
 
@@ -156,7 +157,7 @@ export function createMediaPreviewManager(deps) {
             if (handled) return;
             const msg = document.createElement('div');
             msg.className = 'preview-message';
-            msg.innerHTML = `PDF 無法內嵌預覽，將直接下載。<br/><br/><a class="primary" href="${url}" download="${escapeHtml(resolvedName)}">下載檔案</a>`;
+            msg.innerHTML = `PDF 無法內嵌預覽，將直接下載。<br/><br/><a class="primary" href="${url}" download="${escapeHtml(resolvedName)}">${t('drive.downloadFile')}</a>`;
             wrap.appendChild(msg);
         } else if (ct.startsWith('image/')) {
             // Use full-screen image viewer
@@ -195,17 +196,17 @@ export function createMediaPreviewManager(deps) {
             } catch {
                 const msg = document.createElement('div');
                 msg.className = 'preview-message';
-                msg.textContent = '無法顯示文字內容。';
+                msg.textContent = t('drive.cannotDisplayTextContent');
                 wrap.appendChild(msg);
             }
         } else {
             const message = document.createElement('div');
             message.style.textAlign = 'center';
-            message.innerHTML = `無法預覽此類型（${escapeHtml(contentType || '未知')}）。<br/><br/>`;
+            message.innerHTML = `無法預覽此類型（${escapeHtml(contentType || t('common.unknown'))}）。<br/><br/>`;
             const link = document.createElement('a');
             link.href = url;
             link.download = resolvedName;
-            link.textContent = '下載檔案';
+            link.textContent = t('drive.downloadFile');
             link.className = 'primary';
             message.appendChild(link);
             wrap.appendChild(message);

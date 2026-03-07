@@ -125,10 +125,10 @@ if (isIosVersionTooOld()) {
   const blocker = document.createElement('div');
   blocker.style.cssText = 'position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0a0a0a;color:#e0e0e0;padding:2rem;text-align:center;z-index:99999;font-family:-apple-system,system-ui,sans-serif;';
   blocker.innerHTML = '<div style="font-size:2.5rem;margin-bottom:1rem;">&#9888;&#65039;</div>'
-    + '<h2 style="margin:0 0 0.75rem;font-size:1.25rem;color:#fff;">iOS 版本過舊</h2>'
+    + `<h2 style="margin:0 0 0.75rem;font-size:1.25rem;color:#fff;">${t('auth.iosVersionTooOld')}</h2>`
     + '<p style="margin:0;font-size:0.95rem;line-height:1.6;max-width:320px;color:#aaa;">'
-    + '此應用程式需要 <strong style="color:#fff;">iOS 17.1</strong> 或以上版本才能正常運作。'
-    + '<br><br>請前往「設定 > 一般 > 軟體更新」升級您的裝置。</p>';
+    + `${t('auth.iosVersionRequired', { version: '17.1' })}`
+    + `<br><br>${t('auth.iosUpdateInstructions')}</p>`;
   document.body.appendChild(blocker);
 }
 
@@ -641,21 +641,21 @@ function applyAccountMode() {
   if (newAccount) {
     if (passwordWrapper) {
       const label = passwordWrapper.querySelector('label');
-      if (label) label.textContent = '設定登入密碼';
+      if (label) label.textContent = t('auth.setLoginPassword');
     }
     if (confirmWrapper) {
       if (welcomeAcknowledged) confirmWrapper.classList.remove('hidden');
       else confirmWrapper.classList.add('hidden');
     }
     if (unlockBtn) {
-      unlockBtn.textContent = '登入';
+      unlockBtn.textContent = t('auth.login');
       unlockBtn.disabled = !welcomeAcknowledged;
     }
     if (!welcomeAcknowledged) showWelcomeModal();
   } else {
     if (passwordWrapper) {
       const label = passwordWrapper.querySelector('label');
-      if (label) label.textContent = '登入密碼';
+      if (label) label.textContent = t('auth.loginPassword');
     }
     if (confirmWrapper) {
       confirmWrapper.classList.add('hidden');
@@ -665,7 +665,7 @@ function applyAccountMode() {
     hideWelcomeModal();
     welcomeAcknowledged = false;
     if (unlockBtn) {
-      unlockBtn.textContent = '登入';
+      unlockBtn.textContent = t('auth.login');
       unlockBtn.disabled = false;
     }
   }
@@ -768,7 +768,7 @@ passwordToggles.forEach((btn) => {
       icon.innerHTML = isMasked ? PW_ICON_HIDE : PW_ICON_SHOW;
       icon.dataset.state = isMasked ? 'hide' : 'show';
     }
-    btn.setAttribute('aria-label', isMasked ? '隱藏密碼' : '顯示密碼');
+    btn.setAttribute('aria-label', isMasked ? t('auth.hidePassword') : t('auth.showPassword'));
   });
 });
 if (welcomeNextBtn) {
@@ -892,15 +892,15 @@ async function onUnlock() {
   if (loginInProgress) return;
   const pwd = pwdEl.value || '';
   if (!getSession()) { log('Run SDM Exchange first.'); return; }
-  if (!pwd) { log('請輸入密碼。'); return; }
+  if (!pwd) { log(t('auth.enterPassword')); return; }
   if (newAccount) {
     if ((pwd || '').length < 6) {
-      log('密碼至少需 6 個字元。');
+      log(t('auth.passwordTooShort'));
       return;
     }
     const confirmPwd = pwdConfirmEl?.value || '';
     if (confirmPwd !== pwd) {
-      log('兩次輸入的密碼不一致。');
+      log(t('auth.passwordMismatch'));
       return;
     }
   }
@@ -932,17 +932,17 @@ async function onUnlock() {
           contactRestorePromise = hydrateContactSecretsFromBackup({ reason: 'login-bootstrap' })
             .then((res) => {
               if (res.ok) {
-                updateBootstrapStep('contact-restore', 'success', `還原 ${res.entries} 筆資料`);
+                updateBootstrapStep('contact-restore', 'success', t('bootstrap.contactRestoreSuccess', { count: res.entries }));
               } else if (res.status === 404) {
-                updateBootstrapStep('contact-restore', 'info', '無備份資料');
+                updateBootstrapStep('contact-restore', 'info', t('bootstrap.noBackupData'));
               } else {
-                updateBootstrapStep('contact-restore', 'skip', '還原略過或失敗');
+                updateBootstrapStep('contact-restore', 'skip', t('bootstrap.restoreSkippedOrFailed'));
               }
               return res;
             })
             .catch((err) => {
               log({ contactRestoreError: err?.message || err });
-              updateBootstrapStep('contact-restore', 'error', '還原失敗');
+              updateBootstrapStep('contact-restore', 'error', t('bootstrap.restoreFailed'));
               return { ok: false };
             });
         }
@@ -955,7 +955,7 @@ async function onUnlock() {
           profileInitPromise = initProfileDefaultsOnce({ uidHex: getAccountDigest(), evidence: info?.evidence || null })
             .then((result) => {
               if (result?.skipped) {
-                const reason = result.reason || '已存在暱稱/頭像';
+                const reason = result.reason || t('bootstrap.existingNicknameAvatar');
                 updateBootstrapStep('nickname-init', 'skip', reason);
                 updateBootstrapStep('avatar-init', 'skip', reason);
               } else {
@@ -963,7 +963,7 @@ async function onUnlock() {
                 if (result?.avatarWritten) {
                   updateBootstrapStep('avatar-init', 'success');
                 } else {
-                  updateBootstrapStep('avatar-init', 'skip', result?.avatarReason || '已存在頭像');
+                  updateBootstrapStep('avatar-init', 'skip', result?.avatarReason || t('bootstrap.existingAvatar'));
                 }
               }
               return result;
@@ -986,7 +986,7 @@ async function onUnlock() {
     if (!hasPrekeys) {
       hideLoading();
       loginInProgress = false;
-      log('預共享金鑰尚未就緒，請稍後再試。');
+      log(t('auth.preSharedKeyNotReady'));
       return;
     }
     let deviceIdAfterUnlock = null;
@@ -1015,7 +1015,7 @@ async function onUnlock() {
         try {
           const result = await initProfileDefaultsOnce({ uidHex: getAccountDigest(), evidence: r?.evidence || null });
           if (result?.skipped) {
-            const reason = result.reason || '已存在暱稱/頭像';
+            const reason = result.reason || t('bootstrap.existingNicknameAvatar');
             updateBootstrapStep('nickname-init', 'skip', reason);
             updateBootstrapStep('avatar-init', 'skip', reason);
           } else {
@@ -1023,7 +1023,7 @@ async function onUnlock() {
             if (result?.avatarWritten) {
               updateBootstrapStep('avatar-init', 'success');
             } else {
-              updateBootstrapStep('avatar-init', 'skip', result?.avatarReason || '已存在頭像');
+              updateBootstrapStep('avatar-init', 'skip', result?.avatarReason || t('bootstrap.existingAvatar'));
             }
           }
         } catch (err) {
@@ -1052,15 +1052,15 @@ async function onUnlock() {
         try {
           const restoreRes = await hydrateContactSecretsFromBackup({ reason: 'login-bootstrap' });
           if (restoreRes.ok) {
-            updateBootstrapStep('contact-restore', 'success', `還原 ${restoreRes.entries} 筆資料`);
+            updateBootstrapStep('contact-restore', 'success', t('bootstrap.contactRestoreSuccess', { count: restoreRes.entries }));
           } else if (restoreRes.status === 404) {
-            updateBootstrapStep('contact-restore', 'info', '無備份資料');
+            updateBootstrapStep('contact-restore', 'info', t('bootstrap.noBackupData'));
           } else {
-            updateBootstrapStep('contact-restore', 'skip', '還原略過或失敗');
+            updateBootstrapStep('contact-restore', 'skip', t('bootstrap.restoreSkippedOrFailed'));
           }
         } catch (err) {
           log({ contactRestoreError: err?.message || err });
-          updateBootstrapStep('contact-restore', 'error', '還原失敗');
+          updateBootstrapStep('contact-restore', 'error', t('bootstrap.restoreFailed'));
         }
       }
     }
@@ -1168,21 +1168,21 @@ function invalidateExchange() {
 }
 
 
-const FALLBACK_ERROR_MESSAGE = '發生未知錯誤，請稍後再試。';
-const PASSWORD_ERROR_MESSAGE = '密碼不正確，請重新輸入。';
+const FALLBACK_ERROR_MESSAGE = t('errors.fallbackError');
+const PASSWORD_ERROR_MESSAGE = t('errors.passwordIncorrect');
 
 const ERROR_CODE_MESSAGES = {
-  ConfigError: '伺服器設定異常，請通知客服。',
-  Unauthorized: '晶片驗證失敗，請重新感應卡片。',
-  ExchangeFailed: '伺服器驗證失敗，請稍後再試。',
-  Replay: '偵測到晶片計數器重複，請關閉頁面後重新感應。',
-  SessionExpired: '驗證已逾時，請重新感應卡片。',
-  SessionMismatch: '驗證資料不一致，請重新感應卡片。',
-  StoreFailed: '伺服器儲存資料失敗，請稍後再試。',
-  BadRequest: '送出的資訊格式不正確，請確認後重試。',
+  ConfigError: t('errors.configError'),
+  Unauthorized: t('errors.unauthorized'),
+  ExchangeFailed: t('errors.exchangeFailed'),
+  Replay: t('errors.replay'),
+  SessionExpired: t('errors.sessionExpired'),
+  SessionMismatch: t('errors.sessionMismatch'),
+  StoreFailed: t('errors.storeFailed'),
+  BadRequest: t('errors.badRequest'),
   OpaqueLoginFinishFailed: PASSWORD_ERROR_MESSAGE,
-  OpaqueSessionExpired: '驗證已逾時，請重新感應卡片。',
-  OpaqueSessionNotFound: '驗證資訊不存在，請重新感應卡片。'
+  OpaqueSessionExpired: t('errors.opaqueSessionExpired'),
+  OpaqueSessionNotFound: t('errors.opaqueSessionNotFound')
 };
 
 const ERROR_PATTERNS = [

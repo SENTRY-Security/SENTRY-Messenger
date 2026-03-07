@@ -15,6 +15,7 @@ import { wrapWithMK_JSON, unwrapWithMK_JSON, assertEnvelopeStrict } from '../cry
 import { log } from '../core/log.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';
 import { buildIdenticonImage } from '../lib/identicon.js';
+import { t } from '/locales/index.js';
 
 const PROFILE_INFO_TAG = 'profile/v1';
 const PROFILE_ALLOWED_INFO_TAGS = new Set([PROFILE_INFO_TAG]);
@@ -642,10 +643,10 @@ export async function initProfileDefaultsOnce({ uidHex, evidence, sourceTag = PR
 }
 
 export async function uploadAvatar({ file, onProgress, thumbDataUrl } = {}) {
-  if (!file) throw new Error('請先選擇圖片');
-  if (!file.type || !file.type.startsWith('image/')) throw new Error('只支援圖片格式');
+  if (!file) throw new Error(t('profile.selectImageFirst'));
+  if (!file.type || !file.type.startsWith('image/')) throw new Error(t('profile.imageFormatOnlyError'));
   const sizeLimit = 6 * 1024 * 1024;
-  if (file.size > sizeLimit) throw new Error('圖片超過 6MB，請選擇較小的檔案');
+  if (file.size > sizeLimit) throw new Error(t('profile.imageTooLarge'));
   const acct = (getAccountDigest() || '').toUpperCase();
   if (!acct) throw new Error('Account missing');
   const convId = `${AVATAR_CONV_PREFIX}${acct}`;
