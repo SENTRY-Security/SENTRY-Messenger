@@ -7,6 +7,7 @@ import { BaseController } from './base-controller.js';
 import { normalizePeerKey } from '../contact-core-store.js';
 import { escapeHtml } from '../ui-utils.js';
 import { createGroupProcess, LocalGroupStore } from '../../../features/groups.js';
+import { t } from '/locales/index.js';
 
 export class GroupBuilderController extends BaseController {
     constructor(deps) {
@@ -31,17 +32,17 @@ export class GroupBuilderController extends BaseController {
     async copyGroupSummary(draft) {
         if (!draft) return;
         const summary = [
-            `群組ID: ${draft.groupId}`,
-            `群組名稱: ${draft.name || '(未命名)'}`,
-            `對話ID: ${draft.conversationId}`,
-            `會話密鑰(token): ${draft.tokenB64}`,
-            `邀請密鑰(seed): ${draft.secretB64Url}`
+            `${t('groups.groupIdLabel')} ${draft.groupId}`,
+            `${t('groups.groupNameLabel')} ${draft.name || t('groups.unnamed')}`,
+            `${t('groups.conversationIdLabel')} ${draft.conversationId}`,
+            `${t('groups.sessionTokenLabel')} ${draft.tokenB64}`,
+            `${t('groups.inviteSecretLabel')} ${draft.secretB64Url}`
         ].join('\n');
         try {
             await navigator.clipboard.writeText(summary);
-            this.showToast('群組資訊已複製');
+            this.showToast(t('groups.infoCopied'));
         } catch {
-            this.showToast('無法複製到剪貼簿，請確認權限');
+            this.showToast(t('groups.copyFailed'));
             this.log({ groupCopyClipboardError: 'clipboard-write-failed' });
         }
     }
@@ -70,11 +71,11 @@ export class GroupBuilderController extends BaseController {
             <div class="group-draft-cid">CID ${cid}</div>
             ${created ? `<div class="group-draft-ts">${created}</div>` : ''}
           </div>
-          <button type="button" class="group-draft-copy" aria-label="複製群組資訊">複製</button>
+          <button type="button" class="group-draft-copy" aria-label="${t('groups.copyGroupInfo')}">${t('common.copy')}</button>
         </div>
       `;
         }).join('');
-        container.innerHTML = `<div class="group-draft-header">我的群組（僅本機記錄）</div>${items}`;
+        container.innerHTML = `<div class="group-draft-header">${t('groups.myGroupsLocalOnly')}</div>${items}`;
         container.querySelectorAll('.group-draft-copy').forEach((btn) => {
             btn.addEventListener('click', (event) => {
                 const wrapper = event.target.closest('.group-draft-item');
@@ -116,19 +117,19 @@ export class GroupBuilderController extends BaseController {
         container.style.boxShadow = '0 8px 24px rgba(15,23,42,0.08)';
         container.innerHTML = `
       <div style="display:flex;align-items:center;gap:8px;justify-content:space-between;margin-bottom:8px;">
-        <strong style="font-size:14px;">建立群組</strong>
+        <strong style="font-size:14px;">${t('groups.createGroup')}</strong>
         <div style="display:flex;gap:8px;">
-          <button type="button" class="group-builder-cancel secondary" style="padding:6px 10px;">取消</button>
-          <button type="button" class="group-builder-create primary" style="padding:6px 10px;">建立</button>
+          <button type="button" class="group-builder-cancel secondary" style="padding:6px 10px;">${t('common.cancel')}</button>
+          <button type="button" class="group-builder-create primary" style="padding:6px 10px;">${t('common.create')}</button>
         </div>
       </div>
       <label style="display:block;margin-bottom:8px;">
-        <div style="font-size:12px;color:#475569;margin-bottom:4px;">群組名稱</div>
-        <input type="text" class="group-builder-name" placeholder="輸入群組名稱" style="width:100%;padding:8px 10px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;"/>
+        <div style="font-size:12px;color:#475569;margin-bottom:4px;">${t('groups.groupName')}</div>
+        <input type="text" class="group-builder-name" placeholder="${t('groups.enterGroupName')}" style="width:100%;padding:8px 10px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;"/>
       </label>
-      <div style="font-size:12px;color:#475569;margin:4px 0 6px;">選擇成員</div>
+      <div style="font-size:12px;color:#475569;margin:4px 0 6px;">${t('groups.selectMembers')}</div>
       <div class="group-builder-list" style="max-height:220px;overflow:auto;display:flex;flex-direction:column;gap:6px;"></div>
-      <div class="group-builder-empty" style="display:none;font-size:13px;color:#64748b;padding:8px 0;">尚無好友可加入，請先建立好友。</div>
+      <div class="group-builder-empty" style="display:none;font-size:13px;color:#64748b;padding:8px 0;">${t('groups.noFriendsToAdd')}</div>
     `;
         this.elements.conversationList?.parentElement?.insertBefore(container, this.elements.conversationList);
         this.groupBuilderEl = container;
@@ -165,7 +166,7 @@ export class GroupBuilderController extends BaseController {
         emptyEl.style.display = 'none';
         listEl.innerHTML = contacts.map((c) => {
             const digest = this._contactPeerKey(c) || '';
-            const nickname = escapeHtml(c?.nickname || `好友 ${digest.slice(-4)}`);
+            const nickname = escapeHtml(c?.nickname || t('groups.friendLabel', { id: digest.slice(-4) }));
             return `
         <label class="group-builder-item" style="display:flex;align-items:center;gap:10px;padding:8px;border:1px solid rgba(148,163,184,0.4);border-radius:10px;cursor:pointer;">
           <input type="checkbox" data-peer-account-digest="${digest}" data-digest="${escapeHtml(digest)}" style="width:16px;height:16px;"/>
@@ -201,25 +202,25 @@ export class GroupBuilderController extends BaseController {
         btn.disabled = true;
         try {
             const draft = await createGroupProcess({ name: nameVal, members: selected });
-            this.showToast(`群組已建立：${draft.name}`);
+            this.showToast(t('groups.groupCreated', { name: draft.name }));
             this.localGroups = LocalGroupStore.list();
             this.renderGroupDrafts();
             try {
                 const summary = [
-                    `群組ID: ${draft.groupId}`,
-                    `對話ID: ${draft.conversationId}`,
-                    `會話密鑰(token): ${draft.tokenB64}`,
-                    `邀請密鑰(seed): ${draft.secretB64Url}`
+                    `${t('groups.groupIdLabel')} ${draft.groupId}`,
+                    `${t('groups.conversationIdLabel')} ${draft.conversationId}`,
+                    `${t('groups.sessionTokenLabel')} ${draft.tokenB64}`,
+                    `${t('groups.inviteSecretLabel')} ${draft.secretB64Url}`
                 ].join('\n');
                 await navigator.clipboard.writeText(summary);
-                this.showToast('群組資訊已複製，可貼給成員');
+                this.showToast(t('groups.infoCopiedShareable'));
             } catch {
-                this.showToast('群組已建立，複製剪貼簿失敗，請稍後再試');
+                this.showToast(t('groups.createdCopyFailed'));
                 this.log({ groupCreateClipboardError: 'clipboard-write-failed' });
             }
             this.log({ groupCreate: { groupId: draft.groupId, conversationId: draft.conversationId, hasClipboard: true } });
         } catch (err) {
-            this.showToast(`建立群組失敗：${err?.message || err}`);
+            this.showToast(t('groups.createFailed', { error: err?.message || err }));
             this.log({ groupCreateError: err?.message || err });
         } finally {
             if (btn) {

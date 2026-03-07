@@ -138,7 +138,7 @@ export async function openImageViewer(opts) {
         <button type="button" class="iv-btn iv-crop-cancel" data-action="crop-cancel" aria-label="${t('viewer.cancelCrop')}">
           <svg viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
-        <span class="iv-crop-label">調整裁切區域</span>
+        <span class="iv-crop-label">${t('viewer.adjustCropArea')}</span>
         <button type="button" class="iv-btn iv-crop-confirm" data-action="crop-confirm" aria-label="${t('viewer.confirmCrop')}">
           <svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
@@ -721,16 +721,16 @@ export async function openImageViewer(opts) {
     dialog.className = 'iv-save-dialog';
     dialog.innerHTML = `
       <div class="iv-save-panel">
-        <div class="iv-save-title">儲存編輯後的圖片</div>
+        <div class="iv-save-title">${t('viewer.saveEditedImage')}</div>
         <button type="button" class="iv-save-option" data-mode="overwrite">
           <svg viewBox="0 0 24 24" fill="none" width="20" height="20"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 21v-8H7v8M7 3v5h8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          <span>覆蓋原檔</span>
+          <span>${t('viewer.overwriteOriginal')}</span>
         </button>
         <button type="button" class="iv-save-option" data-mode="new">
           <svg viewBox="0 0 24 24" fill="none" width="20" height="20"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 2v6h6M12 18v-6M9 15h6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          <span>另存新檔</span>
+          <span>${t('viewer.saveAsNew')}</span>
         </button>
-        <button type="button" class="iv-save-cancel" data-action="save-cancel">取消</button>
+        <button type="button" class="iv-save-cancel" data-action="save-cancel">${t('common.cancel')}</button>
       </div>
     `;
     overlay.appendChild(dialog);

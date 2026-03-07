@@ -82,7 +82,7 @@ export async function renderPdfViewer({ url, name, modalApi }) {
       <div class="pdf-stage">
         <div class="pdf-canvas-wrap">
           <canvas id="pdfCanvas" class="pdf-canvas"></canvas>
-          <div class="pdf-loading" id="pdfLoading">載入中…</div>
+          <div class="pdf-loading" id="pdfLoading">${t('common.loading')}</div>
         </div>
       </div>
       <div class="pdf-footer">
@@ -133,7 +133,7 @@ export async function renderPdfViewer({ url, name, modalApi }) {
     canvas.height = viewport.height;
     canvas.style.width = `${viewport.width}px`;
     canvas.style.height = `${viewport.height}px`;
-    if (loadingEl) loadingEl.textContent = `載入第 ${num} 頁…`;
+    if (loadingEl) loadingEl.textContent = t('viewer.loadingPage', { num });
     await page.render({ canvasContext: ctx, viewport }).promise;
     rendering = false;
     updateLabels();
@@ -153,7 +153,7 @@ export async function renderPdfViewer({ url, name, modalApi }) {
     await renderPage(pageNum);
   } catch (err) {
     if (loadingEl) {
-      loadingEl.textContent = `PDF 載入失敗：${err?.message || err}`;
+      loadingEl.textContent = t('viewer.pdfLoadFailed', { error: err?.message || err });
       loadingEl.classList.add('pdf-error');
     }
     return true;

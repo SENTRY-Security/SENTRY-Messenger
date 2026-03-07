@@ -132,7 +132,7 @@ export function openVideoViewer({ name = t('common.video'), size, onClose } = {}
             </div>
             <span class="vv-time vv-time-total">0:00</span>
         </div>
-        <div class="vv-footer">使用 &copy; SENTRY 分片加密串流播放器</div>
+        <div class="vv-footer">${t('viewer.sentryStreamPlayer')}</div>
     `;
 
     /* ── Query elements ── */

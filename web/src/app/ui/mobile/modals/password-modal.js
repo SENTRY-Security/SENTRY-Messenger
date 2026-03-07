@@ -66,20 +66,20 @@ export function createPasswordModal({ deps }) {
     body.innerHTML = `
       <form id="changePasswordForm" class="change-password-form">
         <label for="currentPassword">
-          目前密碼
+          ${t('password.currentPassword')}
           <input id="currentPassword" type="password" autocomplete="current-password" required />
         </label>
         <label for="newPassword">
-          新密碼
+          ${t('password.newPassword')}
           <input id="newPassword" type="password" autocomplete="new-password" minlength="6" required />
         </label>
         <label for="confirmPassword">
-          確認新密碼
+          ${t('password.confirmNewPassword')}
           <input id="confirmPassword" type="password" autocomplete="new-password" minlength="6" required />
         </label>
         <div id="changePasswordStatus" class="change-password-status" role="status" aria-live="polite"></div>
         <div class="change-password-actions">
-          <button type="button" class="secondary" id="changePasswordCancel">取消</button>
+          <button type="button" class="secondary" id="changePasswordCancel">${t('common.cancel')}</button>
           <button type="submit" class="primary" id="changePasswordSubmit">${t('password.updatePassword')}</button>
         </div>
       </form>

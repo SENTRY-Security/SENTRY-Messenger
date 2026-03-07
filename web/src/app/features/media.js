@@ -214,7 +214,7 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
   const name = typeof file.name === 'string' ? file.name : 'blob.bin';
   const fileSize = typeof file.size === 'number' ? file.size : null;
   if (fileSize != null && fileSize > MAX_UPLOAD_BYTES) {
-    throw new Error('檔案大小超過 1GB 限制');
+    throw new Error(t('upload.fileSizeExceeded', { limitMB: 1024 }));
   }
   const dirSegments = normalizeDirSegments(dir);
   if (dirSegments.length && !mk) {
@@ -224,7 +224,7 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
   // 1) Read & Encrypt
   const plainBuf = new Uint8Array(await file.arrayBuffer());
   if (plainBuf.byteLength > MAX_UPLOAD_BYTES) {
-    throw new Error('檔案大小超過 1GB 限制');
+    throw new Error(t('upload.fileSizeExceeded', { limitMB: 1024 }));
   }
   const infoTag = requireMediaInfoTag(useSharedKey ? encryptionInfoTag : MEDIA_INFO_TAG);
   const ctKey = useSharedKey ? sharedKeyU8 : mk;
@@ -327,7 +327,7 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
   const name = typeof file.name === 'string' ? file.name : 'blob.bin';
   const fileSize = typeof file.size === 'number' ? file.size : null;
   if (fileSize != null && fileSize > MAX_UPLOAD_BYTES) {
-    throw new Error('檔案大小超過 1GB 限制');
+    throw new Error(t('upload.fileSizeExceeded', { limitMB: 1024 }));
   }
   const dirSegments = normalizeDirSegments(dir);
   if (dirSegments.length && !mk) {
@@ -336,7 +336,7 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
 
   const plainBuf = new Uint8Array(await file.arrayBuffer());
   if (plainBuf.byteLength > MAX_UPLOAD_BYTES) {
-    throw new Error('檔案大小超過 1GB 限制');
+    throw new Error(t('upload.fileSizeExceeded', { limitMB: 1024 }));
   }
   const infoTag = requireMediaInfoTag(useSharedKey ? encryptionInfoTag : MEDIA_INFO_TAG);
   const ctKey = useSharedKey ? sharedKeyU8 : mk;

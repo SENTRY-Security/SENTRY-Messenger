@@ -1168,11 +1168,11 @@ export function initDrivePane({
         </div>
         <div id="uploadFileName" class="upload-name">${t('drive.noFileSelected')}</div>
         <ul id="uploadFileList" class="upload-file-list"></ul>
-        <p class="upload-hint">支援 iOS Safari：會開啟照片、檔案選擇器。</p>
+        <p class="upload-hint">${t('drive.iosSafariHint')}</p>
         <p class="upload-error" role="alert"></p>
         <div class="upload-actions">
-          <button type="button" id="uploadCancel" class="secondary">取消</button>
-          <button type="submit" class="primary">上傳</button>
+          <button type="button" id="uploadCancel" class="secondary">${t('common.cancel')}</button>
+          <button type="submit" class="primary">${t('common.upload')}</button>
         </div>
       </form>`;
     openModal?.();
@@ -1202,7 +1202,7 @@ export function initDrivePane({
       }
       const oversized = files.filter((file) => Number(file?.size || 0) > MAX_UPLOAD_BYTES);
       if (oversized.length) {
-        const msg = `單檔上限 1GB：${escapeHtml(oversized[0].name || t('common.file'))} 超過限制`;
+        const msg = t('drive.singleFileLimit1GB', { name: escapeHtml(oversized[0].name || t('common.file')) });
         if (errorEl) errorEl.textContent = msg;
         showBlockingModal(msg, { title: t('drive.fileTooLarge') });
         input.value = '';
@@ -1214,7 +1214,7 @@ export function initDrivePane({
       if (nameEl) {
         nameEl.textContent = files.length === 1
           ? formatUploadFileName(files[0].name)
-          : `${files.length} 個檔案 · ${fmtSize(totalSize)}`;
+          : t('drive.filesCountSize', { count: files.length, size: fmtSize(totalSize) });
       }
       if (listEl) {
         listEl.innerHTML = files
@@ -1232,7 +1232,7 @@ export function initDrivePane({
       }
       const oversized = files.filter((file) => Number(file?.size || 0) > MAX_UPLOAD_BYTES);
       if (oversized.length) {
-        const msg = `單檔上限 1GB：${escapeHtml(oversized[0].name || t('common.file'))} 超過限制`;
+        const msg = t('drive.singleFileLimit1GB', { name: escapeHtml(oversized[0].name || t('common.file')) });
         if (errorEl) errorEl.textContent = msg;
         showBlockingModal(msg, { title: t('drive.fileTooLarge') });
         return;
@@ -1258,12 +1258,12 @@ export function initDrivePane({
     body.innerHTML = `
       <form id="folderForm" class="folder-form">
         <label for="folderNameInput">${t('drive.folderName')}</label>
-        <input id="folderNameInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="例如：旅行紀錄 ✈️" />
-        <p class="folder-hint">可輸入中文或 emoji，僅禁止使用 / 等分隔符號。</p>
+        <input id="folderNameInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="${t('drive.folderNamePlaceholder')}" />
+        <p class="folder-hint">${t('drive.folderNameHint')}</p>
         <p class="folder-error" role="alert"></p>
         <div class="folder-actions">
-          <button type="button" id="folderCancel" class="secondary">取消</button>
-          <button type="submit" class="primary">建立</button>
+          <button type="button" id="folderCancel" class="secondary">${t('common.cancel')}</button>
+          <button type="submit" class="primary">${t('common.create')}</button>
         </div>
       </form>`;
     openModal?.();
@@ -1317,7 +1317,7 @@ export function initDrivePane({
     const oversized = files.filter((file) => Number(file?.size || 0) > MAX_UPLOAD_BYTES);
     if (oversized.length) {
       const name = escapeHtml(oversized[0].name || t('common.file'));
-      showBlockingModal(`${t('drive.cannotUpload')}：${name} 超過 1GB 單檔限制`, { title: t('drive.fileTooLarge') });
+      showBlockingModal(t('drive.cannotUploadExceeds1GB', { name }), { title: t('drive.fileTooLarge') });
       return;
     }
     const quotaBytes = resolveDriveQuotaBytes();
@@ -1338,7 +1338,7 @@ export function initDrivePane({
       return;
     }
     const convId = driveState.currentConvId || `drive-${acct}`;
-    showProgressModal?.(files.length === 1 ? (files[0].name || t('common.file')) : `${files.length} 個檔案`);
+    showProgressModal?.(files.length === 1 ? (files[0].name || t('common.file')) : t('drive.nFiles', { count: files.length }));
     await new Promise((resolve) => setTimeout(resolve, 0));
     const titleEl = document.querySelector('.progress-wrap .progress-title');
     const subtitleEl = document.querySelector('.progress-wrap .progress-subtitle');
@@ -1349,7 +1349,7 @@ export function initDrivePane({
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (titleEl) titleEl.textContent = file.name || t('common.file');
-        if (subtitleEl) subtitleEl.textContent = files.length > 1 ? `檔案 ${i + 1} / ${files.length}` : t('drive.uploading');
+        if (subtitleEl) subtitleEl.textContent = files.length > 1 ? t('drive.fileNofM', { current: i + 1, total: files.length }) : t('drive.uploading');
         if (innerEl) innerEl.style.width = '0%';
         if (pctEl) pctEl.innerHTML = '0<span>%</span>';
         if (textEl) textEl.textContent = '';
@@ -1375,7 +1375,7 @@ export function initDrivePane({
         });
         if (innerEl) innerEl.style.width = '100%';
         if (pctEl) pctEl.innerHTML = '100<span>%</span>';
-        if (textEl) textEl.textContent = files.length > 1 ? `已完成 ${i + 1} / ${files.length}` : '';
+        if (textEl) textEl.textContent = files.length > 1 ? t('drive.completedNofM', { current: i + 1, total: files.length }) : '';
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
       completeProgressModal?.();
@@ -1571,7 +1571,7 @@ export function initDrivePane({
     } else {
       const message = document.createElement('div');
       message.className = 'preview-message';
-      message.textContent = `無法預覽此類型（${ct}）`;
+      message.textContent = t('drive.cannotPreviewType', { type: ct });
       wrap.appendChild(message);
       const link = document.createElement('a');
       link.href = url;
@@ -1815,7 +1815,7 @@ export function initDrivePane({
       if (element) closeSwipe?.(element);
       showConfirmModal?.({
         title: t('drive.confirmDelete'),
-        message: `確定刪除「${escapeHtml(name || key)}」？`,
+        message: t('drive.confirmDeleteFile', { name: escapeHtml(name || key) }),
         confirmLabel: t('drive.deleteAriaLabel'),
         onConfirm: async () => {
           try {
@@ -1855,7 +1855,7 @@ export function initDrivePane({
     const visibleCount = targetMessages.filter((m) => !m.placeholder).length;
 
     if (!targetMessages.length) {
-      log({ deleteInfo: `資料夾「${folderName}」內沒有檔案` });
+      log({ deleteInfo: t('drive.folderNoFiles', { name: folderName }) });
       return;
     }
 
@@ -1866,8 +1866,8 @@ export function initDrivePane({
     showConfirmModal?.({
       title: t('drive.confirmDelete'),
       message: visibleCount > 0
-        ? `刪除資料夾「${escapeHtml(folderName)}」及其 ${visibleCount} 個檔案？`
-        : `刪除資料夾「${escapeHtml(folderName)}」（空資料夾）？`,
+        ? t('drive.deleteFolderWithCount', { name: escapeHtml(folderName), count: visibleCount })
+        : t('drive.deleteFolderEmpty', { name: escapeHtml(folderName) }),
       confirmLabel: t('drive.deleteAriaLabel'),
       onConfirm: async () => {
         try {
@@ -1921,7 +1921,7 @@ export function initDrivePane({
     updateUsageSummary();
     const hit = findEnvelopeInMessages(items, key);
     if (hit) return hit;
-    throw new Error('找不到封套資料（此物件可能來自尚未更新索引格式的舊版本或尚未同步）');
+    throw new Error(t('drive.missingEnvelopeData'));
   }
 
   function bindDomEvents() {

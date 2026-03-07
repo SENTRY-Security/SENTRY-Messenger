@@ -3,6 +3,7 @@
 // Centralized brand definitions for multi-brand support.
 // Frontend only stores brand display config — UID→brand mapping lives in the backend.
 // The backend returns `brand`, `brand_name`, `brand_logo` in the SDM exchange response.
+import { t } from '/locales/index.js';
 
 /**
  * Default brand key used when backend doesn't return a brand or brand is unknown.
@@ -26,7 +27,7 @@ export const BRANDS = Object.freeze({
     shortName: 'SENTRY',
     logo: '/assets/images/logo.svg',
     favicon: '/assets/favicon.ico',
-    subtitle: '感應 SENTRY MESSENGER 晶片後輸入密碼即可登入。',
+    get subtitle() { return t('auth.tapChipAndEnterPassword'); },
     e2eeLabel: 'END-TO-END ENCRYPTED'
   }
   // Additional brands can be defined here. However, brands with external logos

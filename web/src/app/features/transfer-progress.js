@@ -373,11 +373,11 @@ function _updateStepPies() {
             }
             if (step.segCount > 0) {
                 if (segEl) {
-                    segEl.textContent = `段 ${step.segCount}`;
+                    segEl.textContent = t('transfer.segment', { count: step.segCount });
                 } else {
                     const el = document.createElement('span');
                     el.className = 'transfer-step-frac';
-                    el.textContent = `段 ${step.segCount}`;
+                    el.textContent = t('transfer.segment', { count: step.segCount });
                     row.appendChild(el);
                 }
             }
@@ -434,7 +434,7 @@ function _renderDetailContent() {
             if (step.segCount > 0) {
                 const segEl = document.createElement('span');
                 segEl.className = 'transfer-step-frac';
-                segEl.textContent = `段 ${step.segCount}`;
+                segEl.textContent = t('transfer.segment', { count: step.segCount });
                 row.appendChild(segEl);
             }
         }
@@ -475,7 +475,7 @@ function _updateStatsDisplay() {
     }
 
     // Always show uploaded/total format
-    sizeLabel.textContent = `已上傳 ${loadedStr} / ${totalStr}`;
+    sizeLabel.textContent = t('transfer.uploaded', { loaded: loadedStr, total: totalStr });
     speedLabel.textContent = speedStr;
 }
 
@@ -531,7 +531,7 @@ function _createBarElement(type, onCancelThunk) {
         const detailBtn = document.createElement('button');
         detailBtn.type = 'button';
         detailBtn.className = 'transfer-bar-detail-btn';
-        detailBtn.title = '詳細資訊';
+        detailBtn.title = t('transfer.details');
         detailBtn.innerHTML = INFO_ICON;
         detailBtn.style.display = 'none'; // shown when upload starts
         detailBtn.addEventListener('click', (e) => {

@@ -1,4 +1,5 @@
 // Debug page for WebKit microphone permission behavior.
+import { t } from '/locales/index.js';
 
 const overlay = document.getElementById('mediaPermissionOverlay');
 const allowBtn = document.getElementById('mediaPermissionAllowBtn');
@@ -99,7 +100,7 @@ async function detectPermission() {
 async function handleAllowClick() {
   allowBtn.disabled = true;
   allowBtn.classList.add('loading');
-  setStatus('等待瀏覽器授權…');
+  setStatus(t('debug.waitingBrowserAuth'));
   logStep('click:start');
   await warmUpAudio();
   let stream = null;
@@ -110,7 +111,7 @@ async function handleAllowClick() {
     logStep('getUserMedia:success');
     const perm = await detectPermission();
     logStep('permission snapshot', perm);
-    setStatus('授權成功，overlay 將關閉。', { success: true });
+    setStatus(t('debug.authSuccessClosing'), { success: true });
     setTimeout(() => {
       hideOverlay();
       allowBtn.disabled = false;
@@ -118,7 +119,7 @@ async function handleAllowClick() {
     }, 800);
   } catch (err) {
     logStep('getUserMedia:error', { name: err?.name, message: err?.message });
-    setStatus(err?.message || '授權失敗，請再試一次。');
+    setStatus(err?.message || t('mediaPermission.authFailed'));
     allowBtn.disabled = false;
     allowBtn.classList.remove('loading');
   } finally {
@@ -138,7 +139,7 @@ function init() {
   showOverlay();
   allowBtn.addEventListener('click', () => {
     if (!navigator.mediaDevices?.getUserMedia) {
-      setStatus('此瀏覽器不支援 getUserMedia。');
+      setStatus(t('debug.getUserMediaNotSupported'));
       return;
     }
     handleAllowClick();

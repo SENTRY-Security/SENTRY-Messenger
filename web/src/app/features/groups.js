@@ -6,6 +6,7 @@
 import { createGroup as apiCreateGroup } from '../api/groups.js';
 import { deriveConversationContextFromSecret } from './conversation.js';
 import { ensureDeviceId } from '../core/store.js';
+import { t } from '/locales/index.js';
 
 const LOCAL_GROUP_STORAGE_KEY = 'groups-drafts-v1';
 let localGroupsCache = null;
@@ -84,13 +85,13 @@ export async function createGroupProcess({ name, members }) {
     });
 
     if (!r.ok) {
-        const msg = typeof data === 'string' ? data : data?.message || data?.error || '建立失敗';
+        const msg = typeof data === 'string' ? data : data?.message || data?.error || t('groups.createFailed');
         throw new Error(msg);
     }
 
     const draft = {
         groupId,
-        name: name || `群組 ${groupId.slice(-4)}`,
+        name: name || t('groups.defaultGroupName', { id: groupId.slice(-4) }),
         conversationId,
         tokenB64,
         secretB64Url,

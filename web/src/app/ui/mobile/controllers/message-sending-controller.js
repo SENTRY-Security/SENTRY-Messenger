@@ -271,7 +271,7 @@ export class MessageSendingController extends BaseController {
                     if (progress?.statusText && progress.statusText !== _lastUploadStatus) {
                         _lastUploadStatus = progress.statusText;
                         // Only toast for non-progress messages (retries, errors, etc.)
-                        if (!/^正在轉碼/.test(progress.statusText) && !/^上傳中/.test(progress.statusText)) {
+                        if (!/^正在轉碼|Transcod/i.test(progress.statusText) && !/^上傳中|Upload/i.test(progress.statusText)) {
                             this.deps.showToast?.(progress.statusText);
                         }
                     } else if (progress?.statusText === null) {

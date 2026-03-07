@@ -450,15 +450,15 @@ export class ConversationListController extends BaseController {
                         } else if (type === 'media') {
                             const mime = (payload.contentType || payload.mimeType || '').toLowerCase();
                             if (mime.startsWith('image/')) {
-                                text = '[圖片]';
+                                text = t('messages.imagePreview');
                             } else if (mime.startsWith('video/')) {
-                                text = '[影片]';
+                                text = t('messages.videoPreview');
                             } else {
-                                text = `[檔案] ${payload.filename || payload.name || t('common.attachment')}`;
+                                text = t('messages.filePreview', { name: payload.filename || payload.name || t('common.attachment') });
                             }
                         } else if (type === 'call_log' || type === 'call-log') {
                             const clKind = payload?.kind || previewMsg?.callLog?.kind || '';
-                            text = clKind === 'video' ? '[視訊通話]' : '[語音通話]';
+                            text = clKind === 'video' ? t('calls.videoCallPreview') : t('calls.voiceCallPreview');
                         } else if (type === 'contact-share' || type === 'contact_share') {
                             const csReason = payload?.reason;
                             if (csReason === 'nickname') text = t('profile.updatedNickname');

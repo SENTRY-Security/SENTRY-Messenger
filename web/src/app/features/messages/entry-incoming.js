@@ -3,6 +3,7 @@
  * Refactored from messages-pane.js handleIncomingSecureMessage.
  */
 
+import { t } from '/locales/index.js';
 import { log, logCapped } from '../../core/log.js';
 import {
     getConversationClearAfter,
@@ -372,7 +373,7 @@ export async function handleIncomingSecureMessage(event, deps) {
 
     // Thread update
     const contactEntry = getContactCore(peerKey) || getContactCore(peerDigestForWrite) || null;
-    const nickname = contactEntry?.nickname || `好友 ${peerDigestForWrite.slice(-4)}`;
+    const nickname = contactEntry?.nickname || t('contacts.friendLabel', { id: peerDigestForWrite.slice(-4) });
     const avatar = contactEntry?.avatar || null;
 
     upsertConversationThread({

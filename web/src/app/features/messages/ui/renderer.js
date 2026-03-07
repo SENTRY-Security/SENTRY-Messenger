@@ -48,23 +48,23 @@ export function formatTimestamp(ts) {
 
         // Within 1 day (today)
         if (diffDays === 0) {
-            return `今天 ${hours}:${minutes}`;
+            return t('renderer.today', { time: `${hours}:${minutes}` });
         }
 
         // Within 2 days (yesterday)
         if (diffDays === 1) {
-            return `昨天 ${hours}:${minutes}`;
+            return t('renderer.yesterday', { time: `${hours}:${minutes}` });
         }
 
         // Within 7 days
         if (diffDays < 7 && diffDays > 0) {
             const weekdays = [t('weekdays.sun'), t('weekdays.mon'), t('weekdays.tue'), t('weekdays.wed'), t('weekdays.thu'), t('weekdays.fri'), t('weekdays.sat')];
-            return `週${weekdays[date.getDay()]} ${hours}:${minutes}`;
+            return t('renderer.weekdayTime', { weekday: weekdays[date.getDay()], time: `${hours}:${minutes}` });
         }
 
         const month = date.getMonth() + 1;
         const dayOfMonth = date.getDate();
-        return `${month}月${dayOfMonth}日 ${hours}:${minutes}`;
+        return t('renderer.dateTime', { month, day: dayOfMonth, time: `${hours}:${minutes}` });
     } catch {
         return '';
     }
@@ -406,7 +406,7 @@ export class MessageRenderer {
         } else if (type === 'application/pdf' || nameLower.endsWith('.pdf')) {
             const pdf = document.createElement('canvas');
             pdf.className = 'message-file-preview-pdf';
-            pdf.setAttribute('aria-label', media?.name || 'PDF 預覽');
+            pdf.setAttribute('aria-label', media?.name || t('viewer.pdfPreview'));
             pdf.dataset.previewState = 'loading';
             container.appendChild(pdf);
             renderPdfThumbnail(media, pdf);
@@ -577,7 +577,7 @@ export class MessageRenderer {
             overlay.style.color = '#fff';
             const pct = Math.round(media._videoProgress || 0);
             const label = document.createElement('div');
-            label.textContent = `下載中… ${pct}%`;
+            label.textContent = t('renderer.downloading', { pct });
             label.style.fontWeight = '600';
             label.style.fontSize = '13px';
             overlay.appendChild(label);
@@ -665,7 +665,7 @@ export class MessageRenderer {
         if (media._expired) {
             const expiredTag = document.createElement('div');
             expiredTag.className = 'message-file-expired';
-            expiredTag.innerHTML = '<svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="10" r="8"/><line x1="6" y1="6" x2="14" y2="14"/></svg> 檔案已失效';
+            expiredTag.innerHTML = `<svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="10" r="8"/><line x1="6" y1="6" x2="14" y2="14"/></svg> ${t('renderer.fileExpired')}`;
             wrapper.appendChild(expiredTag);
         }
 
@@ -677,7 +677,7 @@ export class MessageRenderer {
             const saveBtn = document.createElement('button');
             saveBtn.type = 'button';
             saveBtn.className = 'message-file-save-drive';
-            saveBtn.innerHTML = '<svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 13v3a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 013 16v-3"/><polyline points="7 7 10 3 13 7"/><line x1="10" y1="3" x2="10" y2="13"/></svg> 存到雲端';
+            saveBtn.innerHTML = `<svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 13v3a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 013 16v-3"/><polyline points="7 7 10 3 13 7"/><line x1="10" y1="3" x2="10" y2="13"/></svg> ${t('renderer.saveToCloud')}`;
             saveBtn.addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -776,7 +776,7 @@ export class MessageRenderer {
                 const tsMs = msg.tsMs || (Number.isFinite(rawTs) && rawTs > 0 ? rawTs * 1000 : Date.now());
                 const timeStr = new Date(tsMs).toLocaleString('zh-TW', { hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 
-                sep.textContent = `${senderName} 已於 ${timeStr} 清除上方對話紀錄`;
+                sep.textContent = t('renderer.clearedHistory', { sender: senderName, time: timeStr });
                 this.listEl.appendChild(sep);
                 continue;
             }
@@ -812,7 +812,7 @@ export class MessageRenderer {
                 const isOutgoing = msg?.direction === 'outgoing';
 
                 if (csReason === 'invite-consume' || csReason === 'invite-create') {
-                  sep.textContent = `你已經與 ${name} 建立安全連線 🔐`;
+                  sep.textContent = t('renderer.secureConnectionEstablished', { name });
                 } else if (csReason === 'nickname') {
                   sep.textContent = isOutgoing ? t('profile.youUpdatedNickname') : t('profile.peerUpdatedNickname', { name });
                 } else if (csReason === 'avatar') {
@@ -989,7 +989,7 @@ export class MessageRenderer {
             if (messageType === 'media' && msg.media) {
                 this.renderMediaBubble(bubble, msg);
             } else {
-                bubble.textContent = msg.text || msg.error || '(無法解密)';
+                bubble.textContent = msg.text || msg.error || t('renderer.cannotDecrypt');
             }
 
             row.appendChild(bubble);

@@ -3,6 +3,7 @@
  * Manages outgoing message status transitions, receipt handling, and failure states.
  */
 
+import { t } from '/locales/index.js';
 import { BaseController } from './base-controller.js';
 import { normalizeCounterValue } from '../../../features/messages/parser.js';
 import { getVaultAckCounter } from '../../../features/messages/receipts.js';
@@ -272,7 +273,7 @@ export class MessageStatusController extends BaseController {
     applyCounterTooLowReplaced(message, reasonCode = 'COUNTER_TOO_LOW_REPLACED') {
         if (!message) return;
         const err = this.buildCounterTooLowReplacementError();
-        this.applyOutgoingFailure(message, err, '傳送失敗', reasonCode);
+        this.applyOutgoingFailure(message, err, t('messages.sendFailed'), reasonCode);
     }
 
     /**

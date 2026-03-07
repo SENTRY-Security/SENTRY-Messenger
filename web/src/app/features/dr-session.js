@@ -2815,7 +2815,7 @@ export async function sendDrMedia(params = {}) {
         await ensureDrSession({ peerAccountDigest: peer, peerDeviceId });
       } catch (err) {
         if (!hasDrInit) throw new Error(t('encryption.noSecureSession'));
-        throw new Error('DR 會話初始化失敗：' + (err?.message || err));
+        throw new Error(t('encryption.drInitFailed') + (err?.message || err));
       }
       state = drState({ peerAccountDigest: peer, peerDeviceId });
       hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
@@ -3020,7 +3020,7 @@ export async function sendDrMediaCore(params = {}) {
         if (!hasDrInit) {
           throw new Error(t('encryption.noSecureSession'));
         }
-        throw new Error('DR 會話初始化失敗：' + (err?.message || err));
+        throw new Error(t('encryption.drInitFailed') + (err?.message || err));
       }
       state = drState({ peerAccountDigest: peer, peerDeviceId });
       hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
@@ -3423,7 +3423,7 @@ export async function sendDrMediaCore(params = {}) {
         id: messageId,
         counter: vaultCounter,
         ts: now,
-        text: `[檔案] ${metadata.name}`,
+        text: t('messages.filePreview', { name: metadata.name }),
         type: 'media',
         media: buildReturnMedia(now)
       },
@@ -3441,7 +3441,7 @@ export async function sendDrMediaCore(params = {}) {
         id: messageId,
         counter: vaultCounter,
         ts: now,
-        text: `[檔案] ${metadata.name}`,
+        text: t('messages.filePreview', { name: metadata.name }),
         type: 'media',
         media: buildReturnMedia(now)
       },
@@ -3568,7 +3568,7 @@ export async function sendDrMediaCore(params = {}) {
             id: replacementMessageId,
             counter: repairVaultCounter,
             ts: repairNow,
-            text: `[檔案] ${metadata.name}`,
+            text: t('messages.filePreview', { name: metadata.name }),
             type: 'media',
             media: buildReturnMedia(repairNow)
           },
@@ -3587,7 +3587,7 @@ export async function sendDrMediaCore(params = {}) {
             id: replacementMessageId,
             counter: repairVaultCounter,
             ts: repairNow,
-            text: `[檔案] ${metadata.name}`,
+            text: t('messages.filePreview', { name: metadata.name }),
             type: 'media',
             media: buildReturnMedia(repairNow)
           },
@@ -3645,7 +3645,7 @@ export async function sendDrMediaCore(params = {}) {
           id: finalRepairMessageId,
           counter: repairVaultCounter,
           ts: repairNow,
-          text: `[檔案] ${metadata.name}`,
+          text: t('messages.filePreview', { name: metadata.name }),
           type: 'media',
           media: buildReturnMedia(repairNow)
         },

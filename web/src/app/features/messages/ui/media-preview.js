@@ -76,7 +76,7 @@ export function createMediaPreviewManager(deps) {
                     }
                 });
             } else {
-                showModalLoading(`準備 ${displayName}…`);
+                showModalLoading(t('mediaHandling.preparing', { name: displayName }));
                 const response = await fetch(media.localUrl);
                 if (!response.ok) throw new Error(t('mediaHandling.readLocalPreviewFailed'));
                 const blob = await response.blob();
@@ -93,7 +93,7 @@ export function createMediaPreviewManager(deps) {
             });
         } catch (err) {
             closePreviewModal?.();
-            toast?.(`附件預覽失敗：${err?.message || err}`);
+            toast?.(t('mediaHandling.previewFailed', { error: err?.message || err }));
         }
     }
 
@@ -157,7 +157,7 @@ export function createMediaPreviewManager(deps) {
             if (handled) return;
             const msg = document.createElement('div');
             msg.className = 'preview-message';
-            msg.innerHTML = `PDF 無法內嵌預覽，將直接下載。<br/><br/><a class="primary" href="${url}" download="${escapeHtml(resolvedName)}">${t('drive.downloadFile')}</a>`;
+            msg.innerHTML = `${t('mediaHandling.pdfCannotPreview')}<br/><br/><a class="primary" href="${url}" download="${escapeHtml(resolvedName)}">${t('drive.downloadFile')}</a>`;
             wrap.appendChild(msg);
         } else if (ct.startsWith('image/')) {
             // Use full-screen image viewer
@@ -202,7 +202,7 @@ export function createMediaPreviewManager(deps) {
         } else {
             const message = document.createElement('div');
             message.style.textAlign = 'center';
-            message.innerHTML = `無法預覽此類型（${escapeHtml(contentType || t('common.unknown'))}）。<br/><br/>`;
+            message.innerHTML = `${t('mediaHandling.cannotPreviewType', { type: escapeHtml(contentType || t('common.unknown')) })}<br/><br/>`;
             const link = document.createElement('a');
             link.href = url;
             link.download = resolvedName;
