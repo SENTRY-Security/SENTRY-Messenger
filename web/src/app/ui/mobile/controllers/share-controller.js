@@ -672,7 +672,7 @@ export function setupShareController(options) {
       if (!data?.invite_id || !data?.owner_public_key_b64 || !data?.prekey_bundle) {
         throw new Error(t('share.pairingDataIncomplete'));
       }
-      setPairingStatus('配對成功，正在建立連線…', { isSuccess: true });
+      setPairingStatus(t('share.pairingSuccessConnecting'), { isSuccess: true });
       // Construct the same invite object that handleInviteScan expects
       const inviteData = {
         v: INVITE_PROTOCOL_VERSION,
@@ -689,9 +689,9 @@ export function setupShareController(options) {
       closePairingCodeModal();
       await handleInviteScan(encoded);
     } catch (err) {
-      const msg = err?.data?.message || err?.message || '配對碼查詢失敗';
+      const msg = err?.data?.message || err?.message || t('share.pairingQueryFailed');
       const isRateLimited = err?.status === 429;
-      setPairingStatus(isRateLimited ? '嘗試次數過多，請稍後再試' : msg, { isError: true });
+      setPairingStatus(isRateLimited ? t('share.tooManyAttempts') : msg, { isError: true });
       console.error('[share-controller] pairing code lookup failed', err);
     } finally {
       pairingState.confirming = false;

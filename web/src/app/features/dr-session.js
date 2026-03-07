@@ -801,7 +801,7 @@ function appendDrHistoryEntry(params = {}) {
 }
 
 function restoreDrStateFromHistory(params = {}) {
-  throw new Error('DR history restore disabled；請重新同步好友或重新建立邀請');
+  throw new Error(t('encryption.noSecureSession'));
 }
 
 export function restoreDrStateToHistoryPoint(params = {}) {
@@ -2527,7 +2527,7 @@ export async function sendDrPlaintextCore(params = {}) {
     const nextFail = (sendFailureCounter.get(key) || 0) + 1;
     sendFailureCounter.set(key, nextFail);
     if (nextFail >= 3) {
-      throw new Error('DR 送出連續失敗，請重新同步好友或重新建立邀請');
+      throw new Error(t('encryption.noSecureSession'));
     }
     /* [SECURITY FIX] DO NOT ROLLBACK DR STATE ON NETWORK FAILURE
     // If we restore state here, we risk reusing the same Ratchet Counter (N) for a future message.

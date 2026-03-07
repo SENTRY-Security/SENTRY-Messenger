@@ -1041,10 +1041,10 @@ export function initDrivePane({
       <form id="renameForm" class="nickname-form">
         <label for="renameInput">${type === 'folder' ? t('drive.folderName') : t('drive.fileName')}</label>
         <input id="renameInput" type="text" value="${escapeHtml(name || '')}" autocomplete="off" spellcheck="false" />
-        <p class="nickname-hint">名稱不可為空。</p>
+        <p class="nickname-hint">${t('drive.nameCannotBeEmpty')}</p>
         <div class="nickname-actions">
-          <button type="button" id="renameCancel" class="secondary">取消</button>
-          <button type="submit" class="primary">儲存</button>
+          <button type="button" id="renameCancel" class="secondary">${t('common.cancel')}</button>
+          <button type="submit" class="primary">${t('common.save')}</button>
         </div>
       </form>`;
     openModal?.();
@@ -1163,7 +1163,7 @@ export function initDrivePane({
           <input id="uploadFileInput" type="file" class="upload-input" multiple />
           <label for="uploadFileInput" class="upload-callout">
             <i class='bx bx-cloud-upload'></i>
-            <span>點擊選擇檔案（可多選）</span>
+            <span>${t('drive.clickToSelectFiles')}</span>
           </label>
         </div>
         <div id="uploadFileName" class="upload-name">${t('drive.noFileSelected')}</div>
