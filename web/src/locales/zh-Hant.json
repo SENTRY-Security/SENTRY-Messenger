@@ -327,7 +327,16 @@
     "customLogoutHint": "僅接受 HTTPS（https://）網址，登出時會導向此頁面，請確認為可信任的網址。",
     "noSafeUrlSet": "尚未設定安全網址",
     "openUserMenu": "開啟使用者選單",
-    "userAvatar": "使用者頭像"
+    "userAvatar": "使用者頭像",
+    "invalidUrlError": "請輸入有效的 http/https 網址，例如 https://example.com。",
+    "customLogoutPageDesc": "導向指定的 HTTPS 網址，僅限受信任的頁面。",
+    "setUrl": "設定網址",
+    "showOnlineStatus": "顯示上線狀態",
+    "showOnlineStatusDesc": "讓好友看到你的上線狀態",
+    "autoLogoutOnBackground": "背景自動登出",
+    "autoLogoutOnBackgroundDesc": "當應用程式移至背景時自動登出",
+    "defaultLogoutPage": "預設登出頁面",
+    "defaultLogoutPageDesc": "使用內建的預設登出頁面"
   },
   "password": {
     "title": "變更密碼",
@@ -377,7 +386,14 @@
     "youUpdatedProfile": "你已更新個人資料",
     "peerUpdatedNickname": "{name} 已更新暱稱",
     "peerUpdatedAvatar": "{name} 已更新頭像",
-    "peerUpdatedProfile": "{name} 已更新個人資料"
+    "peerUpdatedProfile": "{name} 已更新個人資料",
+    "newNickname": "新的暱稱",
+    "nicknameHint": "暱稱僅儲存在加密資料中，伺服器不會看到。僅限文字、數字、空格、-、_、.",
+    "changeAvatar": "更換頭像",
+    "chooseImage": "選擇圖片",
+    "avatarCropHint": "拖曳或縮放裁切，支援雙指或滑鼠滾輪。",
+    "imageReadFailed": "圖片讀取失敗：",
+    "uploadFailed": "上傳失敗："
   },
   "subscription": {
     "title": "訂閱 / 儲值",
