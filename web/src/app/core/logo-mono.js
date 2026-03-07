@@ -105,10 +105,10 @@ export async function applyMonoLogo(imgEl, logoUrl, opts) {
   const dropShadow = opts?.dropShadow || '';
 
   // Non-SVG: assume it's a full-color image designed for dark backgrounds.
-  // Remove any brightness/invert filter but keep drop-shadow if present.
+  // Add .color-logo class so CSS @keyframes switch to glow-only variant.
   if (!looksLikeSvg(logoUrl)) {
     imgEl.src = logoUrl;
-    imgEl.style.filter = dropShadow || 'none';
+    imgEl.classList.add('color-logo');
     return;
   }
 
@@ -122,7 +122,7 @@ export async function applyMonoLogo(imgEl, logoUrl, opts) {
     if (!ct.includes('svg') && !ct.includes('xml')) {
       // Not SVG content — treat as raster image
       imgEl.src = logoUrl;
-      imgEl.style.filter = dropShadow || 'none';
+      imgEl.classList.add('color-logo');
       return;
     }
 
@@ -135,12 +135,10 @@ export async function applyMonoLogo(imgEl, logoUrl, opts) {
 
     const whiteSvg = rewriteSvgToWhite(svgDoc);
     imgEl.src = svgToDataUri(whiteSvg);
-    // Remove brightness/invert since we've already made it white; keep drop-shadow
-    imgEl.style.filter = dropShadow || 'none';
+    // Add .mono-done so CSS @keyframes switch to glow-only (no brightness/invert)
+    imgEl.classList.add('mono-done');
   } catch {
-    // Fallback: use CSS filter to invert the original SVG
-    imgEl.src = logoUrl;
-    imgEl.style.filter = INVERT_FILTER + (dropShadow ? ' ' + dropShadow : '');
+    // Fallback: CSS brightness(0) invert(1) stays from stylesheet/sync init
   }
 }
 
@@ -148,16 +146,13 @@ export async function applyMonoLogo(imgEl, logoUrl, opts) {
  * Synchronous helper: apply the CSS filter fallback immediately.
  * Use this for initial render before the async fetch completes.
  */
-export function applyMonoLogoSync(imgEl, logoUrl, opts) {
+export function applyMonoLogoSync(imgEl, logoUrl) {
   if (!imgEl || !logoUrl) return;
-  const dropShadow = opts?.dropShadow || '';
-
   imgEl.src = logoUrl;
-  if (looksLikeSvg(logoUrl)) {
-    imgEl.style.filter = INVERT_FILTER + (dropShadow ? ' ' + dropShadow : '');
-  } else {
-    imgEl.style.filter = dropShadow || 'none';
+  if (!looksLikeSvg(logoUrl)) {
+    imgEl.classList.add('color-logo');
   }
+  // SVG: brightness(0) invert(1) comes from CSS stylesheet — no inline style needed
 }
 
 /**

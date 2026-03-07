@@ -13,30 +13,25 @@ import { resolveBrand } from './brand-config.js';
 import { getBrandKey, getBrandName, getBrandLogo } from './store.js';
 import { applyMonoLogo, applyMonoLogoSync, looksLikeSvg } from './logo-mono.js';
 
-// Drop-shadow presets matching the CSS keyframe animations on each page.
-// Logos that use pulsing glow animations define the shadow in CSS @keyframes,
-// so we only need to supply the shadow for the initial static render here.
-const GLOW_SHADOW = 'drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25))';
-
 /**
- * Logo selectors and their drop-shadow configuration.
- * `glow: true` means the element has a pulsing glow animation — apply
- * the GLOW_SHADOW on initial render (CSS animation will take over).
+ * Logo selectors across all pages.
+ * CSS stylesheets handle brightness(0) invert(1) and @keyframes glow;
+ * applyMonoLogo adds .mono-done / .color-logo classes to switch animations.
  */
 const LOGO_SELECTORS = [
   // login.html
-  { sel: '.splash-logo',                  glow: false },
-  { sel: '.tm-logo',                      glow: true  },
-  { sel: '.brand img',                    glow: false },
+  '.splash-logo',
+  '.tm-logo',
+  '.brand img',
   // app.html
-  { sel: 'img.brand',                     glow: false },  // topbar logo (img WITH class, not img INSIDE .brand)
-  { sel: '.loading-logo',                 glow: true  },
-  { sel: '#appLoadingModal .loading-logo', glow: true  },
+  'img.brand',               // topbar logo (img WITH class, not img INSIDE .brand)
+  '.loading-logo',
+  '#appLoadingModal .loading-logo',
   // logout.html
-  { sel: '.logout-logo',                  glow: true  },
+  '.logout-logo',
   // video viewer
-  { sel: '.vv-buffering-logo',            glow: false },
-  { sel: '.vv-seekbar-thumb-logo',        glow: false }
+  '.vv-buffering-logo',
+  '.vv-seekbar-thumb-logo'
 ];
 
 /**
@@ -70,16 +65,15 @@ export function applyBrand(brandKey) {
   }
 
   // --- Logo images ---
-  for (const { sel, glow } of LOGO_SELECTORS) {
+  for (const sel of LOGO_SELECTORS) {
     const el = document.querySelector(sel);
     if (!el || el.tagName !== 'IMG') continue;
     if (el.alt) el.alt = brand.name;
 
-    const shadow = glow ? GLOW_SHADOW : '';
-    // Synchronous: set src + CSS filter immediately (no flash of unstyled logo)
-    applyMonoLogoSync(el, brand.logo, { dropShadow: shadow });
-    // Async: fetch SVG → rewrite to white → replace src with data URI
-    applyMonoLogo(el, brand.logo, { dropShadow: shadow });
+    // Synchronous: set src, add .color-logo if non-SVG (CSS handles brightness/invert)
+    applyMonoLogoSync(el, brand.logo);
+    // Async: fetch SVG → rewrite to white → replace src with data URI → add .mono-done
+    applyMonoLogo(el, brand.logo);
   }
 
   // --- Brand text elements (elements whose entire content is the brand name) ---
