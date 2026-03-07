@@ -76,7 +76,10 @@
     "ntagMac": "NTAG MAC（16 hex）",
     "nonceOptional": "Nonce（選填）",
     "chipIdImage": "晶片識別圖",
-    "showVersionInfo": "顯示版本資訊"
+    "showVersionInfo": "顯示版本資訊",
+    "iosVersionTooOld": "iOS 版本過舊",
+    "iosVersionRequired": "此應用程式需要 <strong style=\"color:#fff;\">iOS {version}</strong> 或以上版本才能正常運作。",
+    "iosUpdateInstructions": "請前往「設定 > 一般 > 軟體更新」升級您的裝置。"
   },
   "welcome": {
     "title": "迎接嶄新的隱私通訊！",
@@ -94,7 +97,8 @@
     "restoreFailed": "還原失敗",
     "existingNicknameAvatar": "已存在暱稱/頭像",
     "existingAvatar": "已存在頭像",
-    "deviceBackupNotFound": "未找到裝置備份"
+    "deviceBackupNotFound": "未找到裝置備份",
+    "contactRestoreSuccess": "還原 {count} 筆資料"
   },
   "errors": {
     "fallbackError": "發生未知錯誤，請稍後再試。",
@@ -116,7 +120,29 @@
     "invalidContact": "無效的聯絡人",
     "conversationNotFound": "找不到對話",
     "missingAccountDigest": "缺少 accountDigest",
-    "persistentConnectionError": "偵測到持續性的連線或加密錯誤，為確保安全，請重新登入以修復連線。\n\n錯誤詳情: {message}"
+    "persistentConnectionError": "偵測到持續性的連線或加密錯誤，為確保安全，請重新登入以修復連線。\n\n錯誤詳情: {message}",
+    "exchangeFailed": "伺服器驗證失敗，請稍後再試。",
+    "replay": "偵測到晶片計數器重複，請關閉頁面後重新感應。",
+    "sessionExpired": "驗證已逾時，請重新感應卡片。",
+    "sessionMismatch": "驗證資料不一致，請重新感應卡片。",
+    "storeFailed": "伺服器儲存資料失敗，請稍後再試。",
+    "badRequest": "送出的資訊格式不正確，請確認後重試。",
+    "opaqueSessionExpired": "驗證已逾時，請重新感應卡片。",
+    "opaqueSessionNotFound": "驗證資訊不存在，請重新感應卡片。",
+    "uidNotDetected": "尚未偵測到晶片 UID，請重新感應。",
+    "macMissing": "MAC 資料缺失，請重新感應晶片。",
+    "enterUnlockPassword": "請輸入解鎖密碼。",
+    "completeChipVerification": "請先完成晶片驗證。",
+    "completeChipScanFirst": "請先感應晶片並完成驗證。",
+    "masterKeyStoreFailed": "儲存主金鑰失敗，請稍後再試。",
+    "masterKeyInitFailed": "初始化主金鑰失敗，請稍後再試。",
+    "deviceBackupReadFailed": "讀取裝置備份失敗，請稍後再試。",
+    "deviceKeySyncFailed": "同步裝置金鑰失敗，請稍後再試。",
+    "deviceBackupStoreFailed": "儲存裝置備份失敗，請稍後再試。",
+    "prekeysInitFailed": "初始化預共享金鑰失敗，請稍後再試。",
+    "prekeysReinitFailed": "重新建置預共享金鑰失敗，請稍後再試。",
+    "prekeysReplenishFailed": "補貨預共享金鑰失敗，請稍後再試。",
+    "chipVerifyFailed": "晶片驗證失敗，請重新感應卡片。"
   },
   "contacts": {
     "title": "聯絡人",

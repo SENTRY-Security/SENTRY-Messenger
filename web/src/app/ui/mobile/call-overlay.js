@@ -591,8 +591,8 @@ function ensureOverlayElements() {
         <span class="call-secure-label">${t('callEncryption.keyPending')}</span>
       </div>
       <div class="call-actions">
-        <button type="button" class="call-btn reject" data-call-action="reject"><i class='bx bx-x'></i>拒接</button>
-        <button type="button" class="call-btn accept" data-call-action="accept"><i class='bx bx-phone'></i>接聽</button>
+        <button type="button" class="call-btn reject" data-call-action="reject"><i class='bx bx-x'></i>${t('calls.reject')}</button>
+        <button type="button" class="call-btn accept" data-call-action="accept"><i class='bx bx-phone'></i>${t('calls.accept')}</button>
         <button type="button" class="call-btn cancel" data-call-action="cancel"><i class='bx bx-phone-off'></i>取消</button>
       </div>
       <div class="call-controls hidden" aria-label="${t('calls.controls')}">

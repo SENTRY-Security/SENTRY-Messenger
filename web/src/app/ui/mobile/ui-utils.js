@@ -212,14 +212,16 @@ export function resolveMessagePreview(item) {
 /**
  * Degraded preview strings that should not overwrite a good decrypted preview.
  */
-const DEGRADED_PREVIEWS = new Set([
-  '訊息尚未解密🔐',
-  '(載入失敗)',
-  '🔒 加密訊息'
-]);
+function getDegradedPreviews() {
+  return new Set([
+    t('messages.notDecrypted'),
+    t('messages.loadFailed'),
+    t('messages.encryptedMessage')
+  ]);
+}
 
 export function isDegradedPreview(text) {
-  return !text || DEGRADED_PREVIEWS.has(text);
+  return !text || getDegradedPreviews().has(text);
 }
 
 /**

@@ -25,7 +25,9 @@
     "copied": "Copied",
     "copyContent": "Copy content",
     "copyFailed": "Copy failed",
-    "emptyFolder": "Empty folder"
+    "emptyFolder": "Empty folder",
+    "saving": "Saving…",
+    "upload": "Upload"
   },
   "weekdays": {
     "sun": "Sun",
@@ -120,7 +122,29 @@
     "invalidContact": "Invalid contact",
     "conversationNotFound": "Conversation not found",
     "missingAccountDigest": "Missing accountDigest",
-    "persistentConnectionError": "Persistent connection or encryption errors detected. For security, please re-login to repair the connection.\n\nError details: {message}"
+    "persistentConnectionError": "Persistent connection or encryption errors detected. For security, please re-login to repair the connection.\n\nError details: {message}",
+    "exchangeFailed": "Server verification failed, please try again later.",
+    "replay": "Chip counter replay detected, please close the page and re-scan.",
+    "sessionExpired": "Verification timed out, please re-scan your card.",
+    "sessionMismatch": "Verification data mismatch, please re-scan your card.",
+    "storeFailed": "Server failed to store data, please try again later.",
+    "badRequest": "Invalid request format, please verify and try again.",
+    "opaqueSessionExpired": "Verification timed out, please re-scan your card.",
+    "opaqueSessionNotFound": "Verification session not found, please re-scan your card.",
+    "uidNotDetected": "Chip UID not detected, please re-scan.",
+    "macMissing": "MAC data missing, please re-scan chip.",
+    "enterUnlockPassword": "Please enter your unlock password.",
+    "completeChipVerification": "Please complete chip verification first.",
+    "completeChipScanFirst": "Please scan your chip and complete verification first.",
+    "masterKeyStoreFailed": "Failed to store master key, please try again later.",
+    "masterKeyInitFailed": "Failed to initialize master key, please try again later.",
+    "deviceBackupReadFailed": "Failed to read device backup, please try again later.",
+    "deviceKeySyncFailed": "Failed to sync device keys, please try again later.",
+    "deviceBackupStoreFailed": "Failed to store device backup, please try again later.",
+    "prekeysInitFailed": "Failed to initialize pre-shared keys, please try again later.",
+    "prekeysReinitFailed": "Failed to re-initialize pre-shared keys, please try again later.",
+    "prekeysReplenishFailed": "Failed to replenish pre-shared keys, please try again later.",
+    "chipVerifyFailed": "Chip verification failed, please re-scan your card."
   },
   "contacts": {
     "title": "Contacts",

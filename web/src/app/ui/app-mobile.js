@@ -2665,7 +2665,7 @@ function showFatalErrorModal(message = t('errors.connectionError')) {
     // Body
     const msg = document.createElement('div');
     Object.assign(msg.style, { fontSize: '15px', lineHeight: '1.5', color: '#334155' });
-    msg.textContent = `偵測到持續性的連線或加密錯誤，為確保安全，請重新登入以修復連線。\n\n錯誤詳情: ${message}`;
+    msg.textContent = t('errors.persistentConnectionError', { message });
 
     // Action Button
     const btn = document.createElement('button');

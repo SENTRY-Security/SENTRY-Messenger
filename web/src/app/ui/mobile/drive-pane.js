@@ -1420,16 +1420,16 @@ export function initDrivePane({
 
     // ── Chunked non-video: download all chunks then preview ──
     if (chunkedMeta?.chunked) {
-      showModalLoading?.('下載加密檔案中…');
+      showModalLoading?.(t('drive.downloadEncryptedFile'));
       try {
         cleanupPdfViewer();
         const { downloadChunkedManifest, downloadAllChunks } = await import('../../features/chunked-download.js');
-        updateLoadingModal?.({ percent: 5, text: '取得解密資訊中…' });
+        updateLoadingModal?.({ percent: 5, text: t('drive.gettingDecryptInfo') });
         const manifest = await downloadChunkedManifest({
           baseKey: chunkedMeta.baseKey,
           manifestEnvelope: chunkedMeta.manifestEnvelope
         });
-        updateLoadingModal?.({ percent: 10, text: '下載加密分片中…' });
+        updateLoadingModal?.({ percent: 10, text: t('drive.downloadingEncryptedChunks') });
         const result = await downloadAllChunks({
           baseKey: chunkedMeta.baseKey,
           manifest,
@@ -1437,11 +1437,11 @@ export function initDrivePane({
           onProgress: ({ percent: pct }) => {
             if (Number.isFinite(pct)) {
               const mapped = 10 + Math.round(pct * 0.85);
-              updateLoadingModal?.({ percent: mapped, text: `下載加密分片中… ${pct}%` });
+              updateLoadingModal?.({ percent: mapped, text: `${t('drive.downloadingEncryptedChunks')} ${pct}%` });
             }
           }
         });
-        updateLoadingModal?.({ percent: 98, text: '組裝檔案中…' });
+        updateLoadingModal?.({ percent: 98, text: t('drive.assemblingFile') });
         doPreviewFromBlob(result.blob, result.contentType || ct, result.name || resolvedName);
       } catch (err) {
         closeModal?.();
@@ -1451,7 +1451,7 @@ export function initDrivePane({
     }
 
     // ── Standard single-object file ──
-    showModalLoading?.('下載加密檔案中…');
+    showModalLoading?.(t('drive.downloadEncryptedFile'));
     const envelope = findEnvelopeInMessages(driveState.currentMessages, key);
     try {
       cleanupPdfViewer();
@@ -1460,9 +1460,9 @@ export function initDrivePane({
         envelope,
         onProgress: ({ stage, loaded, total }) => {
           if (stage === 'sign') {
-            updateLoadingModal?.({ percent: 5, text: '取得下載授權中…' });
+            updateLoadingModal?.({ percent: 5, text: t('drive.gettingDownloadAuth') });
           } else if (stage === 'download-start') {
-            updateLoadingModal?.({ percent: 10, text: '下載加密檔案中…' });
+            updateLoadingModal?.({ percent: 10, text: t('drive.downloadingEncryptedFile') });
           } else if (stage === 'download') {
             const pct = total && total > 0 ? Math.round((loaded / total) * 100) : null;
             const percent = pct != null ? Math.min(95, Math.max(15, pct)) : 45;

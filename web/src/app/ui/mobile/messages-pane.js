@@ -1139,7 +1139,7 @@ export function initMessagesPane({
     const key = normalizePeerKey(peerAccountDigest);
     if (!key) return;
     const contactEntry = getContactCore(key);
-    const nickname = contactEntry?.nickname || `好友 ${key.slice(-4)}`;
+    const nickname = contactEntry?.nickname || t('contacts.friendFallback', { id: key.slice(-4) });
     const threadEntry = getConversationThreads().get(conversationId) || null;
     const convIndexEntry = sessionStore.conversationIndex?.get?.(conversationId) || null;
     const peerDeviceId =
@@ -1149,7 +1149,7 @@ export function initMessagesPane({
       null;
     showConfirmModal({
       title: t('messages.deleteConversation'),
-      message: `確定要刪除與「${escapeHtml(nickname)}」的對話？此操作也會從對方的對話列表中移除。`,
+      message: t('messages.confirmDeleteConversation', { name: escapeHtml(nickname) }),
       confirmLabel: t('common.delete'),
       onConfirm: async () => {
         try {
@@ -1586,7 +1586,7 @@ export function initMessagesPane({
         <div class="version-section-title">Header Payload</div>
         <div style="margin-top:8px;">
           <details style="border: 1px solid rgba(15, 23, 42, 0.1); border-radius: 10px; background: #f8fafc;">
-             <summary style="padding: 10px 12px; cursor:pointer; font-weight:700; font-size:13px; color:#0f172a;">檢視 Header JSON</summary>
+             <summary style="padding: 10px 12px; cursor:pointer; font-weight:700; font-size:13px; color:#0f172a;">${t('debug.viewHeaderJson')}</summary>
              <div style="padding: 0 12px 12px 12px;">
                <pre style="margin:0; padding:10px; color:#334155; word-break:break-all; white-space:pre-wrap; font-family:monospace; font-size:12px; background:#f1f5f9; border-radius:8px; overflow-x: auto;">${escapeHtml(headerJson)}</pre>
              </div>
@@ -1609,7 +1609,7 @@ export function initMessagesPane({
         <div style="margin: 16px 0; border-top: 1px dashed rgba(0,0,0,0.1);"></div>
         
         <div class="version-section-title">Session State (Global)</div>
-        <div style="font-size: 11px; color: #64748b; margin-bottom: 8px;">當前最新的加密會話狀態</div>
+        <div style="font-size: 11px; color: #64748b; margin-bottom: 8px;">${t('encryption.currentSessionState')}</div>
         ${drData.map(renderRow).join('')}
         
         <div style="margin: 16px 0; border-top: 1px dashed rgba(0,0,0,0.1);"></div>

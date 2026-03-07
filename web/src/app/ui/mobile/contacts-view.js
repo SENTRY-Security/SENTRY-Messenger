@@ -193,7 +193,7 @@ export function initContactsView(options) {
       const pendingInfo = pendingMap ? (pendingMap.get(key) || pendingMap.get(digestOnly)) : null;
       const metaText = pendingInfo
         ? t('contacts.syncingPleaseWait')
-        : (corruptInfo ? t('contacts.corruptNeedResync') : `最近同步：${lastStr}`);
+        : (corruptInfo ? t('contacts.corruptNeedResync') : t('contacts.lastSync', { time: lastStr }));
 
       const li = document.createElement('li');
       li.className = 'contact-item';
@@ -371,7 +371,7 @@ export function initContactsView(options) {
     if (!key) return;
     modal.showConfirmModal({
       title: t('contacts.deleteConfirmTitle'),
-      message: `確定要刪除「${escapeHtml(name || key)}」？`,
+      message: t('contacts.confirmDelete', { name: escapeHtml(name || key) }),
       confirmLabel: t('common.delete'),
       onConfirm: async () => {
         try {

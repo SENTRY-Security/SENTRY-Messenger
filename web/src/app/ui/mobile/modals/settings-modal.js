@@ -126,7 +126,7 @@ export function createSettingsModule({ deps }) {
     if (!input || !saveBtn) return;
     const sanitized = sanitizeUrl(input.value || '');
     if (!sanitized) {
-      if (errorEl) errorEl.textContent = '請輸入有效的 http/https 網址，例如 https://example.com。';
+      if (errorEl) errorEl.textContent = t('settings.invalidUrlError');
       input.focus();
       return;
     }
@@ -258,10 +258,10 @@ export function createSettingsModule({ deps }) {
         <div class="settings-option custom-option">
           <input type="radio" name="autoLogoutRedirect" id="settingsLogoutCustom" value="custom" ${current.autoLogoutRedirectMode === 'custom' ? 'checked' : ''} />
           <div class="option-body">
-            <strong>客製化登出頁面</strong>
-            <p>導向指定的 HTTPS 網址，僅限受信任的頁面。</p>
+            <strong>${escapeHtml(t('settings.customLogoutPage'))}</strong>
+            <p>${escapeHtml(t('settings.customLogoutPageDesc'))}</p>
             <div class="custom-summary" id="settingsLogoutSummary">${escapeHtml(customSummaryValue)}</div>
-            <button type="button" class="settings-link subtle" id="settingsLogoutManage">設定網址</button>
+            <button type="button" class="settings-link subtle" id="settingsLogoutManage">${escapeHtml(t('settings.setUrl'))}</button>
           </div>
         </div>
         </div>
