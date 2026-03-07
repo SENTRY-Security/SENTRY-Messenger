@@ -671,7 +671,8 @@
     "encryptedUpload": "Encrypted upload",
     "videoContainer": "Video container",
     "fragmentedVideoError": "Fragmented video format cannot be parsed correctly",
-    "calculating": "Calculating…"
+    "calculating": "Calculating…",
+    "uploading": "Uploading… {percent}%"
   },
   "video": {
     "cannotLoadVideoModule": "Cannot load video processing module: ",
