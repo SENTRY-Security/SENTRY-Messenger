@@ -383,7 +383,8 @@
     "autoLogoutOnBackground": "背景自動登出",
     "autoLogoutOnBackgroundDesc": "當應用程式移至背景時自動登出",
     "defaultLogoutPage": "預設登出頁面",
-    "defaultLogoutPageDesc": "使用內建的預設登出頁面"
+    "defaultLogoutPageDesc": "使用內建的預設登出頁面",
+    "language": "語言 / Language"
   },
   "password": {
     "title": "變更密碼",

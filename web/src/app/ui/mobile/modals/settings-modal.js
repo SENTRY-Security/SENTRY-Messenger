@@ -281,7 +281,7 @@ export function createSettingsModule({ deps }) {
         </div>
         <div class="settings-item">
           <div class="settings-text">
-            <strong>Language / 語言</strong>
+            <strong>${escapeHtml(t('settings.language'))}</strong>
           </div>
           <select id="settingsLanguage" class="settings-select" style="padding:6px 10px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;background:#fff;">
             ${SUPPORTED_LANGUAGES.map(l => `<option value="${l.code}" ${l.code === getCurrentLang() ? 'selected' : ''}>${escapeHtml(l.label)}</option>`).join('')}

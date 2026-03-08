@@ -383,7 +383,8 @@
     "autoLogoutOnBackground": "Auto logout on background",
     "autoLogoutOnBackgroundDesc": "Automatically log out when the app moves to background",
     "defaultLogoutPage": "Default logout page",
-    "defaultLogoutPageDesc": "Use the built-in default logout page"
+    "defaultLogoutPageDesc": "Use the built-in default logout page",
+    "language": "Language / 語言"
   },
   "password": {
     "title": "Change Password",
