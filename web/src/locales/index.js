@@ -31,7 +31,7 @@ function detectLang() {
  * Normalise a BCP-47 tag to one of the supported locale file names.
  * e.g. 'zh-TW' → 'zh-Hant', 'zh-Hant-TW' → 'zh-Hant', 'en-US' → 'en', 'ja' → 'ja'
  */
-const SUPPORTED_LOCALE_SET = new Set(['en', 'zh-Hant', 'zh-Hans', 'ja', 'ko', 'th', 'vi', 'es', 'pt']);
+const SUPPORTED_LOCALE_SET = new Set(['en', 'zh-Hant', 'zh-Hans', 'ja']);
 
 function normaliseTag(tag) {
   const t = String(tag).toLowerCase();
@@ -41,7 +41,7 @@ function normaliseTag(tag) {
   // Simplified Chinese variants
   if (t === 'zh-hans' || t === 'zh-cn' || t === 'zh-sg'
       || t.startsWith('zh-hans') || t === 'zh') return 'zh-Hans';
-  // Strip region for other languages (en-US → en, ja-JP → ja, ko-KR → ko, etc.)
+  // Strip region for other languages (en-US → en, ja-JP → ja, etc.)
   const base = t.split('-')[0];
   // Return base if it's a supported locale, otherwise fall back to 'en'
   return SUPPORTED_LOCALE_SET.has(base) ? base : 'en';
