@@ -16,14 +16,11 @@ function resolve(obj, path) {
 }
 
 /**
- * Detect the preferred language.
- * Priority: localStorage setting > navigator.language > 'en'
+ * Detect the preferred language from browser settings only.
+ * Language preference is stored in encrypted user settings (loaded after login),
+ * NOT in localStorage, to prevent nationality metadata leakage before login.
  */
 function detectLang() {
-  if (typeof localStorage !== 'undefined') {
-    const saved = localStorage.getItem('sentry-lang');
-    if (saved) return saved;
-  }
   if (typeof navigator !== 'undefined' && navigator.language) {
     return navigator.language;
   }
@@ -113,13 +110,11 @@ export function getCurrentLang() {
 }
 
 /**
- * Switch language at runtime. Saves preference and reloads locale data.
+ * Switch language at runtime. Reloads locale data and applies DOM translations.
+ * Does NOT persist to localStorage — language is stored in encrypted user settings only.
  * @param {string} lang  BCP-47 tag
  */
 export async function setLang(lang) {
-  if (typeof localStorage !== 'undefined') {
-    localStorage.setItem('sentry-lang', lang);
-  }
   await initI18n(lang);
   applyDOMTranslations();
 }

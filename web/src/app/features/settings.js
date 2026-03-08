@@ -15,11 +15,14 @@ function convIdForSettings() {
   return acct ? `settings-${acct}` : null;
 }
 
+const SUPPORTED_LANGS = new Set(['en', 'zh-Hant']);
+
 export const DEFAULT_SETTINGS = Object.freeze({
   showOnlineStatus: true,
   autoLogoutOnBackground: true,
   autoLogoutRedirectMode: 'default',
-  autoLogoutCustomUrl: ''
+  autoLogoutCustomUrl: '',
+  language: null   // null = follow browser; 'en' | 'zh-Hant' = forced
 });
 
 function sanitizeLogoutUrl(input) {
@@ -40,11 +43,13 @@ function normalizeSettings(input = {}) {
   const sanitizedUrl = sanitizeLogoutUrl(input.autoLogoutCustomUrl);
   const wantsCustomRedirect = input.autoLogoutRedirectMode === 'custom';
   const hasUrl = !!sanitizedUrl;
+  const lang = typeof input.language === 'string' && SUPPORTED_LANGS.has(input.language) ? input.language : null;
   const normalized = {
     showOnlineStatus: typeof input.showOnlineStatus === 'boolean' ? input.showOnlineStatus : DEFAULT_SETTINGS.showOnlineStatus,
     autoLogoutOnBackground: typeof input.autoLogoutOnBackground === 'boolean' ? input.autoLogoutOnBackground : DEFAULT_SETTINGS.autoLogoutOnBackground,
     autoLogoutRedirectMode: wantsCustomRedirect && hasUrl ? 'custom' : DEFAULT_SETTINGS.autoLogoutRedirectMode,
-    autoLogoutCustomUrl: sanitizedUrl || null
+    autoLogoutCustomUrl: sanitizedUrl || null,
+    language: lang
   };
   return normalized;
 }

@@ -1,7 +1,7 @@
 // System settings modal (online status, auto-logout, logout redirect, change password)
 
 import { escapeHtml } from '../ui-utils.js';
-import { t, getCurrentLang, setLang } from '/locales/index.js';
+import { t, getCurrentLang, setLang, applyDOMTranslations } from '/locales/index.js';
 
 const SUPPORTED_LANGUAGES = [
   { code: 'zh-Hant', label: '繁體中文' },
@@ -66,7 +66,14 @@ export function createSettingsModule({ deps }) {
       try { console.info('[settings] boot:load:done ' + JSON.stringify({ ok: info.ok !== false, hasEnvelope: !!info.hasEnvelope, urlMode: info.urlMode || null, hasUrl: !!info.hasUrl, urlLen: info.urlLen || 0, ts: info.ts || null })); } catch { }
       const applied = settings || { ...DEFAULT_SETTINGS, updatedAt: Date.now() };
       sessionStore.settingsState = applied;
-      try { console.info('[settings] boot:apply ' + JSON.stringify({ autoLogoutRedirectMode: applied.autoLogoutRedirectMode || null, hasCustomLogoutUrl: !!applied.autoLogoutCustomUrl })); } catch { }
+      // Apply saved language preference from encrypted settings (post-login)
+      if (applied.language && applied.language !== getCurrentLang()) {
+        try {
+          await setLang(applied.language);
+          console.info('[settings] language applied from encrypted settings:', applied.language);
+        } catch (err) { console.warn('[settings] language apply failed', err); }
+      }
+      try { console.info('[settings] boot:apply ' + JSON.stringify({ autoLogoutRedirectMode: applied.autoLogoutRedirectMode || null, hasCustomLogoutUrl: !!applied.autoLogoutCustomUrl, language: applied.language || null })); } catch { }
       return applied;
     } catch (err) {
       try { console.info('[settings] boot:load:done ' + JSON.stringify({ ok: false, hasEnvelope: true, reason: err?.message || String(err), ts: null })); } catch { }
@@ -180,7 +187,7 @@ export function createSettingsModule({ deps }) {
   async function persistPatch(partial) {
     const previous = getEffective();
     const next = { ...previous, ...partial };
-    const trackedKeys = ['showOnlineStatus', 'autoLogoutOnBackground', 'autoLogoutRedirectMode', 'autoLogoutCustomUrl'];
+    const trackedKeys = ['showOnlineStatus', 'autoLogoutOnBackground', 'autoLogoutRedirectMode', 'autoLogoutCustomUrl', 'language'];
     const noChange = trackedKeys.every((key) => previous[key] === next[key]);
     if (noChange) return previous;
     sessionStore.settingsState = next;
@@ -299,10 +306,18 @@ export function createSettingsModule({ deps }) {
     const languageSelect = body.querySelector('#settingsLanguage');
     languageSelect?.addEventListener('change', async (e) => {
       const newLang = e.target.value;
-      await setLang(newLang);
-      closeModal();
-      // Reload page to apply all translations
-      window.location.reload();
+      languageSelect.disabled = true;
+      try {
+        // Save language to encrypted settings (not localStorage)
+        await persistPatch({ language: newLang });
+        await setLang(newLang);
+        closeModal();
+        window.location.reload();
+      } catch (err) {
+        log({ languageSaveError: err?.message || err });
+        languageSelect.disabled = false;
+        if (typeof showAlertModal === 'function') showAlertModal({ title: t('errors.saveFailed'), message: t('errors.saveSettingsFailed') });
+      }
     });
 
     closeBtn?.addEventListener('click', () => closeModal(), { once: true });

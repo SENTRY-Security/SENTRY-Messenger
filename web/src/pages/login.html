@@ -25,9 +25,10 @@
     </script>
     <script>
       // Inline i18n bootstrap — loads locale JSON synchronously so splash text is translated on first paint.
+      // Uses browser language ONLY (no localStorage) to prevent nationality metadata leakage before login.
       (function(){
         var lang = 'en';
-        try { lang = localStorage.getItem('sentry-lang') || (navigator.language || 'en'); } catch {}
+        try { lang = navigator.language || 'en'; } catch {}
         var tag = lang.toLowerCase();
         if (tag==='zh-hant'||tag==='zh-tw'||tag==='zh-hk'||tag.indexOf('zh-hant')===0) tag='zh-Hant';
         else tag = tag.split('-')[0];
