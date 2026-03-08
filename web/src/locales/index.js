@@ -96,7 +96,14 @@ export async function initI18n(lang) {
  * @returns {string}
  */
 export function t(key, params) {
-  const val = resolve(messages, key) ?? resolve(fallbackMessages, key) ?? key;
+  let val = resolve(messages, key) ?? resolve(fallbackMessages, key);
+  // Fall back to inline bootstrap translator (synchronous XHR loaded in HTML)
+  // when async fetch hasn't completed yet
+  if (val == null && typeof window !== 'undefined' && typeof window.__t === 'function') {
+    val = window.__t(key, params);
+    if (val !== key) return val;  // __t already handled interpolation
+  }
+  if (val == null) val = key;
   if (!params || typeof val !== 'string') return val;
   return val.replace(/\{(\w+)\}/g, (_, k) => (params[k] != null ? params[k] : `{${k}}`));
 }
