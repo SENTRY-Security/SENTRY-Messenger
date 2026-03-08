@@ -782,7 +782,7 @@
 }
 .modal.settings-modal .modal-panel {
   width: min(360px, 92vw);
-  max-height: none;
+  max-height: 88vh;
 }
 
 .modal.settings-modal .modal-body {
@@ -791,6 +791,8 @@
   display: flex;
   flex-direction: column;
   gap: 20px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .modal.subscription-modal-shell .modal-panel {
