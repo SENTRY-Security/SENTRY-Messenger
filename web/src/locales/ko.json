@@ -717,7 +717,11 @@
     "typePdf": "PDF",
     "typeText": "텍스트",
     "typeVideo": "동영상",
-    "typeWord": "Word"
+    "typeWord": "Word",
+    "minutesAgo": "{count}분 전",
+    "hoursAgo": "{count}시간 전",
+    "daysAgo": "{count}일 전",
+    "monthDay": "{month}/{day}"
   },
   "viewer": {
     "close": "닫기",

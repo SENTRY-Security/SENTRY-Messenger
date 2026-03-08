@@ -717,7 +717,11 @@
     "typePdf": "PDF",
     "typeText": "Text",
     "typeVideo": "Video",
-    "typeWord": "Word"
+    "typeWord": "Word",
+    "minutesAgo": "{count} min ago",
+    "hoursAgo": "{count} hr ago",
+    "daysAgo": "{count} days ago",
+    "monthDay": "{month}/{day}"
   },
   "viewer": {
     "close": "Close",

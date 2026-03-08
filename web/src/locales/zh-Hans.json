@@ -717,7 +717,11 @@
     "typePdf": "PDF",
     "typeText": "文字",
     "typeVideo": "视频",
-    "typeWord": "Word"
+    "typeWord": "Word",
+    "minutesAgo": "{count} 分钟前",
+    "hoursAgo": "{count} 小时前",
+    "daysAgo": "{count} 天前",
+    "monthDay": "{month}/{day}"
   },
   "viewer": {
     "close": "关闭",

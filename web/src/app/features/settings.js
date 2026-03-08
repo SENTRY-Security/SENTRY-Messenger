@@ -15,10 +15,9 @@ function convIdForSettings() {
   return acct ? `settings-${acct}` : null;
 }
 
-const SUPPORTED_LANGS = new Set(['en', 'zh-Hant', 'zh-Hans', 'ja', 'ko', 'th', 'vi', 'es', 'pt']);
+const SUPPORTED_LANGS = new Set(['en', 'zh-Hant', 'zh-Hans', 'ja', 'ko', 'th', 'vi']);
 
 export const DEFAULT_SETTINGS = Object.freeze({
-  showOnlineStatus: true,
   autoLogoutOnBackground: true,
   autoLogoutRedirectMode: 'default',
   autoLogoutCustomUrl: '',
@@ -45,7 +44,6 @@ function normalizeSettings(input = {}) {
   const hasUrl = !!sanitizedUrl;
   const lang = typeof input.language === 'string' && SUPPORTED_LANGS.has(input.language) ? input.language : null;
   const normalized = {
-    showOnlineStatus: typeof input.showOnlineStatus === 'boolean' ? input.showOnlineStatus : DEFAULT_SETTINGS.showOnlineStatus,
     autoLogoutOnBackground: typeof input.autoLogoutOnBackground === 'boolean' ? input.autoLogoutOnBackground : DEFAULT_SETTINGS.autoLogoutOnBackground,
     autoLogoutRedirectMode: wantsCustomRedirect && hasUrl ? 'custom' : DEFAULT_SETTINGS.autoLogoutRedirectMode,
     autoLogoutCustomUrl: sanitizedUrl || null,

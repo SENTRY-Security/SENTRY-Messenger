@@ -717,7 +717,11 @@
     "typePdf": "PDF",
     "typeText": "ข้อความ",
     "typeVideo": "วิดีโอ",
-    "typeWord": "Word"
+    "typeWord": "Word",
+    "minutesAgo": "{count} นาทีที่แล้ว",
+    "hoursAgo": "{count} ชั่วโมงที่แล้ว",
+    "daysAgo": "{count} วันที่แล้ว",
+    "monthDay": "{day}/{month}"
   },
   "viewer": {
     "close": "ปิด",

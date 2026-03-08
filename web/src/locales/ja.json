@@ -717,7 +717,11 @@
     "typePdf": "PDF",
     "typeText": "テキスト",
     "typeVideo": "動画",
-    "typeWord": "Word"
+    "typeWord": "Word",
+    "minutesAgo": "{count}分前",
+    "hoursAgo": "{count}時間前",
+    "daysAgo": "{count}日前",
+    "monthDay": "{month}/{day}"
   },
   "viewer": {
     "close": "閉じる",

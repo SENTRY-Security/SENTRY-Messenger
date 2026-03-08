@@ -717,7 +717,11 @@
     "typePdf": "PDF",
     "typeText": "Văn bản",
     "typeVideo": "Video",
-    "typeWord": "Word"
+    "typeWord": "Word",
+    "minutesAgo": "{count} phút trước",
+    "hoursAgo": "{count} giờ trước",
+    "daysAgo": "{count} ngày trước",
+    "monthDay": "{day}/{month}"
   },
   "viewer": {
     "close": "Đóng",
