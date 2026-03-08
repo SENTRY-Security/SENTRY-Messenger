@@ -84,8 +84,10 @@
       try { lang = navigator.language || 'en'; } catch {}
       var tag = lang.toLowerCase();
       if (tag==='zh-hant'||tag==='zh-tw'||tag==='zh-hk'||tag.indexOf('zh-hant')===0) tag='zh-Hant';
+      else if (tag==='zh-hans'||tag==='zh-cn'||tag==='zh-sg'||tag.indexOf('zh-hans')===0||tag==='zh') tag='zh-Hans';
       else tag = tag.split('-')[0];
-      if (tag !== 'zh-Hant') tag = 'en';
+      var supported = {en:1,'zh-Hant':1,'zh-Hans':1,ja:1,ko:1,th:1,vi:1,es:1,pt:1};
+      if (!supported[tag]) tag = 'en';
       var msgs = {}, fb = {};
       function loadSync(url) {
         try { var x = new XMLHttpRequest(); x.open('GET', url, false); x.send(); return x.status===200 ? JSON.parse(x.responseText) : {}; } catch { return {}; }

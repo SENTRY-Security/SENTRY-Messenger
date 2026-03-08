@@ -4,8 +4,15 @@ import { escapeHtml } from '../ui-utils.js';
 import { t, getCurrentLang, setLang, applyDOMTranslations } from '/locales/index.js';
 
 const SUPPORTED_LANGUAGES = [
-  { code: 'zh-Hant', label: '繁體中文' },
-  { code: 'en', label: 'English' }
+  { code: 'zh-Hant', label: '🇹🇼 繁體中文' },
+  { code: 'zh-Hans', label: '🇨🇳 简体中文' },
+  { code: 'en',      label: '🇺🇸 English' },
+  { code: 'ja',      label: '🇯🇵 日本語' },
+  { code: 'ko',      label: '🇰🇷 한국어' },
+  { code: 'th',      label: '🇹🇭 ภาษาไทย' },
+  { code: 'vi',      label: '🇻🇳 Tiếng Việt' },
+  { code: 'es',      label: '🇪🇸 Español' },
+  { code: 'pt',      label: '🇵🇹 Português' }
 ];
 
 const LOGOUT_REDIRECT_DEFAULT_URL = '/pages/logout.html';
@@ -283,7 +290,7 @@ export function createSettingsModule({ deps }) {
           <div class="settings-text">
             <strong>${escapeHtml(t('settings.language'))}</strong>
           </div>
-          <select id="settingsLanguage" class="settings-select" style="padding:6px 10px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;background:#fff;">
+          <select id="settingsLanguage" class="settings-select" style="padding:6px 10px;border:1px solid var(--line);border-radius:8px;font-size:14px;background:var(--bg);color:var(--fg);">
             ${SUPPORTED_LANGUAGES.map(l => `<option value="${l.code}" ${l.code === getCurrentLang() ? 'selected' : ''}>${escapeHtml(l.label)}</option>`).join('')}
           </select>
         </div>
@@ -311,8 +318,9 @@ export function createSettingsModule({ deps }) {
         // Save language to encrypted settings (not localStorage)
         await persistPatch({ language: newLang });
         await setLang(newLang);
+        // Live switch: close and re-open settings modal with new language
         closeModal();
-        window.location.reload();
+        setTimeout(() => open(), 80);
       } catch (err) {
         log({ languageSaveError: err?.message || err });
         languageSelect.disabled = false;

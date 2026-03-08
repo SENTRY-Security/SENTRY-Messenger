@@ -15,7 +15,7 @@ function convIdForSettings() {
   return acct ? `settings-${acct}` : null;
 }
 
-const SUPPORTED_LANGS = new Set(['en', 'zh-Hant']);
+const SUPPORTED_LANGS = new Set(['en', 'zh-Hant', 'zh-Hans', 'ja', 'ko', 'th', 'vi', 'es', 'pt']);
 
 export const DEFAULT_SETTINGS = Object.freeze({
   showOnlineStatus: true,
