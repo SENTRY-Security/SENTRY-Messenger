@@ -192,14 +192,14 @@ export function createSettingsModule({ deps }) {
   async function persistPatch(partial) {
     const previous = getEffective();
     const next = { ...previous, ...partial };
-    const trackedKeys = ['showOnlineStatus', 'autoLogoutOnBackground', 'autoLogoutRedirectMode', 'autoLogoutCustomUrl', 'language'];
+    const trackedKeys = ['autoLogoutOnBackground', 'autoLogoutRedirectMode', 'autoLogoutCustomUrl', 'language'];
     const noChange = trackedKeys.every((key) => previous[key] === next[key]);
     if (noChange) return previous;
     sessionStore.settingsState = next;
     try {
       const saved = await saveSettings(next);
       sessionStore.settingsState = saved;
-      log({ settingsSaved: { showOnlineStatus: saved.showOnlineStatus, autoLogoutOnBackground: saved.autoLogoutOnBackground, autoLogoutRedirectMode: saved.autoLogoutRedirectMode, hasCustomLogoutUrl: !!sanitizeUrl(saved.autoLogoutCustomUrl) } });
+      log({ settingsSaved: { autoLogoutOnBackground: saved.autoLogoutOnBackground, autoLogoutRedirectMode: saved.autoLogoutRedirectMode, hasCustomLogoutUrl: !!sanitizeUrl(saved.autoLogoutCustomUrl) } });
       return saved;
     } catch (err) {
       sessionStore.settingsState = previous;
@@ -239,16 +239,6 @@ export function createSettingsModule({ deps }) {
     const autoLogoutDetailsVisible = !!current.autoLogoutOnBackground;
     body.innerHTML = `
       <div id="systemSettings" class="settings-form">
-        <div class="settings-item">
-          <div class="settings-text">
-            <strong>${escapeHtml(t('settings.showOnlineStatus'))}</strong>
-            <p>${escapeHtml(t('settings.showOnlineStatusDesc'))}</p>
-          </div>
-          <label class="settings-switch">
-            <input type="checkbox" id="settingsShowOnline" ${current.showOnlineStatus ? 'checked' : ''} />
-            <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
-          </label>
-        </div>
         <div class="settings-item">
           <div class="settings-text">
             <strong>${escapeHtml(t('settings.autoLogoutOnBackground'))}</strong>
@@ -299,7 +289,6 @@ export function createSettingsModule({ deps }) {
     openModal();
 
     const closeBtn = body.querySelector('#settingsClose');
-    const showOnlineInput = body.querySelector('#settingsShowOnline');
     const autoLogoutInput = body.querySelector('#settingsAutoLogout');
     const autoLogoutOptionsSection = body.querySelector('#settingsAutoLogoutOptions');
     const logoutDefaultRadio = body.querySelector('#settingsLogoutDefault');
@@ -393,7 +382,6 @@ export function createSettingsModule({ deps }) {
         finally { input.disabled = false; }
       });
     };
-    registerToggle(showOnlineInput, 'showOnlineStatus');
     if (autoLogoutInput) {
       autoLogoutInput.addEventListener('change', async () => {
         const previous = getEffective();
