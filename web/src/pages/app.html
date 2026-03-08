@@ -86,7 +86,7 @@
       if (tag==='zh-hant'||tag==='zh-tw'||tag==='zh-hk'||tag.indexOf('zh-hant')===0) tag='zh-Hant';
       else if (tag==='zh-hans'||tag==='zh-cn'||tag==='zh-sg'||tag.indexOf('zh-hans')===0||tag==='zh') tag='zh-Hans';
       else tag = tag.split('-')[0];
-      var supported = {en:1,'zh-Hant':1,'zh-Hans':1,ja:1,ko:1,th:1,vi:1,es:1,pt:1};
+      var supported = {en:1,'zh-Hant':1,'zh-Hans':1,ja:1,ko:1,th:1,vi:1};
       if (!supported[tag]) tag = 'en';
       var msgs = {}, fb = {};
       function loadSync(url) {
@@ -323,7 +323,7 @@
   </script>
   <script>
     (function () {
-      var _t = window.__t || function(k){ return k; };
+      function _t(k, p) { return typeof window.__t === 'function' ? window.__t(k, p) : k; }
       var stages = {
         styles:        { label: _t('auth.loadingInterface'),       progress: 74 },
         scripts:       { label: _t('auth.loadingModules'),         progress: 80 },

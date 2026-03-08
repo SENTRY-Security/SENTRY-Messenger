@@ -89,6 +89,10 @@ export async function initI18n(lang) {
   if (typeof document !== 'undefined') {
     document.documentElement.lang = locale;
   }
+  // Update bootstrap translator so splash screen picks up language changes
+  if (typeof window !== 'undefined') {
+    window.__t = t;
+  }
 }
 
 /**
