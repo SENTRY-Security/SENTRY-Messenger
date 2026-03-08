@@ -10,9 +10,7 @@ const SUPPORTED_LANGUAGES = [
   { code: 'ja',      label: '🇯🇵 日本語' },
   { code: 'ko',      label: '🇰🇷 한국어' },
   { code: 'th',      label: '🇹🇭 ภาษาไทย' },
-  { code: 'vi',      label: '🇻🇳 Tiếng Việt' },
-  { code: 'es',      label: '🇪🇸 Español' },
-  { code: 'pt',      label: '🇵🇹 Português' }
+  { code: 'vi',      label: '🇻🇳 Tiếng Việt' }
 ];
 
 const LOGOUT_REDIRECT_DEFAULT_URL = '/pages/logout.html';
