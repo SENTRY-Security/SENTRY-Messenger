@@ -107,7 +107,7 @@ export function t(key, params) {
   let val = resolve(messages, key) ?? resolve(fallbackMessages, key);
   // Fall back to inline bootstrap translator (synchronous XHR loaded in HTML)
   // when async fetch hasn't completed yet
-  if (val == null && typeof window !== 'undefined' && typeof window.__t === 'function') {
+  if (val == null && typeof window !== 'undefined' && typeof window.__t === 'function' && window.__t !== t) {
     val = window.__t(key, params);
     if (val !== key) return val;  // __t already handled interpolation
   }
