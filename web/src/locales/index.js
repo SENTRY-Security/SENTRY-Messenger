@@ -31,7 +31,7 @@ function detectLang() {
  * Normalise a BCP-47 tag to one of the supported locale file names.
  * e.g. 'zh-TW' → 'zh-Hant', 'zh-Hant-TW' → 'zh-Hant', 'en-US' → 'en', 'ja' → 'ja'
  */
-const SUPPORTED_LOCALE_SET = new Set(['en', 'zh-Hant', 'zh-Hans', 'ja']);
+const SUPPORTED_LOCALE_SET = new Set(['en', 'zh-Hant', 'zh-Hans', 'ja', 'ko', 'th', 'vi']);
 
 function normaliseTag(tag) {
   const t = String(tag).toLowerCase();
