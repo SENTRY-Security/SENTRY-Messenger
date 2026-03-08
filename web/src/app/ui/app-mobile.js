@@ -130,7 +130,7 @@ import { createSettingsModule } from './mobile/modals/settings-modal.js';
 import { createPasswordModal } from './mobile/modals/password-modal.js';
 import { createWsIntegration } from './mobile/ws-integration.js';
 import { isIosWebKitLikeBrowser } from './mobile/browser-detection.js';
-import { initI18n, t, applyDOMTranslations, setLang, getCurrentLang } from '/locales/index.js';
+import { initI18n, t, applyDOMTranslations, setLang, getCurrentLang, onLangChange } from '/locales/index.js';
 
 // --- Loading Modal: report JS modules loaded ---
 window.__updateLoadingProgress?.('scripts');
@@ -1325,6 +1325,7 @@ const initMediaPermissionPrompt = () => {
 };
 
 const connIndicator = createConnectionIndicator(connectionIndicator);
+onLangChange(() => connIndicator.refresh());
 let _lastDegradedToastAt = 0;
 const _DEGRADED_TOAST_COOLDOWN = 60000; // 1 min — avoid spamming toast on flapping RTT
 const updateConnectionIndicator = (state) => {

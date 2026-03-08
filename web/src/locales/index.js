@@ -4,6 +4,7 @@
 let currentLang = 'en';
 let messages = {};
 let fallbackMessages = {};
+const _langChangeListeners = [];
 
 /**
  * Resolve a dot-separated key from a nested object.
@@ -132,6 +133,16 @@ export function getCurrentLang() {
 export async function setLang(lang) {
   await initI18n(lang);
   applyDOMTranslations();
+  for (const cb of _langChangeListeners) { try { cb(currentLang); } catch { /* ignore */ } }
+}
+
+/**
+ * Register a callback to be invoked after a language switch.
+ * Useful for components that render translated text dynamically (not via data-i18n attributes).
+ * @param {function} cb  Receives the new locale string.
+ */
+export function onLangChange(cb) {
+  if (typeof cb === 'function') _langChangeListeners.push(cb);
 }
 
 /**
