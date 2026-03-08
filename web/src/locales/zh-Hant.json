@@ -28,7 +28,8 @@
     "emptyFolder": "空資料夾",
     "saving": "儲存中…",
     "upload": "上傳",
-    "create": "建立"
+    "create": "建立",
+    "avatarPreview": "頭像預覽"
   },
   "weekdays": {
     "sun": "日",
@@ -228,7 +229,18 @@
     "loadFailed": "(載入失敗)",
     "notDecrypted": "訊息尚未解密🔐",
     "confirmDeleteConversation": "確定要刪除與「{name}」的對話？此操作也會從對方的對話列表中移除。",
-    "decrypting": "解密中…"
+    "decrypting": "解密中…",
+    "decryptionInProgress": "解密進行中…",
+    "historySyncComplete": "歷史訊息同步完成",
+    "historySyncFailed": "歷史訊息同步失敗",
+    "imagePreview": "[圖片]",
+    "videoPreview": "[影片]",
+    "loadMore": "載入更多訊息",
+    "noMoreMessages": "沒有更多訊息了",
+    "sendFirstMessage": "發送第一則訊息",
+    "serviceUnavailable": "服務暫時無法使用",
+    "syncInProgress": "同步進行中…",
+    "syncingHistory": "正在同步歷史訊息…"
   },
   "encryption": {
     "decryptFailed": "無法解密",
@@ -249,7 +261,8 @@
     "corruptNeedResync": "狀態損壞，需要重新同步/重新邀請",
     "selectSecureFriend": "請先選擇已建立安全對話的好友",
     "clearedConversationHistory": "已清除上方對話紀錄",
-    "currentSessionState": "當前最新的加密會話狀態"
+    "currentSessionState": "當前最新的加密會話狀態",
+    "drInitFailed": "Double Ratchet 初始化失敗"
   },
   "calls": {
     "title": "通話",
@@ -312,7 +325,9 @@
     "durationZeroSeconds": "0秒",
     "durationMinSec": "{min}分{sec}秒",
     "durationSec": "{sec}秒",
-    "unknownState": "未知的 call session 狀態：{state}"
+    "unknownState": "未知的 call session 狀態：{state}",
+    "voiceCallPreview": "[語音通話]",
+    "videoCallPreview": "[視訊通話]"
   },
   "callEncryption": {
     "keyPending": "建立加密金鑰…",
@@ -693,7 +708,19 @@
     "confirmDeleteFile": "確定刪除「{name}」？",
     "folderNoFiles": "資料夾「{name}」內沒有檔案",
     "deleteFolderWithCount": "刪除資料夾「{name}」及其 {count} 個檔案？",
-    "deleteFolderEmpty": "刪除資料夾「{name}」（空資料夾）？"
+    "deleteFolderEmpty": "刪除資料夾「{name}」（空資料夾）？",
+    "clickToSelectFiles": "點擊選擇檔案",
+    "emptyStateHint": "上傳檔案以開始使用",
+    "nameCannotBeEmpty": "名稱不能為空",
+    "noFilesYet": "尚無檔案",
+    "saveToCloudFailed": "儲存至雲端失敗",
+    "systemFolder": "系統資料夾",
+    "typeAudio": "音訊",
+    "typeImage": "圖片",
+    "typePdf": "PDF",
+    "typeText": "文字",
+    "typeVideo": "影片",
+    "typeWord": "Word"
   },
   "viewer": {
     "close": "關閉",
@@ -725,7 +752,13 @@
     "colorYellow": "黃",
     "colorGreen": "綠",
     "colorBlue": "藍",
-    "colorBlack": "黑"
+    "colorBlack": "黑",
+    "adjustCropArea": "調整裁切區域",
+    "overwriteOriginal": "覆蓋原圖",
+    "pdfPreview": "PDF 預覽",
+    "saveAsNew": "另存新檔",
+    "saveEditedImage": "儲存編輯後的圖片",
+    "sentryStreamPlayer": "SENTRY 串流播放器"
   },
   "mediaHandling": {
     "videoDataIncomplete": "影片資料不完整，無法播放",
@@ -744,7 +777,14 @@
     "assemblingFile": "組裝檔案中…",
     "gettingDownloadAuth": "取得下載授權中…",
     "downloadingEncrypted": "下載加密檔案中…",
-    "decryptingFile": "解密檔案中…"
+    "decryptingFile": "解密檔案中…",
+    "cannotPreviewType": "無法預覽此檔案類型",
+    "pdfCannotEmbed": "無法嵌入 PDF 預覽",
+    "pdfCannotPreview": "無法預覽 PDF",
+    "preparing": "準備中…",
+    "previewNotReady": "預覽尚未準備好",
+    "unsupportedVideoFormat": "不支援此影片格式",
+    "videoPlaybackFailed": "影片播放失敗"
   },
   "mediaPermission": {
     "enableVoiceCall": "啟用語音通話",
@@ -786,7 +826,17 @@
     "uploadFailed": "上傳失敗",
     "pleaseRetryLater": "請稍後再試",
     "cancelUpload": "取消上傳",
-    "updatedProfile": "更新了個人檔案"
+    "updatedProfile": "更新了個人檔案",
+    "today": "今天 {time}",
+    "yesterday": "昨天 {time}",
+    "weekdayTime": "{weekday} {time}",
+    "dateTime": "{month}/{day} {time}",
+    "downloading": "下載中… {pct}%",
+    "fileExpired": "檔案已過期",
+    "saveToCloud": "儲存至雲端",
+    "clearedHistory": "{sender} 於 {time} 清除了聊天記錄",
+    "secureConnectionEstablished": "已與 {name} 建立安全連線",
+    "cannotDecrypt": "無法解密此訊息"
   },
   "fileSending": {
     "fileCurrentlyUploading": "目前有檔案正在上傳，請稍候再試",
@@ -876,7 +926,8 @@
     "loggingOut": "正在登出..."
   },
   "transfer": {
-    "cancelTitle": "取消"
+    "cancelTitle": "取消",
+    "details": "詳情"
   },
   "debug": {
     "internalDebugOnly": "僅供內部除錯使用",
@@ -890,7 +941,10 @@
     "simulateLogin": "模擬登入（新分頁）",
     "resetCounter": "重置 counter",
     "deleteChip": "刪除 chip",
-    "viewHeaderJson": "檢視 Header JSON"
+    "viewHeaderJson": "檢視 Header JSON",
+    "authSuccessClosing": "授權成功，正在關閉…",
+    "getUserMediaNotSupported": "此瀏覽器不支援 getUserMedia",
+    "waitingBrowserAuth": "等待瀏覽器授權中…"
   },
   "nav": {
     "contacts": "聯絡人",

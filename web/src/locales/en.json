@@ -28,7 +28,8 @@
     "emptyFolder": "Empty folder",
     "saving": "Saving…",
     "upload": "Upload",
-    "create": "Create"
+    "create": "Create",
+    "avatarPreview": "Avatar preview"
   },
   "weekdays": {
     "sun": "Sun",
@@ -228,7 +229,18 @@
     "loadFailed": "(Load failed)",
     "notDecrypted": "Message not yet decrypted\uD83D\uDD10",
     "confirmDeleteConversation": "Are you sure you want to delete the conversation with \"{name}\"? This will also remove it from the other party's conversation list.",
-    "decrypting": "Decrypting…"
+    "decrypting": "Decrypting…",
+    "decryptionInProgress": "Decryption in progress…",
+    "historySyncComplete": "History sync complete",
+    "historySyncFailed": "History sync failed",
+    "imagePreview": "[Image]",
+    "videoPreview": "[Video]",
+    "loadMore": "Load more messages",
+    "noMoreMessages": "No more messages",
+    "sendFirstMessage": "Send the first message",
+    "serviceUnavailable": "Service temporarily unavailable",
+    "syncInProgress": "Sync in progress…",
+    "syncingHistory": "Syncing history…"
   },
   "encryption": {
     "decryptFailed": "Cannot decrypt",
@@ -249,7 +261,8 @@
     "corruptNeedResync": "Status corrupted, needs re-sync/re-invite",
     "selectSecureFriend": "Please select a friend with an established secure conversation",
     "clearedConversationHistory": "Cleared conversation history above",
-    "currentSessionState": "Current latest encryption session state"
+    "currentSessionState": "Current latest encryption session state",
+    "drInitFailed": "Double Ratchet initialization failed"
   },
   "calls": {
     "title": "Call",
@@ -312,7 +325,9 @@
     "durationZeroSeconds": "0s",
     "durationMinSec": "{min}m{sec}s",
     "durationSec": "{sec}s",
-    "unknownState": "Unknown call session state: {state}"
+    "unknownState": "Unknown call session state: {state}",
+    "voiceCallPreview": "[Voice call]",
+    "videoCallPreview": "[Video call]"
   },
   "callEncryption": {
     "keyPending": "Establishing encryption key…",
@@ -693,7 +708,19 @@
     "confirmDeleteFile": "Are you sure you want to delete \"{name}\"?",
     "folderNoFiles": "Folder \"{name}\" contains no files",
     "deleteFolderWithCount": "Delete folder \"{name}\" and its {count} files?",
-    "deleteFolderEmpty": "Delete folder \"{name}\" (empty folder)?"
+    "deleteFolderEmpty": "Delete folder \"{name}\" (empty folder)?",
+    "clickToSelectFiles": "Click to select files",
+    "emptyStateHint": "Upload files to get started",
+    "nameCannotBeEmpty": "Name cannot be empty",
+    "noFilesYet": "No files yet",
+    "saveToCloudFailed": "Failed to save to cloud",
+    "systemFolder": "System folder",
+    "typeAudio": "Audio",
+    "typeImage": "Image",
+    "typePdf": "PDF",
+    "typeText": "Text",
+    "typeVideo": "Video",
+    "typeWord": "Word"
   },
   "viewer": {
     "close": "Close",
@@ -725,7 +752,13 @@
     "colorYellow": "Yellow",
     "colorGreen": "Green",
     "colorBlue": "Blue",
-    "colorBlack": "Black"
+    "colorBlack": "Black",
+    "adjustCropArea": "Adjust crop area",
+    "overwriteOriginal": "Overwrite original",
+    "pdfPreview": "PDF preview",
+    "saveAsNew": "Save as new",
+    "saveEditedImage": "Save edited image",
+    "sentryStreamPlayer": "SENTRY Stream Player"
   },
   "mediaHandling": {
     "videoDataIncomplete": "Video data incomplete, cannot play",
@@ -744,7 +777,14 @@
     "assemblingFile": "Assembling file…",
     "gettingDownloadAuth": "Getting download authorization…",
     "downloadingEncrypted": "Downloading encrypted file…",
-    "decryptingFile": "Decrypting file…"
+    "decryptingFile": "Decrypting file…",
+    "cannotPreviewType": "Cannot preview this file type",
+    "pdfCannotEmbed": "Cannot embed PDF preview",
+    "pdfCannotPreview": "Cannot preview PDF",
+    "preparing": "Preparing…",
+    "previewNotReady": "Preview not ready",
+    "unsupportedVideoFormat": "Unsupported video format",
+    "videoPlaybackFailed": "Video playback failed"
   },
   "mediaPermission": {
     "enableVoiceCall": "Enable Voice Calls",
@@ -786,7 +826,17 @@
     "uploadFailed": "Upload failed",
     "pleaseRetryLater": "Please try again later",
     "cancelUpload": "Cancel upload",
-    "updatedProfile": "Updated profile"
+    "updatedProfile": "Updated profile",
+    "today": "Today {time}",
+    "yesterday": "Yesterday {time}",
+    "weekdayTime": "{weekday} {time}",
+    "dateTime": "{month}/{day} {time}",
+    "downloading": "Downloading… {pct}%",
+    "fileExpired": "File expired",
+    "saveToCloud": "Save to cloud",
+    "clearedHistory": "{sender} cleared history at {time}",
+    "secureConnectionEstablished": "Secure connection established with {name}",
+    "cannotDecrypt": "Cannot decrypt this message"
   },
   "fileSending": {
     "fileCurrentlyUploading": "A file is currently uploading, please wait",
@@ -876,7 +926,8 @@
     "loggingOut": "Logging out..."
   },
   "transfer": {
-    "cancelTitle": "Cancel"
+    "cancelTitle": "Cancel",
+    "details": "Details"
   },
   "debug": {
     "internalDebugOnly": "Internal debug only",
@@ -890,7 +941,10 @@
     "simulateLogin": "Simulate login (new tab)",
     "resetCounter": "Reset counter",
     "deleteChip": "Delete chip",
-    "viewHeaderJson": "View Header JSON"
+    "viewHeaderJson": "View Header JSON",
+    "authSuccessClosing": "Authorization successful, closing…",
+    "getUserMediaNotSupported": "getUserMedia is not supported in this browser",
+    "waitingBrowserAuth": "Waiting for browser authorization…"
   },
   "nav": {
     "contacts": "Contacts",
