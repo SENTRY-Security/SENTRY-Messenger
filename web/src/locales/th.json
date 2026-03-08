@@ -227,7 +227,7 @@
     "onlyTextRetrySupported": "ขณะนี้รองรับการลองส่งใหม่เฉพาะข้อความตัวอักษรเท่านั้น",
     "callLogSendFailed": "ส่งบันทึกการโทรไม่สำเร็จ",
     "loadFailed": "(โหลดไม่สำเร็จ)",
-    "notDecrypted": "ยังไม่ได้ถอดรหัสข้อความ\uD83D\uDD10",
+    "notDecrypted": "ยังไม่ได้ถอดรหัสข้อความ🔐",
     "confirmDeleteConversation": "คุณแน่ใจหรือไม่ว่าต้องการลบการสนทนากับ \"{name}\"? การดำเนินการนี้จะลบออกจากรายการสนทนาของอีกฝ่ายด้วย",
     "decrypting": "กำลังถอดรหัส…",
     "decryptionInProgress": "กำลังถอดรหัส…",
@@ -977,5 +977,19 @@
     "backToConversationList": "กลับไปรายการสนทนา",
     "urlOnlyHttps": "รับเฉพาะ URL แบบ HTTPS เท่านั้น",
     "invalidUrl": "กรุณากรอก URL แบบ http/https ที่ถูกต้อง หรือเลือกหน้าออกจากระบบเริ่มต้น"
+  },
+  "loginStages": {
+    "authenticating": "กำลังยืนยันตัวตน...",
+    "encryptingMasterKey": "กำลังเข้ารหัสมาสเตอร์คีย์...",
+    "securingKeyVault": "กำลังรักษาความปลอดภัยคีย์...",
+    "generatingCipherKeys": "กำลังสร้างคีย์เข้ารหัส...",
+    "publishingPrekeys": "กำลังเผยแพร่คีย์ล่วงหน้า...",
+    "wrappingDeviceKeys": "กำลังห่อคีย์อุปกรณ์...",
+    "storingDeviceBackup": "กำลังจัดเก็บข้อมูลสำรองอุปกรณ์...",
+    "settingIdentity": "กำลังตั้งค่าตัวตน...",
+    "configuringProfile": "กำลังตั้งค่าโปรไฟล์...",
+    "fetchingDeviceKeys": "กำลังดึงคีย์อุปกรณ์...",
+    "syncingCipherKeys": "กำลังซิงค์คีย์เข้ารหัส...",
+    "restoringContacts": "กำลังกู้คืนรายชื่อ..."
   }
 }

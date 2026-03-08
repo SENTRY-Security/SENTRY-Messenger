@@ -977,5 +977,19 @@
     "backToConversationList": "대화 목록으로 돌아가기",
     "urlOnlyHttps": "HTTPS URL만 허용됩니다",
     "invalidUrl": "유효한 http/https URL을 입력하거나 기본 로그아웃 페이지를 선택해 주세요."
+  },
+  "loginStages": {
+    "authenticating": "인증 중...",
+    "encryptingMasterKey": "마스터 키 암호화 중...",
+    "securingKeyVault": "키 저장소 보호 중...",
+    "generatingCipherKeys": "암호 키 생성 중...",
+    "publishingPrekeys": "사전 공유 키 게시 중...",
+    "wrappingDeviceKeys": "디바이스 키 래핑 중...",
+    "storingDeviceBackup": "디바이스 백업 저장 중...",
+    "settingIdentity": "신원 설정 중...",
+    "configuringProfile": "프로필 설정 중...",
+    "fetchingDeviceKeys": "디바이스 키 가져오는 중...",
+    "syncingCipherKeys": "암호 키 동기화 중...",
+    "restoringContacts": "연락처 복원 중..."
   }
 }

@@ -977,5 +977,19 @@
     "backToConversationList": "返回对话列表",
     "urlOnlyHttps": "仅接受 HTTPS 网址",
     "invalidUrl": "请输入有效的 http/https 网址，或改选默认退出页面。"
+  },
+  "loginStages": {
+    "authenticating": "验证中...",
+    "encryptingMasterKey": "加密主密钥中...",
+    "securingKeyVault": "保护密钥库中...",
+    "generatingCipherKeys": "生成加密密钥中...",
+    "publishingPrekeys": "发布预共享密钥中...",
+    "wrappingDeviceKeys": "封装设备密钥中...",
+    "storingDeviceBackup": "存储设备备份中...",
+    "settingIdentity": "设置身份中...",
+    "configuringProfile": "配置个人资料中...",
+    "fetchingDeviceKeys": "获取设备密钥中...",
+    "syncingCipherKeys": "同步加密密钥中...",
+    "restoringContacts": "恢复联系人中..."
   }
 }

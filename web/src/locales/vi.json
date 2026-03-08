@@ -227,7 +227,7 @@
     "onlyTextRetrySupported": "Hiện tại chỉ hỗ trợ thử lại tin nhắn văn bản",
     "callLogSendFailed": "Gửi nhật ký cuộc gọi thất bại",
     "loadFailed": "(Tải thất bại)",
-    "notDecrypted": "Tin nhắn chưa được giải mã\uD83D\uDD10",
+    "notDecrypted": "Tin nhắn chưa được giải mã🔐",
     "confirmDeleteConversation": "Bạn có chắc chắn muốn xóa hội thoại với \"{name}\" không? Điều này cũng sẽ xóa khỏi danh sách hội thoại của đối phương.",
     "decrypting": "Đang giải mã…",
     "decryptionInProgress": "Đang tiến hành giải mã…",
@@ -607,8 +607,6 @@
     "missingOwnerDeviceId": "Lời mời thiếu ownerDeviceId",
     "missingOwnerPublicKey": "Lời mời thiếu ownerPublicKeyB64",
     "missingPrekeyOpk": "Gói khóa trước của lời mời thiếu opk",
-    "missingGuestDigest": "Thiếu guestAccountDigest, vui lòng đăng nhập lại và thử lại",
-    "missingGuestDeviceId": "Thiếu guestDeviceId, vui lòng đăng nhập lại và thử lại",
     "setProfileBeforeDeliver": "Vui lòng đặt biệt danh hoặc ảnh đại diện trước khi gửi lời mời.",
     "deliveredWaiting": "Gửi thành công, đang chờ đối phương nhận",
     "retryCenterQr": "Vui lòng thử lại, căn giữa mã QR để quét",
@@ -698,8 +696,8 @@
     "downloadPdfConfirm": "Sau khi tải xuống, tệp sẽ mở bên ngoài. Bạn có thể cần quét lại chip để quay lại ứng dụng nhắn tin. Tải xuống?",
     "download": "Tải xuống",
     "iosSafariHint": "Hỗ trợ iOS Safari: mở trình chọn ảnh và tệp.",
-    "filesCountSize": "{count} tệp \u00b7 {size}",
-    "folderNamePlaceholder": "ví dụ: Nhật ký du lịch \u2708\ufe0f",
+    "filesCountSize": "{count} tệp · {size}",
+    "folderNamePlaceholder": "ví dụ: Nhật ký du lịch ✈️",
     "folderNameHint": "Bạn có thể sử dụng bất kỳ ký tự hoặc emoji nào, ngoại trừ dấu phân cách như /.",
     "nFiles": "{count} tệp",
     "completedNofM": "Đã hoàn thành {current} / {total}",
@@ -979,5 +977,19 @@
     "backToConversationList": "Quay lại danh sách hội thoại",
     "urlOnlyHttps": "Chỉ chấp nhận URL HTTPS",
     "invalidUrl": "Vui lòng nhập URL http/https hợp lệ, hoặc chọn trang đăng xuất mặc định."
+  },
+  "loginStages": {
+    "authenticating": "ĐANG XÁC THỰC...",
+    "encryptingMasterKey": "ĐANG MÃ HÓA KHÓA CHÍNH...",
+    "securingKeyVault": "ĐANG BẢO VỆ KHO KHÓA...",
+    "generatingCipherKeys": "ĐANG TẠO KHÓA MÃ HÓA...",
+    "publishingPrekeys": "ĐANG XUẤT BẢN KHÓA CHIA SẺ TRƯỚC...",
+    "wrappingDeviceKeys": "ĐANG ĐÓNG GÓI KHÓA THIẾT BỊ...",
+    "storingDeviceBackup": "ĐANG LƯU BẢN SAO THIẾT BỊ...",
+    "settingIdentity": "ĐANG THIẾT LẬP DANH TÍNH...",
+    "configuringProfile": "ĐANG CẤU HÌNH HỒ SƠ...",
+    "fetchingDeviceKeys": "ĐANG TẢI KHÓA THIẾT BỊ...",
+    "syncingCipherKeys": "ĐANG ĐỒNG BỘ KHÓA MÃ HÓA...",
+    "restoringContacts": "ĐANG KHÔI PHỤC DANH BẠ..."
   }
 }

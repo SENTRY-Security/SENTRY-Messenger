@@ -538,7 +538,7 @@
     "retrieveInviteFailed": "取回邀請失敗。",
     "delivered": "已投遞 ",
     "retrieved": "已取回 ",
-    "inviteExpired": "已過期",
+    "inviteExpired": "邀請已過期",
     "inviteExpiredText": "邀請已過期",
     "cannotGenerateQR": "無法產生 QR，請稍後再試。",
     "notLoggedInInvite": "尚未登入，無法生成交友邀請，請重新登入後再試。",
@@ -591,10 +591,8 @@
     "consumeVersionMismatch": "邀請版本不符，請請好友重新生成。",
     "consumeBundleInvalid": "邀請內容缺少必要金鑰資訊。",
     "consumeFailed": "取回邀請失敗。",
-    "delivered": "已投遞 ",
     "consumed": "已取回 ",
     "expired": "已過期",
-    "inviteExpired": "邀請已過期",
     "qrGenerationFailed": "無法產生 QR，請稍後再試。",
     "qrGenerationError": "生成 QR 時發生錯誤: ",
     "notLoggedInCannotCreate": "尚未登入，無法生成交友邀請，請重新登入後再試。",
@@ -609,8 +607,6 @@
     "missingOwnerDeviceId": "invite 缺少 ownerDeviceId",
     "missingOwnerPublicKey": "invite 缺少 ownerPublicKeyB64",
     "missingPrekeyOpk": "invite prekey bundle 缺少 opk",
-    "missingGuestDigest": "缺少 guestAccountDigest，請重新登入後再試",
-    "missingGuestDeviceId": "缺少 guestDeviceId，請重新登入後再試",
     "setProfileBeforeDeliver": "請先設定暱稱或頭像後再投遞邀請。",
     "deliveredWaiting": "投遞成功，等待對方取回",
     "retryCenterQr": "請再試一次，將 QR 置中掃描",
@@ -981,5 +977,19 @@
     "backToConversationList": "返回對話列表",
     "urlOnlyHttps": "僅接受 HTTPS 網址",
     "invalidUrl": "請輸入有效的 http/https 網址，或改選預設登出頁面。"
+  },
+  "loginStages": {
+    "authenticating": "驗證中...",
+    "encryptingMasterKey": "加密主金鑰中...",
+    "securingKeyVault": "保護金鑰庫中...",
+    "generatingCipherKeys": "生成加密金鑰中...",
+    "publishingPrekeys": "發布預共享金鑰中...",
+    "wrappingDeviceKeys": "封裝裝置金鑰中...",
+    "storingDeviceBackup": "儲存裝置備份中...",
+    "settingIdentity": "設定身份中...",
+    "configuringProfile": "設定個人檔案中...",
+    "fetchingDeviceKeys": "取得裝置金鑰中...",
+    "syncingCipherKeys": "同步加密金鑰中...",
+    "restoringContacts": "復原聯絡人中..."
   }
 }

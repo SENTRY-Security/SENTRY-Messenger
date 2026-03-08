@@ -473,20 +473,20 @@ const transitionLabel = document.getElementById('loginTransitionLabel');
 // Both paths span 0%→70% since flow-specific steps occupy non-overlapping ranges.
 const STEP_PROGRESS = {
   // Shared steps (0% → 20%)
-  'opaque':          { start: 2,  done: 10, label: 'AUTHENTICATING...' },
-  'wrap-mk':         { start: 10, done: 16, label: 'ENCRYPTING MASTER KEY...' },
-  'mk-store':        { start: 16, done: 20, label: 'SECURING KEY VAULT...' },
+  'opaque':          { start: 2,  done: 10, i18nKey: 'loginStages.authenticating' },
+  'wrap-mk':         { start: 10, done: 16, i18nKey: 'loginStages.encryptingMasterKey' },
+  'mk-store':        { start: 16, done: 20, i18nKey: 'loginStages.securingKeyVault' },
   // New-account only (20% → 70%)
-  'generate-bundle': { start: 20, done: 30, label: 'GENERATING CIPHER KEYS...' },
-  'prekeys-publish': { start: 30, done: 40, label: 'PUBLISHING PREKEYS...' },
-  'wrap-device':     { start: 40, done: 48, label: 'WRAPPING DEVICE KEYS...' },
-  'devkeys-store':   { start: 48, done: 54, label: 'STORING DEVICE BACKUP...' },
-  'nickname-init':   { start: 54, done: 62, label: 'SETTING IDENTITY...' },
-  'avatar-init':     { start: 62, done: 70, label: 'CONFIGURING PROFILE...' },
+  'generate-bundle': { start: 20, done: 30, i18nKey: 'loginStages.generatingCipherKeys' },
+  'prekeys-publish': { start: 30, done: 40, i18nKey: 'loginStages.publishingPrekeys' },
+  'wrap-device':     { start: 40, done: 48, i18nKey: 'loginStages.wrappingDeviceKeys' },
+  'devkeys-store':   { start: 48, done: 54, i18nKey: 'loginStages.storingDeviceBackup' },
+  'nickname-init':   { start: 54, done: 62, i18nKey: 'loginStages.settingIdentity' },
+  'avatar-init':     { start: 62, done: 70, i18nKey: 'loginStages.configuringProfile' },
   // Existing-account only (20% → 70%)
-  'devkeys-fetch':   { start: 20, done: 32, label: 'FETCHING DEVICE KEYS...' },
-  'prekeys-sync':    { start: 32, done: 50, label: 'SYNCING CIPHER KEYS...' },
-  'contact-restore': { start: 50, done: 70, label: 'RESTORING CONTACTS...' },
+  'devkeys-fetch':   { start: 20, done: 32, i18nKey: 'loginStages.fetchingDeviceKeys' },
+  'prekeys-sync':    { start: 32, done: 50, i18nKey: 'loginStages.syncingCipherKeys' },
+  'contact-restore': { start: 50, done: 70, i18nKey: 'loginStages.restoringContacts' },
 };
 let currentProgress = 0;
 let fillRAF = null;
@@ -551,7 +551,7 @@ function updateBootstrapStep(step, status) {
     stopSlowFill();
     if (def.start > currentProgress) currentProgress = def.start;
     setBarWidth(currentProgress);
-    if (transitionLabel) transitionLabel.textContent = def.label;
+    if (transitionLabel) transitionLabel.textContent = def.i18nKey ? t(def.i18nKey) : '';
     startSlowFill(def.done);
   } else if (status === 'success' || status === 'skip' || status === 'info') {
     // Snap to done value, then bridge-fill toward next step's target

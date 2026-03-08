@@ -977,5 +977,19 @@
     "backToConversationList": "会話リストに戻る",
     "urlOnlyHttps": "HTTPS URL のみ使用できます",
     "invalidUrl": "有効な http/https URL を入力するか、デフォルトログアウトページを選択してください。"
+  },
+  "loginStages": {
+    "authenticating": "認証中...",
+    "encryptingMasterKey": "マスターキーを暗号化中...",
+    "securingKeyVault": "キーボルトを保護中...",
+    "generatingCipherKeys": "暗号鍵を生成中...",
+    "publishingPrekeys": "事前共有鍵を公開中...",
+    "wrappingDeviceKeys": "デバイス鍵をラップ中...",
+    "storingDeviceBackup": "デバイスバックアップを保存中...",
+    "settingIdentity": "IDを設定中...",
+    "configuringProfile": "プロフィールを設定中...",
+    "fetchingDeviceKeys": "デバイス鍵を取得中...",
+    "syncingCipherKeys": "暗号鍵を同期中...",
+    "restoringContacts": "連絡先を復元中..."
   }
 }
