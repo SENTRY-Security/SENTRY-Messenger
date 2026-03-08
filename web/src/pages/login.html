@@ -381,7 +381,7 @@
       <img class="splash-logo" id="loginSplashLogo" src="/assets/images/logo.svg" alt="" />
       <div class="splash-brand" id="loginSplashBrand">SENTRY MESSENGER</div>
       <div class="splash-spinner" aria-hidden="true"></div>
-      <div class="splash-text" data-i18n="common.loading">Loading…</div>
+      <div class="splash-text" data-i18n="common.loading"></div>
     </div>
     <script>
       // Brand info is not available until SDM exchange completes.
@@ -404,26 +404,26 @@
       <div class="tm-content">
         <img class="tm-logo" id="loginTmLogo" src="/assets/images/logo.svg" alt="" />
         <div class="tm-brand" id="tmBrand" aria-label="SENTRY MESSENGER"></div>
-        <div class="tm-sublabel" data-i18n="auth.e2eeEncrypted">END-TO-END ENCRYPTED</div>
+        <div class="tm-sublabel" data-i18n="auth.e2eeEncrypted"></div>
         <div class="tm-bar-track">
           <div id="loginTransitionBar" class="tm-bar-fill"></div>
           <div class="tm-bar-scan"></div>
         </div>
-        <div id="loginTransitionLabel" class="loading-label" data-i18n="auth.initializing">INITIALIZING...</div>
+        <div id="loginTransitionLabel" class="loading-label" data-i18n="auth.initializing"></div>
       </div>
     </div>
     <script>if (window.__i18nApply) window.__i18nApply();</script>
     <div id="orientationOverlay" class="orientation-overlay" aria-hidden="true">
       <span class="icon" aria-hidden="true">📱</span>
-      <strong data-i18n="orientation.usePortrait">Please use in portrait mode</strong>
-      <span data-i18n="orientation.rotateBackMessageLogin">For the best experience, please rotate your device back to portrait orientation.</span>
+      <strong data-i18n="orientation.usePortrait"></strong>
+      <span data-i18n="orientation.rotateBackMessageLogin"></span>
     </div>
     <main class="login-shell">
       <div class="brand" id="loginBrand">
         <img id="loginBrandLogo" src="/assets/images/logo.svg" alt="SENTRY MESSENGER" />
         <h1 id="loginBrandName">SENTRY MESSENGER</h1>
       </div>
-      <p class="subtitle" id="loginSubtitle" data-i18n="auth.tapChipAndEnterPassword">Tap your SENTRY MESSENGER chip, then enter your password to log in.</p>
+      <p class="subtitle" id="loginSubtitle" data-i18n="auth.tapChipAndEnterPassword"></p>
 
       <div autocomplete="off" data-1p-ignore="true" data-lpignore="true">
         <div class="uid-card" id="uidCard" data-i18n-aria-label="auth.chipIdImage">
@@ -441,7 +441,7 @@
 
         <div class="grid-two">
           <div class="form-group hidden" id="macWrapper">
-            <label for="sdmMac" data-i18n="auth.ntagMac">NTAG MAC (16 hex)</label>
+            <label for="sdmMac" data-i18n="auth.ntagMac"></label>
             <input id="sdmMac" class="input" type="text" placeholder="501EC4EF6E38555E" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
           </div>
           <div class="form-group hidden" id="ctrWrapper">
@@ -451,20 +451,20 @@
         </div>
 
         <div class="form-group hidden" id="nonceWrapper">
-          <label for="nonce" data-i18n="auth.nonceOptional">Nonce (optional)</label>
+          <label for="nonce" data-i18n="auth.nonceOptional"></label>
           <input id="nonce" class="input" type="text" placeholder="optional" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
         </div>
 
-        <button id="btnSdmExchange" type="button" class="primary hidden" style="width:100%" data-i18n="auth.verifyNtag">Verify NTAG (SDM Exchange)</button>
+        <button id="btnSdmExchange" type="button" class="primary hidden" style="width:100%" data-i18n="auth.verifyNtag"></button>
 
         <div class="form-group hidden" id="sessionWrapper">
-          <label for="sessionView" data-i18n="auth.oneTimeSession">One-time session</label>
+          <label for="sessionView" data-i18n="auth.oneTimeSession"></label>
           <input id="sessionView" class="input" type="text" readonly data-i18n-placeholder="auth.autoFillAfterVerify" />
         </div>
 
         <div class="password-area" id="passwordArea">
           <div class="form-group" id="passwordWrapper">
-            <label for="pwd" data-i18n="auth.loginPassword">Login password</label>
+            <label for="pwd" data-i18n="auth.loginPassword"></label>
             <div class="password-field">
               <input id="pwd" class="input pw-masked" type="text" data-i18n-placeholder="auth.passwordMinLength" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore="true" data-lpignore="true" name="__no_store_pwd__" />
               <button type="button" class="password-toggle" data-target="pwd" data-i18n-aria-label="auth.showPassword" tabindex="-1"><svg class="pw-icon" data-state="show" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 9a3.02 3.02 0 0 0-3 3c0 1.642 1.358 3 3 3 1.641 0 3-1.358 3-3 0-1.641-1.359-3-3-3z"/><path d="M12 5c-7.633 0-9.927 6.617-9.948 6.684L1.946 12l.105.316C2.073 12.383 4.367 19 12 19s9.927-6.617 9.948-6.684l.106-.316-.105-.316C21.927 11.617 19.633 5 12 5zm0 12c-5.351 0-7.424-3.846-7.926-5C4.578 10.842 6.652 7 12 7c5.351 0 7.424 3.846 7.926 5-.504 1.158-2.578 5-7.926 5z"/></svg></button>
@@ -472,7 +472,7 @@
           </div>
 
           <div class="form-group hidden" id="confirmWrapper">
-            <label for="pwdConfirm" data-i18n="auth.confirmPassword">Confirm password</label>
+            <label for="pwdConfirm" data-i18n="auth.confirmPassword"></label>
             <div class="password-field">
               <input id="pwdConfirm" class="input pw-masked" type="text" data-i18n-placeholder="auth.reEnterPassword" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore="true" data-lpignore="true" />
               <button type="button" class="password-toggle" data-target="pwdConfirm" data-i18n-aria-label="auth.showPassword" tabindex="-1"><svg class="pw-icon" data-state="show" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 9a3.02 3.02 0 0 0-3 3c0 1.642 1.358 3 3 3 1.641 0 3-1.358 3-3 0-1.641-1.359-3-3-3z"/><path d="M12 5c-7.633 0-9.927 6.617-9.948 6.684L1.946 12l.105.316C2.073 12.383 4.367 19 12 19s9.927-6.617 9.948-6.684l.106-.316-.105-.316C21.927 11.617 19.633 5 12 5zm0 12c-5.351 0-7.424-3.846-7.926-5C4.578 10.842 6.652 7 12 7c5.351 0 7.424 3.846 7.926 5-.504 1.158-2.578 5-7.926 5z"/></svg></button>
@@ -486,30 +486,30 @@
       </div>
 
       <div class="actions">
-        <button id="btnUnlock" type="button" class="primary" disabled data-i18n="auth.login">Login</button>
+        <button id="btnUnlock" type="button" class="primary" disabled data-i18n="auth.login"></button>
       </div>
 
-      <p class="notice"><span class="notice-icon" aria-hidden="true">🔒</span><span class="notice-text" data-i18n="welcome.e2eeDescription">Uses E2EE end-to-end encryption technology. All encryption/decryption is computed on the frontend. The server only stores encrypted information. All sensitive data is kept in memory only and cleared immediately when navigating away.</span></p>
+      <p class="notice"><span class="notice-icon" aria-hidden="true">🔒</span><span class="notice-text" data-i18n="welcome.e2eeDescription"></span></p>
     </div>
   </main>
     <div id="welcomeModal" class="modal welcome-modal hidden" aria-hidden="true">
       <div class="modal-backdrop"></div>
       <div class="modal-panel" role="dialog" aria-modal="true">
         <div class="modal-head">
-          <h2 data-i18n="welcome.title">Welcome to a new era of private messaging!</h2>
+          <h2 data-i18n="welcome.title"></h2>
           <button type="button" class="modal-close" id="welcomeClose">×</button>
         </div>
         <div id="welcomeContent" class="modal-body">
           <ul>
-            <li data-i18n="welcome.feature1">Cutting-edge E2EE end-to-end encryption across all communications.</li>
-            <li data-i18n="welcome.feature2">We cannot know who you chat with or what you say.</li>
-            <li data-i18n="welcome.feature3">We cannot access your nickname, avatar, or even friend information.</li>
-            <li data-i18n="welcome.feature4">Industry-first advanced encrypted cloud storage — protecting not just conversations, but all your data.</li>
-            <li data-i18n="welcome.feature5">Chip-as-identity concept — no one can track you via phone number or email.</li>
+            <li data-i18n="welcome.feature1"></li>
+            <li data-i18n="welcome.feature2"></li>
+            <li data-i18n="welcome.feature3"></li>
+            <li data-i18n="welcome.feature4"></li>
+            <li data-i18n="welcome.feature5"></li>
           </ul>
         </div>
         <div class="welcome-actions">
-          <button type="button" id="welcomeNext" data-i18n="welcome.startSetPassword">Start setting your password</button>
+          <button type="button" id="welcomeNext" data-i18n="welcome.startSetPassword"></button>
         </div>
       </div>
     </div>
@@ -517,9 +517,9 @@
     <div id="loginLoading" class="loading-backdrop hidden" role="presentation">
       <div class="loading-card" role="status" aria-live="polite">
         <div class="loading-spinner" aria-hidden="true"></div>
-        <div id="loginLoadingText" class="loading-text" data-i18n="auth.loggingIn">Logging in, please wait…</div>
+        <div id="loginLoadingText" class="loading-text" data-i18n="auth.loggingIn"></div>
         <div id="loginBootstrapProgress" class="bootstrap-progress hidden">
-          <div class="progress-note" data-i18n="auth.firstLoginInit">First login requires initializing the following:</div>
+          <div class="progress-note" data-i18n="auth.firstLoginInit"></div>
           <ul id="loginBootstrapSteps"></ul>
         </div>
       </div>

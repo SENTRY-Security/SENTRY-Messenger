@@ -208,15 +208,15 @@
     <div class="app-tm-content">
       <img class="loading-logo" id="appLoadingLogo" src="/assets/images/logo.svg" alt="" />
       <div class="loading-brand" id="appLoadingBrand">SENTRY MESSENGER</div>
-      <div class="loading-sublabel" data-i18n="auth.e2eeEncrypted">END-TO-END ENCRYPTED</div>
+      <div class="loading-sublabel" data-i18n="auth.e2eeEncrypted"></div>
       <div class="loading-bar-track" id="appEnterBtn">
         <div id="appLoadingBar" class="loading-bar-fill"></div>
         <div class="loading-bar-scan"></div>
-        <span id="appEnterLabel" class="loading-enter-label" data-i18n="auth.enterButton">E N T E R</span>
+        <span id="appEnterLabel" class="loading-enter-label" data-i18n="auth.enterButton"></span>
       </div>
-      <div id="appLoadingLabel" class="loading-label" data-i18n="auth.loadingSecureSession">LOADING SECURE SESSION...</div>
+      <div id="appLoadingLabel" class="loading-label" data-i18n="auth.loadingSecureSession"></div>
       <div id="appLoadingStatus" class="loading-status"></div>
-      <button id="appLoadingSkip" class="loading-skip" data-i18n="auth.skipForNow">Later</button>
+      <button id="appLoadingSkip" class="loading-skip" data-i18n="auth.skipForNow"></button>
     </div>
   </div>
   <script>if (window.__i18nApply) window.__i18nApply();</script>
@@ -446,15 +446,15 @@
 
   <div id="orientationOverlay" class="orientation-overlay" aria-hidden="true">
     <span class="icon" aria-hidden="true">📱</span>
-    <strong data-i18n="orientation.usePortrait">Please use in portrait mode</strong>
-    <span data-i18n="orientation.rotateBackMessage">For the best experience, please rotate your device back to portrait orientation.</span>
+    <strong data-i18n="orientation.usePortrait"></strong>
+    <span data-i18n="orientation.rotateBackMessage"></span>
   </div>
   <header class="topbar">
     <div class="title">
       <img class="brand" id="appHeaderLogo" src="/assets/images/logo.svg" alt="SENTRY MESSENGER" />
       <span id="appHeaderBrandName">SENTRY</span>
       <span id="connectionIndicator" class="connection-indicator" aria-live="polite" data-ws-path="/api/ws"
-        data-ws-host=""><span class="dot" aria-hidden="true"></span><span data-i18n="status.offline">Offline</span></span>
+        data-ws-host=""><span class="dot" aria-hidden="true"></span><span data-i18n="status.offline"></span></span>
     </div>
     <div class="actions">
       <div id="userMenu" class="user-menu">
@@ -466,17 +466,17 @@
           </span>
         </button>
         <div id="userMenuDropdown" class="user-menu-dropdown" role="menu" aria-hidden="true">
-          <button class="user-menu-item" type="button" data-action="settings" role="menuitem" data-i18n="settings.title">Settings</button>
+          <button class="user-menu-item" type="button" data-action="settings" role="menuitem" data-i18n="settings.title"></button>
           <button class="user-menu-item" type="button" data-action="subscription" id="userMenuSubscriptionBtn"
             role="menuitem">
-            <span data-i18n="subscription.subscriptionStatusTab">Subscription Status</span>
+            <span data-i18n="subscription.subscriptionStatusTab"></span>
             <span class="menu-item-badge" aria-hidden="true">!</span>
           </button>
           <button class="user-menu-item" type="button" data-action="version-info" id="userMenuVersionBtn"
-            role="menuitem" data-i18n="versionInfo.title">Version Info</button>
+            role="menuitem" data-i18n="versionInfo.title"></button>
           <div class="version-info-menu" id="versionInfoPopupAppMenu" aria-hidden="true"></div>
           <div class="user-menu-divider" role="presentation"></div>
-          <button class="user-menu-item logout" type="button" data-action="logout" role="menuitem" data-i18n="auth.logout">Logout</button>
+          <button class="user-menu-item logout" type="button" data-action="logout" role="menuitem" data-i18n="auth.logout"></button>
         </div>
       </div>
     </div>
@@ -513,11 +513,11 @@
       <div class="card contacts-card">
         <div id="contactsRefreshHint" class="contacts-refresh">
           <i class='bx bx-refresh icon' aria-hidden="true"></i>
-          <span class="label" data-i18n="contacts.pullToRefresh">Pull to refresh contacts</span>
+          <span class="label" data-i18n="contacts.pullToRefresh"></span>
         </div>
         <div id="contactsScroll" class="contacts-scroll">
           <div class="contact-list-header">
-            <span><strong id="contactsCount">0</strong> <span data-i18n="contacts.friendCount">friends</span></span>
+            <span><strong id="contactsCount">0</strong> <span data-i18n="contacts.friendCount"></span></span>
             <div class="add-friend-wrapper">
               <button id="btnContactsAddFriend" class="contacts-add-btn" type="button" data-i18n-aria-label="contacts.addFriend" data-i18n-title="contacts.addFriend">
                 <i class='bx bx-user-plus'></i>
@@ -525,11 +525,11 @@
               <div id="contactsAddFriendMenu" class="add-friend-menu add-friend-menu--below" style="display:none">
                 <button id="btnContactsAddFriendQr" class="add-friend-menu-item" type="button">
                   <i class='bx bx-qr'></i>
-                  <span data-i18n="contacts.qrAddFriend">QR add friend</span>
+                  <span data-i18n="contacts.qrAddFriend"></span>
                 </button>
                 <button id="btnContactsAddFriendCode" class="add-friend-menu-item" type="button">
                   <i class='bx bx-dialpad'></i>
-                  <span data-i18n="contacts.usePairingCode">Use pairing code</span>
+                  <span data-i18n="contacts.usePairingCode"></span>
                 </button>
               </div>
             </div>
@@ -548,11 +548,11 @@
           <aside class="messages-sidebar">
             <div id="conversationRefresh" class="conversation-refresh">
               <i class='bx bx-refresh icon' aria-hidden="true"></i>
-              <span class="label" data-i18n="messages.pullToRefreshConversations">Pull to refresh conversations</span>
+              <span class="label" data-i18n="messages.pullToRefreshConversations"></span>
             </div>
             <div class="conversation-actions" style="display:none" aria-hidden="true">
               <button id="btnCreateGroup" type="button" class="secondary" data-i18n-aria-label="contacts.createGroup" data-i18n-title="contacts.createGroup">
-                <i class='bx bx-group'></i> <span data-i18n="contacts.createGroup">Create group</span>
+                <i class='bx bx-group'></i> <span data-i18n="contacts.createGroup"></span>
               </button>
             </div>
             <div id="groupDrafts" class="conversation-group-drafts" aria-live="polite" style="display:none"
@@ -565,7 +565,7 @@
                   class='bx bx-chevron-left'></i></button>
               <div id="messagesPeerAvatar" class="messages-peer-avatar"></div>
               <div class="messages-header-meta">
-                <strong id="messagesPeerName" data-i18n="contacts.selectToChat">Select a friend to start chatting</strong>
+                <strong id="messagesPeerName" data-i18n="contacts.selectToChat"></strong>
                 <span id="messagesStatus" class="status"></span>
               </div>
               <div class="messages-actions">
@@ -576,10 +576,10 @@
                     disabled><i class='bx bx-phone'></i></button>
                   <div id="callSubmenu" class="call-submenu hidden">
                     <button type="button" class="call-submenu-item" data-call-type="voice">
-                      <i class='bx bx-phone'></i><span data-i18n="calls.voiceCall">Voice call</span>
+                      <i class='bx bx-phone'></i><span data-i18n="calls.voiceCall"></span>
                     </button>
                     <button type="button" class="call-submenu-item" data-call-type="video">
-                      <i class='bx bx-video'></i><span data-i18n="calls.videoCall">Video call</span>
+                      <i class='bx bx-video'></i><span data-i18n="calls.videoCall"></span>
                     </button>
                   </div>
                 </div>
@@ -587,13 +587,13 @@
             </div>
             <div id="messagesScroll" class="messages-scroll">
               <div id="messagesLoadMore" class="messages-load-more hidden" role="status">
-                <span class="label" data-i18n="common.loadMore">Load more</span>
+                <span class="label" data-i18n="common.loadMore"></span>
                 <span class="spinner" aria-hidden="true"></span>
               </div>
               <div id="messagesEmpty" class="messages-empty">
                 <i class='bx bx-message-dots' aria-hidden="true"></i>
-                <p class="messages-empty-title" data-i18n="messages.noConversationSelected">No conversation selected</p>
-                <p class="messages-empty-hint" data-i18n="messages.selectConversationToChat">Select a conversation to start chatting</p>
+                <p class="messages-empty-title" data-i18n="messages.noConversationSelected"></p>
+                <p class="messages-empty-hint" data-i18n="messages.selectConversationToChat"></p>
               </div>
               <ul id="messagePlaceholders" class="messages-list messages-placeholders"></ul>
               <ul id="messagesList" class="messages-list"></ul>
@@ -613,10 +613,10 @@
     <section id="tab-drive" class="tab">
       <div id="driveRefreshHint" class="drive-refresh">
         <i class='bx bx-refresh icon' aria-hidden="true"></i>
-        <span class="label" data-i18n="drive.pullToRefresh">Pull to refresh files</span>
+        <span class="label" data-i18n="drive.pullToRefresh"></span>
       </div>
       <div class="drive-usage" aria-live="polite">
-        <span class="drive-usage-label" data-i18n="drive.cloudSpace">Cloud space</span>
+        <span class="drive-usage-label" data-i18n="drive.cloudSpace"></span>
         <span class="drive-usage-amount">
           <span id="driveUsageValue">0 B</span>
           <span id="driveUsageTotal" class="drive-usage-total">/ 3 GB</span>
@@ -630,7 +630,7 @@
       <div class="card">
         <div class="list-header">
           <div style="display:flex;flex-direction:column;gap:6px;">
-            <h3 style="margin:0" data-i18n="drive.fileList">File list</h3>
+            <h3 style="margin:0" data-i18n="drive.fileList"></h3>
             <nav id="driveCrumb" class="crumb" style="font-size:13px"></nav>
           </div>
           <div class="list-actions">
@@ -665,13 +665,13 @@
               <strong id="profileNickname">……</strong>
               <button id="btnProfileNickEdit" class="profile-edit-btn" type="button" data-i18n-aria-label="profile.editNickname">
                 <i class='bx bx-pencil'></i>
-                <span data-i18n="profile.editNickname">Edit nickname</span>
+                <span data-i18n="profile.editNickname"></span>
               </button>
             </div>
             <div class="profile-stats">
               <div class="stat">
                 <div id="statContacts" class="stat-value">0</div>
-                <div class="stat-label" data-i18n="common.friend">Friend</div>
+                <div class="stat-label" data-i18n="common.friend"></div>
               </div>
               <div class="add-friend-wrapper">
                 <button id="btnShareModal" class="profile-share-btn" type="button" data-i18n-aria-label="contacts.addFriend" data-i18n-title="contacts.addFriend">
@@ -680,11 +680,11 @@
                 <div id="addFriendMenu" class="add-friend-menu" style="display:none">
                   <button id="btnAddFriendQr" class="add-friend-menu-item" type="button">
                     <i class='bx bx-qr'></i>
-                    <span data-i18n="contacts.qrAddFriend">QR add friend</span>
+                    <span data-i18n="contacts.qrAddFriend"></span>
                   </button>
                   <button id="btnAddFriendCode" class="add-friend-menu-item" type="button">
                     <i class='bx bx-dialpad'></i>
-                    <span data-i18n="contacts.usePairingCode">Use pairing code</span>
+                    <span data-i18n="contacts.usePairingCode"></span>
                   </button>
                 </div>
               </div>
@@ -701,7 +701,7 @@
     <div class="modal-panel share-modal-panel" role="dialog" aria-modal="true" aria-labelledby="shareModalTitle">
       <div id="shareFlip" class="share-flip">
         <div class="share-face share-front">
-          <span id="shareModalTitle" class="sr-only" data-i18n="contacts.addFriend">Add friend</span>
+          <span id="shareModalTitle" class="sr-only" data-i18n="contacts.addFriend"></span>
           <header class="share-head">
             <button type="button" class="share-close" data-share-close-btn data-i18n-aria-label="common.close" aria-label="Close">×</button>
             <button id="btnShareSwitchScan" class="share-corner-toggle share-corner-toggle--scan" type="button"
@@ -744,7 +744,7 @@
     <div class="modal-panel pairing-code-panel" role="dialog" aria-modal="true" aria-labelledby="pairingCodeTitle">
       <header class="pairing-code-head">
         <button type="button" class="share-close" data-pairing-close-btn data-i18n-aria-label="common.close" aria-label="Close">×</button>
-        <span id="pairingCodeTitle" class="pairing-code-title" data-i18n="share.pairingCode">Pairing code</span>
+        <span id="pairingCodeTitle" class="pairing-code-title" data-i18n="share.pairingCode"></span>
       </header>
       <div class="pairing-code-body">
         <div class="pairing-code-countdown">
@@ -763,8 +763,8 @@
         </div>
         <div id="pairingStatus" class="pairing-code-status"></div>
         <div class="pairing-code-actions">
-          <button id="btnPairingToggle" class="pairing-toggle-btn" type="button" data-i18n="share.enterPeerPairingCode">Enter peer pairing code</button>
-          <button id="btnPairingConfirm" class="pairing-confirm-btn" type="button" style="display:none" data-i18n="common.confirm">Confirm</button>
+          <button id="btnPairingToggle" class="pairing-toggle-btn" type="button" data-i18n="share.enterPeerPairingCode"></button>
+          <button id="btnPairingConfirm" class="pairing-confirm-btn" type="button" style="display:none" data-i18n="common.confirm"></button>
         </div>
       </div>
     </div>
@@ -787,14 +787,14 @@
     <div class="modal-backdrop" id="customLogoutBackdrop"></div>
     <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="customLogoutTitle">
       <div class="modal-head">
-        <div id="customLogoutTitle" class="modal-title" data-i18n="settings.customLogoutPage">Custom logout page</div>
+        <div id="customLogoutTitle" class="modal-title" data-i18n="settings.customLogoutPage"></div>
         <button id="customLogoutClose" class="modal-close" data-i18n-aria-label="common.close" aria-label="Close">×</button>
       </div>
       <div class="modal-body">
         <div class="custom-logout-body">
-          <p class="custom-logout-desc" data-i18n="settings.customLogoutHint">Only HTTPS (https://) URLs are accepted. You will be redirected to this page on logout. Please ensure it is a trusted URL.</p>
+          <p class="custom-logout-desc" data-i18n="settings.customLogoutHint"></p>
           <label class="custom-logout-field" for="customLogoutInput">
-            <span data-i18n="settings.setUrl">Set URL</span>
+            <span data-i18n="settings.setUrl"></span>
             <input type="url" id="customLogoutInput" list="customLogoutOptions" placeholder="https://example.com/logout"
               inputmode="url" autocomplete="off" spellcheck="false" />
           </label>
@@ -807,8 +807,8 @@
           </datalist>
           <div id="customLogoutError" class="custom-logout-error" role="status" aria-live="polite"></div>
           <div class="custom-logout-actions">
-            <button type="button" class="secondary" id="customLogoutCancel" data-i18n="common.cancel">Cancel</button>
-            <button type="button" class="primary" id="customLogoutSave" data-i18n="common.save">Save</button>
+            <button type="button" class="secondary" id="customLogoutCancel" data-i18n="common.cancel"></button>
+            <button type="button" class="primary" id="customLogoutSave" data-i18n="common.save"></button>
           </div>
         </div>
       </div>
@@ -822,12 +822,12 @@
       <button id="nav-contacts" class="navbtn" data-i18n-aria-label="nav.contacts">
         <span class="nav-badge" data-tab="contacts"></span>
         <i class='bx bx-user-circle'></i>
-        <span data-i18n="nav.contacts">Contacts</span>
+        <span data-i18n="nav.contacts"></span>
       </button>
       <button id="nav-messages" class="navbtn" data-i18n-aria-label="nav.messages">
         <span class="nav-badge" data-tab="messages"></span>
         <i class='bx bx-message-dots'></i>
-        <span data-i18n="nav.messages">Messages</span>
+        <span data-i18n="nav.messages"></span>
       </button>
       <button id="nav-drive" class="navbtn active" data-i18n-aria-label="nav.encryptedCloud">
         <span class="nav-badge" data-tab="drive"></span>
@@ -835,12 +835,12 @@
           <i class='bx bxs-cloud nav-icon-base'></i>
           <i class='bx bx-lock-alt nav-icon-lock'></i>
         </span>
-        <span data-i18n="nav.encryptedCloud">Encrypted Cloud</span>
+        <span data-i18n="nav.encryptedCloud"></span>
       </button>
       <button id="nav-profile" class="navbtn" data-i18n-aria-label="nav.myFiles">
         <span class="nav-badge" data-tab="profile"></span>
         <i class='bx bx-user'></i>
-        <span data-i18n="nav.myFiles">My Files</span>
+        <span data-i18n="nav.myFiles"></span>
       </button>
     </div>
   </nav>
@@ -848,22 +848,20 @@
   <div id="mediaPermissionOverlay" class="media-permission-overlay" aria-hidden="true" style="display:none">
     <div class="media-permission-card" role="dialog" aria-modal="true" aria-labelledby="mediaPermissionTitle">
       <i class='bx bxs-lock-shield icon' aria-hidden="true"></i>
-      <h2 id="mediaPermissionTitle" data-i18n="mediaPermission.enableVoiceCall">Enable voice calls</h2>
-      <p data-i18n="mediaPermission.clickBelowToAuth">Click the button below to authorize the microphone and unlock audio playback, ensuring incoming calls ring normally.</p>
+      <h2 id="mediaPermissionTitle" data-i18n="mediaPermission.enableVoiceCall"></h2>
+      <p data-i18n="mediaPermission.clickBelowToAuth"></p>
       <ul>
-        <li><i class='bx bx-microphone'></i><span data-i18n="mediaPermission.micRequiredForE2ee">Allow microphone to enable E2EE voice calls.</span></li>
-        <li><i class='bx bx-volume-full'></i><span data-i18n="mediaPermission.unlockAudioPlayback">Also unlocks audio playback, preventing the browser from blocking incoming call ringtones.</span></li>
+        <li><i class='bx bx-microphone'></i><span data-i18n="mediaPermission.micRequiredForE2ee"></span></li>
+        <li><i class='bx bx-volume-full'></i><span data-i18n="mediaPermission.unlockAudioPlayback"></span></li>
       </ul>
       <div id="mediaPermissionStatus" class="media-permission-status" role="status" aria-live="polite"></div>
-      <p class="media-permission-hints" data-i18n="mediaPermission.safariRetryHint">
-        If the browser authorization window does not appear, press "Cancel and retry", or go to Safari Settings > Advanced Website Settings > Microphone to re-allow.
-      </p>
+      <p class="media-permission-hints" data-i18n="mediaPermission.safariRetryHint"></p>
       <div class="media-permission-actions">
         <button id="mediaPermissionAllowBtn" type="button" class="media-permission-btn">
-          <i class='bx bx-check-shield'></i><span id="mediaPermissionAllowLabel" data-i18n="mediaPermission.allowMicrophone">Allow microphone</span>
+          <i class='bx bx-check-shield'></i><span id="mediaPermissionAllowLabel" data-i18n="mediaPermission.allowMicrophone"></span>
         </button>
         <button id="mediaPermissionDebugBtn" type="button" class="media-permission-skip" style="display:none">Debug</button>
-        <button id="mediaPermissionSkipBtn" type="button" class="media-permission-skip" data-i18n="mediaPermission.later">Later</button>
+        <button id="mediaPermissionSkipBtn" type="button" class="media-permission-skip" data-i18n="mediaPermission.later"></button>
       </div>
     </div>
   </div>
