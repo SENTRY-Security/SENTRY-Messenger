@@ -10,6 +10,12 @@ NTAG424_KDF = "HKDF"
 NTAG424_SALT = "sentry.red"
 NTAG424_INFO = "ntag424-slot-0"
 NTAG424_KVER = "1"
+# S3/R2 (non-secret config; keys set via wrangler secret)
+S3_ENDPOINT = "https://436a742b2a3f99a70289f00ca8688b8e.r2.cloudflarestorage.com"
+S3_REGION = "auto"
+S3_BUCKET = "message-media"
+SIGNED_PUT_TTL = "900"
+SIGNED_GET_TTL = "900"
 # Comma-separated origins allowed for CORS (empty = allow all)
 # CORS_ORIGINS = "https://app.example.com,https://www.example.com"
 # Node.js origin for proxying unmigrated routes (empty = return 404)
@@ -36,6 +42,11 @@ NTAG424_KDF = "HKDF"
 NTAG424_SALT = "sentry.red"
 NTAG424_INFO = "ntag424-slot-0"
 NTAG424_KVER = "1"
+S3_ENDPOINT = "https://436a742b2a3f99a70289f00ca8688b8e.r2.cloudflarestorage.com"
+S3_REGION = "auto"
+S3_BUCKET = "message-media-uat"
+SIGNED_PUT_TTL = "900"
+SIGNED_GET_TTL = "900"
 
 [[env.uat.d1_databases]]
 binding = "DB"

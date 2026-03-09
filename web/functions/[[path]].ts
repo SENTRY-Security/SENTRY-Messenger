@@ -2,10 +2,12 @@
 const DEBUG_ALLOWED_IPS = ['60.248.6.250'];
 const RESTRICTED_PATHS = ['/pages/debug.html', '/debug.html', '/debug'];
 
-// Routes migrated to Worker — send directly to WORKER_API_URL (no /d1/ rewrite)
+// Routes migrated to Worker — send directly as /api/v1/* (no /d1/ rewrite)
 const WORKER_DIRECT_PREFIXES = [
   '/api/v1/auth/',
   '/api/v1/mk/',
+  '/api/v1/contacts/',
+  '/api/v1/admin/',
 ];
 
 export const onRequest: PagesFunction<{

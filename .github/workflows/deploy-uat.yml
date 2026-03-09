@@ -95,6 +95,8 @@ jobs:
           echo '${{ secrets.UAT_ACCOUNT_HMAC_KEY }}'     | npx wrangler@4 secret put ACCOUNT_HMAC_KEY --env uat 2>&1 || true
           echo '${{ secrets.UAT_INVITE_TOKEN_KEY }}'     | npx wrangler@4 secret put INVITE_TOKEN_KEY --env uat 2>&1 || true
           echo '${{ secrets.UAT_PORTAL_HMAC_SECRET }}'   | npx wrangler@4 secret put PORTAL_HMAC_SECRET --env uat 2>&1 || true
+          echo '${{ secrets.UAT_S3_ACCESS_KEY }}'        | npx wrangler@4 secret put S3_ACCESS_KEY --env uat 2>&1 || true
+          echo '${{ secrets.UAT_S3_SECRET_KEY }}'        | npx wrangler@4 secret put S3_SECRET_KEY --env uat 2>&1 || true
           echo "Worker secrets set."
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.UAT_CLOUDFLARE_API_TOKEN }}

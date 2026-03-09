@@ -7204,6 +7204,87 @@ async function handlePublicRoutes(req, env) {
     return json({ error: 'NotImplemented', message: 'media/copy-chunked not yet available on edge; use origin server' }, { status: 501 });
   }
 
+  // ── Contacts (migrated from Node.js) ──────────────────────────
+  // POST /api/v1/contacts/uplink — upsert encrypted contact list
+  if (path === '/api/v1/contacts/uplink' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const contacts = Array.isArray(body?.contacts) ? body.contacts : [];
+    const intBody = { accountDigest: auth.accountDigest, contacts };
+    return handleContactsRoutes(internalRequest('/d1/contacts/upsert', 'POST', intBody, baseUrl), env);
+  }
+
+  // POST /api/v1/contacts/downlink — get contact snapshot
+  if (path === '/api/v1/contacts/downlink' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const qs = `?accountDigest=${auth.accountDigest}`;
+    return handleContactsRoutes(internalRequest(`/d1/contacts/snapshot${qs}`, 'GET', null, baseUrl), env);
+  }
+
+  // POST /api/v1/contacts/avatar/sign-put — get presigned upload URL for avatar
+  if (path === '/api/v1/contacts/avatar/sign-put' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const peerDigest = normalizeAccountDigest(body?.peerDigest || body?.peer_digest);
+    if (!peerDigest) return json({ error: 'BadRequest', message: 'peerDigest required' }, { status: 400 });
+    const size = Number(body?.size || 0);
+    if (size < 1 || size > 5 * 1024 * 1024) return json({ error: 'BadRequest', message: 'size must be 1–5MB' }, { status: 400 });
+    const uid = generateNanoId();
+    const key = `avatars/${auth.accountDigest}/${peerDigest}_${Date.now()}_${uid}.enc`;
+    const ttlSec = 300;
+    try {
+      const presignedUrl = await generatePresignedUrl(env, { method: 'PUT', key, expiresIn: ttlSec, contentType: 'application/octet-stream' });
+      return json({
+        upload: { url: presignedUrl, bucket: env.S3_BUCKET, key, method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' } },
+        expiresIn: ttlSec,
+        objectPath: key
+      });
+    } catch (err) {
+      return json({ error: 'PresignFailed', message: err?.message || 'failed to generate presigned URL' }, { status: 500 });
+    }
+  }
+
+  // POST /api/v1/contacts/avatar/sign-get — get presigned download URL for avatar
+  if (path === '/api/v1/contacts/avatar/sign-get' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const keyStr = body?.key;
+    if (!keyStr || typeof keyStr !== 'string') return json({ error: 'BadRequest', message: 'key required' }, { status: 400 });
+    const expectedPrefix = `avatars/${auth.accountDigest}/`;
+    if (!keyStr.startsWith(expectedPrefix)) {
+      return json({ error: 'AccessDenied', message: 'invalid key scope' }, { status: 403 });
+    }
+    const ttlSec = 3600;
+    try {
+      const presignedUrl = await generatePresignedUrl(env, { method: 'GET', key: keyStr, expiresIn: ttlSec });
+      return json({ download: { url: presignedUrl, bucket: env.S3_BUCKET, key: keyStr }, expiresIn: ttlSec });
+    } catch (err) {
+      return json({ error: 'PresignFailed', message: err?.message || 'failed to generate presigned URL' }, { status: 500 });
+    }
+  }
+
+  // ── Admin (migrated from Node.js) ────────────────────────────
+  // POST /api/v1/admin/set-brand — set brand info for account/uid
+  if (path === '/api/v1/admin/set-brand' && method === 'POST') {
+    // Verify admin HMAC (same as Node.js verifyIncomingHmac)
+    if (!await verifyHMAC(req, env)) {
+      return json({ error: 'Unauthorized', message: 'invalid admin signature' }, { status: 401 });
+    }
+    if (body?.brand === undefined) {
+      return json({ error: 'BadRequest', message: 'brand field required' }, { status: 400 });
+    }
+    const payload = {
+      brand: body.brand || null,
+      brandName: body.brandName || body.brand_name || undefined,
+      brandLogo: body.brandLogo || body.brand_logo || undefined,
+      accountDigest: body.accountDigest || body.account_digest || undefined,
+      uidDigest: body.uidDigest || body.uid_digest || undefined,
+      uidHex: body.uidHex || body.uid_hex || undefined
+    };
+    return handleAccountsRoutes(internalRequest('/d1/accounts/set-brand', 'POST', payload, baseUrl), env);
+  }
+
   return null;
 }
 
