@@ -18,6 +18,12 @@ binding = "DB"
 database_name = "message_db"
 database_id = "99728586-d8a9-4525-a1af-e68e84594047"
 
+# KV namespace for short-lived auth sessions (SDM exchange, OPAQUE login)
+# Create with: wrangler kv namespace create AUTH_KV
+[[kv_namespaces]]
+binding = "AUTH_KV"
+id = "AUTH_KV_PLACEHOLDER"
+
 # ── UAT Environment ─────────────────────────────────────────────
 [env.uat]
 name = "message-data-uat"
@@ -26,3 +32,7 @@ name = "message-data-uat"
 binding = "DB"
 database_name = "message_db_uat"
 database_id = "362f2681-29fc-45bf-9e2a-09b9021e6019"
+
+[[env.uat.kv_namespaces]]
+binding = "AUTH_KV"
+id = "AUTH_KV_UAT_PLACEHOLDER"

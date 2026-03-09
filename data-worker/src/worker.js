@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { toU8Strict } from './u8-strict.js';
+import { getOpaqueConfig, OpaqueID, OpaqueServer, KE1, KE3, RegistrationRequest, RegistrationRecord, ExpectedAuthResult } from '@cloudflare/opaque-ts';
 
 // ---- 基本工具與正規化 ----
 const textEncoder = new TextEncoder();
@@ -19,6 +20,195 @@ function proxyToNodejs(req, env) {
   return fetch(new Request(target.toString(), req));
 }
 const INVITE_INFO_TAG = 'contact-init/dropbox/v1';
+
+// ---- AES-CMAC (RFC 4493) implemented with node:crypto ----
+function aesCmac(keyBuf, dataBuf) {
+  const ZERO = Buffer.alloc(16);
+  const BLOCKLEN = 16;
+  const Rb = 0x87;
+  // Step 1: Generate subkeys
+  const cipher0 = crypto.createCipheriv('aes-128-ecb', keyBuf, null);
+  cipher0.setAutoPadding(false);
+  const L = cipher0.update(ZERO);
+  cipher0.final();
+  function dbl(buf) {
+    const out = Buffer.alloc(BLOCKLEN);
+    let carry = 0;
+    for (let i = BLOCKLEN - 1; i >= 0; i--) {
+      const v = (buf[i] << 1) | carry;
+      out[i] = v & 0xff;
+      carry = buf[i] >> 7;
+    }
+    if (carry) out[BLOCKLEN - 1] ^= Rb;
+    return out;
+  }
+  const K1 = dbl(L);
+  const K2 = dbl(K1);
+  // Step 2: Prepare blocks
+  const data = Buffer.isBuffer(dataBuf) ? dataBuf : Buffer.from(dataBuf);
+  const n = data.length === 0 ? 1 : Math.ceil(data.length / BLOCKLEN);
+  const lastComplete = data.length > 0 && data.length % BLOCKLEN === 0;
+  const Mn = Buffer.alloc(BLOCKLEN);
+  if (lastComplete) {
+    data.copy(Mn, 0, (n - 1) * BLOCKLEN, n * BLOCKLEN);
+    for (let i = 0; i < BLOCKLEN; i++) Mn[i] ^= K1[i];
+  } else {
+    const tail = data.length - (n - 1) * BLOCKLEN;
+    if (tail > 0) data.copy(Mn, 0, (n - 1) * BLOCKLEN, data.length);
+    Mn[tail] = 0x80; // padding
+    for (let i = 0; i < BLOCKLEN; i++) Mn[i] ^= K2[i];
+  }
+  // Step 3: CBC-MAC
+  let X = Buffer.alloc(BLOCKLEN);
+  for (let i = 0; i < n - 1; i++) {
+    const block = data.subarray(i * BLOCKLEN, (i + 1) * BLOCKLEN);
+    for (let j = 0; j < BLOCKLEN; j++) X[j] ^= block[j];
+    const c = crypto.createCipheriv('aes-128-ecb', keyBuf, null);
+    c.setAutoPadding(false);
+    X = c.update(X);
+    c.final();
+  }
+  for (let j = 0; j < BLOCKLEN; j++) X[j] ^= Mn[j];
+  const cf = crypto.createCipheriv('aes-128-ecb', keyBuf, null);
+  cf.setAutoPadding(false);
+  const T = cf.update(X);
+  cf.final();
+  return T; // 16-byte Buffer
+}
+
+// ---- NTAG424 KDF ----
+function ntag424_normalizeCtr(ctrHex) {
+  const s = String(ctrHex || '').replace(/[^0-9a-f]/gi, '').toUpperCase();
+  const right6 = s.length > 6 ? s.slice(-6) : s;
+  return right6.padStart(6, '0');
+}
+
+function ntag424_hkdf16(kmHex, uidHex, salt, info) {
+  const km = Buffer.from(kmHex, 'hex');
+  const hmac = (key, data) => crypto.createHmac('sha256', key).update(data).digest();
+  const prk = hmac(Buffer.from(salt || ''), km);
+  const okm = hmac(prk, Buffer.from(`${info || 'ntag424-static-key'}:${uidHex}`, 'utf8'));
+  return okm.subarray(0, 16);
+}
+
+function ntag424_ev2cmac16(kmHex, uidHex, tagidHex, kver) {
+  const parts = [Buffer.from([0x01]), Buffer.from('EV2-KDF')];
+  if (uidHex) parts.push(Buffer.from(uidHex, 'hex'));
+  if (tagidHex) parts.push(Buffer.from(String(tagidHex).replace(/-/g, ''), 'hex'));
+  if (kver != null) parts.push(Buffer.from([Number(kver) & 0xff]));
+  return aesCmac(Buffer.from(kmHex, 'hex'), Buffer.concat(parts)).subarray(0, 16);
+}
+
+function ntag424_deriveKey(env, kmEnvName, uidHex, tagidHex) {
+  const kmHex = String(env[kmEnvName] || '').trim().toUpperCase();
+  if (!/^[0-9A-Fa-f]{32}$/.test(kmHex)) throw new Error(`${kmEnvName} missing or invalid`);
+  const uid = String(uidHex || '').toUpperCase();
+  const mode = String(env.NTAG424_KDF || 'HKDF').toUpperCase();
+  const kver = env.NTAG424_KVER ? Number(env.NTAG424_KVER) : undefined;
+  if (mode === 'EV2') return ntag424_ev2cmac16(kmHex, uid, tagidHex, kver);
+  const salt = env.NTAG424_SALT || env.DOMAIN || 'sentry.red';
+  const info = env.NTAG424_INFO || 'ntag424-static-key';
+  return ntag424_hkdf16(kmHex, uid, salt, info);
+}
+
+function ntag424_deriveWithFallback(env, uidHex, tagidHex) {
+  const current = ntag424_deriveKey(env, 'NTAG424_KM', uidHex, tagidHex);
+  const oldHex = String(env.NTAG424_KM_OLD || '').trim();
+  if (/^[0-9A-Fa-f]{32}$/.test(oldHex)) {
+    const uid = String(uidHex || '').toUpperCase();
+    const mode = String(env.NTAG424_KDF || 'HKDF').toUpperCase();
+    const kver = env.NTAG424_KVER ? Number(env.NTAG424_KVER) : undefined;
+    const legacy = (mode === 'EV2')
+      ? ntag424_ev2cmac16(oldHex.toUpperCase(), uid, tagidHex, kver)
+      : ntag424_hkdf16(oldHex.toUpperCase(), uid, env.NTAG424_SALT || env.DOMAIN || 'sentry.red', env.NTAG424_INFO || 'ntag424-static-key');
+    return { current, legacy };
+  }
+  return { current };
+}
+
+// ---- NTAG424 SDM CMAC Verify ----
+function ntag424_computeSdmCmac(sdmKeyHex, uidHex, ctrHex) {
+  const K = Buffer.from(sdmKeyHex, 'hex');
+  const UID = Buffer.from(String(uidHex).replace(/[^0-9a-f]/gi, ''), 'hex');
+  const ctr6 = ntag424_normalizeCtr(ctrHex);
+  const ctrBuf = Buffer.from(ctr6, 'hex');
+  const ctrLSB = Buffer.from(ctrBuf).reverse();
+  const SV2 = Buffer.concat([Buffer.from('3CC300010080', 'hex'), UID, ctrLSB]);
+  const Kses = aesCmac(K, SV2);
+  const full = aesCmac(Kses, Buffer.alloc(0));
+  // MACt: take odd-indexed bytes (indices 1,3,5,7,9,11,13,15) → 8 bytes
+  const mac8 = Buffer.alloc(8);
+  for (let i = 1, j = 0; i < 16 && j < 8; i += 2, j++) mac8[j] = full[i];
+  return mac8.toString('hex').toUpperCase();
+}
+
+function ntag424_verifyCmac(env, uidHex, ctrHex, cmacHex, tagidHex) {
+  const { current, legacy } = ntag424_deriveWithFallback(env, uidHex, tagidHex);
+  const got = String(cmacHex || '').replace(/[^0-9a-f]/gi, '').toUpperCase();
+  const keyHex = current.toString('hex').toUpperCase();
+  const expected = ntag424_computeSdmCmac(keyHex, uidHex, ctrHex);
+  if (got === expected) return { ok: true, expected, got, used: 'current' };
+  if (legacy) {
+    const legacyHex = legacy.toString('hex').toUpperCase();
+    const expectedOld = ntag424_computeSdmCmac(legacyHex, uidHex, ctrHex);
+    if (got === expectedOld) return { ok: true, expected: expectedOld, got, used: 'legacy' };
+  }
+  return { ok: false, expected, got, used: 'current' };
+}
+
+function ntag424_computeSdmCmacForDebug(env, uidHex, ctrHex) {
+  const key = ntag424_deriveKey(env, 'NTAG424_KM', uidHex);
+  return ntag424_computeSdmCmac(key.toString('hex').toUpperCase(), uidHex, ctrHex);
+}
+
+// ---- OPAQUE Server (singleton per isolate) ----
+let _opaqueServer = null;
+function getOrInitOpaqueServer(env) {
+  if (_opaqueServer) return _opaqueServer;
+  const seedHex = String(env.OPAQUE_OPRF_SEED || '').trim();
+  if (!/^[0-9A-Fa-f]{64}$/.test(seedHex)) return null;
+  const cfg = getOpaqueConfig(OpaqueID.OPAQUE_P256);
+  const oprf_seed = Array.from(Buffer.from(seedHex, 'hex'));
+  const serverId = env.OPAQUE_SERVER_ID || env.DOMAIN || 'api.sentry';
+  const privB64 = String(env.OPAQUE_AKE_PRIV_B64 || '').trim();
+  const pubB64 = String(env.OPAQUE_AKE_PUB_B64 || '').trim();
+  let ake_keypair = null;
+  if (privB64 && pubB64) {
+    ake_keypair = {
+      private_key: Array.from(Buffer.from(privB64, 'base64')),
+      public_key: Array.from(Buffer.from(pubB64, 'base64'))
+    };
+  }
+  try {
+    _opaqueServer = new OpaqueServer(cfg, oprf_seed, ake_keypair, serverId);
+    return _opaqueServer;
+  } catch (e) {
+    console.error('[opaque.init] failed', e?.message || e);
+    return null;
+  }
+}
+
+// ---- Auth KV helpers ----
+const AUTH_KV_PREFIX_SESS = 'sess:';
+const AUTH_KV_PREFIX_OPAQUE = 'opaque:';
+const AUTH_KV_PREFIX_DBG_CTR = 'dbgctr:';
+
+async function kvPut(env, key, value, ttlSeconds) {
+  if (!env.AUTH_KV) throw new Error('AUTH_KV not bound');
+  await env.AUTH_KV.put(key, JSON.stringify(value), { expirationTtl: ttlSeconds });
+}
+
+async function kvGet(env, key) {
+  if (!env.AUTH_KV) return null;
+  const raw = await env.AUTH_KV.get(key);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+async function kvDelete(env, key) {
+  if (!env.AUTH_KV) return;
+  await env.AUTH_KV.delete(key);
+}
 
 function timingSafeEqual(a, b) {
   if (a.length !== b.length) return false;
@@ -5696,6 +5886,260 @@ function internalRequest(url, method, body, baseUrl) {
   return new Request(new URL(url, baseUrl), opts);
 }
 
+// ---- Auth routes (SDM exchange, OPAQUE, MK) ----
+const ACCOUNT_DIGEST_RE = /^[0-9A-Fa-f]{64}$/;
+const SDM_EXCHANGE_TTL = 300; // seconds
+const OPAQUE_SESSION_TTL = 120;
+
+async function handleAuthRoutes(path, method, url, body, req, env, baseUrl) {
+  // POST /api/v1/auth/sdm/exchange
+  if (path === '/api/v1/auth/sdm/exchange' && method === 'POST') {
+    if (!body?.uid || !body?.sdmmac) return json({ error: 'BadRequest', message: 'uid, sdmmac required' }, { status: 400 });
+    const uidHex = String(body.uid).replace(/[^0-9a-f]/gi, '').toUpperCase();
+    const ctrHex = typeof body.sdmcounter === 'number' ? body.sdmcounter.toString(16) : String(body.sdmcounter || '0');
+    const cmacHex = String(body.sdmmac).replace(/[^0-9a-f]/gi, '').toUpperCase();
+
+    // 1) Verify SDM CMAC
+    let vr;
+    try { vr = ntag424_verifyCmac(env, uidHex, ctrHex, cmacHex); }
+    catch (e) { return json({ error: 'ConfigError', message: e?.message || 'NTAG424 config missing' }, { status: 500 }); }
+    if (!vr.ok) return json({ error: 'Unauthorized', detail: 'SDM verify failed' }, { status: 401 });
+
+    // 2) Call /d1/tags/exchange
+    const intBody = { uidHex, ctr: parseInt(ctrHex, 16) || 0 };
+    const tagRes = await handleTagsRoutes(internalRequest('/d1/tags/exchange', 'POST', intBody, baseUrl), env);
+    if (!tagRes || tagRes.status >= 400) {
+      const errData = tagRes ? await tagRes.json().catch(() => ({})) : {};
+      return json({ error: 'ExchangeFailed', details: errData }, { status: tagRes?.status || 502 });
+    }
+    const data = await tagRes.json();
+    if (!data.account_token || !data.account_digest) {
+      return json({ error: 'AccountInfoMissing', message: 'worker did not return account token' }, { status: 502 });
+    }
+
+    // 3) Create session in KV
+    const session = crypto.randomBytes(24).toString('base64url');
+    await kvPut(env, AUTH_KV_PREFIX_SESS + session, {
+      accountToken: data.account_token,
+      accountDigest: data.account_digest.toUpperCase(),
+      uidDigest: data.uid_digest || null
+    }, SDM_EXCHANGE_TTL);
+
+    const serverId = env.OPAQUE_SERVER_ID || env.DOMAIN || 'api.sentry';
+    return json({
+      session,
+      has_mk: !!(data.hasMK || data.has_mk),
+      wrapped_mk: data.wrapped_mk || undefined,
+      account_token: data.account_token,
+      account_digest: data.account_digest.toUpperCase(),
+      uid_digest: data.uid_digest || null,
+      opaque_server_id: serverId,
+      brand: data.brand || undefined,
+      brand_name: data.brand_name || undefined,
+      brand_logo: data.brand_logo || undefined
+    });
+  }
+
+  // POST /api/v1/auth/sdm/debug-kit
+  if (path === '/api/v1/auth/sdm/debug-kit' && method === 'POST') {
+    let uidHex = String(body?.uid_hex || '').replace(/[^0-9a-f]/gi, '').toUpperCase();
+    if (!uidHex || uidHex.length < 14) uidHex = crypto.randomBytes(7).toString('hex').toUpperCase();
+    else uidHex = uidHex.slice(0, 14);
+
+    // Debug counter via KV
+    const ctrKey = AUTH_KV_PREFIX_DBG_CTR + uidHex;
+    const now = Math.floor(Date.now() / 1000);
+    const last = (await kvGet(env, ctrKey)) || 0;
+    const next = now > last ? now : last + 1;
+    await kvPut(env, ctrKey, next, 86400);
+
+    const ctrHex = next.toString(16).toUpperCase().padStart(6, '0').slice(-6);
+    let cmacHex;
+    try { cmacHex = ntag424_computeSdmCmacForDebug(env, uidHex, ctrHex); }
+    catch (e) { return json({ error: 'ConfigError', message: e?.message }, { status: 500 }); }
+    return json({ uid_hex: uidHex, sdmcounter: ctrHex, sdmmac: cmacHex, nonce: `debug-${Date.now()}` });
+  }
+
+  // POST /api/v1/mk/store
+  if (path === '/api/v1/mk/store' && method === 'POST') {
+    if (!body?.session) return json({ error: 'BadRequest', message: 'session required' }, { status: 400 });
+    const sess = await kvGet(env, AUTH_KV_PREFIX_SESS + body.session);
+    await kvDelete(env, AUTH_KV_PREFIX_SESS + body.session); // single use
+
+    if (!sess) return json({ error: 'SessionExpired', message: 'please re-tap the tag' }, { status: 401 });
+    const accountToken = sess.accountToken || body.account_token || null;
+    const accountDigest = (sess.accountDigest || body.account_digest || '').toUpperCase();
+    if (body.account_token && body.account_token !== accountToken) {
+      return json({ error: 'SessionMismatch', message: 'account token mismatch' }, { status: 401 });
+    }
+    if (body.account_digest && body.account_digest.toUpperCase() !== accountDigest) {
+      return json({ error: 'SessionMismatch', message: 'account digest mismatch' }, { status: 401 });
+    }
+    if (!accountToken || !accountDigest || !ACCOUNT_DIGEST_RE.test(accountDigest)) {
+      return json({ error: 'AccountInfoMissing', message: 'account token missing' }, { status: 400 });
+    }
+    if (!body?.wrapped_mk) return json({ error: 'BadRequest', message: 'wrapped_mk required' }, { status: 400 });
+
+    const intBody = { accountToken, accountDigest, wrapped_mk: body.wrapped_mk };
+    const r = await handleTagsRoutes(internalRequest('/d1/tags/store-mk', 'POST', intBody, baseUrl), env);
+    if (!r || r.status >= 400) {
+      const errData = r ? await r.text().catch(() => '') : 'no response';
+      return json({ error: 'StoreFailed', details: errData }, { status: r?.status || 502 });
+    }
+    return new Response(null, { status: 204 });
+  }
+
+  // POST /api/v1/mk/update
+  if (path === '/api/v1/mk/update' && method === 'POST') {
+    if (!body?.account_token || !body?.account_digest || !body?.wrapped_mk) {
+      return json({ error: 'BadRequest', message: 'account_token, account_digest, wrapped_mk required' }, { status: 400 });
+    }
+    const intBody = {
+      accountToken: body.account_token,
+      accountDigest: body.account_digest.toUpperCase(),
+      wrapped_mk: body.wrapped_mk
+    };
+    const r = await handleTagsRoutes(internalRequest('/d1/tags/store-mk', 'POST', intBody, baseUrl), env);
+    if (!r || r.status >= 400) {
+      const txt = r ? await r.text().catch(() => '') : '';
+      return json({ error: 'StoreFailed', details: txt }, { status: 502 });
+    }
+    return new Response(null, { status: 204 });
+  }
+
+  // ---- OPAQUE endpoints ----
+  // POST /api/v1/auth/opaque/register-init
+  if (path === '/api/v1/auth/opaque/register-init' && method === 'POST') {
+    const server = getOrInitOpaqueServer(env);
+    if (!server) return json({ error: 'ConfigError', message: 'OPAQUE not configured' }, { status: 500 });
+    const acct = String(body?.account_digest || '').trim().toUpperCase();
+    const reqB64 = String(body?.request_b64 || '');
+    if (!ACCOUNT_DIGEST_RE.test(acct) || !reqB64) return json({ error: 'BadRequest', message: 'account_digest and request_b64 required' }, { status: 400 });
+
+    const cfg = getOpaqueConfig(OpaqueID.OPAQUE_P256);
+    const reqBytes = Array.from(Buffer.from(reqB64, 'base64'));
+    const expectedLen = RegistrationRequest.sizeSerialized(cfg);
+    if (reqBytes.length !== expectedLen) {
+      return json({ error: 'BadRequest', message: `invalid request_b64 length (got ${reqBytes.length}, expected ${expectedLen})` }, { status: 400 });
+    }
+    let reqObj;
+    try { reqObj = RegistrationRequest.deserialize(cfg, reqBytes); }
+    catch { return json({ error: 'BadRequest', message: 'invalid request_b64' }, { status: 400 }); }
+    let out;
+    try { out = await server.registerInit(reqObj, acct); }
+    catch { return json({ error: 'RecordNotFound' }, { status: 404 }); }
+    if (out instanceof Error) return json({ error: 'RecordNotFound' }, { status: 404 });
+    const response_b64 = Buffer.from(new Uint8Array(out.serialize())).toString('base64');
+    return json({ response_b64 });
+  }
+
+  // POST /api/v1/auth/opaque/register-finish
+  if (path === '/api/v1/auth/opaque/register-finish' && method === 'POST') {
+    const acct = String(body?.account_digest || '').trim().toUpperCase();
+    const record_b64 = body?.record_b64;
+    if (!ACCOUNT_DIGEST_RE.test(acct) || !record_b64) {
+      return json({ error: 'BadRequest', message: 'account_digest and record_b64 required' }, { status: 400 });
+    }
+    const intBody = { accountDigest: acct, record_b64, client_identity: body?.client_identity ?? null };
+    const intReq = internalRequest('/d1/opaque/store', 'POST', intBody, baseUrl);
+    // Use the existing internal handler for /d1/opaque/store
+    const storeUrl = new URL(intReq.url);
+    // Direct D1 call
+    try {
+      await env.DB.prepare(
+        'INSERT OR REPLACE INTO opaque_records (account_digest, record_b64, client_identity, updated_at) VALUES (?, ?, ?, ?)'
+      ).bind(acct, record_b64, body?.client_identity ?? null, Date.now()).run();
+    } catch (e) {
+      return json({ error: 'OpaqueStoreFailed', message: e?.message }, { status: 500 });
+    }
+    return new Response(null, { status: 204 });
+  }
+
+  // POST /api/v1/auth/opaque/login-init
+  if (path === '/api/v1/auth/opaque/login-init' && method === 'POST') {
+    const server = getOrInitOpaqueServer(env);
+    if (!server) return json({ error: 'ConfigError', message: 'OPAQUE not configured' }, { status: 500 });
+    const acct = String(body?.account_digest || '').trim().toUpperCase();
+    const ke1B64 = String(body?.ke1_b64 || '');
+    if (!ACCOUNT_DIGEST_RE.test(acct) || !ke1B64) return json({ error: 'BadRequest' }, { status: 400 });
+
+    const cfg = getOpaqueConfig(OpaqueID.OPAQUE_P256);
+
+    // Fetch registration record from D1
+    const row = await env.DB.prepare('SELECT record_b64, client_identity FROM opaque_records WHERE account_digest = ?').bind(acct).first();
+    if (!row) return json({ error: 'RecordNotFound' }, { status: 404 });
+
+    const recBytes = Array.from(Buffer.from(row.record_b64, 'base64'));
+    const minRecord = RegistrationRecord.sizeSerialized(cfg);
+    if (recBytes.length < minRecord) return json({ error: 'RecordNotFound' }, { status: 404 });
+    let record;
+    try { record = RegistrationRecord.deserialize(cfg, recBytes); }
+    catch { return json({ error: 'RecordNotFound' }, { status: 404 }); }
+
+    const ke1Bytes = Array.from(Buffer.from(ke1B64, 'base64'));
+    if (ke1Bytes.length !== KE1.sizeSerialized(cfg)) return json({ error: 'RecordNotFound' }, { status: 404 });
+    let ke1;
+    try { ke1 = KE1.deserialize(cfg, ke1Bytes); }
+    catch { return json({ error: 'RecordNotFound' }, { status: 404 }); }
+
+    const client_identity = row.client_identity || undefined;
+    const context = body?.context || undefined;
+    const initRes = await server.authInit(ke1, record, acct, client_identity, context);
+    if (initRes instanceof Error) return json({ error: 'RecordNotFound', message: 'register required' }, { status: 404 });
+
+    const ke2_b64 = Buffer.from(new Uint8Array(initRes.ke2.serialize())).toString('base64');
+    const expected_b64 = Buffer.from(new Uint8Array(initRes.expected.serialize())).toString('base64');
+    const opaqueSession = `opaque-${crypto.randomBytes(18).toString('base64url')}`;
+
+    // Store expected in KV
+    await kvPut(env, AUTH_KV_PREFIX_OPAQUE + opaqueSession, { expected_b64 }, OPAQUE_SESSION_TTL);
+    return json({ ke2_b64, opaque_session: opaqueSession });
+  }
+
+  // POST /api/v1/auth/opaque/login-finish
+  if (path === '/api/v1/auth/opaque/login-finish' && method === 'POST') {
+    const server = getOrInitOpaqueServer(env);
+    if (!server) return json({ error: 'ConfigError', message: 'OPAQUE not configured' }, { status: 500 });
+    const opaqueSession = body?.opaque_session;
+    const ke3B64 = body?.ke3_b64;
+    if (!opaqueSession || !ke3B64) return json({ error: 'BadRequest' }, { status: 400 });
+
+    const rec = await kvGet(env, AUTH_KV_PREFIX_OPAQUE + opaqueSession);
+    await kvDelete(env, AUTH_KV_PREFIX_OPAQUE + opaqueSession); // single use
+    if (!rec) return json({ error: 'OpaqueSessionNotFound' }, { status: 400 });
+
+    const cfg = getOpaqueConfig(OpaqueID.OPAQUE_P256);
+    let expected, ke3;
+    try { expected = ExpectedAuthResult.deserialize(cfg, Array.from(Buffer.from(rec.expected_b64, 'base64'))); }
+    catch { return json({ error: 'BadRequest', message: 'invalid expected_b64' }, { status: 400 }); }
+    try { ke3 = KE3.deserialize(cfg, Array.from(Buffer.from(ke3B64, 'base64'))); }
+    catch { return json({ error: 'BadRequest', message: 'invalid ke3_b64' }, { status: 400 }); }
+
+    const fin = server.authFinish(ke3, expected);
+    if (fin instanceof Error) return json({ error: 'OpaqueLoginFinishFailed', message: fin.message || 'login-finish failed' }, { status: 400 });
+    const session_key_b64 = Buffer.from(new Uint8Array(fin.session_key)).toString('base64');
+    return json({ ok: true, session_key_b64 });
+  }
+
+  // GET /api/v1/auth/opaque/debug
+  if (path === '/api/v1/auth/opaque/debug' && method === 'GET') {
+    const seedHex = String(env.OPAQUE_OPRF_SEED || '');
+    const privB64 = String(env.OPAQUE_AKE_PRIV_B64 || '');
+    const pubB64 = String(env.OPAQUE_AKE_PUB_B64 || '');
+    return json({
+      hasSeed: /^[0-9A-Fa-f]{64}$/.test(seedHex),
+      hasPriv: !!privB64,
+      hasPub: !!pubB64,
+      seedLen: seedHex.length,
+      privLen: privB64 ? Buffer.from(privB64, 'base64').length : 0,
+      pubLen: pubB64 ? Buffer.from(pubB64, 'base64').length : 0,
+      serverId: env.OPAQUE_SERVER_ID || env.DOMAIN || 'api.sentry'
+    });
+  }
+
+  return null;
+}
+
 /**
  * Main public API router for /api/ and /api/v1/ paths.
  * No HMAC required — uses account token/digest auth.
@@ -5723,6 +6167,12 @@ async function handlePublicRoutes(req, env) {
     try { body = await req.json(); } catch {
       return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
     }
+  }
+
+  // ── Auth (SDM exchange, OPAQUE, MK) ──────────────────────────
+  if (path.startsWith('/api/v1/auth/') || path === '/api/v1/mk/store' || path === '/api/v1/mk/update') {
+    const authResult = await handleAuthRoutes(path, method, url, body, req, env, baseUrl);
+    if (authResult) return authResult;
   }
 
   // ── Groups ────────────────────────────────────────────────────
