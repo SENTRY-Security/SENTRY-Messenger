@@ -26,8 +26,9 @@ function aesCmac(keyBuf, dataBuf) {
   const ZERO = Buffer.alloc(16);
   const BLOCKLEN = 16;
   const Rb = 0x87;
+  const ECB_IV = Buffer.alloc(0); // ECB has no IV; Workers nodejs_compat rejects null
   // Step 1: Generate subkeys
-  const cipher0 = crypto.createCipheriv('aes-128-ecb', keyBuf, null);
+  const cipher0 = crypto.createCipheriv('aes-128-ecb', keyBuf, ECB_IV);
   cipher0.setAutoPadding(false);
   const L = cipher0.update(ZERO);
   cipher0.final();
@@ -63,13 +64,13 @@ function aesCmac(keyBuf, dataBuf) {
   for (let i = 0; i < n - 1; i++) {
     const block = data.subarray(i * BLOCKLEN, (i + 1) * BLOCKLEN);
     for (let j = 0; j < BLOCKLEN; j++) X[j] ^= block[j];
-    const c = crypto.createCipheriv('aes-128-ecb', keyBuf, null);
+    const c = crypto.createCipheriv('aes-128-ecb', keyBuf, ECB_IV);
     c.setAutoPadding(false);
     X = c.update(X);
     c.final();
   }
   for (let j = 0; j < BLOCKLEN; j++) X[j] ^= Mn[j];
-  const cf = crypto.createCipheriv('aes-128-ecb', keyBuf, null);
+  const cf = crypto.createCipheriv('aes-128-ecb', keyBuf, ECB_IV);
   cf.setAutoPadding(false);
   const T = cf.update(X);
   cf.final();
