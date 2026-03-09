@@ -83,6 +83,24 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CI: true
 
+      - name: Set Worker Secrets
+        working-directory: data-worker
+        run: |
+          echo "Setting Worker secrets..."
+          echo '${{ secrets.OPAQUE_OPRF_SEED }}'    | npx wrangler@4 secret put OPAQUE_OPRF_SEED 2>&1 || true
+          echo '${{ secrets.OPAQUE_AKE_PRIV_B64 }}' | npx wrangler@4 secret put OPAQUE_AKE_PRIV_B64 2>&1 || true
+          echo '${{ secrets.OPAQUE_AKE_PUB_B64 }}'  | npx wrangler@4 secret put OPAQUE_AKE_PUB_B64 2>&1 || true
+          echo '${{ secrets.NTAG424_KM }}'           | npx wrangler@4 secret put NTAG424_KM 2>&1 || true
+          echo '${{ secrets.DATA_API_HMAC }}'        | npx wrangler@4 secret put DATA_API_HMAC 2>&1 || true
+          echo '${{ secrets.ACCOUNT_HMAC_KEY }}'     | npx wrangler@4 secret put ACCOUNT_HMAC_KEY 2>&1 || true
+          echo '${{ secrets.INVITE_TOKEN_KEY }}'     | npx wrangler@4 secret put INVITE_TOKEN_KEY 2>&1 || true
+          echo '${{ secrets.PORTAL_HMAC_SECRET }}'   | npx wrangler@4 secret put PORTAL_HMAC_SECRET 2>&1 || true
+          echo "Worker secrets set."
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CI: true
+
   # ── Web (Cloudflare Pages) ────────────────────────────────────────────
   deploy-pages:
     runs-on: ubuntu-latest

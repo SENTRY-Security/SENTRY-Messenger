@@ -5,11 +5,13 @@ compatibility_date = "2025-09-17"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
+OPAQUE_SERVER_ID = "api.message.sentry.red"
+NTAG424_KDF = "HKDF"
+NTAG424_SALT = "sentry.red"
+NTAG424_INFO = "ntag424-slot-0"
+NTAG424_KVER = "1"
 # Comma-separated origins allowed for CORS (empty = allow all)
 # CORS_ORIGINS = "https://app.example.com,https://www.example.com"
-# Node.js WS server URL for real-time notifications (Phase 1 bridge)
-# WS_NOTIFY_URL = "https://ws.example.com/ws/notify"
-# WS_NOTIFY_SECRET → set via `wrangler secret put WS_NOTIFY_SECRET`
 # Node.js origin for proxying unmigrated routes (empty = return 404)
 # NODEJS_ORIGIN = "https://nodejs-api.message.sentry.red"
 
@@ -22,11 +24,18 @@ database_id = "99728586-d8a9-4525-a1af-e68e84594047"
 # Create with: wrangler kv namespace create AUTH_KV
 [[kv_namespaces]]
 binding = "AUTH_KV"
-id = "AUTH_KV_PLACEHOLDER"
+id = "2ace4d55398742928e4b2ca79a371d0d"
 
 # ── UAT Environment ─────────────────────────────────────────────
 [env.uat]
 name = "message-data-uat"
+
+[env.uat.vars]
+OPAQUE_SERVER_ID = "uat-api.message.sentry.red"
+NTAG424_KDF = "HKDF"
+NTAG424_SALT = "sentry.red"
+NTAG424_INFO = "ntag424-slot-0"
+NTAG424_KVER = "1"
 
 [[env.uat.d1_databases]]
 binding = "DB"
@@ -35,4 +44,4 @@ database_id = "362f2681-29fc-45bf-9e2a-09b9021e6019"
 
 [[env.uat.kv_namespaces]]
 binding = "AUTH_KV"
-id = "AUTH_KV_UAT_PLACEHOLDER"
+id = "3d14a30fff6344c7bb300d175e84b38c"

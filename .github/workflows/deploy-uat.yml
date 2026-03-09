@@ -83,6 +83,24 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.UAT_CLOUDFLARE_ACCOUNT_ID }}
           CI: true
 
+      - name: Set Worker Secrets (UAT)
+        working-directory: data-worker
+        run: |
+          echo "Setting Worker secrets (UAT)..."
+          echo '${{ secrets.UAT_OPAQUE_OPRF_SEED }}'    | npx wrangler@4 secret put OPAQUE_OPRF_SEED --env uat 2>&1 || true
+          echo '${{ secrets.UAT_OPAQUE_AKE_PRIV_B64 }}' | npx wrangler@4 secret put OPAQUE_AKE_PRIV_B64 --env uat 2>&1 || true
+          echo '${{ secrets.UAT_OPAQUE_AKE_PUB_B64 }}'  | npx wrangler@4 secret put OPAQUE_AKE_PUB_B64 --env uat 2>&1 || true
+          echo '${{ secrets.UAT_NTAG424_KM }}'           | npx wrangler@4 secret put NTAG424_KM --env uat 2>&1 || true
+          echo '${{ secrets.UAT_DATA_API_HMAC }}'        | npx wrangler@4 secret put DATA_API_HMAC --env uat 2>&1 || true
+          echo '${{ secrets.UAT_ACCOUNT_HMAC_KEY }}'     | npx wrangler@4 secret put ACCOUNT_HMAC_KEY --env uat 2>&1 || true
+          echo '${{ secrets.UAT_INVITE_TOKEN_KEY }}'     | npx wrangler@4 secret put INVITE_TOKEN_KEY --env uat 2>&1 || true
+          echo '${{ secrets.UAT_PORTAL_HMAC_SECRET }}'   | npx wrangler@4 secret put PORTAL_HMAC_SECRET --env uat 2>&1 || true
+          echo "Worker secrets set."
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.UAT_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.UAT_CLOUDFLARE_ACCOUNT_ID }}
+          CI: true
+
   # ── Web (Cloudflare Pages — UAT Preview) ───────────────────────────
   deploy-pages:
     runs-on: ubuntu-latest
