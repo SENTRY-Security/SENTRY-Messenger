@@ -9,7 +9,7 @@ const textEncoder = new TextEncoder();
  * Proxy an unmatched request to the Node.js origin server.
  * If NODEJS_ORIGIN is not configured, returns a 404 JSON response.
  */
-function proxyToNodejs(req, env) {
+function proxyToNodejs(req, env, consumedBody) {
   const origin = env.NODEJS_ORIGIN;
   if (!origin) return json({ error: 'not_found' }, { status: 404 });
   const target = new URL(req.url);
@@ -17,7 +17,20 @@ function proxyToNodejs(req, env) {
   target.hostname = parsed.hostname;
   target.port = parsed.port;
   target.protocol = parsed.protocol;
-  return fetch(new Request(target.toString(), req));
+  // If the body was already consumed (e.g. by req.json()), rebuild the request
+  // with the parsed body to avoid "ReadableStream is disturbed" errors.
+  const init = {
+    method: req.method,
+    headers: req.headers,
+    redirect: req.redirect
+  };
+  if (consumedBody !== undefined && consumedBody !== null) {
+    init.body = JSON.stringify(consumedBody);
+  } else if (req.method !== 'GET' && req.method !== 'HEAD') {
+    // Body not consumed yet, pass original request body
+    init.body = req.body;
+  }
+  return fetch(new Request(target.toString(), init));
 }
 const INVITE_INFO_TAG = 'contact-init/dropbox/v1';
 
@@ -6163,9 +6176,11 @@ async function handlePublicRoutes(req, env) {
   }
 
   // ── Parse body for POST requests ─────────────────────────────
+  // Store parsed body on req so proxyToNodejs can re-serialize it
+  // (the original ReadableStream becomes "disturbed" after .json()).
   let body = null;
   if (method === 'POST') {
-    try { body = await req.json(); } catch {
+    try { body = await req.json(); req._parsedBody = body; } catch {
       return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
     }
   }
@@ -7307,7 +7322,8 @@ export default {
         const result = await handlePublicRoutes(req, env);
         if (result) return withCORS(result, req, env);
         // Unmigrated public route → proxy to Node.js origin
-        return withCORS(await proxyToNodejs(req, env), req, env);
+        // Pass parsed body since handlePublicRoutes consumed the stream via req.json()
+        return withCORS(await proxyToNodejs(req, env, req._parsedBody), req, env);
       }
 
       // ── Internal API (HMAC-protected, backward-compat) ──
