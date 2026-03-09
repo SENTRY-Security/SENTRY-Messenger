@@ -6418,8 +6418,13 @@ async function handlePublicRoutes(req, env) {
   if (path === '/api/v1/invites/create' && method === 'POST') {
     const auth = await resolvePublicAuth(req, env, { body });
     if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const accountToken = (body?.account_token || body?.accountToken || req.headers.get('x-account-token') || '').trim();
+    const deviceId = (req.headers.get('x-device-id') || body?.device_id || body?.deviceId || '').trim();
     const intBody = {
-      ownerAccountDigest: auth.accountDigest,
+      inviteId: body.invite_id || body.inviteId,
+      accountToken,
+      accountDigest: auth.accountDigest,
+      deviceId,
       ownerPublicKeyB64: body.owner_public_key_b64 || body.ownerPublicKeyB64 || null,
       wantPairingCode: body.want_pairing_code ?? body.wantPairingCode ?? false
     };
@@ -6429,9 +6434,13 @@ async function handlePublicRoutes(req, env) {
   if (path === '/api/v1/invites/deliver' && method === 'POST') {
     const auth = await resolvePublicAuth(req, env, { body });
     if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const accountToken = (body?.account_token || body?.accountToken || req.headers.get('x-account-token') || '').trim();
+    const deviceId = (req.headers.get('x-device-id') || body?.device_id || body?.deviceId || '').trim();
     const intBody = {
       inviteId: body.invite_id || body.inviteId,
-      peerAccountDigest: auth.accountDigest,
+      accountToken,
+      accountDigest: auth.accountDigest,
+      deviceId,
       ciphertextEnvelope: body.ciphertext_envelope || body.ciphertextEnvelope
     };
     const result = await handleInviteDropboxRoutes(internalRequest('/d1/invites/deliver', 'POST', intBody, baseUrl), env);
@@ -6457,9 +6466,11 @@ async function handlePublicRoutes(req, env) {
   if (path === '/api/v1/invites/consume' && method === 'POST') {
     const auth = await resolvePublicAuth(req, env, { body });
     if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const accountToken = (body?.account_token || body?.accountToken || req.headers.get('x-account-token') || '').trim();
     const intBody = {
       inviteId: body.invite_id || body.inviteId,
-      consumerAccountDigest: auth.accountDigest
+      accountToken,
+      accountDigest: auth.accountDigest
     };
     return handleInviteDropboxRoutes(internalRequest('/d1/invites/consume', 'POST', intBody, baseUrl), env);
   }
@@ -6467,8 +6478,10 @@ async function handlePublicRoutes(req, env) {
   if (path === '/api/v1/invites/confirm' && method === 'POST') {
     const auth = await resolvePublicAuth(req, env, { body });
     if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const accountToken = (body?.account_token || body?.accountToken || req.headers.get('x-account-token') || '').trim();
     const intBody = {
       inviteId: body.invite_id || body.inviteId,
+      accountToken,
       accountDigest: auth.accountDigest
     };
     return handleInviteDropboxRoutes(internalRequest('/d1/invites/confirm', 'POST', intBody, baseUrl), env);
@@ -6477,15 +6490,18 @@ async function handlePublicRoutes(req, env) {
   if (path === '/api/v1/invites/unconfirmed' && method === 'POST') {
     const auth = await resolvePublicAuth(req, env, { body });
     if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
-    const intBody = { ownerAccountDigest: auth.accountDigest };
+    const accountToken = (body?.account_token || body?.accountToken || req.headers.get('x-account-token') || '').trim();
+    const intBody = { accountToken, accountDigest: auth.accountDigest };
     return handleInviteDropboxRoutes(internalRequest('/d1/invites/unconfirmed', 'POST', intBody, baseUrl), env);
   }
 
   if (path === '/api/v1/invites/status' && method === 'POST') {
     const auth = await resolvePublicAuth(req, env, { body });
     if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const accountToken = (body?.account_token || body?.accountToken || req.headers.get('x-account-token') || '').trim();
     const intBody = {
       inviteId: body.invite_id || body.inviteId,
+      accountToken,
       accountDigest: auth.accountDigest
     };
     return handleInviteDropboxRoutes(internalRequest('/d1/invites/status', 'POST', intBody, baseUrl), env);
