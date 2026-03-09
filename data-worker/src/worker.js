@@ -6869,10 +6869,10 @@ async function handlePublicRoutes(req, env) {
     const convId = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
     const senderDeviceId = url.searchParams.get('senderDeviceId') || url.searchParams.get('sender_device_id');
     if (!convId) return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
-    const params = new URLSearchParams();
-    params.set('conversationId', convId);
-    if (senderDeviceId) params.set('senderDeviceId', senderDeviceId);
-    return handleMessagesRoutes(internalRequest(`/d1/messages/secure/max-counter?${params.toString()}`, 'GET', null, baseUrl), env);
+    // Internal handler expects POST with body
+    const intBody = { conversationId: convId };
+    if (senderDeviceId) intBody.senderDeviceId = senderDeviceId;
+    return handleMessagesRoutes(internalRequest('/d1/messages/secure/max-counter', 'POST', intBody, baseUrl), env);
   }
 
   if (path === '/api/v1/messages/by-counter' && method === 'GET') {
