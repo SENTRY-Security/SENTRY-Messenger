@@ -6791,20 +6791,23 @@ async function handlePublicRoutes(req, env) {
     if (result && result.status < 400) {
       try {
         const resData = await result.clone().json().catch(() => null);
-        const receiverDigest = body?.receiver_account_digest || body?.receiverAccountDigest;
+        // [FIX] For atomic-send the receiver/message fields live inside body.message, not top-level
+        const msg = body?.message || {};
+        const receiverDigest = body?.receiver_account_digest || body?.receiverAccountDigest
+          || msg.receiver_account_digest || msg.receiverAccountDigest;
         const convId = body?.conversation_id || body?.conversationId;
         if (receiverDigest && convId) {
           await notifyAccountDO(env, receiverDigest, {
             type: 'secure-message',
             conversationId: convId,
-            messageId: body?.message?.id || body?.id || body?.messageId || resData?.id || resData?.messageId || null,
+            messageId: msg.id || body?.id || body?.messageId || resData?.id || resData?.messageId || null,
             preview: body?.preview || '',
-            ts: body?.created_at || body?.ts || Date.now(),
+            ts: msg.created_at || body?.created_at || body?.ts || Date.now(),
             count: 1,
-            counter: body?.counter ?? null,
+            counter: msg.counter ?? body?.counter ?? null,
             senderAccountDigest: auth.accountDigest,
             senderDeviceId: deviceId,
-            targetDeviceId: body?.receiver_device_id || body?.receiverDeviceId || null,
+            targetDeviceId: msg.receiver_device_id || msg.receiverDeviceId || body?.receiver_device_id || body?.receiverDeviceId || null,
             peerAccountDigest: auth.accountDigest,
             targetAccountDigest: receiverDigest
           });
