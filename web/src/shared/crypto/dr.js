@@ -212,6 +212,18 @@ export async function x3dhInitiate(devicePriv, peerBundle, overrideEk = null) {
   };
   if (drDebugLogsEnabled) {
     try {
+      const rkH = state.rk ? await hashPrefix(state.rk) : null;
+      const ckSH = state.ckS ? await hashPrefix(state.ckS) : null;
+      const myPubH = state.myRatchetPub ? await hashPrefix(state.myRatchetPub) : null;
+      const myPrivH = state.myRatchetPriv ? await hashPrefix(state.myRatchetPriv) : null;
+      console.warn('[dr-debug:x3dh-initiate]', {
+        rkHash: rkH,
+        ckSHash: ckSH,
+        myPubHash: myPubH,
+        myPrivHash: myPrivH,
+        peerDigest: peerBundle?.account_digest || null,
+        peerDeviceId: peerBundle?.device_id || null
+      });
       console.log('[msg] state:init-transport-counter', JSON.stringify({
         peerDigest: peerBundle?.account_digest || null,
         peerDeviceId: peerBundle?.device_id || null,
@@ -292,6 +304,20 @@ export async function x3dhRespond(devicePriv, guestBundle) {
   };
   if (drDebugLogsEnabled) {
     try {
+      const rkH = state.rk ? await hashPrefix(state.rk) : null;
+      const ckSH = state.ckS ? await hashPrefix(state.ckS) : null;
+      const ckRH = state.ckR ? await hashPrefix(state.ckR) : null;
+      const myPubH = state.myRatchetPub ? await hashPrefix(state.myRatchetPub) : null;
+      const theirPubH = state.theirRatchetPub ? await hashPrefix(state.theirRatchetPub) : null;
+      console.warn('[dr-debug:x3dh-respond]', {
+        rkHash: rkH,
+        ckSHash: ckSH,
+        ckRHash: ckRH,
+        myPubHash: myPubH,
+        theirRatchetPubHash: theirPubH,
+        peerDigest: guestBundle?.account_digest || null,
+        peerDeviceId: guestBundle?.device_id || null
+      });
       console.log('[msg] state:init-transport-counter', JSON.stringify({
         peerDigest: guestBundle?.account_digest || null,
         peerDeviceId: guestBundle?.device_id || null,
@@ -316,11 +342,15 @@ export async function drRatchet(st, theirRatchetPubU8) {
   // NsTotal is maintained by reserveTransportCounter() in dr-session.js instead.
   // st.NsTotal = nsBase + nsPrev;
   st.NrTotal = nrBase + nrPrev;
+  const rkHashBefore = drDebugLogsEnabled ? await hashPrefix(st.rk) : null;
+  const myPrivHash = drDebugLogsEnabled && st.myRatchetPriv ? await hashPrefix(st.myRatchetPriv) : null;
+  const theirPubHash = drDebugLogsEnabled && theirRatchetPubU8 ? await hashPrefix(theirRatchetPubU8) : null;
   const dh = await scalarMult(st.myRatchetPriv.slice(0, 32), theirRatchetPubU8);
   const rkOut = await kdfRK(st.rk, dh);
   const { a: newRoot, b: chainSeed } = split64(rkOut);
   const dhOutHash = await hashPrefix(dh);
   const ckRSeedHash = await hashPrefix(chainSeed);
+  const newRkHash = drDebugLogsEnabled ? await hashPrefix(newRoot) : null;
   const myNew = await genX25519Keypair();
   st.rk = newRoot;
   st.ckR = chainSeed;
@@ -336,9 +366,13 @@ export async function drRatchet(st, theirRatchetPubU8) {
   st.pendingSendRatchet = false;
   try {
     if (drDebugLogsEnabled) {
-      console.warn('[dr-debug:ratchet-dh]', {
+      console.warn('[dr-debug:ratchet-dh:recv]', {
+        rkHashBefore,
+        myPrivHash,
+        theirPubHash,
         dhOutHash,
         ckRSeedHash,
+        newRkHash,
         headerEk: theirRatchetPubU8 ? b64(theirRatchetPubU8).slice(0, 12) : null
       });
     }
@@ -364,6 +398,9 @@ export async function drEncryptText(st, plaintext, opts = {}) {
       const { a: ckS } = split64(seed);
       st.ckS = ckS;
     } else {
+      const rkBefore = drDebugLogsEnabled ? await hashPrefix(st.rk) : null;
+      const myPrivBefore = drDebugLogsEnabled && st.myRatchetPriv ? await hashPrefix(st.myRatchetPriv) : null;
+      const theirPubBefore = drDebugLogsEnabled && st.theirRatchetPub ? await hashPrefix(st.theirRatchetPub) : null;
       const myNew = await genX25519Keypair();
       const dh = await scalarMult(myNew.secretKey.slice(0, 32), st.theirRatchetPub);
       const rkOut = await kdfRK(st.rk, dh);
@@ -377,14 +414,31 @@ export async function drEncryptText(st, plaintext, opts = {}) {
       try {
         if (drDebugLogsEnabled) {
           console.warn('[dr-debug:ratchet-dh:send]', {
+            rkHashBefore: rkBefore,
+            myNewPrivHash: await hashPrefix(myNew.secretKey),
+            myNewPubHash: await hashPrefix(myNew.publicKey),
+            theirPubHash: theirPubBefore,
             dhOutHash: await hashPrefix(dh),
             ckSSeedHash: await hashPrefix(chainSeed),
-            headerEk: st?.theirRatchetPub ? b64(st.theirRatchetPub).slice(0, 12) : null
+            newRkHash: await hashPrefix(newRoot),
+            headerEk: b64(myNew.publicKey).slice(0, 12)
           });
         }
       } catch { }
     }
   }
+  try {
+    if (drDebugLogsEnabled) {
+      console.warn('[dr-debug:encrypt-pre-mk]', {
+        hasCkS: !!(st.ckS && st.ckS.length),
+        ckSHash: st.ckS ? await hashPrefix(st.ckS) : null,
+        rkHash: st.rk ? await hashPrefix(st.rk) : null,
+        Ns: st.Ns,
+        pendingSendRatchet: st.pendingSendRatchet,
+        branch: st.pendingSendRatchet ? 'pending-cleared' : (st.ckS ? 'existing-ckS' : 'ratchet')
+      });
+    }
+  } catch { }
   const mkOut = await kdfCK(st.ckS);
   const { a: mk, b: nextCkS } = split64(mkOut);
   const mkB64 = b64(mk);
@@ -457,17 +511,32 @@ export async function drDecryptText(st, packet, opts = {}) {
       throw new Error('invalid message counter');
     }
     // [DEBUG-TRACE]
-    console.log('[drDecryptText] Start', {
-      headerN,
-      pn: packet?.header?.pn,
-      ek: packet?.header?.ek_pub_b64 ? String(packet.header.ek_pub_b64).slice(0, 8) : null,
-      role: typeof st?.baseKey?.role === 'string' ? st.baseKey.role : 'unknown',
-      stateNs: st?.Ns,
-      stateNr: st?.Nr,
-      hasRk: !!(st?.rk && st.rk.length),
-      hasCkR: !!(st?.ckR && st.ckR.length),
-      hasTheirPub: !!(st?.theirRatchetPub && st.theirRatchetPub.length)
-    });
+    {
+      let rkH = null, ckRH = null, ckSH = null, myPrivH = null, theirPubH = null;
+      try {
+        rkH = st?.rk ? await hashPrefix(st.rk) : null;
+        ckRH = st?.ckR ? await hashPrefix(st.ckR) : null;
+        ckSH = st?.ckS ? await hashPrefix(st.ckS) : null;
+        myPrivH = st?.myRatchetPriv ? await hashPrefix(st.myRatchetPriv) : null;
+        theirPubH = st?.theirRatchetPub ? await hashPrefix(st.theirRatchetPub) : null;
+      } catch { }
+      console.log('[drDecryptText] Start', {
+        headerN,
+        pn: packet?.header?.pn,
+        ek: packet?.header?.ek_pub_b64 ? String(packet.header.ek_pub_b64).slice(0, 12) : null,
+        role: typeof st?.baseKey?.role === 'string' ? st.baseKey.role : 'unknown',
+        stateNs: st?.Ns,
+        stateNr: st?.Nr,
+        rkHash: rkH,
+        ckRHash: ckRH,
+        ckSHash: ckSH,
+        myPrivHash: myPrivH,
+        theirPubHash: theirPubH,
+        hasRk: !!(st?.rk && st.rk.length),
+        hasCkR: !!(st?.ckR && st.ckR.length),
+        hasTheirPub: !!(st?.theirRatchetPub && st.theirRatchetPub.length)
+      });
+    }
     const resolveStateKey = () => {
       const base = st?.baseKey || {};
       if (base.stateKey) return base.stateKey;

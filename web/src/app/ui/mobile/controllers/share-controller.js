@@ -10,7 +10,7 @@ import { generateQR } from '../../../lib/qr.js';
 import QrScanner from '../../../lib/vendor/qr-scanner.min.js';
 import { log, logCapped } from '../../../core/log.js';
 import { genX25519Keypair } from '../../../crypto/nacl.js';
-import { b64 } from '../../../crypto/nacl.js';
+import { b64, b64u8 } from '../../../crypto/nacl.js';
 import { x3dhInitiate, x3dhRespond } from '../../../crypto/dr.js';
 import { sealInviteEnvelope, openInviteEnvelope } from '../../../crypto/invite-dropbox.js';
 import {
@@ -1639,8 +1639,8 @@ export function setupShareController(options) {
         ownerAccountDigest: resolvedOwnerDigest,
         ownerDeviceId: resolvedOwnerDeviceId,
         ownerBundle,
-        ekPrivB64: ekPair.priv,
-        ekPubB64: ekPair.pub,
+        ekPrivB64: b64(ekPair.secretKey),
+        ekPubB64: b64(ekPair.publicKey),
         guestBundle,
         guestProfile,
         deliverCompleted: false,
@@ -3090,7 +3090,7 @@ export function setupShareController(options) {
     const devicePriv = await ensureDevicePrivLoaded();
     if (!devicePriv) throw new Error('replayDeliveryIntent: device key unavailable');
 
-    const ekPair = { priv: ekPrivB64, pub: ekPubB64 };
+    const ekPair = { secretKey: b64u8(ekPrivB64), publicKey: b64u8(ekPubB64) };
     const ownerBundleForInit = mapOwnerBundleToX3dh(storedOwnerBundle);
     const initiatorState = await x3dhInitiate(devicePriv, ownerBundleForInit, ekPair);
     if (!(initiatorState?.rk instanceof Uint8Array)) {

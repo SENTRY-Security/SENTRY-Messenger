@@ -253,6 +253,15 @@ async function ensureLiveReady(params = {}, adapters) {
 
   if (skipDrCheck) {
     const guestBundle = header?.dr_init?.guest_bundle || null;
+    if (DEBUG.drVerbose) {
+      console.warn('[dr-live:skip-dr-check]', {
+        msgType: msgTypeHint,
+        hasGuestBundle: !!guestBundle,
+        readyPeerAccountDigest: readyPeerAccountDigest ? readyPeerAccountDigest.slice(0, 8) : null,
+        readyPeerDeviceId: readyPeerDeviceId ? readyPeerDeviceId.slice(-6) : null,
+        conversationId: conversationId ? conversationId.slice(0, 8) : null
+      });
+    }
     if (guestBundle && adapters?.ensureDrReceiverState) {
       try {
         await adapters.ensureDrReceiverState(conversationId, readyPeerAccountDigest, readyPeerDeviceId, guestBundle);
@@ -375,10 +384,19 @@ async function decryptIncomingSingle(params = {}, adapters) {
     if (DEBUG.drVerbose) {
       console.log('[state-live] live-text check state', {
         peer: senderDigest ? senderDigest.slice(0, 8) : null,
+        peerDeviceId: senderDeviceId ? senderDeviceId.slice(-6) : null,
         hasState: !!rawState,
-        hasRk: !!rawState?.rk,
+        hasRk: !!(rawState?.rk instanceof Uint8Array),
+        hasCkS: !!(rawState?.ckS instanceof Uint8Array),
+        hasCkR: !!(rawState?.ckR instanceof Uint8Array),
+        hasMyPriv: !!(rawState?.myRatchetPriv instanceof Uint8Array),
+        hasTheirPub: !!(rawState?.theirRatchetPub instanceof Uint8Array),
         ns: rawState?.Ns,
-        nr: rawState?.Nr
+        nr: rawState?.Nr,
+        role: rawState?.baseKey?.role || null,
+        bornReason: rawState?.__bornReason || null,
+        lastWriteTag: rawState?.__lastWriteTag || null,
+        msgType: resolveMsgType(raw?.meta || header?.meta, header) || null
       });
     }
 
