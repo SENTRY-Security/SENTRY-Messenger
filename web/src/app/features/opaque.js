@@ -116,6 +116,7 @@ export async function ensureOpaque({ password, accountDigest, serverId, clientId
       /EnvelopeRecoveryError/i.test(msg) ||
       /OpaqueLoginFinishFailed/i.test(msg)
     ) {
+      console.info('[opaque] No existing credential found — registering new OPAQUE record (this is expected for new accounts)');
       await opaqueRegister({ password, accountDigest, serverId, clientIdentity });
       return await opaqueLogin({ password, accountDigest, serverId, clientIdentity });
     }
