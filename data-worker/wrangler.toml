@@ -18,8 +18,8 @@ SIGNED_PUT_TTL = "900"
 SIGNED_GET_TTL = "900"
 # Comma-separated origins allowed for CORS (empty = allow all)
 # CORS_ORIGINS = "https://app.example.com,https://www.example.com"
-# Node.js origin for proxying unmigrated routes (empty = return 404)
-# NODEJS_ORIGIN = "https://nodejs-api.message.sentry.red"
+# Node.js origin for proxying unmigrated routes
+NODEJS_ORIGIN = "https://api.message.sentry.red"
 
 [[d1_databases]]
 binding = "DB"
@@ -47,6 +47,7 @@ S3_REGION = "auto"
 S3_BUCKET = "message-media-uat"
 SIGNED_PUT_TTL = "900"
 SIGNED_GET_TTL = "900"
+NODEJS_ORIGIN = "https://uat-api.message.sentry.red"
 
 [[env.uat.d1_databases]]
 binding = "DB"

@@ -2,17 +2,8 @@
 const DEBUG_ALLOWED_IPS = ['60.248.6.250'];
 const RESTRICTED_PATHS = ['/pages/debug.html', '/debug.html', '/debug'];
 
-// Routes migrated to Worker — send directly as /api/v1/* (no /d1/ rewrite)
-const WORKER_DIRECT_PREFIXES = [
-  '/api/v1/auth/',
-  '/api/v1/mk/',
-  '/api/v1/contacts/',
-  '/api/v1/admin/',
-];
-
 export const onRequest: PagesFunction<{
   ORIGIN_API: string;
-  WORKER_API_URL: string;
 }> = async ({ request, env, next }) => {
   const url = new URL(request.url);
 
@@ -37,29 +28,13 @@ export const onRequest: PagesFunction<{
     });
   }
 
+  // ORIGIN_API points to the Worker, which handles all routing:
+  // - Migrated routes are handled directly by the Worker
+  // - Unmigrated routes are proxied to Node.js by the Worker (proxyToNodejs)
+  // No path rewriting needed — send /api/v1/* paths as-is.
   const originApi = env.ORIGIN_API || 'https://api.message.sentry.red';
-  const workerApi = env.WORKER_API_URL || originApi;
-  const isWorkerDirect = WORKER_DIRECT_PREFIXES.some(p => url.pathname.startsWith(p));
-
-  // Worker-direct routes: send /api/v1/auth/* and /api/v1/mk/* to Worker as-is
-  // Legacy routes: rewrite /api/v1/* to /d1/* and send to ORIGIN_API (Node.js)
-  let targetPath = url.pathname;
-  let upstreamBase: URL;
-
-  if (isWorkerDirect) {
-    // Send to Worker without path rewrite
-    upstreamBase = new URL(workerApi);
-  } else {
-    upstreamBase = new URL(originApi);
-    if (targetPath.startsWith('/api/v1/')) {
-      targetPath = '/d1/' + targetPath.slice('/api/v1/'.length);
-    } else if (targetPath.startsWith('/api/')) {
-      targetPath = '/d1/' + targetPath.slice('/api/'.length);
-    }
-  }
-
-  const targetUrl = new URL(targetPath + url.search, upstreamBase);
-  console.log('[Proxy] Forwarding', { original: request.url, target: targetUrl.toString(), workerDirect: isWorkerDirect });
+  const targetUrl = new URL(url.pathname + url.search, originApi);
+  console.log('[Proxy] Forwarding', { original: request.url, target: targetUrl.toString() });
 
   let response: Response;
   try {
