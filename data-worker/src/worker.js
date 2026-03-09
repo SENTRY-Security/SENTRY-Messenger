@@ -6682,8 +6682,13 @@ async function handlePublicRoutes(req, env) {
   }
 
   if (path === '/api/v1/invites/lookup-code' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const accountToken = (body?.account_token || body?.accountToken || req.headers.get('x-account-token') || '').trim();
     const intBody = {
-      pairingCode: body.pairing_code || body.pairingCode
+      pairingCode: body.pairing_code || body.pairingCode,
+      accountToken,
+      accountDigest: auth.accountDigest
     };
     return handleInviteDropboxRoutes(internalRequest('/d1/invites/lookup-code', 'POST', intBody, baseUrl), env);
   }
