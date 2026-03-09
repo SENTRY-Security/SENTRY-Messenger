@@ -10,6 +10,8 @@ compatibility_flags = ["nodejs_compat"]
 # Node.js WS server URL for real-time notifications (Phase 1 bridge)
 # WS_NOTIFY_URL = "https://ws.example.com/ws/notify"
 # WS_NOTIFY_SECRET → set via `wrangler secret put WS_NOTIFY_SECRET`
+# Node.js origin for proxying unmigrated routes (empty = return 404)
+# NODEJS_ORIGIN = "https://nodejs-api.message.sentry.red"
 
 [[d1_databases]]
 binding = "DB"

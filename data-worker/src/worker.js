@@ -3,6 +3,21 @@ import { toU8Strict } from './u8-strict.js';
 
 // ---- 基本工具與正規化 ----
 const textEncoder = new TextEncoder();
+
+/**
+ * Proxy an unmatched request to the Node.js origin server.
+ * If NODEJS_ORIGIN is not configured, returns a 404 JSON response.
+ */
+function proxyToNodejs(req, env) {
+  const origin = env.NODEJS_ORIGIN;
+  if (!origin) return json({ error: 'not_found' }, { status: 404 });
+  const target = new URL(req.url);
+  const parsed = new URL(origin);
+  target.hostname = parsed.hostname;
+  target.port = parsed.port;
+  target.protocol = parsed.protocol;
+  return fetch(new Request(target.toString(), req));
+}
 const INVITE_INFO_TAG = 'contact-init/dropbox/v1';
 
 function timingSafeEqual(a, b) {
@@ -6757,7 +6772,8 @@ export default {
       if (url.pathname.startsWith('/api/')) {
         const result = await handlePublicRoutes(req, env);
         if (result) return withCORS(result, req, env);
-        return withCORS(json({ error: 'not_found' }, { status: 404 }), req, env);
+        // Unmigrated public route → proxy to Node.js origin
+        return withCORS(await proxyToNodejs(req, env), req, env);
       }
 
       // ── Internal API (HMAC-protected, backward-compat) ──
@@ -6815,7 +6831,8 @@ export default {
       const contactsResult = await handleContactsRoutes(req, env);
       if (contactsResult) return contactsResult;
 
-      return json({ error: 'not_found' }, { status: 404 });
+      // Unmigrated internal route → proxy to Node.js origin
+      return proxyToNodejs(req, env);
     } catch (err) {
       console.error('[global-trap] worker exception', err);
       try {
