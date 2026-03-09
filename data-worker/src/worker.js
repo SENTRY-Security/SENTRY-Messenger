@@ -6551,7 +6551,7 @@ async function handlePublicRoutes(req, env) {
   if (path === '/api/v1/messages/secure' && method === 'POST') {
     const auth = await resolvePublicAuth(req, env, { body });
     if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
-    const deviceId = (req.headers.get('x-device-id') || '').trim();
+    const deviceId = (req.headers.get('x-device-id') || body?.sender_device_id || body?.senderDeviceId || body?.device_id || body?.deviceId || '').trim();
     if (!deviceId) return json({ error: 'BadRequest', message: 'deviceId required' }, { status: 400 });
     const convId = normalizeConversationId(body?.conversation_id || body?.conversationId);
     if (!convId) return json({ error: 'BadRequest', message: 'conversation_id required' }, { status: 400 });
@@ -6601,7 +6601,7 @@ async function handlePublicRoutes(req, env) {
   if (path === '/api/v1/messages' && method === 'POST') {
     const auth = await resolvePublicAuth(req, env, { body });
     if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
-    const deviceId = (req.headers.get('x-device-id') || '').trim();
+    const deviceId = (req.headers.get('x-device-id') || body?.sender_device_id || body?.senderDeviceId || body?.device_id || body?.deviceId || '').trim();
     if (!deviceId) return json({ error: 'BadRequest', message: 'deviceId required' }, { status: 400 });
     const convId = normalizeConversationId(body?.conv_id || body?.conversation_id || body?.conversationId);
     if (!convId) return json({ error: 'BadRequest', message: 'conversation_id required' }, { status: 400 });
