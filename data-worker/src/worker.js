@@ -6593,8 +6593,9 @@ async function handlePublicRoutes(req, env) {
     if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
     const accountToken = (body?.account_token || body?.accountToken || req.headers.get('x-account-token') || '').trim();
     const deviceId = (req.headers.get('x-device-id') || body?.device_id || body?.deviceId || '').trim();
+    const inviteId = body.invite_id || body.inviteId || generateNanoId(32);
     const intBody = {
-      inviteId: body.invite_id || body.inviteId,
+      inviteId,
       accountToken,
       accountDigest: auth.accountDigest,
       deviceId,
