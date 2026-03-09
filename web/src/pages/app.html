@@ -876,11 +876,10 @@
     // Route all API requests through the Cloudflare Pages proxy (relative paths).
     // The [[path]].ts proxy function handles CORS, error wrapping, and path rewriting.
     // For local dev, override via ?api=https://... query parameter.
-    window.API_ORIGIN = new URLSearchParams(location.search).get('api') || (() => {
-      const h = location.hostname;
-      if (h.includes('uat')) return 'https://uat-api.message.sentry.red';
-      return '';
-    })();
+    // Use same-origin so requests go through Pages proxy,
+    // which routes migrated endpoints to Worker and legacy to Node.js.
+    // For local dev, override via ?api=https://... query parameter.
+    window.API_ORIGIN = new URLSearchParams(location.search).get('api') || '';
     (function () {
       const overlay = document.getElementById('orientationOverlay');
       const docEl = document.documentElement;
