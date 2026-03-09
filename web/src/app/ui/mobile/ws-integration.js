@@ -89,7 +89,8 @@ export function createWsIntegration({ deps }) {
       throw err;
     }
     const expiresAt = Number(data.expires_at || data.expiresAt || data.exp || 0) || null;
-    wsAuthTokenInfo = { token: data.token, expiresAt };
+    const wsUrlDirect = typeof data.ws_url === 'string' ? data.ws_url.trim() : '';
+    wsAuthTokenInfo = { token: data.token, expiresAt, ws_url: wsUrlDirect || null };
     return wsAuthTokenInfo;
   }
 
@@ -132,30 +133,45 @@ export function createWsIntegration({ deps }) {
       scheduleReconnect(4000);
       return;
     }
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    let baseHost = connectionIndicatorEl?.dataset?.wsHost || '';
-    let path = connectionIndicatorEl?.dataset?.wsPath || '/api/ws';
-    const apiOriginRaw = typeof globalThis !== 'undefined' && typeof globalThis.API_ORIGIN === 'string'
-      ? globalThis.API_ORIGIN.trim()
-      : '';
-    if (apiOriginRaw) {
-      try {
-        const originUrl = new URL(apiOriginRaw);
-        baseHost = originUrl.host || baseHost;
-        const prefix = originUrl.pathname && originUrl.pathname !== '/' ? originUrl.pathname.replace(/\/$/, '') : '';
-        if (prefix) {
-          path = path.startsWith('/') ? `${prefix}${path}` : `${prefix}/${path}`;
-        }
-      } catch (err) {
-        log({ apiOriginParseError: err?.message || err });
-      }
-    }
-    if (!baseHost) baseHost = location.host;
-    if (!path.startsWith('/')) path = `/${path}`;
-    // Pass token as query param for Cloudflare Worker DO WebSocket upgrade
+    // If the token response includes a direct WS URL from the Worker, prefer it
+    // (bypasses the Pages proxy which may not forward WebSocket upgrades reliably).
+    const directWsUrl = tokenInfo?.ws_url || '';
     const deviceId = getDeviceId() || ensureDeviceId() || '';
     const tokenParam = encodeURIComponent(tokenInfo.token);
-    const wsUrl = `${proto}//${baseHost}${path}?token=${tokenParam}${deviceId ? `&deviceId=${encodeURIComponent(deviceId)}` : ''}`;
+    let wsUrl;
+    if (directWsUrl) {
+      try {
+        const parsed = new URL(directWsUrl);
+        parsed.searchParams.set('token', tokenInfo.token);
+        if (deviceId) parsed.searchParams.set('deviceId', deviceId);
+        wsUrl = parsed.toString();
+      } catch {
+        // fall through to legacy URL construction
+      }
+    }
+    if (!wsUrl) {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      let baseHost = connectionIndicatorEl?.dataset?.wsHost || '';
+      let path = connectionIndicatorEl?.dataset?.wsPath || '/api/ws';
+      const apiOriginRaw = typeof globalThis !== 'undefined' && typeof globalThis.API_ORIGIN === 'string'
+        ? globalThis.API_ORIGIN.trim()
+        : '';
+      if (apiOriginRaw) {
+        try {
+          const originUrl = new URL(apiOriginRaw);
+          baseHost = originUrl.host || baseHost;
+          const prefix = originUrl.pathname && originUrl.pathname !== '/' ? originUrl.pathname.replace(/\/$/, '') : '';
+          if (prefix) {
+            path = path.startsWith('/') ? `${prefix}${path}` : `${prefix}/${path}`;
+          }
+        } catch (err) {
+          log({ apiOriginParseError: err?.message || err });
+        }
+      }
+      if (!baseHost) baseHost = location.host;
+      if (!path.startsWith('/')) path = `/${path}`;
+      wsUrl = `${proto}//${baseHost}${path}?token=${tokenParam}${deviceId ? `&deviceId=${encodeURIComponent(deviceId)}` : ''}`;
+    }
     if (wsDebugEnabled) {
       log({ wsConnectUrl: wsUrl });
     }

@@ -6418,12 +6418,15 @@ async function handlePublicRoutes(req, env) {
     const sessionTs = Math.floor(Date.now() / 1000);
     try {
       const { token, payload } = await createWsToken(env, { accountDigest: resolvedDigest });
+      // Include the Worker's direct WS endpoint so the client can bypass Pages proxy
+      const workerWsUrl = `wss://${new URL(req.url).hostname}/ws`;
       return json({
         token,
         expires_at: payload.exp,
         account_digest: payload.accountDigest,
         session_ts: sessionTs,
-        client_session_ts: body?.session_ts ?? null
+        client_session_ts: body?.session_ts ?? null,
+        ws_url: workerWsUrl
       });
     } catch (err) {
       return json({ error: 'TokenError', message: err?.message || 'failed to create token' }, { status: 500 });
@@ -7664,7 +7667,7 @@ export default {
       }
 
       // ── WebSocket upgrade → Durable Object ──
-      if ((url.pathname === '/ws' || url.pathname === '/api/ws') && req.headers.get('Upgrade') === 'websocket') {
+      if ((url.pathname === '/ws' || url.pathname === '/api/ws') && (req.headers.get('Upgrade') || '').toLowerCase() === 'websocket') {
         return handleWsUpgrade(req, env, url);
       }
 

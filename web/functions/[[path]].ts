@@ -36,6 +36,20 @@ export const onRequest: PagesFunction<{
   const targetUrl = new URL(url.pathname + url.search, originApi);
   console.log('[Proxy] Forwarding', { original: request.url, target: targetUrl.toString() });
 
+  // WebSocket upgrade: forward directly without cache options and return as-is.
+  // The upstream Worker (Durable Object) returns a Response with the `webSocket`
+  // property; wrapping it in a new Response() would lose that property.
+  const isUpgrade = request.headers.get('Upgrade')?.toLowerCase() === 'websocket';
+  if (isUpgrade) {
+    try {
+      const upstreamRequest = new Request(targetUrl.toString(), request);
+      return await fetch(upstreamRequest);
+    } catch (err) {
+      console.error('[Proxy] WebSocket upstream failed:', err);
+      return json({ error: 'BadGateway', message: 'WebSocket upstream unavailable' }, 502, request);
+    }
+  }
+
   let response: Response;
   try {
     const upstreamRequest = new Request(targetUrl.toString(), request);
@@ -49,8 +63,8 @@ export const onRequest: PagesFunction<{
     );
   }
 
-  const upgrade = response.headers.get('Upgrade');
-  if (upgrade && upgrade.toLowerCase() === 'websocket') {
+  // Fallback: if somehow a non-upgrade request returns a WebSocket response
+  if ((response as any).webSocket || response.status === 101) {
     return response;
   }
 
