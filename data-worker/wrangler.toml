@@ -4,6 +4,13 @@ main = "src/worker.js"
 compatibility_date = "2025-09-17"
 compatibility_flags = ["nodejs_compat"]
 
+[vars]
+# Comma-separated origins allowed for CORS (empty = allow all)
+# CORS_ORIGINS = "https://app.example.com,https://www.example.com"
+# Node.js WS server URL for real-time notifications (Phase 1 bridge)
+# WS_NOTIFY_URL = "https://ws.example.com/ws/notify"
+# WS_NOTIFY_SECRET → set via `wrangler secret put WS_NOTIFY_SECRET`
+
 [[d1_databases]]
 binding = "DB"
 database_name = "message_db"

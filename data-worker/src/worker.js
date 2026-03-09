@@ -5306,10 +5306,732 @@ async function handleAccountsRoutes(req, env) {
   return null;
 }
 
+// ── Public API helpers (Phase 1 – edge-direct access) ────────────────────────
+
+function buildCORSHeaders(req, env) {
+  const origin = req.headers.get('origin') || '';
+  const allowList = (env.CORS_ORIGINS || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  const allowed = !allowList.length || !origin || allowList.includes(origin);
+  return {
+    'Access-Control-Allow-Origin': allowed ? (origin || '*') : '',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Account-Token, X-Account-Digest, X-Device-Id, Authorization',
+    'Access-Control-Max-Age': '86400'
+  };
+}
+
+function withCORS(response, req, env) {
+  const headers = buildCORSHeaders(req, env);
+  const resp = new Response(response.body, response);
+  for (const [k, v] of Object.entries(headers)) resp.headers.set(k, v);
+  return resp;
+}
+
+/**
+ * Resolve account auth from request headers + body for public API routes.
+ * Returns { accountDigest } or null if auth fails.
+ */
+async function resolvePublicAuth(req, env, { body = null } = {}) {
+  const tokenHeader = (req.headers.get('x-account-token') || '').trim();
+  const digestHeader = (req.headers.get('x-account-digest') || '').trim();
+
+  const accountToken = tokenHeader || body?.account_token || body?.accountToken || null;
+  const rawDigest = digestHeader || body?.account_digest || body?.accountDigest || null;
+  const accountDigest = rawDigest ? normalizeAccountDigest(rawDigest) : null;
+
+  if (!accountToken && !accountDigest) return null;
+
+  await ensureDataTables(env);
+  const account = await resolveAccount(
+    env,
+    { accountToken, accountDigest },
+    { allowCreate: false, preferredAccountToken: accountToken, preferredAccountDigest: accountDigest }
+  );
+  if (!account) return null;
+  return { accountDigest: account.account_digest };
+}
+
+function isSystemOwnedConversation(convId, accountDigest) {
+  if (!convId) return false;
+  const acct = (accountDigest || '').toUpperCase();
+  if (!acct) return false;
+  return convId === `drive-${acct}` ||
+    convId === `profile-${acct}` || convId === `profile:${acct}` ||
+    convId === `settings-${acct}` ||
+    convId === `avatar-${acct}` ||
+    convId === `contacts-${acct}`;
+}
+
+/**
+ * Direct conversation authorization – replaces the HTTP round-trip
+ * that Node.js used via /d1/conversations/authorize.
+ */
+async function authorizeConversationDirect(env, { convId, accountDigest, deviceId = null }) {
+  await ensureDataTables(env);
+  const normalizedDeviceId = deviceId ? normalizeDeviceId(deviceId) : null;
+  if (normalizedDeviceId) {
+    const devRow = await env.DB.prepare(
+      `SELECT 1 FROM devices WHERE account_digest=?1 AND device_id=?2`
+    ).bind(accountDigest, normalizedDeviceId).first();
+    if (!devRow) {
+      const err = new Error('device not registered');
+      err.status = 404;
+      throw err;
+    }
+  }
+  const row = await env.DB.prepare(
+    `SELECT device_id FROM conversation_acl
+     WHERE conversation_id=?1 AND account_digest=?2
+       AND (device_id=?3 OR device_id IS NULL)`
+  ).bind(convId, accountDigest, normalizedDeviceId || '').first();
+  if (!row) {
+    await grantConversationAccess(env, { conversationId: convId, accountDigest, deviceId: normalizedDeviceId });
+  } else if (row.device_id === null && normalizedDeviceId) {
+    await grantConversationAccess(env, { conversationId: convId, accountDigest, deviceId: normalizedDeviceId });
+  }
+  return { ok: true };
+}
+
+/**
+ * Fire-and-forget WebSocket notification to the Node.js WS server.
+ * env.WS_NOTIFY_URL should point to the Node.js server's notification endpoint.
+ * If not configured, notifications are silently skipped.
+ */
+function notifyWsServer(env, payload) {
+  const url = env.WS_NOTIFY_URL;
+  if (!url) return;
+  const secret = env.WS_NOTIFY_SECRET || env.HMAC_SECRET || '';
+  const body = JSON.stringify(payload);
+  const headers = { 'content-type': 'application/json' };
+  if (secret) {
+    // Lightweight HMAC for WS notification
+    headers['x-ws-notify-secret'] = secret;
+  }
+  // Fire-and-forget: do not await
+  fetch(`${url}`, { method: 'POST', headers, body }).catch(() => {});
+}
+
+/**
+ * Create a synthetic internal Request to delegate to existing /d1/ handlers.
+ */
+function internalRequest(url, method, body, baseUrl) {
+  const opts = { method, headers: { 'content-type': 'application/json' } };
+  if (body !== null && body !== undefined && method !== 'GET') {
+    opts.body = typeof body === 'string' ? body : JSON.stringify(body);
+  }
+  return new Request(new URL(url, baseUrl), opts);
+}
+
+/**
+ * Main public API router for /api/ and /api/v1/ paths.
+ * No HMAC required — uses account token/digest auth.
+ */
+async function handlePublicRoutes(req, env) {
+  const url = new URL(req.url);
+  const path = url.pathname;
+  const method = req.method;
+  const baseUrl = url.origin;
+
+  // ── Health / Status ───────────────────────────────────────────
+  if (path === '/api/health' || path === '/api/v1/health') {
+    return json({ ok: true, ts: Date.now() });
+  }
+  if (path === '/api/status' || path === '/api/v1/status') {
+    return json({ name: 'message-data', version: '1.0.0', edge: true });
+  }
+  if (path === '/api/v1/messages/probe') {
+    return json({ probe: 'ok' });
+  }
+
+  // ── Parse body for POST requests ─────────────────────────────
+  let body = null;
+  if (method === 'POST') {
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+  }
+
+  // ── Groups ────────────────────────────────────────────────────
+  if (path === '/api/v1/groups/create' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized', message: 'account verification failed' }, { status: 401 });
+    const intBody = {
+      groupId: body.group_id || body.groupId,
+      conversationId: body.conversation_id || body.conversationId,
+      creatorAccountDigest: auth.accountDigest,
+      name: body.name || null,
+      avatar: body.avatar ?? null,
+      members: (body.members || []).map(m => ({
+        accountDigest: m.account_digest || m.accountDigest
+      }))
+    };
+    return handleGroupsRoutes(internalRequest('/d1/groups/create', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/groups/members/add' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      groupId: body.group_id || body.groupId,
+      members: (body.members || []).map(m => ({
+        accountDigest: m.account_digest || m.accountDigest
+      }))
+    };
+    return handleGroupsRoutes(internalRequest('/d1/groups/members/add', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/groups/members/remove' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      groupId: body.group_id || body.groupId,
+      members: (body.members || []).map(m => ({
+        accountDigest: m.account_digest || m.accountDigest
+      })),
+      status: body.status || null
+    };
+    return handleGroupsRoutes(internalRequest('/d1/groups/members/remove', 'POST', intBody, baseUrl), env);
+  }
+
+  {
+    const groupMatch = path.match(/^\/api\/v1\/groups\/([A-Za-z0-9_-]{8,128})$/);
+    if (groupMatch && method === 'GET') {
+      const groupId = groupMatch[1];
+      const accountDigest = url.searchParams.get('account_digest') || url.searchParams.get('accountDigest') || '';
+      if (!accountDigest) return json({ error: 'BadRequest', message: 'account_digest required' }, { status: 400 });
+      const qs = `?groupId=${encodeURIComponent(groupId)}&accountDigest=${encodeURIComponent(accountDigest)}`;
+      return handleGroupsRoutes(internalRequest(`/d1/groups/get${qs}`, 'GET', null, baseUrl), env);
+    }
+  }
+
+  // ── Contact Secrets ───────────────────────────────────────────
+  if (path === '/api/v1/contact-secrets/backup' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      accountDigest: auth.accountDigest,
+      payload: body.payload,
+      checksum: body.checksum || null,
+      snapshotVersion: body.snapshot_version ?? body.snapshotVersion ?? null,
+      entries: body.entries ?? null,
+      updatedAt: body.updated_at ?? body.updatedAt ?? Date.now(),
+      bytes: body.bytes ?? null,
+      withDrState: body.with_dr_state ?? body.withDrState ?? null,
+      deviceLabel: body.device_label ?? body.deviceLabel ?? null,
+      deviceId: body.device_id || body.deviceId,
+      reason: body.reason || 'auto'
+    };
+    return handleContactSecretsRoutes(internalRequest('/d1/contact-secrets/backup', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/contact-secrets/backup' && method === 'GET') {
+    const auth = await resolvePublicAuth(req, env, { body: null });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const limit = Math.min(Math.max(Number(url.searchParams.get('limit') || 1), 1), 10);
+    const version = Number(url.searchParams.get('version') || 0);
+    let qs = `?accountDigest=${encodeURIComponent(auth.accountDigest)}&limit=${limit}`;
+    if (version > 0) qs += `&version=${Math.floor(version)}`;
+    return handleContactSecretsRoutes(internalRequest(`/d1/contact-secrets/backup${qs}`, 'GET', null, baseUrl), env);
+  }
+
+  // ── Message Key Vault ─────────────────────────────────────────
+  if (path === '/api/v1/message-key-vault/put' && method === 'POST') {
+    // Authenticate via token only (sender may write to peer's vault)
+    const tokenHeader = (req.headers.get('x-account-token') || '').trim();
+    const accountToken = tokenHeader || body?.account_token || body?.accountToken || null;
+    if (!accountToken) return json({ error: 'Unauthorized', message: 'account_token required' }, { status: 401 });
+    await ensureDataTables(env);
+    const account = await resolveAccount(env, { accountToken }, { allowCreate: false });
+    if (!account) return json({ error: 'Unauthorized' }, { status: 401 });
+    // Target digest: explicit body field, or default to authenticated user
+    const targetDigest = normalizeAccountDigest(body?.account_digest || body?.accountDigest) || account.account_digest;
+    const intBody = {
+      accountDigest: targetDigest,
+      conversationId: body.conversation_id || body.conversationId,
+      messageId: body.message_id || body.messageId,
+      senderDeviceId: body.sender_device_id || body.senderDeviceId,
+      targetDeviceId: body.target_device_id || body.targetDeviceId,
+      direction: body.direction,
+      msgType: body.msg_type || body.msgType || null,
+      headerCounter: body.header_counter ?? body.headerCounter ?? null,
+      wrapped_mk: body.wrapped_mk,
+      wrap_context: body.wrap_context
+    };
+    return handleMessageKeyVaultRoutes(internalRequest('/d1/message-key-vault/put', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/message-key-vault/get' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      accountDigest: auth.accountDigest,
+      conversationId: body.conversation_id || body.conversationId,
+      messageId: body.message_id || body.messageId,
+      senderDeviceId: body.sender_device_id || body.senderDeviceId
+    };
+    return handleMessageKeyVaultRoutes(internalRequest('/d1/message-key-vault/get', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/message-key-vault/latest-state' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      accountDigest: auth.accountDigest,
+      conversationId: body.conversation_id || body.conversationId
+    };
+    return handleMessageKeyVaultRoutes(internalRequest('/d1/message-key-vault/latest-state', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/message-key-vault/count' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      conversationId: body.conversation_id || body.conversationId,
+      messageId: body.message_id || body.messageId
+    };
+    return handleMessageKeyVaultRoutes(internalRequest('/d1/message-key-vault/count', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/message-key-vault/delete' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      accountDigest: auth.accountDigest,
+      conversationId: body.conversation_id || body.conversationId,
+      messageId: body.message_id || body.messageId,
+      senderDeviceId: body.sender_device_id || body.senderDeviceId
+    };
+    return handleMessageKeyVaultRoutes(internalRequest('/d1/message-key-vault/delete', 'POST', intBody, baseUrl), env);
+  }
+
+  // ── Keys (Prekeys) ────────────────────────────────────────────
+  if (path === '/api/v1/keys/publish' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const spk = body.signed_prekey || body.signedPrekey || {};
+    const intBody = {
+      accountDigest: auth.accountDigest,
+      deviceId: body.device_id || body.deviceId,
+      signedPrekey: {
+        id: spk.id,
+        pub: spk.pub,
+        sig: spk.sig,
+        ik_pub: spk.ik_pub
+      },
+      opks: body.opks || []
+    };
+    return handlePrekeysRoutes(internalRequest('/d1/prekeys/publish', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/keys/bundle' && method === 'POST') {
+    const peerDigest = normalizeAccountDigest(body?.peer_account_digest || body?.peerAccountDigest);
+    if (!peerDigest) return json({ error: 'BadRequest', message: 'peer_account_digest required' }, { status: 400 });
+    let qs = `?peerAccountDigest=${encodeURIComponent(peerDigest)}`;
+    const peerDeviceId = body?.peer_device_id || body?.peerDeviceId;
+    if (peerDeviceId) qs += `&peerDeviceId=${encodeURIComponent(peerDeviceId)}`;
+    return handlePrekeysRoutes(internalRequest(`/d1/prekeys/bundle${qs}`, 'GET', null, baseUrl), env);
+  }
+
+  // ── DevKeys ───────────────────────────────────────────────────
+  if (path === '/api/v1/devkeys/fetch' && method === 'POST') {
+    const accountToken = body?.account_token || body?.accountToken || null;
+    const accountDigest = normalizeAccountDigest(body?.account_digest || body?.accountDigest);
+    if (!accountToken && !accountDigest) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {};
+    if (accountToken) intBody.accountToken = String(accountToken).trim();
+    if (accountDigest) intBody.accountDigest = accountDigest;
+    // If we have a token but no digest, compute digest
+    if (accountToken && !accountDigest) {
+      intBody.accountDigest = await digestAccountToken(String(accountToken).trim());
+    }
+    return handleTagsRoutes(internalRequest('/d1/devkeys/fetch', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/devkeys/store' && method === 'POST') {
+    const accountToken = body?.account_token || body?.accountToken || null;
+    const accountDigest = normalizeAccountDigest(body?.account_digest || body?.accountDigest);
+    if (!accountToken && !accountDigest) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {};
+    if (accountToken) intBody.accountToken = String(accountToken).trim();
+    if (accountDigest) intBody.accountDigest = accountDigest;
+    if (accountToken && !accountDigest) {
+      intBody.accountDigest = await digestAccountToken(String(accountToken).trim());
+    }
+    intBody.wrapped_dev = body.wrapped_dev;
+    if (body.session) intBody.session = body.session;
+    return handleTagsRoutes(internalRequest('/d1/devkeys/store', 'POST', intBody, baseUrl), env);
+  }
+
+  // ── Account ───────────────────────────────────────────────────
+  if (path === '/api/v1/account/evidence' && method === 'GET') {
+    const accountDigest = normalizeAccountDigest(
+      url.searchParams.get('account_digest') || url.searchParams.get('accountDigest') || ''
+    );
+    if (!accountDigest) return json({ error: 'BadRequest', message: 'account_digest required' }, { status: 400 });
+    const qs = `?accountDigest=${encodeURIComponent(accountDigest)}`;
+    return handleAccountsRoutes(internalRequest(`/d1/account/evidence${qs}`, 'GET', null, baseUrl), env);
+  }
+
+  // ── Invites ───────────────────────────────────────────────────
+  if (path === '/api/v1/invites/create' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      ownerAccountDigest: auth.accountDigest,
+      ownerPublicKeyB64: body.owner_public_key_b64 || body.ownerPublicKeyB64 || null,
+      wantPairingCode: body.want_pairing_code ?? body.wantPairingCode ?? false
+    };
+    return handleInviteDropboxRoutes(internalRequest('/d1/invites/create', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/invites/deliver' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      inviteId: body.invite_id || body.inviteId,
+      peerAccountDigest: auth.accountDigest,
+      ciphertextEnvelope: body.ciphertext_envelope || body.ciphertextEnvelope
+    };
+    const result = await handleInviteDropboxRoutes(internalRequest('/d1/invites/deliver', 'POST', intBody, baseUrl), env);
+    // WS notification: invite delivered
+    if (result && result.status < 400) {
+      try {
+        const resData = await result.clone().json().catch(() => null);
+        const ownerDigest = resData?.ownerAccountDigest || resData?.owner_account_digest;
+        if (ownerDigest) {
+          const targetDeviceId = body?.target_device_id || body?.targetDeviceId || null;
+          notifyWsServer(env, {
+            type: 'invite-delivered',
+            targetAccountDigest: ownerDigest,
+            targetDeviceId,
+            inviteId: intBody.inviteId
+          });
+        }
+      } catch { /* best-effort */ }
+    }
+    return result;
+  }
+
+  if (path === '/api/v1/invites/consume' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      inviteId: body.invite_id || body.inviteId,
+      consumerAccountDigest: auth.accountDigest
+    };
+    return handleInviteDropboxRoutes(internalRequest('/d1/invites/consume', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/invites/confirm' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      inviteId: body.invite_id || body.inviteId,
+      accountDigest: auth.accountDigest
+    };
+    return handleInviteDropboxRoutes(internalRequest('/d1/invites/confirm', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/invites/unconfirmed' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = { ownerAccountDigest: auth.accountDigest };
+    return handleInviteDropboxRoutes(internalRequest('/d1/invites/unconfirmed', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/invites/status' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      inviteId: body.invite_id || body.inviteId,
+      accountDigest: auth.accountDigest
+    };
+    return handleInviteDropboxRoutes(internalRequest('/d1/invites/status', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/invites/lookup-code' && method === 'POST') {
+    const intBody = {
+      pairingCode: body.pairing_code || body.pairingCode
+    };
+    return handleInviteDropboxRoutes(internalRequest('/d1/invites/lookup-code', 'POST', intBody, baseUrl), env);
+  }
+
+  // ── Friends ───────────────────────────────────────────────────
+  if (path === '/api/v1/friends/delete' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const senderDeviceId = (req.headers.get('x-device-id') || '').trim();
+    if (!senderDeviceId) return json({ error: 'BadRequest', message: 'deviceId header required' }, { status: 400 });
+    const peerDigest = normalizeAccountDigest(body?.peer_account_digest || body?.peerAccountDigest);
+    if (!peerDigest) return json({ error: 'BadRequest', message: 'peer_account_digest required' }, { status: 400 });
+    const conversationId = body?.conversation_id || body?.conversationId || null;
+    const intBody = {
+      ownerAccountDigest: auth.accountDigest,
+      peerAccountDigest: peerDigest,
+      ...(conversationId ? { conversationId } : {})
+    };
+    const result = await handleFriendsRoutes(internalRequest('/d1/friends/contact-delete', 'POST', intBody, baseUrl), env);
+    // WS notifications: contact removed
+    if (result && result.status < 400) {
+      const targetDeviceId = body?.target_device_id || body?.targetDeviceId || null;
+      notifyWsServer(env, {
+        type: 'contact-removed',
+        ownerAccountDigest: auth.accountDigest,
+        peerAccountDigest: peerDigest,
+        senderDeviceId,
+        targetDeviceId,
+        conversationId
+      });
+    }
+    return result;
+  }
+
+  // ── Messages ──────────────────────────────────────────────────
+  if (path === '/api/v1/messages/atomic-send' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const deviceId = (req.headers.get('x-device-id') || '').trim() || body?.sender_device_id || body?.senderDeviceId;
+    if (!deviceId) return json({ error: 'BadRequest', message: 'deviceId required' }, { status: 400 });
+    // atomic-send: pass body through with accountDigest injected
+    const intBody = { ...body, senderAccountDigest: auth.accountDigest, sender_account_digest: auth.accountDigest };
+    delete intBody.account_token; delete intBody.accountToken;
+    const result = await handleAtomicSendRoutes(internalRequest('/d1/messages/atomic-send', 'POST', intBody, baseUrl), env);
+    // WS notification for message delivery
+    if (result && result.status < 400) {
+      try {
+        const resData = await result.clone().json().catch(() => null);
+        const receiverDigest = body?.receiver_account_digest || body?.receiverAccountDigest;
+        const convId = body?.conversation_id || body?.conversationId;
+        if (receiverDigest && convId) {
+          notifyWsServer(env, {
+            type: 'secure-message',
+            targetAccountDigest: receiverDigest,
+            conversationId: convId,
+            messageId: body?.id || body?.messageId || resData?.messageId || null,
+            preview: body?.preview || '',
+            ts: body?.created_at || body?.ts || Date.now(),
+            senderAccountDigest: auth.accountDigest,
+            senderDeviceId: deviceId,
+            targetDeviceId: body?.receiver_device_id || body?.receiverDeviceId || null,
+            counter: body?.counter ?? null
+          });
+        }
+      } catch { /* best-effort */ }
+    }
+    return result;
+  }
+
+  if (path === '/api/v1/messages/secure' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const deviceId = (req.headers.get('x-device-id') || '').trim();
+    if (!deviceId) return json({ error: 'BadRequest', message: 'deviceId required' }, { status: 400 });
+    const convId = normalizeConversationId(body?.conversation_id || body?.conversationId);
+    if (!convId) return json({ error: 'BadRequest', message: 'conversation_id required' }, { status: 400 });
+    // Conversation auth
+    if (!isSystemOwnedConversation(convId, auth.accountDigest)) {
+      try {
+        await authorizeConversationDirect(env, { convId, accountDigest: auth.accountDigest, deviceId });
+      } catch (err) {
+        return json({ error: 'ConversationAccessDenied', message: err?.message || 'access denied' }, { status: err?.status || 403 });
+      }
+    }
+    const intBody = {
+      conversation_id: convId,
+      sender_account_digest: auth.accountDigest,
+      sender_device_id: deviceId,
+      receiver_account_digest: body?.receiver_account_digest || body?.receiverAccountDigest,
+      receiver_device_id: body?.receiver_device_id || body?.receiverDeviceId,
+      header_json: body?.header_json || (body?.header ? JSON.stringify(body.header) : undefined),
+      ciphertext_b64: body?.ciphertext_b64 || body?.ciphertext,
+      counter: body?.counter,
+      id: body?.id || body?.messageId,
+      created_at: body?.created_at || body?.ts
+    };
+    // Use handleMessagesRoutes for /d1/messages (secure messages go through the same store path)
+    const result = await handleMessagesRoutes(internalRequest('/d1/messages', 'POST', intBody, baseUrl), env);
+    // WS notification
+    if (result && result.status < 400) {
+      const receiverDigest = intBody.receiver_account_digest;
+      if (receiverDigest) {
+        notifyWsServer(env, {
+          type: 'secure-message',
+          targetAccountDigest: receiverDigest,
+          conversationId: convId,
+          messageId: intBody.id || null,
+          preview: body?.preview || '',
+          ts: Number(intBody.created_at || Date.now()),
+          senderAccountDigest: auth.accountDigest,
+          senderDeviceId: deviceId,
+          targetDeviceId: intBody.receiver_device_id || null,
+          counter: intBody.counter ?? null
+        });
+      }
+    }
+    return result;
+  }
+
+  if (path === '/api/v1/messages' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const deviceId = (req.headers.get('x-device-id') || '').trim();
+    if (!deviceId) return json({ error: 'BadRequest', message: 'deviceId required' }, { status: 400 });
+    const convId = normalizeConversationId(body?.conv_id || body?.conversation_id || body?.conversationId);
+    if (!convId) return json({ error: 'BadRequest', message: 'conversation_id required' }, { status: 400 });
+    if (!isSystemOwnedConversation(convId, auth.accountDigest)) {
+      try {
+        await authorizeConversationDirect(env, { convId, accountDigest: auth.accountDigest, deviceId });
+      } catch (err) {
+        return json({ error: 'ConversationAccessDenied', message: err?.message || 'access denied' }, { status: err?.status || 403 });
+      }
+    }
+    const receiverDigest = body?.receiver_account_digest || body?.receiverAccountDigest;
+    const receiverDeviceId = body?.receiver_device_id || body?.receiverDeviceId;
+    const intBody = {
+      conversation_id: convId,
+      sender_account_digest: auth.accountDigest,
+      sender_device_id: deviceId,
+      receiver_account_digest: receiverDigest,
+      receiver_device_id: receiverDeviceId,
+      header_json: body?.header_json || (body?.header ? JSON.stringify(body.header) : undefined),
+      ciphertext_b64: body?.ciphertext_b64 || body?.ciphertext,
+      counter: body?.counter,
+      id: body?.id || body?.messageId,
+      created_at: body?.created_at || body?.ts
+    };
+    const result = await handleMessagesRoutes(internalRequest('/d1/messages', 'POST', intBody, baseUrl), env);
+    if (result && result.status < 400 && receiverDigest) {
+      notifyWsServer(env, {
+        type: 'secure-message',
+        targetAccountDigest: receiverDigest,
+        conversationId: convId,
+        messageId: intBody.id || null,
+        preview: body?.preview || body?.text || '',
+        ts: Number(intBody.created_at || Date.now()),
+        senderAccountDigest: auth.accountDigest,
+        senderDeviceId: deviceId,
+        targetDeviceId: receiverDeviceId || null,
+        counter: intBody.counter ?? null
+      });
+    }
+    return result;
+  }
+
+  if (path === '/api/v1/messages/secure' && method === 'GET') {
+    const auth = await resolvePublicAuth(req, env, { body: null });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const convId = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
+    if (!convId) return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
+    // Build query string for internal handler
+    const params = new URLSearchParams(url.searchParams);
+    params.set('conversationId', convId);
+    return handleMessagesRoutes(internalRequest(`/d1/messages/secure?${params.toString()}`, 'GET', null, baseUrl), env);
+  }
+
+  if (path === '/api/v1/messages/secure/max-counter' && method === 'GET') {
+    const convId = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
+    const senderDeviceId = url.searchParams.get('senderDeviceId') || url.searchParams.get('sender_device_id');
+    if (!convId) return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
+    const params = new URLSearchParams();
+    params.set('conversationId', convId);
+    if (senderDeviceId) params.set('senderDeviceId', senderDeviceId);
+    return handleMessagesRoutes(internalRequest(`/d1/messages/secure/max-counter?${params.toString()}`, 'GET', null, baseUrl), env);
+  }
+
+  if (path === '/api/v1/messages/by-counter' && method === 'GET') {
+    const convId = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
+    const counter = url.searchParams.get('counter');
+    if (!convId) return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
+    const params = new URLSearchParams();
+    params.set('conversationId', convId);
+    if (counter !== null) params.set('counter', counter);
+    // Forward additional query params
+    for (const [k, v] of url.searchParams) {
+      if (!params.has(k)) params.set(k, v);
+    }
+    return handleMessagesRoutes(internalRequest(`/d1/messages/by-counter?${params.toString()}`, 'GET', null, baseUrl), env);
+  }
+
+  {
+    const convMsgMatch = path.match(/^\/api\/v1\/conversations\/([^/]+)\/messages$/);
+    if (convMsgMatch && method === 'GET') {
+      const convId = convMsgMatch[1];
+      const params = new URLSearchParams(url.searchParams);
+      params.set('conversationId', convId);
+      return handleMessagesRoutes(internalRequest(`/d1/messages?${params.toString()}`, 'GET', null, baseUrl), env);
+    }
+  }
+
+  if (path === '/api/v1/messages/send-state' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = { ...body };
+    intBody.sender_account_digest = intBody.sender_account_digest || auth.accountDigest;
+    delete intBody.account_token; delete intBody.accountToken;
+    return handleMessagesRoutes(internalRequest('/d1/messages/send-state', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/messages/outgoing-status' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = { ...body };
+    intBody.sender_account_digest = intBody.sender_account_digest || auth.accountDigest;
+    delete intBody.account_token; delete intBody.accountToken;
+    return handleMessagesRoutes(internalRequest('/d1/messages/outgoing-status', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/messages/delete' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      ids: body.ids,
+      conversation_id: body.conversation_id || body.conversationId,
+      account_digest: auth.accountDigest
+    };
+    return handleMessagesRoutes(internalRequest('/d1/messages/delete', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/deletion/cursor' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = { ...body, account_digest: auth.accountDigest, accountDigest: auth.accountDigest };
+    delete intBody.account_token; delete intBody.accountToken;
+    return handleMessagesRoutes(internalRequest('/d1/deletion/cursor', 'POST', intBody, baseUrl), env);
+  }
+
+  // ── Auth brand lookup (public, no auth needed) ────────────────
+  if (path === '/api/v1/auth/brand' && method === 'GET') {
+    const uidHex = url.searchParams.get('uid') || '';
+    if (!uidHex) return json({ error: 'BadRequest', message: 'uid required' }, { status: 400 });
+    const qs = `?uid=${encodeURIComponent(uidHex)}`;
+    return handleAccountsRoutes(internalRequest(`/d1/accounts/brand${qs}`, 'GET', null, baseUrl), env);
+  }
+
+  return null;
+}
+
+// ── Main fetch handler ──────────────────────────────────────────
 export default {
   async fetch(req, env) {
     try {
-      // 基本 HMAC 防護
+      const url = new URL(req.url);
+
+      // ── CORS preflight for public API ──
+      if (req.method === 'OPTIONS' && (url.pathname.startsWith('/api/') || url.pathname.startsWith('/api'))) {
+        return new Response(null, { status: 204, headers: buildCORSHeaders(req, env) });
+      }
+
+      // ── Public API routes (no HMAC, account-token auth) ──
+      if (url.pathname.startsWith('/api/')) {
+        const result = await handlePublicRoutes(req, env);
+        if (result) return withCORS(result, req, env);
+        return withCORS(json({ error: 'not_found' }, { status: 404 }), req, env);
+      }
+
+      // ── Internal API (HMAC-protected, backward-compat) ──
       if (!await verifyHMAC(req, env)) {
         return new Response('unauthorized', { status: 401 });
       }
