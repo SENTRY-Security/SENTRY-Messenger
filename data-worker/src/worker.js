@@ -6827,7 +6827,7 @@ async function handlePublicRoutes(req, env) {
           await notifyAccountDO(env, receiverDigest, {
             type: 'secure-message',
             conversationId: convId,
-            messageId: body?.id || body?.messageId || resData?.messageId || null,
+            messageId: body?.message?.id || body?.id || body?.messageId || resData?.id || resData?.messageId || null,
             preview: body?.preview || '',
             ts: body?.created_at || body?.ts || Date.now(),
             count: 1,
