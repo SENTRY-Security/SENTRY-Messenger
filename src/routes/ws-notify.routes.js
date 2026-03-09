@@ -72,6 +72,30 @@ r.post('/internal/ws-notify', (req, res) => {
       case 'contacts-reload':
         manager.notifyContactsReload(null, payload.targetAccountDigest || payload.accountDigest);
         break;
+      case 'call-invite':
+      case 'call-cancel':
+      case 'call-reject':
+      case 'call-answer':
+      case 'call-hangup':
+      case 'call-ice-candidate':
+      case 'call-renegotiate': {
+        // Relay call signaling to the target account via WS broadcast
+        const callTarget = payload.calleeAccountDigest || payload.targetAccountDigest;
+        if (callTarget) {
+          manager.broadcastToAccount(callTarget, {
+            type: payload.type,
+            callId: payload.callId,
+            fromAccountDigest: payload.callerAccountDigest || payload.senderAccountDigest,
+            toAccountDigest: callTarget,
+            fromDeviceId: payload.senderDeviceId || null,
+            toDeviceId: payload.targetDeviceId || null,
+            mode: payload.mode || null,
+            ts: payload.ts || Date.now(),
+            payload: payload.detail || payload.payload || null
+          });
+        }
+        break;
+      }
       case 'force-logout':
         manager.forceLogout(payload.targetAccountDigest, {
           reason: payload.reason || 'account purged'

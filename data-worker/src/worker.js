@@ -5616,34 +5616,38 @@ async function authorizeConversationDirect(env, { convId, accountDigest, deviceI
 
 /**
  * Fire-and-forget WebSocket notification to the Node.js WS server.
- * env.WS_NOTIFY_URL should point to the Node.js server's /internal/ws-notify endpoint.
+ * Returns a Promise so callers can use ctx.waitUntil() to prevent early termination.
+ * env.WS_NOTIFY_URL or env.NODEJS_ORIGIN should point to the Node.js server.
  * If not configured, notifications are silently skipped.
  */
-function notifyWsServer(env, payload) {
+async function notifyWsServer(env, payload) {
   const baseUrl = env.WS_NOTIFY_URL || env.NODEJS_ORIGIN;
-  if (!baseUrl) return;
+  if (!baseUrl) {
+    console.info('[ws-notify] skip: no WS_NOTIFY_URL or NODEJS_ORIGIN configured');
+    return;
+  }
   const secret = env.WS_NOTIFY_SECRET || env.DATA_API_HMAC || '';
   const body = JSON.stringify(payload);
   const headers = { 'content-type': 'application/json' };
   const url = baseUrl.endsWith('/internal/ws-notify')
     ? baseUrl
     : `${baseUrl.replace(/\/$/, '')}/internal/ws-notify`;
-  if (secret) {
-    // HMAC of body for verification
-    const enc = new TextEncoder();
-    crypto.subtle.importKey(
-      'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
-    ).then(key =>
-      crypto.subtle.sign('HMAC', key, enc.encode(body))
-    ).then(sig => {
-      const b64 = btoa(String.fromCharCode(...new Uint8Array(sig)))
+  try {
+    if (secret) {
+      const enc = new TextEncoder();
+      const key = await crypto.subtle.importKey(
+        'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+      );
+      const sig = await crypto.subtle.sign('HMAC', key, enc.encode(body));
+      headers['x-ws-notify-hmac'] = btoa(String.fromCharCode(...new Uint8Array(sig)))
         .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-      headers['x-ws-notify-hmac'] = b64;
-      fetch(url, { method: 'POST', headers, body }).catch(() => {});
-    }).catch(() => {});
-  } else {
-    // No secret — send without HMAC (will be rejected by receiver)
-    fetch(url, { method: 'POST', headers, body }).catch(() => {});
+    }
+    const res = await fetch(url, { method: 'POST', headers, body });
+    if (!res.ok) {
+      console.warn('[ws-notify] failed', { url, status: res.status, type: payload?.type });
+    }
+  } catch (err) {
+    console.warn('[ws-notify] error', { url, type: payload?.type, error: err?.message || String(err) });
   }
 }
 
@@ -6625,7 +6629,7 @@ async function handlePublicRoutes(req, env) {
         const ownerDigest = resData?.ownerAccountDigest || resData?.owner_account_digest;
         if (ownerDigest) {
           const targetDeviceId = body?.target_device_id || body?.targetDeviceId || null;
-          notifyWsServer(env, {
+          await notifyWsServer(env, {
             type: 'invite-delivered',
             targetAccountDigest: ownerDigest,
             targetDeviceId,
@@ -6711,7 +6715,7 @@ async function handlePublicRoutes(req, env) {
     // WS notifications: contact removed
     if (result && result.status < 400) {
       const targetDeviceId = body?.target_device_id || body?.targetDeviceId || null;
-      notifyWsServer(env, {
+      await notifyWsServer(env, {
         type: 'contact-removed',
         ownerAccountDigest: auth.accountDigest,
         peerAccountDigest: peerDigest,
@@ -6740,7 +6744,7 @@ async function handlePublicRoutes(req, env) {
         const receiverDigest = body?.receiver_account_digest || body?.receiverAccountDigest;
         const convId = body?.conversation_id || body?.conversationId;
         if (receiverDigest && convId) {
-          notifyWsServer(env, {
+          await notifyWsServer(env, {
             type: 'secure-message',
             targetAccountDigest: receiverDigest,
             conversationId: convId,
@@ -6791,7 +6795,7 @@ async function handlePublicRoutes(req, env) {
     if (result && result.status < 400) {
       const receiverDigest = intBody.receiver_account_digest;
       if (receiverDigest) {
-        notifyWsServer(env, {
+        await notifyWsServer(env, {
           type: 'secure-message',
           targetAccountDigest: receiverDigest,
           conversationId: convId,
@@ -6838,7 +6842,7 @@ async function handlePublicRoutes(req, env) {
     };
     const result = await handleMessagesRoutes(internalRequest('/d1/messages', 'POST', intBody, baseUrl), env);
     if (result && result.status < 400 && receiverDigest) {
-      notifyWsServer(env, {
+      await notifyWsServer(env, {
         type: 'secure-message',
         targetAccountDigest: receiverDigest,
         conversationId: convId,
@@ -6991,7 +6995,7 @@ async function handlePublicRoutes(req, env) {
       try { session = (await sessionRes.json())?.session || null; } catch { session = null; }
     }
     // WS notification
-    notifyWsServer(env, {
+    await notifyWsServer(env, {
       type: 'call-invite', callId, callerAccountDigest: auth.accountDigest,
       calleeAccountDigest: peerDigest, targetDeviceId, senderDeviceId, mode: body?.mode || 'voice'
     });
@@ -7551,7 +7555,7 @@ async function handlePublicRoutes(req, env) {
     // Step 3: WS forceLogout
     const logoutDigest = workerJson?.accountDigest || null;
     if (logoutDigest) {
-      notifyWsServer(env, {
+      await notifyWsServer(env, {
         type: 'force-logout',
         targetAccountDigest: logoutDigest,
         reason: 'account purged'

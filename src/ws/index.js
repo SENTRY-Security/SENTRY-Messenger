@@ -719,6 +719,11 @@ export function setupWebSocket(server) {
         ts: Date.now()
       });
     },
+    broadcastToAccount(accountDigest, payload) {
+      const digest = canonicalAccountDigest(accountDigest);
+      if (!digest || !payload) return;
+      broadcastByDigest(digest, payload);
+    },
     forceLogout(accountDigest = null, { reason = 'account removed' } = {}) {
       const digest = canonicalAccountDigest(accountDigest);
       if (!digest) return;
