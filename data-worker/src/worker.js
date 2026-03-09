@@ -6389,8 +6389,10 @@ async function handlePublicRoutes(req, env) {
 
   // ── Account ───────────────────────────────────────────────────
   if (path === '/api/v1/account/evidence' && method === 'GET') {
+    // Frontend sends digest via x-account-digest header or query param
     const accountDigest = normalizeAccountDigest(
-      url.searchParams.get('account_digest') || url.searchParams.get('accountDigest') || ''
+      url.searchParams.get('account_digest') || url.searchParams.get('accountDigest') ||
+      req.headers.get('x-account-digest') || ''
     );
     if (!accountDigest) return json({ error: 'BadRequest', message: 'account_digest required' }, { status: 400 });
     const qs = `?accountDigest=${encodeURIComponent(accountDigest)}`;
