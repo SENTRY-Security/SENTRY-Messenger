@@ -40,7 +40,7 @@
   │                      │     │                        │     │  (data-worker/)          │
   │  Cloudflare Pages    │────▶│  Express + WebSocket   │────▶│  Cloudflare Workers      │
   │  Vanilla JS SPA      │     │  Linode VPS (PM2)      │     │  D1 (SQLite) + R2 Storage│
-  │  esbuild bundler     │     │  HMAC-signed requests  │     │                          │
+  │  esbuild bundler     │     │  信令 / 管理端         │     │  KV (auth sessions)      │
   └──────────────────────┘     └───────────────────────┘     └─────────────────────────┘
          │                              │                              │
          │  ◀── HTTPS/WSS ──▶          │  ◀── HMAC-auth REST ──▶     │
@@ -48,13 +48,14 @@
   ┌──────┴──────┐               ┌───────┴───────┐             ┌───────┴───────┐
   │ X3DH + DR   │               │ Rate Limit    │             │ D1 Database   │
   │ 客戶端加密   │               │ Helmet/CORS   │             │ R2 媒體儲存   │
-  │ IndexedDB   │               │ JWT WS Auth   │             │ OPAQUE 紀錄   │
-  └─────────────┘               └───────────────┘             └───────────────┘
+  │ IndexedDB   │               │ JWT WS Auth   │             │ OPAQUE + SDM  │
+  └─────────────┘               └───────────────┘             │ KV Sessions   │
+                                                              └───────────────┘
 ```
 
 1. **Frontend (`web/`)** — 純靜態 SPA，部署至 Cloudflare Pages，所有加密/解密在客戶端完成
-2. **Backend (`src/`)** — Node.js Express API + WebSocket 伺服器，部署於 VPS (PM2)，負責路由轉發與即時信令
-3. **Data Worker (`data-worker/`)** — Cloudflare Workers，直接存取 D1 資料庫與 R2 物件儲存，以 HMAC 驗證 Backend 請求
+2. **Backend (`src/`)** — Node.js Express API + WebSocket 伺服器，部署於 VPS (PM2)，負責即時信令與管理端
+3. **Data Worker (`data-worker/`)** — Cloudflare Workers，直接存取 D1/R2/KV，處理 OPAQUE 認證、SDM 驗證、金鑰管理及所有公開 API
 
 ---
 
@@ -293,7 +294,6 @@ SENTRY-Messenger/
 │   │
 │   ├── routes/                       # API 路由層
 │   │   ├── index.js                  # 路由聚合器（掛載 /api 前綴）
-│   │   ├── auth.routes.js            # SDM/OPAQUE 認證 + MK 存取
 │   │   ├── keys.routes.js            # X3DH SPK/OPK 發布與 Bundle 取得
 │   │   ├── devkeys.routes.js         # 裝置金鑰備份/還原
 │   │   ├── friends.routes.js         # 聯絡人刪除（掛載於 / 及 /v1）
@@ -331,9 +331,7 @@ SENTRY-Messenger/
 │   │   ├── portal-subscription.js    # 訂閱入口整合
 │   │   └── subscription-local.js     # 本地訂閱模擬
 │   │
-│   ├── lib/                          # 密碼學工具
-│   │   ├── ntag424-kdf.js            # NTAG 424 DNA 金鑰派生 (HKDF/EV2)
-│   │   └── ntag424-verify.js         # SDM CMAC 驗證
+│   ├── lib/                          # 密碼學工具（已遷移至 Worker）
 │   │
 │   ├── utils/                        # 共用工具
 │   │   ├── env.js                    # 環境變數載入
@@ -355,9 +353,10 @@ SENTRY-Messenger/
 │
 ├── data-worker/                      # ═══ Cloudflare Worker ═══
 │   ├── src/
-│   │   ├── worker.js                 # D1 查詢 + R2 操作 + HMAC 驗證
+│   │   ├── worker.js                 # D1/R2/KV + HMAC 驗證 + OPAQUE/SDM 認證
 │   │   └── u8-strict.js              # Uint8Array 驗證
-│   ├── migrations/                   # D1 資料庫遷移（共 6 個）
+│   ├── package.json                  # Worker 依賴 (@cloudflare/opaque-ts)
+│   ├── migrations/                   # D1 資料庫遷移
 │   │   ├── 0001_consolidated.sql     # 主要 Schema（核心表）
 │   │   ├── 0002_fix_missing_tables.sql  # 補建缺失表（contact_secret_backups 等）
 │   │   ├── 0003_restore_deletion_cursors.sql  # deletion_cursors + legacy prekey
@@ -365,7 +364,7 @@ SENTRY-Messenger/
 │   │   ├── 0005_add_min_ts_to_deletion_cursors.sql # 新增 min_ts 欄位
 │   │   ├── 0006_drop_min_counter_from_deletion_cursors.sql # 移除 min_counter
 │   │   └── 0007_add_pairing_code.sql # 配對碼支援
-│   └── wrangler.toml                 # Workers 設定 (D1 binding)
+│   └── wrangler.toml                 # Workers 設定 (D1 + KV bindings)
 │
 ├── web/                              # ═══ Frontend SPA ═══
 │   ├── build.mjs                     # esbuild 打包設定
@@ -753,17 +752,23 @@ SENTRY-Messenger/
 ```
 NFC 標籤 tap → UID + Counter + CMAC
                        ↓
-              HKDF/EV2 金鑰派生 (NTAG424_KM + salt)
+              Worker: HKDF/EV2 金鑰派生 (NTAG424_KM + salt)
                        ↓
-              CMAC 驗證 → Counter 單調性檢查 (防重放)
+              Worker: AES-CMAC 驗證 (RFC 4493) → Counter 單調性檢查 (防重放)
                        ↓
-              帳號 token 發放
+              KV session 發放 (TTL 300s) + 帳號 token
 ```
+
+- AES-CMAC 使用 `node:crypto` AES-128-ECB 實作（`nodejs_compat`）
+- 支援 HKDF-SHA256 與 EV2-CMAC 兩種金鑰派生模式
+- 支援 `NTAG424_KM_OLD` legacy key 自動 fallback
 
 ### OPAQUE 密碼認證
 
-- 基於 P-256 曲線的 OPAQUE PAKE 協定
+- 基於 P-256 曲線的 OPAQUE PAKE 協定（`@cloudflare/opaque-ts`）
+- 完全在 Cloudflare Worker 執行，無需 Node.js 中繼
 - 兩階段流程: `register-init` → `register-finish` / `login-init` → `login-finish`
+- `login-init` 產生的 `expected` 暫存於 KV（TTL 120s），`login-finish` 消費後刪除
 - 伺服器不持有明文密碼，防止離線字典攻擊
 - 成功後衍生 Session Key
 
@@ -1071,19 +1076,22 @@ media_objects         # 媒體物件追蹤
 
 ## API 端點
 
-### 認證 (`/api/v1/auth/`)
+### 認證 (`/api/v1/auth/`) — Worker 端
 
-| 端點 | 方法 | 說明 |
-|------|------|------|
-| `/auth/sdm/exchange` | POST | NFC 標籤 SDM 認證 → 帳號 token |
-| `/auth/sdm/debug-kit` | POST | 產生測試用 SDM 憑證 |
-| `/auth/opaque/register-init` | POST | OPAQUE 註冊初始化 |
-| `/auth/opaque/register-finish` | POST | OPAQUE 註冊完成 |
-| `/auth/opaque/login-init` | POST | OPAQUE 登入初始化 |
-| `/auth/opaque/login-finish` | POST | OPAQUE 登入完成 |
-| `/auth/opaque/debug` | GET | OPAQUE 設定除錯（非敏感資訊） |
-| `/mk/store` | POST | 儲存 wrapped MK（首次設定） |
-| `/mk/update` | POST | 更新 wrapped MK（變更密碼） |
+> 所有認證端點已遷移至 Cloudflare Worker，使用 KV 管理短期 session。
+
+| 端點 | 方法 | 說明 | 狀態儲存 |
+|------|------|------|----------|
+| `/auth/sdm/exchange` | POST | NFC 標籤 SDM 認證 → 帳號 token | KV session (TTL 300s) |
+| `/auth/sdm/debug-kit` | POST | 產生測試用 SDM 憑證 | KV counter (TTL 24h) |
+| `/auth/brand` | GET | 品牌查詢（splash 用） | — |
+| `/auth/opaque/register-init` | POST | OPAQUE 註冊初始化 | — |
+| `/auth/opaque/register-finish` | POST | OPAQUE 註冊完成 → D1 | — |
+| `/auth/opaque/login-init` | POST | OPAQUE 登入初始化 | KV expected (TTL 120s) |
+| `/auth/opaque/login-finish` | POST | OPAQUE 登入完成 → Session Key | KV 消費後刪除 |
+| `/auth/opaque/debug` | GET | OPAQUE 設定除錯（非敏感資訊） | — |
+| `/mk/store` | POST | 儲存 wrapped MK（首次設定，消費 session） | KV session 單次消費 |
+| `/mk/update` | POST | 更新 wrapped MK（變更密碼） | — |
 
 ### 金鑰管理 (`/api/v1/keys/`)
 
@@ -1492,24 +1500,42 @@ cd web && npm run verify:cdn     # CDN 完整性驗證（含 verbose）
 | `SIGNED_PUT_TTL` | 上傳簽章 URL 有效期 (秒) | `900` |
 | `SIGNED_GET_TTL` | 下載簽章 URL 有效期 (秒) | `900` |
 
-### NFC 認證 (NTAG 424 DNA)
+### NFC 認證 (NTAG 424 DNA) — Worker secret
 
-| 變數 | 說明 | 範例 |
-|------|------|------|
-| `NTAG424_KM` | 主金鑰 | `<32 hex chars>` |
-| `NTAG424_KDF` | 派生模式 | `HKDF` / `EV2` |
-| `NTAG424_SALT` | HKDF salt | `sentry.red` |
-| `NTAG424_INFO` | HKDF info | `ntag424-slot-0` |
-| `NTAG424_KVER` | 金鑰版本 | `1` |
+> 以下變數需設定於 **Cloudflare Worker**（`wrangler secret put`），Node.js 端已不再使用。
 
-### OPAQUE PAKE 認證
+| 變數 | 說明 | 範例 | 設定方式 |
+|------|------|------|----------|
+| `NTAG424_KM` | 主金鑰 (16 bytes) | `<32 hex chars>` | `wrangler secret put` |
+| `NTAG424_KM_OLD` | 舊主金鑰（fallback） | `<32 hex chars>` | `wrangler secret put` |
+| `NTAG424_KDF` | 派生模式 | `HKDF` / `EV2` | wrangler.toml `[vars]` |
+| `NTAG424_SALT` | HKDF salt | `sentry.red` | wrangler.toml `[vars]` |
+| `NTAG424_INFO` | HKDF info | `ntag424-static-key` | wrangler.toml `[vars]` |
+| `NTAG424_KVER` | 金鑰版本 (EV2 mode) | `1` | wrangler.toml `[vars]` |
 
-| 變數 | 說明 | 範例 |
-|------|------|------|
-| `OPAQUE_OPRF_SEED` | OPRF 種子 | `<64 hex chars>` |
-| `OPAQUE_AKE_PRIV_B64` | AKE 私鑰 | `<base64>` |
-| `OPAQUE_AKE_PUB_B64` | AKE 公鑰 | `<base64>` |
-| `OPAQUE_SERVER_ID` | 伺服器識別符 | `api.sentry` |
+### OPAQUE PAKE 認證 — Worker secret
+
+> OPAQUE 完全在 Worker 執行，金鑰需設定於 Cloudflare Worker。
+
+| 變數 | 說明 | 範例 | 設定方式 |
+|------|------|------|----------|
+| `OPAQUE_OPRF_SEED` | OPRF 種子 (32 bytes) | `<64 hex chars>` | `wrangler secret put` |
+| `OPAQUE_AKE_PRIV_B64` | AKE 私鑰 | `<base64>` | `wrangler secret put` |
+| `OPAQUE_AKE_PUB_B64` | AKE 公鑰 | `<base64>` | `wrangler secret put` |
+| `OPAQUE_SERVER_ID` | 伺服器識別符 | `api.sentry` | wrangler.toml `[vars]` |
+
+### KV Namespace — Worker binding
+
+| Binding | 用途 | TTL |
+|---------|------|-----|
+| `AUTH_KV` | SDM exchange session、OPAQUE login expected、debug counter | 120s–300s |
+
+建立方式：
+```bash
+wrangler kv namespace create AUTH_KV
+wrangler kv namespace create AUTH_KV --env uat
+# 將產出的 id 填入 wrangler.toml
+```
 
 ### WebRTC 通話
 
@@ -1542,11 +1568,9 @@ cd web && npm run verify:cdn     # CDN 完整性驗證（含 verbose）
 | pino / pino-http | 結構化日誌 |
 | jsonwebtoken | JWT 產生/驗證 |
 | dotenv | 環境變數載入 |
-| @cloudflare/opaque-ts | OPAQUE PAKE 協定 |
 | @noble/curves, @noble/hashes, @noble/ed25519 | 密碼學原語 |
 | tweetnacl | NaCl 加密函式庫 |
 | ed2curve | Ed25519 → X25519 轉換 |
-| elliptic | 橢圓曲線加密 |
 | @aws-sdk/client-s3 | R2/S3 操作 |
 | @aws-sdk/s3-presigned-post | S3 Presigned POST |
 | @aws-sdk/s3-request-presigner | S3 Presigned URL |
@@ -1557,8 +1581,14 @@ cd web && npm run verify:cdn     # CDN 完整性驗證（含 verbose）
 | jsqr | QR Code 解碼 |
 | qrcode-reader | QR Code 讀取 |
 | pdfjs-dist | PDF 解析 |
-| node-aes-cmac | AES-CMAC (NTAG424) |
 | pm2 | 程序管理 |
+
+### Worker 依賴
+
+| 套件 | 用途 |
+|------|------|
+| @cloudflare/opaque-ts | OPAQUE PAKE 協定 (P-256) |
+| node:crypto (nodejs_compat) | AES-CMAC / HKDF-SHA256 / HMAC |
 
 ### Frontend 工具與技術
 
@@ -1593,8 +1623,9 @@ cd web && npm run verify:cdn     # CDN 完整性驗證（含 verbose）
 
 | 服務 | 用途 |
 |------|------|
-| Cloudflare Workers | 資料層 API |
+| Cloudflare Workers | 資料層 API + OPAQUE/SDM 認證 |
 | Cloudflare D1 | SQLite 資料庫 |
+| Cloudflare KV | 短期 auth session 儲存 |
 | Cloudflare R2 | 媒體物件儲存 |
 | Cloudflare Pages | 前端部署（esbuild bundle + Pages Functions） |
 | Cloudflare TURN | WebRTC 通話 relay（動態憑證） |
