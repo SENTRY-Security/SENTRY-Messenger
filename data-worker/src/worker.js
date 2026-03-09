@@ -5616,21 +5616,35 @@ async function authorizeConversationDirect(env, { convId, accountDigest, deviceI
 
 /**
  * Fire-and-forget WebSocket notification to the Node.js WS server.
- * env.WS_NOTIFY_URL should point to the Node.js server's notification endpoint.
+ * env.WS_NOTIFY_URL should point to the Node.js server's /internal/ws-notify endpoint.
  * If not configured, notifications are silently skipped.
  */
 function notifyWsServer(env, payload) {
-  const url = env.WS_NOTIFY_URL;
-  if (!url) return;
-  const secret = env.WS_NOTIFY_SECRET || env.HMAC_SECRET || '';
+  const baseUrl = env.WS_NOTIFY_URL || env.NODEJS_ORIGIN;
+  if (!baseUrl) return;
+  const secret = env.WS_NOTIFY_SECRET || env.DATA_API_HMAC || '';
   const body = JSON.stringify(payload);
   const headers = { 'content-type': 'application/json' };
+  const url = baseUrl.endsWith('/internal/ws-notify')
+    ? baseUrl
+    : `${baseUrl.replace(/\/$/, '')}/internal/ws-notify`;
   if (secret) {
-    // Lightweight HMAC for WS notification
-    headers['x-ws-notify-secret'] = secret;
+    // HMAC of body for verification
+    const enc = new TextEncoder();
+    crypto.subtle.importKey(
+      'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+    ).then(key =>
+      crypto.subtle.sign('HMAC', key, enc.encode(body))
+    ).then(sig => {
+      const b64 = btoa(String.fromCharCode(...new Uint8Array(sig)))
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      headers['x-ws-notify-hmac'] = b64;
+      fetch(url, { method: 'POST', headers, body }).catch(() => {});
+    }).catch(() => {});
+  } else {
+    // No secret — send without HMAC (will be rejected by receiver)
+    fetch(url, { method: 'POST', headers, body }).catch(() => {});
   }
-  // Fire-and-forget: do not await
-  fetch(`${url}`, { method: 'POST', headers, body }).catch(() => {});
 }
 
 // ── Direct D1 helpers for device & call operations (edge-direct) ──────────
@@ -5881,12 +5895,122 @@ async function generatePresignedUrl(env, { method, key, expiresIn, contentType, 
   return `${protocol}//${host}${canonicalUri}?${sortedParams.toString()}`;
 }
 
+// ── S3 direct operations (DELETE, LIST) for purge / cleanup ───────
+async function s3SignedRequest(env, { method, key, query = '', body = null }) {
+  const endpoint = env.S3_ENDPOINT;
+  const accessKey = env.S3_ACCESS_KEY;
+  const secretKey = env.S3_SECRET_KEY;
+  const bucket = env.S3_BUCKET;
+  const region = env.S3_REGION || 'auto';
+  if (!endpoint || !accessKey || !secretKey || !bucket) {
+    throw new Error('S3 configuration missing');
+  }
+  const { protocol, host } = parseS3Endpoint(endpoint);
+  const now = new Date();
+  const dateStamp = now.toISOString().replace(/[-:]/g, '').slice(0, 8);
+  const amzDate = now.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+  const credential = `${accessKey}/${dateStamp}/${region}/s3/aws4_request`;
+  const encodedKey = key ? '/' + key.split('/').map(s => encodeURIComponent(s)).join('/') : '';
+  const canonicalUri = `/${bucket}${encodedKey}`;
+  const canonicalQueryString = query ? new URLSearchParams([...new URLSearchParams(query).entries()].sort((a, b) => a[0].localeCompare(b[0]))).toString() : '';
+  const payloadHash = body ? await sha256Hex(body) : await sha256Hex('');
+  const canonicalHeaders = `host:${host}\nx-amz-content-sha256:${payloadHash}\nx-amz-date:${amzDate}\n`;
+  const signedHeaders = 'host;x-amz-content-sha256;x-amz-date';
+  const canonicalRequest = [method, canonicalUri, canonicalQueryString, canonicalHeaders, signedHeaders, payloadHash].join('\n');
+  const scope = `${dateStamp}/${region}/s3/aws4_request`;
+  const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, await sha256Hex(canonicalRequest)].join('\n');
+  const signingKey = await getS3SigningKey(secretKey, dateStamp, region, 's3');
+  const signatureBytes = await hmacSha256(signingKey, stringToSign);
+  const signature = [...signatureBytes].map(b => b.toString(16).padStart(2, '0')).join('');
+  const authHeader = `AWS4-HMAC-SHA256 Credential=${credential}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+  const url = `${protocol}//${host}${canonicalUri}${canonicalQueryString ? '?' + canonicalQueryString : ''}`;
+  return fetch(url, {
+    method,
+    headers: {
+      'Host': host,
+      'x-amz-content-sha256': payloadHash,
+      'x-amz-date': amzDate,
+      'Authorization': authHeader
+    },
+    body: body || undefined
+  });
+}
+
+async function deleteS3Object(env, key) {
+  const res = await s3SignedRequest(env, { method: 'DELETE', key });
+  return res.ok || res.status === 404; // 404 = already gone
+}
+
+async function deleteS3Prefix(env, prefix, maxKeys = 1000) {
+  let deleted = 0;
+  let continuationToken = null;
+  for (let iter = 0; iter < 10; iter++) { // safety limit
+    const params = new URLSearchParams({ prefix, 'max-keys': String(maxKeys), 'list-type': '2' });
+    if (continuationToken) params.set('continuation-token', continuationToken);
+    const res = await s3SignedRequest(env, { method: 'GET', key: '', query: params.toString() });
+    if (!res.ok) break;
+    const xml = await res.text();
+    // Simple XML parsing for <Key> elements
+    const keys = [...xml.matchAll(/<Key>([^<]+)<\/Key>/g)].map(m => m[1]);
+    if (keys.length === 0) break;
+    for (const k of keys) {
+      try {
+        await deleteS3Object(env, k);
+        deleted++;
+      } catch { /* best-effort */ }
+    }
+    // Check for truncation
+    const isTruncated = xml.includes('<IsTruncated>true</IsTruncated>');
+    if (!isTruncated) break;
+    const tokenMatch = xml.match(/<NextContinuationToken>([^<]+)<\/NextContinuationToken>/);
+    if (!tokenMatch) break;
+    continuationToken = tokenMatch[1];
+  }
+  return deleted;
+}
+
 function generateNanoId(len = 32) {
   const chars = '1234567890abcdef';
   const bytes = crypto.getRandomValues(new Uint8Array(len));
   let id = '';
   for (let i = 0; i < len; i++) id += chars[bytes[i] % chars.length];
   return id;
+}
+
+// ── WS Token (JWT HS256) ──────────────────────────────────────────
+const WS_JWT_HEADER_B64 = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))
+  .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+async function hmacSha256Sign(secret, data) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(data));
+  return btoa(String.fromCharCode(...new Uint8Array(sig)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function base64url(str) {
+  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function createWsToken(env, { accountDigest, ttlSec = 300 }) {
+  const secret = env.WS_TOKEN_SECRET;
+  if (!secret) throw new Error('WS_TOKEN_SECRET not configured');
+  if (!accountDigest) throw new Error('accountDigest required');
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    accountDigest: String(accountDigest).toUpperCase(),
+    iat: now,
+    exp: now + ttlSec
+  };
+  const bodyB64 = base64url(JSON.stringify(payload));
+  const signature = await hmacSha256Sign(secret, `${WS_JWT_HEADER_B64}.${bodyB64}`);
+  return {
+    token: `${WS_JWT_HEADER_B64}.${bodyB64}.${signature}`,
+    payload
+  };
 }
 
 /**
@@ -6178,8 +6302,12 @@ async function handlePublicRoutes(req, env) {
   // ── Parse body for POST requests ─────────────────────────────
   // Store parsed body on req so proxyToNodejs can re-serialize it
   // (the original ReadableStream becomes "disturbed" after .json()).
+  // Skip JSON parsing for non-JSON content types (e.g. multipart form-data)
+  // so they can be proxied to Node.js with body stream intact.
   let body = null;
-  if (method === 'POST') {
+  const contentType = (req.headers.get('content-type') || '').toLowerCase();
+  const isJsonContent = !contentType || contentType.includes('application/json') || contentType.includes('text/');
+  if (method === 'POST' && isJsonContent) {
     try { body = await req.json(); req._parsedBody = body; } catch {
       return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
     }
@@ -6189,6 +6317,51 @@ async function handlePublicRoutes(req, env) {
   if (path.startsWith('/api/v1/auth/') || path === '/api/v1/mk/store' || path === '/api/v1/mk/update') {
     const authResult = await handleAuthRoutes(path, method, url, body, req, env, baseUrl);
     if (authResult) return authResult;
+  }
+
+  // ── WS Token ─────────────────────────────────────────────────
+  if (path === '/api/v1/ws/token' && method === 'POST') {
+    if (!env.WS_TOKEN_SECRET) {
+      return json({ error: 'ConfigError', message: 'WS_TOKEN_SECRET not configured' }, { status: 500 });
+    }
+    const accountToken = (body?.account_token || body?.accountToken || '').trim();
+    const rawDigest = (body?.account_digest || body?.accountDigest || '').trim();
+    const accountDigest = rawDigest ? normalizeAccountDigest(rawDigest) : null;
+    if (!accountToken && !accountDigest) {
+      return json({ error: 'BadRequest', message: 'account_token or account_digest required' }, { status: 400 });
+    }
+    // Verify account
+    await ensureDataTables(env);
+    let account;
+    try {
+      account = await resolveAccount(env, { accountToken: accountToken || null, accountDigest }, {
+        allowCreate: false,
+        preferredAccountToken: accountToken || null,
+        preferredAccountDigest: accountDigest
+      });
+    } catch (err) {
+      return json({ error: 'VerifyFailed', message: err?.message || 'resolveAccount failed' }, { status: 502 });
+    }
+    if (!account) {
+      return json({ error: 'VerifyFailed', message: 'account not found' }, { status: 401 });
+    }
+    const resolvedDigest = String(account.account_digest || '').toUpperCase();
+    if (!resolvedDigest) {
+      return json({ error: 'VerifyFailed', message: 'account digest missing' }, { status: 500 });
+    }
+    const sessionTs = Math.floor(Date.now() / 1000);
+    try {
+      const { token, payload } = await createWsToken(env, { accountDigest: resolvedDigest });
+      return json({
+        token,
+        expires_at: payload.exp,
+        account_digest: payload.accountDigest,
+        session_ts: sessionTs,
+        client_session_ts: body?.session_ts ?? null
+      });
+    } catch (err) {
+      return json({ error: 'TokenError', message: err?.message || 'failed to create token' }, { status: 500 });
+    }
   }
 
   // ── Groups ────────────────────────────────────────────────────
@@ -7317,6 +7490,68 @@ async function handlePublicRoutes(req, env) {
       uidHex: body.uidHex || body.uid_hex || undefined
     };
     return handleAccountsRoutes(internalRequest('/d1/accounts/set-brand', 'POST', payload, baseUrl), env);
+  }
+
+  // POST /api/v1/admin/purge-account — full account purge (D1 + S3 + WS logout)
+  if (path === '/api/v1/admin/purge-account' && method === 'POST') {
+    if (!await verifyHMAC(req, env)) {
+      return json({ error: 'Unauthorized', message: 'invalid admin signature' }, { status: 401 });
+    }
+    const { uidDigest, accountDigest, dryRun = false } = body || {};
+    if (!uidDigest && !accountDigest) {
+      return json({ error: 'BadRequest', message: 'uidDigest or accountDigest required' }, { status: 400 });
+    }
+    // Step 1: Call internal D1 purge handler
+    const purgeBody = {
+      uidDigest: uidDigest || undefined,
+      accountDigest: accountDigest || undefined,
+      dryRun: !!dryRun
+    };
+    const purgeResult = await handleAccountsRoutes(
+      internalRequest('/d1/accounts/purge', 'POST', purgeBody, baseUrl), env
+    );
+    let workerJson;
+    try {
+      workerJson = await purgeResult.clone().json();
+    } catch {
+      workerJson = null;
+    }
+    if (!purgeResult.ok) return purgeResult;
+    const result = { worker: workerJson || {} };
+    if (dryRun || workerJson?.skipped) return json(result);
+
+    // Step 2: Delete S3/R2 objects
+    const mediaKeys = Array.isArray(workerJson?.mediaKeys) ? workerJson.mediaKeys : [];
+    const prefixes = Array.isArray(workerJson?.prefixes) ? workerJson.prefixes : [];
+    const r2Summary = { deletedKeys: 0, failedKeys: [], prefixDeleted: 0, prefixFailures: [] };
+    for (const key of mediaKeys) {
+      try {
+        await deleteS3Object(env, key);
+        r2Summary.deletedKeys++;
+      } catch (err) {
+        r2Summary.failedKeys.push({ key, error: err?.message || String(err) });
+      }
+    }
+    for (const prefix of prefixes) {
+      try {
+        const deleted = await deleteS3Prefix(env, prefix);
+        r2Summary.prefixDeleted += deleted;
+      } catch (err) {
+        r2Summary.prefixFailures.push({ prefix, error: err?.message || String(err) });
+      }
+    }
+    result.r2 = r2Summary;
+
+    // Step 3: WS forceLogout
+    const logoutDigest = workerJson?.accountDigest || null;
+    if (logoutDigest) {
+      notifyWsServer(env, {
+        type: 'force-logout',
+        targetAccountDigest: logoutDigest,
+        reason: 'account purged'
+      });
+    }
+    return json(result);
   }
 
   return null;

@@ -5,6 +5,7 @@ import compression from 'compression';
 import rateLimit from 'express-rate-limit';
 import pinoHttp from 'pino-http';
 import routes from './routes/index.js';
+import wsNotify from './routes/ws-notify.routes.js';
 import { env } from './utils/env.js';
 import { logger } from './utils/logger.js';
 import { notFound, errorHandler } from './middlewares/error.js';
@@ -81,6 +82,9 @@ if (enableRateLimit) {
 
 // 路由
 app.use('/api', routes);
+
+// Internal endpoints (Worker → Node.js notifications, not rate-limited)
+app.use(wsNotify);
 
 // 404 & 錯誤處理
 app.use(notFound);
