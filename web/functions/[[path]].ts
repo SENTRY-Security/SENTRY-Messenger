@@ -2,7 +2,16 @@
 const DEBUG_ALLOWED_IPS = ['60.248.6.250'];
 const RESTRICTED_PATHS = ['/pages/debug.html', '/debug.html', '/debug'];
 
-export const onRequest: PagesFunction<{ ORIGIN_API: string }> = async ({ request, env, next }) => {
+// Routes migrated to Worker — send directly to WORKER_API_URL (no /d1/ rewrite)
+const WORKER_DIRECT_PREFIXES = [
+  '/api/v1/auth/',
+  '/api/v1/mk/',
+];
+
+export const onRequest: PagesFunction<{
+  ORIGIN_API: string;
+  WORKER_API_URL: string;
+}> = async ({ request, env, next }) => {
   const url = new URL(request.url);
 
   // --- IP restriction for debug page ---
@@ -27,22 +36,28 @@ export const onRequest: PagesFunction<{ ORIGIN_API: string }> = async ({ request
   }
 
   const originApi = env.ORIGIN_API || 'https://api.message.sentry.red';
-  if (!originApi) {
-    return json({ error: 'ConfigError', message: 'ORIGIN_API is not configured' }, 500, request);
-  }
+  const workerApi = env.WORKER_API_URL || originApi;
+  const isWorkerDirect = WORKER_DIRECT_PREFIXES.some(p => url.pathname.startsWith(p));
 
-  const upstreamBase = new URL(originApi);
-
-  // Rewrite /api/v1/* to /d1/* for upstream Worker
+  // Worker-direct routes: send /api/v1/auth/* and /api/v1/mk/* to Worker as-is
+  // Legacy routes: rewrite /api/v1/* to /d1/* and send to ORIGIN_API (Node.js)
   let targetPath = url.pathname;
-  if (targetPath.startsWith('/api/v1/')) {
-    targetPath = '/d1/' + targetPath.slice('/api/v1/'.length);
-  } else if (targetPath.startsWith('/api/')) {
-    targetPath = '/d1/' + targetPath.slice('/api/'.length);
+  let upstreamBase: URL;
+
+  if (isWorkerDirect) {
+    // Send to Worker without path rewrite
+    upstreamBase = new URL(workerApi);
+  } else {
+    upstreamBase = new URL(originApi);
+    if (targetPath.startsWith('/api/v1/')) {
+      targetPath = '/d1/' + targetPath.slice('/api/v1/'.length);
+    } else if (targetPath.startsWith('/api/')) {
+      targetPath = '/d1/' + targetPath.slice('/api/'.length);
+    }
   }
 
   const targetUrl = new URL(targetPath + url.search, upstreamBase);
-  console.log('[Proxy] Forwarding', { original: request.url, search: url.search, target: targetUrl.toString() });
+  console.log('[Proxy] Forwarding', { original: request.url, target: targetUrl.toString(), workerDirect: isWorkerDirect });
 
   let response: Response;
   try {
@@ -72,9 +87,6 @@ export const onRequest: PagesFunction<{ ORIGIN_API: string }> = async ({ request
     headers
   });
 };
-
-
-
 
 
 function corsHeaders(req?: Request): Record<string, string> {
