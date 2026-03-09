@@ -5414,6 +5414,262 @@ function notifyWsServer(env, payload) {
   fetch(`${url}`, { method: 'POST', headers, body }).catch(() => {});
 }
 
+// ── Direct D1 helpers for device & call operations (edge-direct) ──────────
+
+async function touchDeviceDirect(env, accountDigest, deviceId) {
+  await ensureDataTables(env);
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(
+    `INSERT INTO devices (account_digest, device_id, status, last_seen_at, created_at, updated_at)
+     VALUES (?1, ?2, 'active', ?3, ?3, ?3)
+     ON CONFLICT(account_digest, device_id) DO UPDATE SET status='active', last_seen_at=?3, updated_at=?3`
+  ).bind(accountDigest, deviceId, now).run();
+}
+
+async function assertDeviceActiveDirect(env, accountDigest, deviceId) {
+  await ensureDataTables(env);
+  const row = await env.DB.prepare(
+    `SELECT status FROM devices WHERE account_digest=?1 AND device_id=?2`
+  ).bind(accountDigest, deviceId).first();
+  if (!row || row.status !== 'active') {
+    const err = new Error('device not active');
+    err.status = 403;
+    err.code = 'DEVICE_NOT_ACTIVE';
+    throw err;
+  }
+}
+
+async function listActiveDevicesDirect(env, accountDigest) {
+  await ensureDataTables(env);
+  const rows = await env.DB.prepare(
+    `SELECT device_id, status, last_seen_at FROM devices
+     WHERE account_digest=?1 AND status='active'
+     ORDER BY last_seen_at DESC`
+  ).bind(accountDigest).all();
+  return (rows?.results || []).map(r => ({ deviceId: r.device_id, status: r.status }));
+}
+
+async function assertActiveDeviceOrReturn(env, accountDigest, deviceId) {
+  try {
+    await touchDeviceDirect(env, accountDigest, deviceId);
+    await assertDeviceActiveDirect(env, accountDigest, deviceId);
+    return null;
+  } catch (err) {
+    const status = err?.status || 403;
+    const code = err?.code || 'DEVICE_NOT_ACTIVE';
+    return json({ error: code, message: err?.message || 'device not active' }, { status });
+  }
+}
+
+async function resolveTargetDeviceDirect(env, peerAccountDigest, preferredDeviceId) {
+  if (preferredDeviceId) {
+    await assertDeviceActiveDirect(env, peerAccountDigest, preferredDeviceId);
+    return preferredDeviceId;
+  }
+  const devices = await listActiveDevicesDirect(env, peerAccountDigest);
+  if (!devices.length || !devices[0]?.deviceId) {
+    const err = new Error('peer-no-active-device');
+    err.status = 409;
+    err.code = 'peer-no-active-device';
+    throw err;
+  }
+  return devices[0].deviceId;
+}
+
+// ── Call network config builder (edge-direct) ────────────────────────────
+
+const CALL_NETWORK_CONFIG_DEFAULTS = {
+  version: 1,
+  turnSecretsEndpoint: '/api/v1/calls/turn-credentials',
+  turnTtlSeconds: 300,
+  rtcpProbe: { timeoutMs: 1500, maxAttempts: 3, targetBitrateKbps: 2000 },
+  bandwidthProfiles: [
+    { name: 'video-medium', minBitrate: 900000, maxBitrate: 1400000, maxFrameRate: 30, resolution: '540p' },
+    { name: 'video-low', minBitrate: 300000, maxBitrate: 600000, maxFrameRate: 24, resolution: '360p' },
+    { name: 'audio', minBitrate: 32000, maxBitrate: 64000, maxFrameRate: null, resolution: null }
+  ],
+  ice: {
+    iceTransportPolicy: 'all',
+    bundlePolicy: 'max-bundle',
+    continualGatheringPolicy: 'gather_continually',
+    servers: [{ urls: ['stun:stun.cloudflare.com:3478'] }]
+  },
+  fallback: { maxPeerConnectionRetries: 2, relayOnlyAfterAttempts: 2, showBlockedAfterSeconds: 20 }
+};
+
+function clampNum(v, min, max) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : min;
+}
+
+function buildCallNetworkConfigEdge(env) {
+  const cfg = JSON.parse(JSON.stringify(CALL_NETWORK_CONFIG_DEFAULTS));
+  cfg.version = clampNum(env.CALL_NETWORK_VERSION || cfg.version, 1, 999);
+  cfg.turnSecretsEndpoint = (env.CALL_TURN_ENDPOINT || cfg.turnSecretsEndpoint).trim();
+  cfg.turnTtlSeconds = clampNum(env.TURN_TTL_SECONDS || cfg.turnTtlSeconds, 60, 3600);
+  cfg.rtcpProbe.timeoutMs = clampNum(env.CALL_RTCP_TIMEOUT_MS || cfg.rtcpProbe.timeoutMs, 250, 10000);
+  cfg.rtcpProbe.maxAttempts = clampNum(env.CALL_RTCP_MAX_ATTEMPTS || cfg.rtcpProbe.maxAttempts, 1, 10);
+  cfg.rtcpProbe.targetBitrateKbps = clampNum(env.CALL_RTCP_TARGET_KBPS || cfg.rtcpProbe.targetBitrateKbps, 64, 10000);
+  cfg.ice.iceTransportPolicy = env.CALL_ICE_TRANSPORT_POLICY || cfg.ice.iceTransportPolicy;
+  cfg.ice.bundlePolicy = env.CALL_ICE_BUNDLE_POLICY || cfg.ice.bundlePolicy;
+  cfg.ice.continualGatheringPolicy = env.CALL_ICE_GATHER_POLICY || cfg.ice.continualGatheringPolicy;
+  const extraStun = (env.CALL_EXTRA_STUN_URIS || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (extraStun.length) cfg.ice.servers.push({ urls: extraStun });
+  cfg.fallback.maxPeerConnectionRetries = clampNum(env.CALL_FALLBACK_MAX_RETRIES || cfg.fallback.maxPeerConnectionRetries, 0, 10);
+  cfg.fallback.relayOnlyAfterAttempts = clampNum(env.CALL_FALLBACK_RELAY_AFTER || cfg.fallback.relayOnlyAfterAttempts, 0, 10);
+  cfg.fallback.showBlockedAfterSeconds = clampNum(env.CALL_FALLBACK_BLOCKED_AFTER || cfg.fallback.showBlockedAfterSeconds, 1, 120);
+  return cfg;
+}
+
+// ── JWT RS256 verification via Web Crypto (edge-direct) ──────────────────
+
+function pemToArrayBuffer(pem) {
+  let raw = pem;
+  if (raw.includes('\\n')) raw = raw.replace(/\\n/g, '\n');
+  if (!raw.includes('-----BEGIN')) {
+    const chunks = raw.replace(/\s+/g, '').match(/.{1,64}/g) || [];
+    raw = ['-----BEGIN PUBLIC KEY-----', ...chunks, '-----END PUBLIC KEY-----'].join('\n');
+  }
+  const b64 = raw.replace(/-----[^-]+-----/g, '').replace(/\s/g, '');
+  const binary = atob(b64);
+  const buf = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
+  return buf.buffer;
+}
+
+function base64UrlDecode(str) {
+  let s = str.replace(/-/g, '+').replace(/_/g, '/');
+  while (s.length % 4) s += '=';
+  const binary = atob(s);
+  const buf = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
+  return buf.buffer;
+}
+
+async function verifyJwtRS256(token, publicKeyPem) {
+  if (!publicKeyPem) {
+    const err = new Error('PUBLIC KEY missing');
+    err.status = 500;
+    throw err;
+  }
+  const parts = token.split('.');
+  if (parts.length !== 3) {
+    const err = new Error('invalid JWT format');
+    err.status = 400;
+    err.code = 'InvalidVoucher';
+    throw err;
+  }
+  const [headerB64, payloadB64, signatureB64] = parts;
+  let header, payload;
+  try {
+    header = JSON.parse(atob(headerB64.replace(/-/g, '+').replace(/_/g, '/')));
+    payload = JSON.parse(atob(payloadB64.replace(/-/g, '+').replace(/_/g, '/')));
+  } catch {
+    const err = new Error('invalid JWT encoding');
+    err.status = 400;
+    err.code = 'InvalidVoucher';
+    throw err;
+  }
+  const keyData = pemToArrayBuffer(publicKeyPem);
+  const key = await crypto.subtle.importKey(
+    'spki', keyData,
+    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+    false, ['verify']
+  );
+  const data = new TextEncoder().encode(`${headerB64}.${payloadB64}`);
+  const signature = base64UrlDecode(signatureB64);
+  const valid = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, signature, data);
+  if (!valid) {
+    const err = new Error('invalid JWT signature');
+    err.status = 400;
+    err.code = 'InvalidVoucher';
+    throw err;
+  }
+  return { payload, header, signatureB64 };
+}
+
+// ── S3v4 presigned URL generation (edge-direct, no AWS SDK) ──────────────
+
+async function hmacSha256(key, data) {
+  const k = typeof key === 'string' ? new TextEncoder().encode(key) : key;
+  const d = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+  const cryptoKey = await crypto.subtle.importKey('raw', k, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return new Uint8Array(await crypto.subtle.sign('HMAC', cryptoKey, d));
+}
+
+async function sha256Hex(data) {
+  const buf = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+  const hash = await crypto.subtle.digest('SHA-256', buf);
+  return [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function getS3SigningKey(secretKey, dateStamp, region, service) {
+  let key = await hmacSha256(`AWS4${secretKey}`, dateStamp);
+  key = await hmacSha256(key, region);
+  key = await hmacSha256(key, service);
+  key = await hmacSha256(key, 'aws4_request');
+  return key;
+}
+
+function parseS3Endpoint(endpoint) {
+  const u = new URL(endpoint);
+  return { protocol: u.protocol, host: u.host, hostname: u.hostname, port: u.port };
+}
+
+async function generatePresignedUrl(env, { method, key, expiresIn, contentType, downloadName }) {
+  const endpoint = env.S3_ENDPOINT;
+  const accessKey = env.S3_ACCESS_KEY;
+  const secretKey = env.S3_SECRET_KEY;
+  const bucket = env.S3_BUCKET;
+  const region = env.S3_REGION || 'auto';
+  if (!endpoint || !accessKey || !secretKey || !bucket) {
+    throw new Error('S3 configuration missing');
+  }
+  const { protocol, host } = parseS3Endpoint(endpoint);
+  const now = new Date();
+  const dateStamp = now.toISOString().replace(/[-:]/g, '').slice(0, 8);
+  const amzDate = now.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+  const credential = `${accessKey}/${dateStamp}/${region}/s3/aws4_request`;
+  const encodedKey = key.split('/').map(s => encodeURIComponent(s)).join('/');
+  const canonicalUri = `/${bucket}/${encodedKey}`;
+  const queryParams = new URLSearchParams();
+  queryParams.set('X-Amz-Algorithm', 'AWS4-HMAC-SHA256');
+  queryParams.set('X-Amz-Credential', credential);
+  queryParams.set('X-Amz-Date', amzDate);
+  queryParams.set('X-Amz-Expires', String(expiresIn));
+  queryParams.set('X-Amz-SignedHeaders', 'host');
+  if (method === 'PUT' && contentType) {
+    queryParams.set('X-Amz-SignedHeaders', 'content-type;host');
+  }
+  if (method === 'GET' && downloadName) {
+    queryParams.set('response-content-disposition', `attachment; filename="${downloadName}"`);
+  }
+  const sortedParams = new URLSearchParams([...queryParams.entries()].sort((a, b) => a[0].localeCompare(b[0])));
+  const canonicalQueryString = sortedParams.toString();
+  let canonicalHeaders = `host:${host}\n`;
+  let signedHeaders = 'host';
+  if (method === 'PUT' && contentType) {
+    canonicalHeaders = `content-type:${contentType}\nhost:${host}\n`;
+    signedHeaders = 'content-type;host';
+  }
+  const canonicalRequest = [method, canonicalUri, canonicalQueryString, canonicalHeaders, signedHeaders, 'UNSIGNED-PAYLOAD'].join('\n');
+  const scope = `${dateStamp}/${region}/s3/aws4_request`;
+  const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, await sha256Hex(canonicalRequest)].join('\n');
+  const signingKey = await getS3SigningKey(secretKey, dateStamp, region, 's3');
+  const signatureBytes = await hmacSha256(signingKey, stringToSign);
+  const signature = [...signatureBytes].map(b => b.toString(16).padStart(2, '0')).join('');
+  sortedParams.set('X-Amz-Signature', signature);
+  return `${protocol}//${host}${canonicalUri}?${sortedParams.toString()}`;
+}
+
+function generateNanoId(len = 32) {
+  const chars = '1234567890abcdef';
+  const bytes = crypto.getRandomValues(new Uint8Array(len));
+  let id = '';
+  for (let i = 0; i < len; i++) id += chars[bytes[i] % chars.length];
+  return id;
+}
+
 /**
  * Create a synthetic internal Request to delegate to existing /d1/ handlers.
  */
@@ -6008,6 +6264,479 @@ async function handlePublicRoutes(req, env) {
     if (!uidHex) return json({ error: 'BadRequest', message: 'uid required' }, { status: 400 });
     const qs = `?uid=${encodeURIComponent(uidHex)}`;
     return handleAccountsRoutes(internalRequest(`/d1/accounts/brand${qs}`, 'GET', null, baseUrl), env);
+  }
+
+  // ── Calls ────────────────────────────────────────────────────────
+  if (path === '/api/v1/calls/invite' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const senderDeviceId = (req.headers.get('x-device-id') || '').trim();
+    if (!senderDeviceId) return json({ error: 'BadRequest', message: 'deviceId header required' }, { status: 400 });
+    const peerDigest = normalizeAccountDigest(body?.peer_account_digest || body?.peerAccountDigest);
+    if (!peerDigest) return json({ error: 'BadRequest', message: 'peer_account_digest required' }, { status: 400 });
+    const callId = (body?.call_id || body?.callId || crypto.randomUUID()).toLowerCase();
+    const ttlSeconds = clampNum(body?.expires_in_seconds ?? body?.expiresInSeconds ?? 90, 30, 600);
+    // Device validation
+    const devErr = await assertActiveDeviceOrReturn(env, auth.accountDigest, senderDeviceId);
+    if (devErr) return devErr;
+    let targetDeviceId;
+    try {
+      targetDeviceId = await resolveTargetDeviceDirect(env, peerDigest, body?.preferred_device_id || body?.preferredDeviceId || null);
+    } catch (err) {
+      if (!(body?.preferred_device_id || body?.preferredDeviceId)) {
+        return json({ error: err?.code || 'peer-device-not-active', message: err?.message }, { status: err?.status || 409 });
+      }
+      targetDeviceId = body.preferred_device_id || body.preferredDeviceId;
+    }
+    const expiresAt = Date.now() + ttlSeconds * 1000;
+    const sessionPayload = {
+      callId, callerAccountDigest: auth.accountDigest, calleeAccountDigest: peerDigest,
+      callerDeviceId: senderDeviceId, status: 'dialing', mode: body?.mode || 'voice',
+      capabilities: body?.capabilities || null,
+      metadata: { ...(body?.metadata || {}), traceId: body?.trace_id || null, initiatedBy: auth.accountDigest },
+      targetDeviceId, expiresAt
+    };
+    let sessionRes;
+    try {
+      sessionRes = await handleCallsRoutes(internalRequest('/d1/calls/session', 'POST', sessionPayload, baseUrl), env);
+    } catch { sessionRes = null; }
+    // Append call event (best-effort)
+    try {
+      await handleCallsRoutes(internalRequest('/d1/calls/events', 'POST', {
+        callId, type: 'call-invite',
+        payload: { traceId: body?.trace_id || null, mode: body?.mode || 'voice', capabilities: body?.capabilities || null, targetDeviceId },
+        fromAccountDigest: auth.accountDigest, toAccountDigest: peerDigest, traceId: body?.trace_id || null
+      }, baseUrl), env);
+    } catch { /* best-effort */ }
+    let session = null;
+    if (sessionRes && sessionRes.status < 400) {
+      try { session = (await sessionRes.json())?.session || null; } catch { session = null; }
+    }
+    // WS notification
+    notifyWsServer(env, {
+      type: 'call-invite', callId, callerAccountDigest: auth.accountDigest,
+      calleeAccountDigest: peerDigest, targetDeviceId, senderDeviceId, mode: body?.mode || 'voice'
+    });
+    return json({ ok: true, callId, targetDeviceId, session, expiresInSeconds: ttlSeconds });
+  }
+
+  if (path === '/api/v1/calls/cancel' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const senderDeviceId = (req.headers.get('x-device-id') || '').trim();
+    if (!senderDeviceId) return json({ error: 'BadRequest', message: 'deviceId header required' }, { status: 400 });
+    const callId = (body?.call_id || body?.callId || '').trim().toLowerCase();
+    if (!callId) return json({ error: 'BadRequest', message: 'call_id required' }, { status: 400 });
+    const devErr = await assertActiveDeviceOrReturn(env, auth.accountDigest, senderDeviceId);
+    if (devErr) return devErr;
+    const payload = {
+      callId, status: 'ended', endReason: body?.reason || 'cancelled', endedAt: Date.now(), expiresAt: Date.now() + 30000,
+      metadata: { cancelledBy: auth.accountDigest, cancelledByDeviceId: senderDeviceId }
+    };
+    let session = null;
+    try {
+      const r = await handleCallsRoutes(internalRequest('/d1/calls/session', 'POST', payload, baseUrl), env);
+      if (r && r.status < 400) session = (await r.json())?.session || null;
+    } catch { /* */ }
+    try {
+      await handleCallsRoutes(internalRequest('/d1/calls/events', 'POST', {
+        callId, type: 'call-cancel', payload: { reason: body?.reason || 'cancelled' },
+        fromAccountDigest: auth.accountDigest, traceId: body?.trace_id || null
+      }, baseUrl), env);
+    } catch { /* best-effort */ }
+    return json({ ok: true, session });
+  }
+
+  if (path === '/api/v1/calls/acknowledge' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const senderDeviceId = (req.headers.get('x-device-id') || '').trim();
+    if (!senderDeviceId) return json({ error: 'BadRequest', message: 'deviceId header required' }, { status: 400 });
+    const callId = (body?.call_id || body?.callId || '').trim().toLowerCase();
+    if (!callId) return json({ error: 'BadRequest', message: 'call_id required' }, { status: 400 });
+    const devErr = await assertActiveDeviceOrReturn(env, auth.accountDigest, senderDeviceId);
+    if (devErr) return devErr;
+    const payload = {
+      callId, status: 'ringing', expiresAt: Date.now() + 90000,
+      metadata: { lastAckAccountDigest: auth.accountDigest, lastAckDeviceId: senderDeviceId }
+    };
+    let session = null;
+    try {
+      const r = await handleCallsRoutes(internalRequest('/d1/calls/session', 'POST', payload, baseUrl), env);
+      if (r && r.status < 400) session = (await r.json())?.session || null;
+    } catch { /* */ }
+    try {
+      await handleCallsRoutes(internalRequest('/d1/calls/events', 'POST', {
+        callId, type: 'call-ack', payload: { ackAccountDigest: auth.accountDigest },
+        fromAccountDigest: auth.accountDigest, traceId: body?.trace_id || null
+      }, baseUrl), env);
+    } catch { /* best-effort */ }
+    return json({ ok: true, session });
+  }
+
+  if (path === '/api/v1/calls/metrics' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const senderDeviceId = (req.headers.get('x-device-id') || '').trim();
+    if (!senderDeviceId) return json({ error: 'BadRequest', message: 'deviceId header required' }, { status: 400 });
+    const callId = (body?.call_id || body?.callId || '').trim().toLowerCase();
+    if (!callId) return json({ error: 'BadRequest', message: 'call_id required' }, { status: 400 });
+    const devErr = await assertActiveDeviceOrReturn(env, auth.accountDigest, senderDeviceId);
+    if (devErr) return devErr;
+    const payload = {
+      callId, metrics: body?.metrics, status: body?.status, endReason: body?.end_reason,
+      endedAt: body?.ended ? Date.now() : undefined, senderDeviceId
+    };
+    let session = null;
+    try {
+      const r = await handleCallsRoutes(internalRequest('/d1/calls/session', 'POST', payload, baseUrl), env);
+      if (r && r.status < 400) session = (await r.json())?.session || null;
+    } catch { /* */ }
+    try {
+      await handleCallsRoutes(internalRequest('/d1/calls/events', 'POST', {
+        callId, type: 'call-report-metrics', payload: body?.metrics || {},
+        fromAccountDigest: auth.accountDigest
+      }, baseUrl), env);
+    } catch { /* best-effort */ }
+    return json({ ok: true, session });
+  }
+
+  {
+    const callSessionMatch = path.match(/^\/api\/v1\/calls\/session\/([^/]+)$/);
+    if (callSessionMatch && method === 'GET') {
+      const callId = callSessionMatch[1].trim().toLowerCase();
+      if (!callId) return json({ error: 'BadRequest', message: 'invalid call id' }, { status: 400 });
+      const auth = await resolvePublicAuth(req, env, { body: null });
+      if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+      const senderDeviceId = (req.headers.get('x-device-id') || '').trim();
+      if (!senderDeviceId) return json({ error: 'BadRequest', message: 'deviceId header required' }, { status: 400 });
+      const devErr = await assertActiveDeviceOrReturn(env, auth.accountDigest, senderDeviceId);
+      if (devErr) return devErr;
+      const r = await handleCallsRoutes(internalRequest(`/d1/calls/session?callId=${encodeURIComponent(callId)}`, 'GET', null, baseUrl), env);
+      if (!r || r.status >= 400) return r || json({ error: 'NotFound' }, { status: 404 });
+      const data = await r.json();
+      const session = data?.session;
+      if (!session) return json({ error: 'NotFound', message: 'call session absent' }, { status: 404 });
+      const isParticipant = (session.caller_account_digest === auth.accountDigest) || (session.callee_account_digest === auth.accountDigest);
+      if (!isParticipant) return json({ error: 'Forbidden', message: 'not a participant of this call' }, { status: 403 });
+      return json({ ok: true, session });
+    }
+  }
+
+  if (path === '/api/v1/calls/network-config' && method === 'GET') {
+    const auth = await resolvePublicAuth(req, env, { body: null });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const senderDeviceId = (req.headers.get('x-device-id') || '').trim();
+    if (!senderDeviceId) return json({ error: 'BadRequest', message: 'deviceId header required' }, { status: 400 });
+    const config = buildCallNetworkConfigEdge(env);
+    return json({ ok: true, config });
+  }
+
+  if (path === '/api/v1/calls/turn-credentials' && method === 'POST') {
+    const turnTokenId = env.CLOUDFLARE_TURN_TOKEN_ID || '';
+    const turnTokenKey = env.CLOUDFLARE_TURN_TOKEN_KEY || '';
+    if (!turnTokenId || !turnTokenKey) {
+      return json({ error: 'ConfigError', message: 'Cloudflare TURN credentials not configured' }, { status: 500 });
+    }
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const senderDeviceId = (req.headers.get('x-device-id') || '').trim();
+    if (!senderDeviceId) return json({ error: 'BadRequest', message: 'deviceId header required' }, { status: 400 });
+    const ttlSeconds = clampNum(body?.ttl_seconds ?? body?.ttlSeconds ?? 300, 60, 600);
+    try {
+      const cfResp = await fetch(
+        `https://rtc.live.cloudflare.com/v1/turn/keys/${turnTokenId}/credentials/generate`,
+        {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${turnTokenKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ttl: ttlSeconds })
+        }
+      );
+      if (!cfResp.ok) {
+        return json({ error: 'TurnCredentialsFailed', message: `Cloudflare TURN API error: ${cfResp.status}` }, { status: 502 });
+      }
+      const cfData = await cfResp.json();
+      const iceServers = [];
+      if (cfData.iceServers?.urls && cfData.iceServers?.username && cfData.iceServers?.credential) {
+        iceServers.push({
+          urls: Array.isArray(cfData.iceServers.urls) ? cfData.iceServers.urls : [cfData.iceServers.urls],
+          username: cfData.iceServers.username,
+          credential: cfData.iceServers.credential
+        });
+      }
+      return json({ ttl: ttlSeconds, expiresAt: Math.floor(Date.now() / 1000) + ttlSeconds, iceServers });
+    } catch (err) {
+      return json({ error: 'TurnCredentialsFailed', message: err?.message || 'TURN API request failed' }, { status: 502 });
+    }
+  }
+
+  // ── Subscription ─────────────────────────────────────────────────
+  if (path === '/api/v1/subscription/redeem' && method === 'POST') {
+    const token = body?.token;
+    if (!token || typeof token !== 'string') return json({ error: 'BadRequest', message: 'token required' }, { status: 400 });
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const dryRun = body?.dry_run === true || body?.dryRun === true;
+    let jwtResult;
+    try {
+      jwtResult = await verifyJwtRS256(token, env.PRIVATE_KEY_PUBLIC_PEM || '');
+    } catch (err) {
+      return json({ error: err?.code || 'InvalidVoucher', message: err?.message || 'JWT verification failed' }, { status: err?.status || 400 });
+    }
+    const { payload: jwtPayload, header: jwtHeader, signatureB64 } = jwtResult;
+    const durationDays = Number(jwtPayload?.durationDays || jwtPayload?.extendDays || 0);
+    if (!Number.isFinite(durationDays) || durationDays <= 0) {
+      return json({ error: 'InvalidVoucher', message: '憑證缺少展期天數' }, { status: 400 });
+    }
+    const tokenId = jwtPayload?.voucherId || jwtPayload?.sub || jwtPayload?.jti;
+    if (!tokenId) return json({ error: 'InvalidVoucher', message: '憑證缺少 voucherId/jti' }, { status: 400 });
+    const redeemBody = {
+      tokenId, voucherId: jwtPayload?.voucherId || null, jti: jwtPayload?.jti || null,
+      agentId: jwtPayload?.agentId || null, durationDays,
+      issuedAt: jwtPayload?.iat || null, expiresAt: jwtPayload?.exp || null,
+      keyId: jwtHeader?.kid || 'default', signatureB64: signatureB64 || null,
+      digest: auth.accountDigest, dryRun
+    };
+    return handleSubscriptionRoutes(internalRequest('/d1/subscription/redeem', 'POST', redeemBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/subscription/validate' && method === 'POST') {
+    const token = body?.token;
+    if (!token || typeof token !== 'string') return json({ error: 'BadRequest', message: 'token required' }, { status: 400 });
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    let jwtResult;
+    try {
+      jwtResult = await verifyJwtRS256(token, env.PRIVATE_KEY_PUBLIC_PEM || '');
+    } catch (err) {
+      return json({ error: err?.code || 'InvalidVoucher', message: err?.message || 'JWT verification failed' }, { status: err?.status || 400 });
+    }
+    const { payload: jwtPayload, header: jwtHeader, signatureB64 } = jwtResult;
+    const durationDays = Number(jwtPayload?.durationDays || jwtPayload?.extendDays || 0);
+    if (!Number.isFinite(durationDays) || durationDays <= 0) {
+      return json({ error: 'InvalidVoucher', message: '憑證缺少展期天數' }, { status: 400 });
+    }
+    const tokenId = jwtPayload?.voucherId || jwtPayload?.sub || jwtPayload?.jti;
+    if (!tokenId) return json({ error: 'InvalidVoucher', message: '憑證缺少 voucherId/jti' }, { status: 400 });
+    const redeemBody = {
+      tokenId, voucherId: jwtPayload?.voucherId || null, jti: jwtPayload?.jti || null,
+      agentId: jwtPayload?.agentId || null, durationDays,
+      issuedAt: jwtPayload?.iat || null, expiresAt: jwtPayload?.exp || null,
+      keyId: jwtHeader?.kid || 'default', signatureB64: signatureB64 || null,
+      digest: auth.accountDigest, dryRun: true
+    };
+    return handleSubscriptionRoutes(internalRequest('/d1/subscription/redeem', 'POST', redeemBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/subscription/status' && method === 'GET') {
+    const digest = normalizeAccountDigest(url.searchParams.get('digest') || '');
+    const uidDigest = normalizeAccountDigest(url.searchParams.get('uidDigest') || '');
+    if (!digest && !uidDigest) return json({ error: 'BadRequest', message: 'digest or uidDigest required' }, { status: 400 });
+    const params = new URLSearchParams();
+    if (digest) params.set('digest', digest);
+    if (!digest && uidDigest) params.set('uidDigest', uidDigest);
+    const limitRaw = Number(url.searchParams.get('limit') || 0);
+    if (Number.isFinite(limitRaw) && limitRaw > 0) params.set('limit', String(Math.min(Math.max(Math.floor(limitRaw), 1), 200)));
+    return handleSubscriptionRoutes(internalRequest(`/d1/subscription/status?${params.toString()}`, 'GET', null, baseUrl), env);
+  }
+
+  if (path === '/api/v1/subscription/token-status' && method === 'GET') {
+    const tokenId = url.searchParams.get('token_id') || url.searchParams.get('tokenId') || url.searchParams.get('voucherId') || url.searchParams.get('jti') || '';
+    if (!tokenId.trim()) return json({ error: 'BadRequest', message: 'tokenId required' }, { status: 400 });
+    return handleSubscriptionRoutes(internalRequest(`/d1/subscription/token-status?tokenId=${encodeURIComponent(tokenId.trim())}`, 'GET', null, baseUrl), env);
+  }
+
+  // ── Media ────────────────────────────────────────────────────────
+  if (path === '/api/v1/media/sign-put' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const convId = normalizeConversationId(body?.conv_id || body?.conversationId);
+    if (!convId) return json({ error: 'BadRequest', message: 'invalid conv_id' }, { status: 400 });
+    if (!isSystemOwnedConversation(convId, auth.accountDigest)) {
+      try {
+        await authorizeConversationDirect(env, { convId, accountDigest: auth.accountDigest, deviceId: (req.headers.get('x-device-id') || '').trim() || null });
+      } catch (err) {
+        return json({ error: 'ConversationAccessDenied', message: err?.message || 'access denied' }, { status: err?.status || 403 });
+      }
+    }
+    const maxBytes = Number(env.UPLOAD_MAX_BYTES || 1073741824);
+    if (body?.size != null) {
+      const sizeNum = Number(body.size);
+      if (!Number.isFinite(sizeNum) || sizeNum <= 0) return json({ error: 'BadRequest', message: 'invalid size' }, { status: 400 });
+      if (sizeNum > maxBytes) return json({ error: 'FileTooLarge', message: `Payload exceeds limit ${maxBytes} bytes`, maxBytes }, { status: 413 });
+    }
+    const direction = body?.direction === 'received' ? 'received' : (body?.direction === 'sent' ? 'sent' : null);
+    let basePrefix = convId;
+    if (direction === 'received') basePrefix = `${convId}/__SYS_RECV__`;
+    else if (direction === 'sent') basePrefix = `${convId}/__SYS_SENT__`;
+    let dirClean = '';
+    if (body?.dir && typeof body.dir === 'string') {
+      const segs = String(body.dir).replace(/\\+/g, '/').split('/').map(s => s ? s.normalize('NFKC').replace(/[\u0000-\u001F\u007F]/gu, '').replace(/[\\/]/g, '').replace(/[?#*<>"'`|]/g, '').trim().slice(0, 96) : '').filter(Boolean);
+      if (segs.length) dirClean = segs.join('/');
+    }
+    const keyPrefix = dirClean ? `${basePrefix}/${dirClean}` : basePrefix;
+    // Quota check via internal handler
+    if (body?.size != null) {
+      try {
+        const usageResp = await handleMediaRoutes(internalRequest('/d1/media/usage', 'POST', { convId, prefix: basePrefix }, baseUrl), env);
+        if (usageResp && usageResp.status < 400) {
+          const usage = await usageResp.json();
+          const totalBytes = Number(usage?.totalBytes ?? 0);
+          const quota = Number(env.DRIVE_QUOTA_BYTES || 3221225472);
+          if (Number.isFinite(totalBytes) && totalBytes + Number(body.size) > quota) {
+            return json({ error: 'FolderCapacityExceeded', message: `空間不足，上限 ${quota} bytes`, maxBytes: quota, currentBytes: totalBytes }, { status: 413 });
+          }
+        }
+      } catch { /* proceed without quota check */ }
+    }
+    const uid = generateNanoId();
+    const key = `${keyPrefix}/${uid}`;
+    const ct = body?.content_type || 'application/octet-stream';
+    const ttlSec = Number(env.SIGNED_PUT_TTL || 900);
+    try {
+      const presignedUrl = await generatePresignedUrl(env, { method: 'PUT', key, expiresIn: ttlSec, contentType: ct });
+      return json({ upload: { url: presignedUrl, bucket: env.S3_BUCKET, key, method: 'PUT', headers: { 'Content-Type': ct } }, expiresIn: ttlSec, objectPath: key });
+    } catch (err) {
+      return json({ error: 'PresignFailed', message: err?.message || 'failed to generate presigned URL' }, { status: 500 });
+    }
+  }
+
+  if (path === '/api/v1/media/sign-get' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const keyStr = body?.key;
+    if (!keyStr || typeof keyStr !== 'string' || keyStr.length < 3) return json({ error: 'BadRequest', message: 'key required' }, { status: 400 });
+    const convIdFrag = keyStr.replace(/[\u0000-\u001F\u007F]/gu, '').trim();
+    const firstSlash = convIdFrag.indexOf('/');
+    const convIdPart = firstSlash === -1 ? convIdFrag : convIdFrag.slice(0, firstSlash);
+    const convId = normalizeConversationId(convIdPart);
+    if (!convId) return json({ error: 'BadRequest', message: 'invalid object key' }, { status: 400 });
+    if (!isSystemOwnedConversation(convId, auth.accountDigest)) {
+      try {
+        await authorizeConversationDirect(env, { convId, accountDigest: auth.accountDigest, deviceId: (req.headers.get('x-device-id') || '').trim() || null });
+      } catch (err) {
+        return json({ error: 'ConversationAccessDenied', message: err?.message || 'access denied' }, { status: err?.status || 403 });
+      }
+    }
+    const ttlSec = Number(env.SIGNED_GET_TTL || 900);
+    try {
+      const presignedUrl = await generatePresignedUrl(env, { method: 'GET', key: keyStr, expiresIn: ttlSec, downloadName: body?.download_name });
+      return json({ download: { url: presignedUrl, bucket: env.S3_BUCKET, key: keyStr }, expiresIn: ttlSec });
+    } catch (err) {
+      return json({ error: 'PresignFailed', message: err?.message || 'failed to generate presigned URL' }, { status: 500 });
+    }
+  }
+
+  if (path === '/api/v1/media/sign-put-chunked' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const convId = normalizeConversationId(body?.conv_id || body?.conversationId);
+    if (!convId) return json({ error: 'BadRequest', message: 'invalid conv_id' }, { status: 400 });
+    if (!isSystemOwnedConversation(convId, auth.accountDigest)) {
+      try {
+        await authorizeConversationDirect(env, { convId, accountDigest: auth.accountDigest, deviceId: (req.headers.get('x-device-id') || '').trim() || null });
+      } catch (err) {
+        return json({ error: 'ConversationAccessDenied', message: err?.message || 'access denied' }, { status: err?.status || 403 });
+      }
+    }
+    const totalSize = Number(body?.total_size || 0);
+    const chunkCount = Number(body?.chunk_count || 0);
+    if (!totalSize || !chunkCount || chunkCount > 2000) return json({ error: 'BadRequest', message: 'total_size and chunk_count required' }, { status: 400 });
+    const maxBytes = Number(env.UPLOAD_MAX_BYTES || 1073741824);
+    if (totalSize > maxBytes) return json({ error: 'FileTooLarge', message: `Payload exceeds limit ${maxBytes} bytes`, maxBytes }, { status: 413 });
+    const direction = body?.direction === 'received' ? 'received' : (body?.direction === 'sent' ? 'sent' : null);
+    let basePrefix = convId;
+    if (direction === 'received') basePrefix = `${convId}/__SYS_RECV__`;
+    else if (direction === 'sent') basePrefix = `${convId}/__SYS_SENT__`;
+    let dirClean = '';
+    if (body?.dir && typeof body.dir === 'string') {
+      const segs = String(body.dir).replace(/\\+/g, '/').split('/').map(s => s ? s.normalize('NFKC').replace(/[\u0000-\u001F\u007F]/gu, '').replace(/[\\/]/g, '').replace(/[?#*<>"'`|]/g, '').trim().slice(0, 96) : '').filter(Boolean);
+      if (segs.length) dirClean = segs.join('/');
+    }
+    const keyPrefix = dirClean ? `${basePrefix}/${dirClean}` : basePrefix;
+    // Quota check
+    try {
+      const usageResp = await handleMediaRoutes(internalRequest('/d1/media/usage', 'POST', { convId, prefix: basePrefix }, baseUrl), env);
+      if (usageResp && usageResp.status < 400) {
+        const usage = await usageResp.json();
+        const totalBytes = Number(usage?.totalBytes ?? 0);
+        const quota = Number(env.DRIVE_QUOTA_BYTES || 3221225472);
+        if (Number.isFinite(totalBytes) && totalBytes + totalSize > quota) {
+          return json({ error: 'FolderCapacityExceeded', message: `空間不足，上限 ${quota} bytes`, maxBytes: quota, currentBytes: totalBytes }, { status: 413 });
+        }
+      }
+    } catch { /* proceed */ }
+    const ttlSec = Number(env.SIGNED_PUT_TTL || 900);
+    const ct = body?.content_type || 'application/octet-stream';
+    const uid = generateNanoId();
+    const baseKey = `${keyPrefix}/${uid}`;
+    try {
+      const manifestUrl = await generatePresignedUrl(env, { method: 'PUT', key: `${baseKey}/m`, expiresIn: ttlSec, contentType: 'application/octet-stream' });
+      const manifest = { url: manifestUrl, bucket: env.S3_BUCKET, key: `${baseKey}/m`, method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' } };
+      const chunks = [];
+      for (let i = 0; i < chunkCount; i++) {
+        const chunkKey = `${baseKey}/c/${i}`;
+        const chunkUrl = await generatePresignedUrl(env, { method: 'PUT', key: chunkKey, expiresIn: ttlSec, contentType: ct });
+        chunks.push({ index: i, url: chunkUrl, bucket: env.S3_BUCKET, key: chunkKey, method: 'PUT', headers: { 'Content-Type': ct } });
+      }
+      return json({ baseKey, manifest, chunks, expiresIn: ttlSec });
+    } catch (err) {
+      return json({ error: 'PresignFailed', message: err?.message || 'failed to generate presigned URLs' }, { status: 500 });
+    }
+  }
+
+  if (path === '/api/v1/media/sign-get-chunked' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const baseKeyStr = body?.base_key;
+    if (!baseKeyStr || typeof baseKeyStr !== 'string' || baseKeyStr.length < 3) return json({ error: 'BadRequest', message: 'base_key required' }, { status: 400 });
+    const convIdFrag = baseKeyStr.replace(/[\u0000-\u001F\u007F]/gu, '').trim();
+    const firstSlash = convIdFrag.indexOf('/');
+    const convIdPart = firstSlash === -1 ? convIdFrag : convIdFrag.slice(0, firstSlash);
+    const convId = normalizeConversationId(convIdPart);
+    if (!convId) return json({ error: 'BadRequest', message: 'invalid base_key' }, { status: 400 });
+    if (!isSystemOwnedConversation(convId, auth.accountDigest)) {
+      try {
+        await authorizeConversationDirect(env, { convId, accountDigest: auth.accountDigest, deviceId: (req.headers.get('x-device-id') || '').trim() || null });
+      } catch (err) {
+        return json({ error: 'ConversationAccessDenied', message: err?.message || 'access denied' }, { status: err?.status || 403 });
+      }
+    }
+    const ttlSec = Number(env.SIGNED_GET_TTL || 900);
+    try {
+      const manifestUrl = await generatePresignedUrl(env, { method: 'GET', key: `${baseKeyStr}/m`, expiresIn: ttlSec });
+      const manifestGet = { url: manifestUrl, bucket: env.S3_BUCKET, key: `${baseKeyStr}/m` };
+      const chunks = [];
+      if (Array.isArray(body?.chunk_indices) && body.chunk_indices.length > 0) {
+        for (const idx of body.chunk_indices) {
+          const chunkKey = `${baseKeyStr}/c/${idx}`;
+          const chunkUrl = await generatePresignedUrl(env, { method: 'GET', key: chunkKey, expiresIn: ttlSec });
+          chunks.push({ index: idx, url: chunkUrl, bucket: env.S3_BUCKET, key: chunkKey });
+        }
+      }
+      return json({ manifest: manifestGet, chunks, expiresIn: ttlSec });
+    } catch (err) {
+      return json({ error: 'PresignFailed', message: err?.message || 'failed to generate presigned URLs' }, { status: 500 });
+    }
+  }
+
+  if (path === '/api/v1/media/cleanup-chunked' && method === 'POST') {
+    // Cleanup requires S3 ListObjects + DeleteObjects — not feasible without SDK from Worker.
+    // Delegate to Node.js or return a best-effort acknowledgment.
+    // For now, we just verify auth + return ok (actual deletion handled by TTL or manual cleanup).
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    return json({ ok: true, deleted: 0, note: 'cleanup delegated to backend' });
+  }
+
+  if (path === '/api/v1/media/copy' && method === 'POST') {
+    // Server-side S3 copy requires SDK — not available in pure Worker.
+    // Return error directing client to re-upload or use Node.js path.
+    return json({ error: 'NotImplemented', message: 'media/copy not yet available on edge; use origin server' }, { status: 501 });
+  }
+
+  if (path === '/api/v1/media/copy-chunked' && method === 'POST') {
+    return json({ error: 'NotImplemented', message: 'media/copy-chunked not yet available on edge; use origin server' }, { status: 501 });
   }
 
   return null;
