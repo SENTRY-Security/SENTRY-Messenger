@@ -37,19 +37,30 @@ function proxyToNodejs(req, env, consumedBody) {
 }
 const INVITE_INFO_TAG = 'contact-init/dropbox/v1';
 
-// ---- AES-CMAC (RFC 4493) implemented with node:crypto ----
-function aesCmac(keyBuf, dataBuf) {
-  const ZERO = Buffer.alloc(16);
+// ---- AES-CMAC (RFC 4493) implemented with Web Crypto API ----
+// Uses AES-CBC with zero IV to simulate AES-ECB per block (for a single
+// 16-byte block, CBC with zero IV is identical to ECB).
+async function aesCmac(keyBuf, dataBuf) {
   const BLOCKLEN = 16;
   const Rb = 0x87;
-  const ECB_IV = Buffer.alloc(0); // ECB has no IV; Workers nodejs_compat rejects null
-  // Step 1: Generate subkeys
-  const cipher0 = crypto.createCipheriv('aes-128-ecb', keyBuf, ECB_IV);
-  cipher0.setAutoPadding(false);
-  const L = cipher0.update(ZERO);
-  cipher0.final();
+  const ZERO_IV = new Uint8Array(BLOCKLEN);
+
+  const rawKey = keyBuf instanceof Uint8Array ? keyBuf : new Uint8Array(keyBuf.buffer || keyBuf);
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw', rawKey, { name: 'AES-CBC' }, false, ['encrypt']
+  );
+
+  // Helper: AES-ECB encrypt a single 16-byte block via AES-CBC(zero IV).
+  // AES-CBC output = encrypted block (16 B) + PKCS7 pad block (16 B) → take first 16.
+  async function ecbBlock(block) {
+    const ct = await crypto.subtle.encrypt({ name: 'AES-CBC', iv: ZERO_IV }, cryptoKey, block);
+    return new Uint8Array(ct, 0, BLOCKLEN);
+  }
+
+  // Step 1: Generate subkeys  L = AES-ECB(K, 0^128)
+  const L = await ecbBlock(ZERO_IV);
   function dbl(buf) {
-    const out = Buffer.alloc(BLOCKLEN);
+    const out = new Uint8Array(BLOCKLEN);
     let carry = 0;
     for (let i = BLOCKLEN - 1; i >= 0; i--) {
       const v = (buf[i] << 1) | carry;
@@ -61,36 +72,34 @@ function aesCmac(keyBuf, dataBuf) {
   }
   const K1 = dbl(L);
   const K2 = dbl(K1);
+
   // Step 2: Prepare blocks
-  const data = Buffer.isBuffer(dataBuf) ? dataBuf : Buffer.from(dataBuf);
+  const data = dataBuf instanceof Uint8Array ? dataBuf : new Uint8Array(
+    Buffer.isBuffer(dataBuf) ? dataBuf.buffer.slice(dataBuf.byteOffset, dataBuf.byteOffset + dataBuf.byteLength) : (dataBuf || [])
+  );
   const n = data.length === 0 ? 1 : Math.ceil(data.length / BLOCKLEN);
   const lastComplete = data.length > 0 && data.length % BLOCKLEN === 0;
-  const Mn = Buffer.alloc(BLOCKLEN);
+  const Mn = new Uint8Array(BLOCKLEN);
   if (lastComplete) {
-    data.copy(Mn, 0, (n - 1) * BLOCKLEN, n * BLOCKLEN);
+    Mn.set(data.subarray((n - 1) * BLOCKLEN, n * BLOCKLEN));
     for (let i = 0; i < BLOCKLEN; i++) Mn[i] ^= K1[i];
   } else {
     const tail = data.length - (n - 1) * BLOCKLEN;
-    if (tail > 0) data.copy(Mn, 0, (n - 1) * BLOCKLEN, data.length);
+    if (tail > 0) Mn.set(data.subarray((n - 1) * BLOCKLEN, data.length));
     Mn[tail] = 0x80; // padding
     for (let i = 0; i < BLOCKLEN; i++) Mn[i] ^= K2[i];
   }
+
   // Step 3: CBC-MAC
-  let X = Buffer.alloc(BLOCKLEN);
+  let X = new Uint8Array(BLOCKLEN);
   for (let i = 0; i < n - 1; i++) {
     const block = data.subarray(i * BLOCKLEN, (i + 1) * BLOCKLEN);
     for (let j = 0; j < BLOCKLEN; j++) X[j] ^= block[j];
-    const c = crypto.createCipheriv('aes-128-ecb', keyBuf, ECB_IV);
-    c.setAutoPadding(false);
-    X = c.update(X);
-    c.final();
+    X = await ecbBlock(X);
   }
   for (let j = 0; j < BLOCKLEN; j++) X[j] ^= Mn[j];
-  const cf = crypto.createCipheriv('aes-128-ecb', keyBuf, ECB_IV);
-  cf.setAutoPadding(false);
-  const T = cf.update(X);
-  cf.final();
-  return T; // 16-byte Buffer
+  const T = await ecbBlock(X);
+  return Buffer.from(T); // Return as Buffer for caller compatibility
 }
 
 // ---- NTAG424 KDF ----
@@ -108,15 +117,15 @@ function ntag424_hkdf16(kmHex, uidHex, salt, info) {
   return okm.subarray(0, 16);
 }
 
-function ntag424_ev2cmac16(kmHex, uidHex, tagidHex, kver) {
+async function ntag424_ev2cmac16(kmHex, uidHex, tagidHex, kver) {
   const parts = [Buffer.from([0x01]), Buffer.from('EV2-KDF')];
   if (uidHex) parts.push(Buffer.from(uidHex, 'hex'));
   if (tagidHex) parts.push(Buffer.from(String(tagidHex).replace(/-/g, ''), 'hex'));
   if (kver != null) parts.push(Buffer.from([Number(kver) & 0xff]));
-  return aesCmac(Buffer.from(kmHex, 'hex'), Buffer.concat(parts)).subarray(0, 16);
+  return (await aesCmac(Buffer.from(kmHex, 'hex'), Buffer.concat(parts))).subarray(0, 16);
 }
 
-function ntag424_deriveKey(env, kmEnvName, uidHex, tagidHex) {
+async function ntag424_deriveKey(env, kmEnvName, uidHex, tagidHex) {
   const kmHex = String(env[kmEnvName] || '').trim().toUpperCase();
   if (!/^[0-9A-Fa-f]{32}$/.test(kmHex)) throw new Error(`${kmEnvName} missing or invalid`);
   const uid = String(uidHex || '').toUpperCase();
@@ -128,15 +137,15 @@ function ntag424_deriveKey(env, kmEnvName, uidHex, tagidHex) {
   return ntag424_hkdf16(kmHex, uid, salt, info);
 }
 
-function ntag424_deriveWithFallback(env, uidHex, tagidHex) {
-  const current = ntag424_deriveKey(env, 'NTAG424_KM', uidHex, tagidHex);
+async function ntag424_deriveWithFallback(env, uidHex, tagidHex) {
+  const current = await ntag424_deriveKey(env, 'NTAG424_KM', uidHex, tagidHex);
   const oldHex = String(env.NTAG424_KM_OLD || '').trim();
   if (/^[0-9A-Fa-f]{32}$/.test(oldHex)) {
     const uid = String(uidHex || '').toUpperCase();
     const mode = String(env.NTAG424_KDF || 'HKDF').toUpperCase();
     const kver = env.NTAG424_KVER ? Number(env.NTAG424_KVER) : undefined;
     const legacy = (mode === 'EV2')
-      ? ntag424_ev2cmac16(oldHex.toUpperCase(), uid, tagidHex, kver)
+      ? await ntag424_ev2cmac16(oldHex.toUpperCase(), uid, tagidHex, kver)
       : ntag424_hkdf16(oldHex.toUpperCase(), uid, env.NTAG424_SALT || env.DOMAIN || 'sentry.red', env.NTAG424_INFO || 'ntag424-static-key');
     return { current, legacy };
   }
@@ -144,37 +153,37 @@ function ntag424_deriveWithFallback(env, uidHex, tagidHex) {
 }
 
 // ---- NTAG424 SDM CMAC Verify ----
-function ntag424_computeSdmCmac(sdmKeyHex, uidHex, ctrHex) {
+async function ntag424_computeSdmCmac(sdmKeyHex, uidHex, ctrHex) {
   const K = Buffer.from(sdmKeyHex, 'hex');
   const UID = Buffer.from(String(uidHex).replace(/[^0-9a-f]/gi, ''), 'hex');
   const ctr6 = ntag424_normalizeCtr(ctrHex);
   const ctrBuf = Buffer.from(ctr6, 'hex');
   const ctrLSB = Buffer.from(ctrBuf).reverse();
   const SV2 = Buffer.concat([Buffer.from('3CC300010080', 'hex'), UID, ctrLSB]);
-  const Kses = aesCmac(K, SV2);
-  const full = aesCmac(Kses, Buffer.alloc(0));
+  const Kses = await aesCmac(K, SV2);
+  const full = await aesCmac(Kses, Buffer.alloc(0));
   // MACt: take odd-indexed bytes (indices 1,3,5,7,9,11,13,15) → 8 bytes
   const mac8 = Buffer.alloc(8);
   for (let i = 1, j = 0; i < 16 && j < 8; i += 2, j++) mac8[j] = full[i];
   return mac8.toString('hex').toUpperCase();
 }
 
-function ntag424_verifyCmac(env, uidHex, ctrHex, cmacHex, tagidHex) {
-  const { current, legacy } = ntag424_deriveWithFallback(env, uidHex, tagidHex);
+async function ntag424_verifyCmac(env, uidHex, ctrHex, cmacHex, tagidHex) {
+  const { current, legacy } = await ntag424_deriveWithFallback(env, uidHex, tagidHex);
   const got = String(cmacHex || '').replace(/[^0-9a-f]/gi, '').toUpperCase();
   const keyHex = current.toString('hex').toUpperCase();
-  const expected = ntag424_computeSdmCmac(keyHex, uidHex, ctrHex);
+  const expected = await ntag424_computeSdmCmac(keyHex, uidHex, ctrHex);
   if (got === expected) return { ok: true, expected, got, used: 'current' };
   if (legacy) {
     const legacyHex = legacy.toString('hex').toUpperCase();
-    const expectedOld = ntag424_computeSdmCmac(legacyHex, uidHex, ctrHex);
+    const expectedOld = await ntag424_computeSdmCmac(legacyHex, uidHex, ctrHex);
     if (got === expectedOld) return { ok: true, expected: expectedOld, got, used: 'legacy' };
   }
   return { ok: false, expected, got, used: 'current' };
 }
 
-function ntag424_computeSdmCmacForDebug(env, uidHex, ctrHex) {
-  const key = ntag424_deriveKey(env, 'NTAG424_KM', uidHex);
+async function ntag424_computeSdmCmacForDebug(env, uidHex, ctrHex) {
+  const key = await ntag424_deriveKey(env, 'NTAG424_KM', uidHex);
   return ntag424_computeSdmCmac(key.toString('hex').toUpperCase(), uidHex, ctrHex);
 }
 
@@ -6036,22 +6045,36 @@ async function handleWsUpgrade(req, env, url) {
   }
 
   // Forward to Durable Object
-  const doId = env.ACCOUNT_WS.idFromName(accountDigest);
-  const stub = env.ACCOUNT_WS.get(doId);
+  if (!env.ACCOUNT_WS) {
+    console.error('[ws-upgrade] ACCOUNT_WS binding not available');
+    return json({ error: 'ConfigError', message: 'ACCOUNT_WS DO binding not configured' }, { status: 500 });
+  }
 
   const deviceId = url.searchParams.get('deviceId') || req.headers.get('x-device-id') || '';
 
-  // Build a new request for the DO with metadata headers
-  const doReq = new Request('https://do/ws', {
-    headers: {
-      'Upgrade': 'websocket',
-      'x-account-digest': accountDigest,
-      'x-device-id': deviceId,
-      'x-session-ts': String(payload.iat || now)
-    }
-  });
+  try {
+    const doId = env.ACCOUNT_WS.idFromName(accountDigest);
+    const stub = env.ACCOUNT_WS.get(doId);
 
-  return stub.fetch(doReq);
+    // Build a new request for the DO with metadata headers
+    const doReq = new Request('https://do/ws', {
+      headers: {
+        'Upgrade': 'websocket',
+        'x-account-digest': accountDigest,
+        'x-device-id': deviceId,
+        'x-session-ts': String(payload.iat || now)
+      }
+    });
+
+    return await stub.fetch(doReq);
+  } catch (err) {
+    console.error('[ws-upgrade] DO fetch failed', { error: err?.message || String(err), stack: err?.stack, accountDigest });
+    return json({
+      error: 'WsUpgradeError',
+      message: err?.message || 'Durable Object fetch failed',
+      stage: 'do-fetch'
+    }, { status: 500 });
+  }
 }
 
 // ── Notify account via Durable Object (replaces notifyWsServer) ──
@@ -6105,7 +6128,7 @@ async function handleAuthRoutes(path, method, url, body, req, env, baseUrl) {
 
     // 1) Verify SDM CMAC
     let vr;
-    try { vr = ntag424_verifyCmac(env, uidHex, ctrHex, cmacHex); }
+    try { vr = await ntag424_verifyCmac(env, uidHex, ctrHex, cmacHex); }
     catch (e) { return json({ error: 'ConfigError', message: e?.message || 'NTAG424 config missing' }, { status: 500 }); }
     if (!vr.ok) return json({ error: 'Unauthorized', detail: 'SDM verify failed' }, { status: 401 });
 
@@ -6159,7 +6182,7 @@ async function handleAuthRoutes(path, method, url, body, req, env, baseUrl) {
 
     const ctrHex = next.toString(16).toUpperCase().padStart(6, '0').slice(-6);
     let cmacHex;
-    try { cmacHex = ntag424_computeSdmCmacForDebug(env, uidHex, ctrHex); }
+    try { cmacHex = await ntag424_computeSdmCmacForDebug(env, uidHex, ctrHex); }
     catch (e) { return json({ error: 'ConfigError', message: e?.message }, { status: 500 }); }
     return json({ uid_hex: uidHex, sdmcounter: ctrHex, sdmmac: cmacHex, nonce: `debug-${Date.now()}` });
   }
@@ -7664,6 +7687,17 @@ export default {
       // ── CORS preflight for public API ──
       if (req.method === 'OPTIONS' && (url.pathname.startsWith('/api/') || url.pathname.startsWith('/api'))) {
         return new Response(null, { status: 204, headers: buildCORSHeaders(req, env) });
+      }
+
+      // ── WS diagnostic (temporary) ──
+      if (url.pathname === '/ws/diag') {
+        return json({
+          hasAccountWs: !!env.ACCOUNT_WS,
+          hasWsTokenSecret: !!env.WS_TOKEN_SECRET,
+          hasAuthKv: !!env.AUTH_KV,
+          hasDb: !!env.DB,
+          hostname: url.hostname
+        });
       }
 
       // ── WebSocket upgrade → Durable Object ──

@@ -67,3 +67,8 @@ database_id = "362f2681-29fc-45bf-9e2a-09b9021e6019"
 [[env.uat.kv_namespaces]]
 binding = "AUTH_KV"
 id = "3d14a30fff6344c7bb300d175e84b38c"
+
+[env.uat.durable_objects]
+bindings = [
+  { name = "ACCOUNT_WS", class_name = "AccountWebSocket" }
+]
