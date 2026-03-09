@@ -19,6 +19,7 @@
 - [API 端點](#api-端點)
 - [WebSocket 即時通訊](#websocket-即時通訊)
 - [安全設計原則](#安全設計原則)
+- [橫向部署與擴展優勢](#橫向部署與擴展優勢)
 - [快速開始](#快速開始)
 - [部署](#部署)
 - [測試](#測試)
@@ -28,34 +29,35 @@
 
 ## 架構概覽
 
-### 三層 Hybrid 部署架構
+### 全 Serverless 雙層架構
 
 ```
                     ┌──────────────────────────────────────────────────────────────┐
                     │                     SENTRY Messenger                         │
                     └──────────────────────────────────────────────────────────────┘
 
-  ┌──────────────────────┐     ┌───────────────────────┐     ┌─────────────────────────┐
-  │   Frontend (web/)    │     │  Backend (src/)        │     │  Data Layer              │
-  │                      │     │                        │     │  (data-worker/)          │
-  │  Cloudflare Pages    │────▶│  Express + WebSocket   │────▶│  Cloudflare Workers      │
-  │  Vanilla JS SPA      │     │  Linode VPS (PM2)      │     │  D1 (SQLite) + R2 Storage│
-  │  esbuild bundler     │     │  信令 / 管理端         │     │  KV (auth sessions)      │
-  └──────────────────────┘     └───────────────────────┘     └─────────────────────────┘
-         │                              │                              │
-         │  ◀── HTTPS/WSS ──▶          │  ◀── HMAC-auth REST ──▶     │
-         │                              │                              │
-  ┌──────┴──────┐               ┌───────┴───────┐             ┌───────┴───────┐
-  │ X3DH + DR   │               │ Rate Limit    │             │ D1 Database   │
-  │ 客戶端加密   │               │ Helmet/CORS   │             │ R2 媒體儲存   │
-  │ IndexedDB   │               │ JWT WS Auth   │             │ OPAQUE + SDM  │
-  └─────────────┘               └───────────────┘             │ KV Sessions   │
-                                                              └───────────────┘
+  ┌──────────────────────┐                          ┌─────────────────────────────────┐
+  │   Frontend (web/)    │                          │  Cloudflare Workers              │
+  │                      │                          │  (data-worker/)                  │
+  │  Cloudflare Pages    │─── HTTPS / WSS ────────▶│  API + WebSocket (Durable Objects)│
+  │  Vanilla JS SPA      │                          │  D1 (SQLite) + R2 + KV           │
+  │  esbuild bundler     │                          │                                  │
+  └──────────────────────┘                          └─────────────────────────────────┘
+         │                                                        │
+  ┌──────┴──────┐                                         ┌───────┴───────┐
+  │ X3DH + DR   │                                         │ D1 Database   │
+  │ 客戶端加密   │                                         │ R2 媒體儲存   │
+  │ IndexedDB   │                                         │ OPAQUE + SDM  │
+  └─────────────┘                                         │ KV Sessions   │
+                                                          │ Durable Objects│
+                                                          │  (WebSocket)  │
+                                                          └───────────────┘
 ```
 
 1. **Frontend (`web/`)** — 純靜態 SPA，部署至 Cloudflare Pages，所有加密/解密在客戶端完成
-2. **Backend (`src/`)** — Node.js Express API + WebSocket 伺服器，部署於 VPS (PM2)，負責即時信令與管理端
-3. **Data Worker (`data-worker/`)** — Cloudflare Workers，直接存取 D1/R2/KV，處理 OPAQUE 認證、SDM 驗證、金鑰管理及所有公開 API
+2. **Cloudflare Workers (`data-worker/`)** — 統一後端，處理所有 REST API、WebSocket 即時通訊（Durable Objects）、OPAQUE 認證、SDM 驗證、金鑰管理，直接存取 D1/R2/KV
+
+> **v0.1.9 架構遷移：** 原有的 Node.js Express + WebSocket 中繼層（`src/`）已完全移除。所有 API 端點與 WebSocket 連線管理已遷移至 Cloudflare Workers + Durable Objects，實現完全 Serverless 架構。不再需要 VPS、PM2 或任何伺服器維運。
 
 ---
 
@@ -85,7 +87,7 @@
 - **聯絡人邀請** — 加密 Invite Dropbox 機制（支援離線互加 + 確認回饋）
 - **群組對話** — 多人加密聊天室，角色權限管理（owner/admin/member）
 - **已讀回條** — Commit-driven 訊息狀態追蹤（✓ sent / ✓✓ delivered）
-- **即時推播** — WebSocket 即時訊息通知與通話信令
+- **即時推播** — WebSocket 即時訊息通知與通話信令（Durable Objects per-account 隔離）
 - **訊息重播** — Message Key Vault 支援歷史訊息回放
 - **聯絡人備份** — 加密備份/還原聯絡人密鑰至伺服器
 - **訂閱管理** — 訂閱碼兌換、驗證、QR 掃描上傳與配額管理
@@ -288,73 +290,16 @@ MSE 串流播放                            │  MediaSource Extensions      │
 ```
 SENTRY-Messenger/
 │
-├── src/                              # ═══ Node.js Backend ═══
-│   ├── server.js                     # HTTP + WebSocket 啟動入口，graceful shutdown
-│   ├── app.js                        # Express 設定 (Helmet, CORS, 壓縮, Rate Limit, Pino logging)
-│   │
-│   ├── routes/                       # API 路由層
-│   │   ├── index.js                  # 路由聚合器（掛載 /api 前綴）
-│   │   ├── keys.routes.js            # X3DH SPK/OPK 發布與 Bundle 取得
-│   │   ├── devkeys.routes.js         # 裝置金鑰備份/還原
-│   │   ├── friends.routes.js         # 聯絡人刪除（掛載於 / 及 /v1）
-│   │   ├── ws-token.routes.js        # WebSocket JWT 產生
-│   │   └── v1/                       # v1 API 端點
-│   │       ├── messages.routes.js    #   訊息 CRUD / 原子發送 / Probe
-│   │       ├── media.routes.js       #   媒體上傳/下載 Presigned URL
-│   │       ├── calls.routes.js       #   通話邀請/信令/TURN/Metrics
-│   │       ├── contact-secrets.routes.js  # 聯絡人密鑰備份
-│   │       ├── contacts.routes.js    #   聯絡人同步 + 頭像 Presigned URL
-│   │       ├── groups.routes.js      #   群組管理（CRUD + 成員新增/移除）
-│   │       ├── invites.routes.js     #   Invite Dropbox（含 confirm/unconfirmed）
-│   │       ├── account.routes.js     #   帳號資訊
-│   │       ├── message-key-vault.routes.js # 訊息金鑰保險庫 CRUD
-│   │       ├── subscription.routes.js #   訂閱管理（兌換/驗證/掃描上傳）
-│   │       ├── admin.routes.js       #   管理員操作（帳號清除）
-│   │
-│   ├── controllers/                  # 業務邏輯層
-│   │   ├── messages.controller.js    # 訊息建立/原子發送/狀態查詢/刪除
-│   │   ├── contact-secrets.controller.js # 聯絡人密鑰備份/還原
-│   │   ├── calls.controller.js       # 通話生命週期管理
-│   │   ├── account.controller.js     # 帳號證據/狀態
-│   │   ├── groups.controller.js      # 群組 CRUD
-│   │   ├── friends.controller.js     # 好友關係
-│   │   ├── invites.controller.js     # Invite Dropbox 操作
-│   │   ├── subscription.controller.js # 訂閱兌換
-│   │   └── message-key-vault.controller.js # Key Vault 操作
-│   │
-│   ├── ws/                           # WebSocket 伺服器
-│   │   └── index.js                  # 連線管理/認證/通話信令/Presence/帳號鎖定
-│   │
-│   ├── services/                     # 外部服務整合
-│   │   ├── s3.js                     # R2/S3 Presigned URL 產生
-│   │   ├── call-worker.js            # Cloudflare Worker API 呼叫封裝
-│   │   ├── portal-subscription.js    # 訂閱入口整合
-│   │   └── subscription-local.js     # 本地訂閱模擬
-│   │
-│   ├── lib/                          # 密碼學工具（已遷移至 Worker）
-│   │
-│   ├── utils/                        # 共用工具
-│   │   ├── env.js                    # 環境變數載入
-│   │   ├── logger.js                 # Pino 結構化日誌
-│   │   ├── account-context.js        # 帳號認證解析
-│   │   ├── account-verify.js         # 帳號 digest 驗證
-│   │   ├── conversation-auth.js      # 對話存取控制
-│   │   ├── call-validators.js        # 通話 ID/事件驗證
-│   │   ├── hmac.js                   # HMAC 簽章 (Worker API 通訊)
-│   │   ├── ws-token.js               # WebSocket JWT 產生/驗證
-│   │   └── session-utils.js          # Session 時間戳正規化
-│   │
-│   ├── middlewares/                   # Express 中介軟體
-│   │   ├── async.js                  # Async 錯誤包裝器
-│   │   └── error.js                  # 全域錯誤處理 + 404
-│   │
-│   └── schemas/                      # 驗證 Schema
-│       └── message.schema.js         # Zod 訊息 payload 驗證
-│
-├── data-worker/                      # ═══ Cloudflare Worker ═══
+├── data-worker/                      # ═══ Cloudflare Workers 統一後端 ═══
 │   ├── src/
-│   │   ├── worker.js                 # D1/R2/KV + HMAC 驗證 + OPAQUE/SDM 認證
-│   │   └── u8-strict.js              # Uint8Array 驗證
+│   │   ├── worker.js                 # 主入口：REST API 路由、HMAC 驗證、
+│   │   │                             #   OPAQUE/SDM 認證、D1/R2/KV 操作、
+│   │   │                             #   金鑰管理、訊息 CRUD、媒體簽章、
+│   │   │                             #   通話管理、聯絡人/群組/訂閱 API
+│   │   ├── account-ws.js             # Durable Object：per-account WebSocket 管理
+│   │   │                             #   JWT 認證、心跳、通話信令轉發、
+│   │   │                             #   Presence (KV)、訊息/事件廣播
+│   │   └── u8-strict.js              # Uint8Array 驗證工具
 │   ├── package.json                  # Worker 依賴 (@cloudflare/opaque-ts)
 │   ├── migrations/                   # D1 資料庫遷移
 │   │   ├── 0001_consolidated.sql     # 主要 Schema（核心表）
@@ -364,7 +309,7 @@ SENTRY-Messenger/
 │   │   ├── 0005_add_min_ts_to_deletion_cursors.sql # 新增 min_ts 欄位
 │   │   ├── 0006_drop_min_counter_from_deletion_cursors.sql # 移除 min_counter
 │   │   └── 0007_add_pairing_code.sql # 配對碼支援
-│   └── wrangler.toml                 # Workers 設定 (D1 + KV bindings)
+│   └── wrangler.toml                 # Workers 設定 (D1 + KV + Durable Objects bindings)
 │
 ├── web/                              # ═══ Frontend SPA ═══
 │   ├── build.mjs                     # esbuild 打包設定
@@ -654,7 +599,7 @@ SENTRY-Messenger/
 │   └── assets/                       # 測試資源
 │
 ├── scripts/                          # ═══ 部署與工具 ═══
-│   ├── deploy-hybrid.sh              # 一鍵 Hybrid 部署
+│   ├── deploy-hybrid.sh              # 一鍵部署
 │   ├── deploy-prod.sh                # 正式環境部署
 │   ├── wipe-all.sh                   # 全環境清除
 │   ├── serve-web.mjs                 # 本地 Web 伺服器
@@ -759,14 +704,14 @@ NFC 標籤 tap → UID + Counter + CMAC
               KV session 發放 (TTL 300s) + 帳號 token
 ```
 
-- AES-CMAC 使用 `node:crypto` AES-128-ECB 實作（`nodejs_compat`）
+- AES-CMAC 使用 Web Crypto API AES-CBC 模擬 ECB（`nodejs_compat`）
 - 支援 HKDF-SHA256 與 EV2-CMAC 兩種金鑰派生模式
 - 支援 `NTAG424_KM_OLD` legacy key 自動 fallback
 
 ### OPAQUE 密碼認證
 
 - 基於 P-256 曲線的 OPAQUE PAKE 協定（`@cloudflare/opaque-ts`）
-- 完全在 Cloudflare Worker 執行，無需 Node.js 中繼
+- 完全在 Cloudflare Worker 執行
 - 兩階段流程: `register-init` → `register-finish` / `login-init` → `login-finish`
 - `login-init` 產生的 `expected` 暫存於 KV（TTL 120s），`login-finish` 消費後刪除
 - 伺服器不持有明文密碼，防止離線字典攻擊
@@ -828,13 +773,13 @@ atomicSend API                 # 訊息 + vault key 原子寫入
   ↓
 伺服器 D1 持久化               # messages_secure + message_key_vault
   ↓
-WebSocket 通知對方             # secure-message 事件
+WebSocket 通知對方             # secure-message 事件（經 Durable Object 轉發）
 ```
 
 ### 接收流程
 
 ```
-WebSocket: "secure-message" 事件
+WebSocket: "secure-message" 事件（Durable Object → Client）
   ↓
 Facade: onWsIncomingMessageNew()
   ↓
@@ -1076,9 +1021,9 @@ media_objects         # 媒體物件追蹤
 
 ## API 端點
 
-### 認證 (`/api/v1/auth/`) — Worker 端
+> 所有 API 端點均由 Cloudflare Workers 統一處理，前端直連 Worker URL。
 
-> 所有認證端點已遷移至 Cloudflare Worker，使用 KV 管理短期 session。
+### 認證 (`/api/v1/auth/`)
 
 | 端點 | 方法 | 說明 | 狀態儲存 |
 |------|------|------|----------|
@@ -1198,7 +1143,7 @@ media_objects         # 媒體物件追蹤
 
 | 端點 | 方法 | 說明 |
 |------|------|------|
-| `/friends/delete` | POST | 刪除聯絡人（掛載於 `/api/` 及 `/api/v1/`） |
+| `/friends/delete` | POST | 刪除聯絡人 |
 | `/ws/token` | POST | 取得 WebSocket JWT token |
 | `/account/evidence` | GET | 取得帳號資訊 |
 | `/health` | GET | 健康檢查 |
@@ -1208,22 +1153,23 @@ media_objects         # 媒體物件追蹤
 
 ## WebSocket 即時通訊
 
-### 連線流程
+### 架構
+
+WebSocket 連線由 **Cloudflare Durable Objects** 管理（`AccountWebSocket` class），每個帳號對應一個 Durable Object 實例，支援同一帳號多裝置同時連線。
 
 ```
-Client                                Server
-  │                                      │
-  │──── WebSocket 連線 ─────────────────▶│
-  │◀─── hello (server greeting) ────────│
-  │──── auth (JWT token) ──────────────▶│
-  │◀─── auth_ok / auth_fail ───────────│
-  │                                      │
-  │◀─── secure-message (新訊息) ────────│
-  │◀─── vault-ack (金鑰確認) ──────────│
-  │◀─── call-invite (通話邀請) ────────│
-  │──── presence-subscribe ────────────▶│
-  │◀─── presence-update ───────────────│
-  │                                      │
+Client                          Worker                         Durable Object
+  │                                │                               │
+  │── POST /ws/token ─────────────▶│                               │
+  │◀── JWT token ─────────────────│                               │
+  │                                │                               │
+  │── WebSocket /ws ──────────────▶│── Upgrade ──────────────────▶│
+  │                                │                               │
+  │◀─── hello (server greeting) ──────────────────────────────────│
+  │──── auth (JWT token) ─────────────────────────────────────────▶│
+  │◀─── auth_ok / auth_fail ─────────────────────────────────────│
+  │                                                                │
+  │◀─── secure-message / call-invite / presence-update ───────────│
 ```
 
 ### 訊息類型
@@ -1321,36 +1267,85 @@ Client                                Server
 
 ---
 
+## 橫向部署與擴展優勢
+
+### 從 VPS 到全 Serverless 的架構遷移
+
+原架構使用 Node.js Express + WebSocket 部署於 Linode VPS（PM2 管理），存在以下限制：單一伺服器承載所有連線、手動水平擴展困難、WebSocket sticky session 問題、需自行管理伺服器維運（OS 更新、SSL、監控、備份）。
+
+遷移至 Cloudflare Workers + Durable Objects 後，實現了完全 Serverless 的架構：
+
+### 自動彈性擴展
+
+| 面向 | VPS 架構 (舊) | Workers 架構 (新) |
+|------|--------------|-------------------|
+| API 請求處理 | 單台 VPS，PM2 cluster | Cloudflare 全球邊緣網路自動分發 |
+| WebSocket 連線 | 單台 VPS 承載上限 | Durable Objects per-account 隔離，無上限 |
+| 擴展方式 | 手動加機器 + Load Balancer | 零配置自動擴展 |
+| 冷啟動 | N/A（常駐進程） | 毫秒級冷啟動（Worker isolate） |
+
+### 全球邊緣部署
+
+- **API 延遲降低** — Cloudflare Workers 部署於全球 300+ 節點，使用者自動連至最近的邊緣節點處理 API 請求
+- **WebSocket 就近接入** — Durable Objects 根據帳號自動分配至最近的資料中心，減少信令延遲
+- **D1 智慧路由** — SQLite 資料庫自動複製讀取副本至邊緣，降低查詢延遲
+
+### 運維零負擔
+
+| 項目 | VPS 架構 (舊) | Workers 架構 (新) |
+|------|--------------|-------------------|
+| 伺服器維運 | OS 更新、安全修補、監控 | 完全免維運 |
+| SSL 憑證 | 手動管理或 Let's Encrypt | Cloudflare 自動管理 |
+| 程序管理 | PM2 守護、OOM 監控 | 平台自動管理 |
+| 部署流程 | SSH + git pull + PM2 reload | `wrangler deploy`（零停機） |
+| 高可用性 | 需手動設定冗餘 | 平台內建，自動 failover |
+| DDoS 防護 | 需額外設定 | Cloudflare 內建防護 |
+
+### Durable Objects — 有狀態 WebSocket 的最佳解
+
+傳統 WebSocket 水平擴展的痛點是 **sticky session**：同一帳號的多個連線必須路由至同一台伺服器，才能正確轉發訊息。Durable Objects 天然解決了這個問題：
+
+- **Per-account 隔離** — 每個帳號對應一個 `AccountWebSocket` 實例，所有裝置的 WebSocket 連線自動路由至同一個 DO
+- **Hibernatable API** — 無活動時 DO 自動休眠（不佔用計算資源），收到訊息時毫秒級喚醒
+- **內建持久化** — DO 可使用 Transactional Storage 持久化 Presence 狀態，無需外部 Redis
+- **自動遷移** — Cloudflare 自動將 DO 遷移至最佳資料中心，無需手動管理
+
+### 成本效益
+
+| 項目 | VPS 架構 (舊) | Workers 架構 (新) |
+|------|--------------|-------------------|
+| 固定成本 | VPS 月租（無論流量高低） | 依用量計費（請求數 + CPU 時間） |
+| 低流量時 | 仍需支付固定費用 | 近乎零成本 |
+| 突發流量 | 可能當機或需臨時擴容 | 自動擴展，按量計費 |
+| 維運人力 | 需 DevOps 投入 | 零維運成本 |
+
+---
+
 ## 快速開始
 
 ### 前置需求
 
 - Node.js >= 18
-- Cloudflare 帳號 (Workers + D1 + R2 + Pages)
-- 已設定遠端主機 SSH (`~/.ssh/config` 中的 `Message` host)
+- Cloudflare 帳號 (Workers + D1 + R2 + KV + Pages)
+- Wrangler CLI (`npm install -g wrangler`)
 
 ### 本地開發
 
 ```bash
-# 安裝 Backend 依賴
+# 安裝依賴
 npm install
+cd web && npm install && cd ..
 
-# 建立 .env 檔案並填入必要環境變數
-# 必填：WS_TOKEN_SECRET (>= 32 字元)、DATA_API_URL、DATA_API_HMAC
-
-# 啟動 Backend 開發伺服器
-npm run dev
+# 啟動 Worker 本地開發 (D1 + KV + Durable Objects)
+cd data-worker && npx wrangler dev
 
 # ─── 另一個終端 ───
 
-# 安裝 Frontend 依賴
-cd web && npm install
-
-# 開發模式（raw 複製，不壓縮）
-npm run build:raw
+# 前端開發模式（raw 複製，不壓縮）
+cd web && npm run build:raw
 
 # 或使用 Wrangler 本地預覽
-npm run preview
+cd web && npm run preview
 ```
 
 ### Frontend 打包
@@ -1368,68 +1363,74 @@ npm run preview      # Wrangler Pages 本地預覽
 
 ## 部署
 
-### 一鍵 Hybrid 部署
+### 架構概覽
 
-```bash
-./scripts/deploy-hybrid.sh
+```
+GitHub Push (main)
+  │
+  ├── deploy-worker    # Cloudflare Worker (D1 migrations + wrangler deploy + secrets)
+  └── deploy-pages     # Cloudflare Pages (npm build → wrangler pages deploy ./dist)
 ```
 
-部署流程：
+僅需兩個部署目標，無伺服器維運。
 
-1. **Cloudflare Worker** — `wrangler d1 migrations apply` + `wrangler deploy` 部署 `data-worker/`
-2. **Cloudflare Pages** — `npm run build`（esbuild bundle + SRI）→ `wrangler pages deploy ./dist`
-3. **Backend** — git push → SSH 到遠端 → `npm install --production && pm2 reload message-api`
+### GitHub Actions CI/CD
 
-### Frontend Bundle 打包
+```yaml
+deploy.yml (main branch):
+  ├── job: changes         # dorny/paths-filter 偵測變更路徑
+  ├── job: deploy-worker   # data-worker/** 變更 → D1 migrations + wrangler deploy + secrets
+  └── job: deploy-pages    # web/** 變更 → npm build + wrangler pages deploy
+
+deploy-uat.yml (non-main branches):
+  ├── job: deploy-worker   # --env uat → message-data-uat
+  └── job: deploy-pages    # --env uat → UAT Pages
+```
+
+### Worker 部署
+
+```bash
+cd data-worker
+
+# 套用 D1 資料庫遷移
+wrangler d1 migrations apply message_db --remote
+
+# 部署 Worker
+wrangler deploy
+
+# 設定 Secrets (首次或變更時)
+wrangler secret put OPAQUE_OPRF_SEED
+wrangler secret put OPAQUE_AKE_PRIV_B64
+wrangler secret put OPAQUE_AKE_PUB_B64
+wrangler secret put NTAG424_KM
+wrangler secret put DATA_API_HMAC
+wrangler secret put ACCOUNT_HMAC_KEY
+wrangler secret put INVITE_TOKEN_KEY
+wrangler secret put PORTAL_HMAC_SECRET
+wrangler secret put S3_ACCESS_KEY
+wrangler secret put S3_SECRET_KEY
+wrangler secret put WS_TOKEN_SECRET
+```
+
+### Pages 部署
 
 ```bash
 cd web
-npm run build        # esbuild 打包 → dist/（ES2022, code splitting, minify, SRI）
-npm run build:raw    # 直接複製 src → dist（開發用，不壓縮）
-npm run verify       # 打包完整性驗證（SHA256 + SRI SHA384）
-npm run verify:cdn   # CDN 完整性驗證（含 verbose）
-npm run preview      # Wrangler Pages 本地預覽
+
+# Bundle 模式
+npm run build && wrangler pages deploy ./dist --project-name message-web-hybrid
+
+# Raw 模式（開發用）
+wrangler pages deploy ./src
 ```
 
-**Bundle 特性：**
+### Frontend Bundle 特性
+
 - **esbuild** ES2022 target，code splitting + minification + source maps
 - **SRI** (Subresource Integrity) — 所有 JS/CSS 注入 SHA384 完整性雜湊
 - **Build Manifest** — `dist/build-manifest.json` 含 git commit hash + 每檔 SHA256
 - **Entry Points**: `app-mobile.js`、`login-ui.js`、`debug-page.js`、`media-permission-demo.js`
 - **CSS Bundle**: `app-bundle.css` 單檔壓縮
-
-### GitHub Actions CI/CD
-
-```yaml
-deploy.yml:
-  ├── job: deploy-worker     # Cloudflare Worker (D1 migrations + wrangler deploy)
-  ├── job: deploy-pages      # Cloudflare Pages (npm build → wrangler pages deploy ./dist)
-  └── job: deploy-backend    # Node.js VPS (SSH → git pull → npm install → pm2 reload)
-```
-
-### Worker D1 遷移
-
-```bash
-cd data-worker
-wrangler d1 migrations apply message_db     # 套用資料庫遷移（共 7 個）
-wrangler deploy                              # 部署 Worker
-```
-
-### 手動部署
-
-```bash
-# Worker
-cd data-worker && wrangler deploy
-
-# Pages（bundle 模式）
-cd web && npm run build && wrangler pages deploy ./dist --project-name message-web-hybrid
-
-# Pages（raw 模式，開發用）
-cd web && wrangler pages deploy ./src
-
-# Backend (VPS)
-ssh Message "cd /path/to/app && git pull && npm install --production && pm2 reload message-api"
-```
 
 ---
 
@@ -1473,122 +1474,82 @@ cd web && npm run verify:cdn     # CDN 完整性驗證（含 verbose）
 
 ## 環境變數
 
-### 核心設定
+> 所有後端環境變數均設定於 Cloudflare Workers（`wrangler.toml` 或 `wrangler secret put`）。
+
+### Worker 公開設定 (wrangler.toml `[vars]`)
 
 | 變數 | 說明 | 範例 |
 |------|------|------|
-| `PORT` | HTTP 監聽埠 | `3000` |
-| `NODE_ENV` | 環境模式 | `development` / `production` |
-| `SERVICE_NAME` | 服務名稱 | `message-api` |
-| `SERVICE_VERSION` | 服務版本 | `0.1.0` |
-| `WS_TOKEN_SECRET` | WebSocket JWT 簽章金鑰 (>= 32 字元) | `<random-string>` |
-| `DATA_API_URL` | Cloudflare Worker URL | `https://message-data.xxx.workers.dev` |
-| `DATA_API_HMAC` | Worker 通訊 HMAC 密鑰 | `<secret>` |
-| `CORS_ORIGIN` | 允許的 CORS 來源 (逗號分隔) | `https://sentry.red,https://app.sentry.red` |
-| `DISABLE_RATE_LIMIT` | 停用 API 限速 (`1` = 停用) | `1` |
-
-### S3/R2 儲存
-
-| 變數 | 說明 | 範例 |
-|------|------|------|
-| `S3_ENDPOINT` | R2 / S3 相容端點 URL | |
-| `S3_BUCKET` | 儲存桶名稱 | |
-| `S3_ACCESS_KEY` | S3 存取金鑰 | |
-| `S3_SECRET_KEY` | S3 秘密金鑰 | |
-| `UPLOAD_MAX_BYTES` | 單檔上傳大小限制 | `1073741824` (1GB) |
-| `DRIVE_QUOTA_BYTES` | 每個對話儲存配額 | `3221225472` (3GB) |
+| `OPAQUE_SERVER_ID` | OPAQUE 伺服器識別符 | `api.message.sentry.red` |
+| `NTAG424_KDF` | NFC 金鑰派生模式 | `HKDF` / `EV2` |
+| `NTAG424_SALT` | HKDF salt | `sentry.red` |
+| `NTAG424_INFO` | HKDF info | `ntag424-slot-0` |
+| `NTAG424_KVER` | 金鑰版本 | `1` |
+| `S3_ENDPOINT` | R2 / S3 相容端點 URL | `https://xxx.r2.cloudflarestorage.com` |
+| `S3_REGION` | S3 區域 | `auto` |
+| `S3_BUCKET` | 儲存桶名稱 | `message-media` |
 | `SIGNED_PUT_TTL` | 上傳簽章 URL 有效期 (秒) | `900` |
 | `SIGNED_GET_TTL` | 下載簽章 URL 有效期 (秒) | `900` |
 
-### NFC 認證 (NTAG 424 DNA) — Worker secret
+### Worker Secrets (`wrangler secret put`)
 
-> 以下變數需設定於 **Cloudflare Worker**（`wrangler secret put`），Node.js 端已不再使用。
+| 變數 | 說明 |
+|------|------|
+| `OPAQUE_OPRF_SEED` | OPRF 種子 (32 bytes hex) |
+| `OPAQUE_AKE_PRIV_B64` | OPAQUE AKE 私鑰 (base64) |
+| `OPAQUE_AKE_PUB_B64` | OPAQUE AKE 公鑰 (base64) |
+| `NTAG424_KM` | NFC 主金鑰 (16 bytes hex) |
+| `NTAG424_KM_OLD` | NFC 舊主金鑰（fallback） |
+| `DATA_API_HMAC` | API HMAC 驗證密鑰 |
+| `ACCOUNT_HMAC_KEY` | 帳號 HMAC 密鑰 |
+| `INVITE_TOKEN_KEY` | 邀請 Token 密鑰 |
+| `PORTAL_HMAC_SECRET` | Portal HMAC 密鑰 |
+| `S3_ACCESS_KEY` | R2/S3 存取金鑰 |
+| `S3_SECRET_KEY` | R2/S3 秘密金鑰 |
+| `WS_TOKEN_SECRET` | WebSocket JWT 簽章金鑰 (>= 32 字元) |
 
-| 變數 | 說明 | 範例 | 設定方式 |
-|------|------|------|----------|
-| `NTAG424_KM` | 主金鑰 (16 bytes) | `<32 hex chars>` | `wrangler secret put` |
-| `NTAG424_KM_OLD` | 舊主金鑰（fallback） | `<32 hex chars>` | `wrangler secret put` |
-| `NTAG424_KDF` | 派生模式 | `HKDF` / `EV2` | wrangler.toml `[vars]` |
-| `NTAG424_SALT` | HKDF salt | `sentry.red` | wrangler.toml `[vars]` |
-| `NTAG424_INFO` | HKDF info | `ntag424-static-key` | wrangler.toml `[vars]` |
-| `NTAG424_KVER` | 金鑰版本 (EV2 mode) | `1` | wrangler.toml `[vars]` |
+### D1 Database Binding
 
-### OPAQUE PAKE 認證 — Worker secret
+| Binding | 用途 |
+|---------|------|
+| `DB` | D1 SQLite 資料庫（message_db） |
 
-> OPAQUE 完全在 Worker 執行，金鑰需設定於 Cloudflare Worker。
-
-| 變數 | 說明 | 範例 | 設定方式 |
-|------|------|------|----------|
-| `OPAQUE_OPRF_SEED` | OPRF 種子 (32 bytes) | `<64 hex chars>` | `wrangler secret put` |
-| `OPAQUE_AKE_PRIV_B64` | AKE 私鑰 | `<base64>` | `wrangler secret put` |
-| `OPAQUE_AKE_PUB_B64` | AKE 公鑰 | `<base64>` | `wrangler secret put` |
-| `OPAQUE_SERVER_ID` | 伺服器識別符 | `api.sentry` | wrangler.toml `[vars]` |
-
-### KV Namespace — Worker binding
+### KV Namespace Binding
 
 | Binding | 用途 | TTL |
 |---------|------|-----|
-| `AUTH_KV` | SDM exchange session、OPAQUE login expected、debug counter | 120s–300s |
+| `AUTH_KV` | SDM exchange session、OPAQUE login expected、debug counter、Presence | 120s–300s |
 
-建立方式：
 ```bash
+# 建立 KV namespace
 wrangler kv namespace create AUTH_KV
 wrangler kv namespace create AUTH_KV --env uat
 # 將產出的 id 填入 wrangler.toml
 ```
 
-### WebRTC 通話
+### Durable Objects Binding
 
-| 變數 | 說明 | 範例 |
-|------|------|------|
-| `CLOUDFLARE_TURN_TOKEN_ID` | Cloudflare TURN token ID | `<token-id>` |
-| `CLOUDFLARE_TURN_TOKEN_KEY` | Cloudflare TURN token 密鑰 | `<token-key>` |
-| `TURN_TTL_SECONDS` | TURN 憑證有效期 (秒) | `300` |
-| `TURN_SHARED_SECRET` | TURN 憑證簽章密鑰 (備用) | `<secret>` |
-| `TURN_STUN_URIS` | STUN 伺服器列表 (逗號分隔) | `stun:stun.cloudflare.com:3478` |
-| `TURN_RELAY_URIS` | TURN relay 伺服器列表 | `turn:relay.example.com` |
-| `CALL_LOCK_TTL_MS` | 通話鎖定逾時 (毫秒, 最小 30s) | `120000` |
-| `CALL_SESSION_TTL_SECONDS` | 通話 Session 過期時間 | `90` |
-| `CALL_EXTRA_STUN_URIS` | 額外 STUN 伺服器 | `stun:stun.l.google.com:19302` |
+| Binding | Class | 用途 |
+|---------|-------|------|
+| `ACCOUNT_WS` | `AccountWebSocket` | Per-account WebSocket 連線管理 |
+
+### WebRTC 通話（Worker Secrets）
+
+| 變數 | 說明 |
+|------|------|
+| `CLOUDFLARE_TURN_TOKEN_ID` | Cloudflare TURN token ID |
+| `CLOUDFLARE_TURN_TOKEN_KEY` | Cloudflare TURN token 密鑰 |
 
 ---
 
 ## 技術棧
-
-### Backend 依賴
-
-| 套件 | 用途 |
-|------|------|
-| express | HTTP API 框架 |
-| ws | WebSocket 伺服器 |
-| helmet | HTTP 安全標頭 |
-| compression | 回應壓縮 |
-| cors | CORS 中間件 |
-| express-rate-limit | API 限速 |
-| pino / pino-http | 結構化日誌 |
-| jsonwebtoken | JWT 產生/驗證 |
-| dotenv | 環境變數載入 |
-| @noble/curves, @noble/hashes, @noble/ed25519 | 密碼學原語 |
-| tweetnacl | NaCl 加密函式庫 |
-| ed2curve | Ed25519 → X25519 轉換 |
-| @aws-sdk/client-s3 | R2/S3 操作 |
-| @aws-sdk/s3-presigned-post | S3 Presigned POST |
-| @aws-sdk/s3-request-presigner | S3 Presigned URL |
-| zod | Schema 驗證 |
-| nanoid | 安全亂數 ID |
-| multer | Multipart 檔案上傳 |
-| jimp | 伺服器端圖片處理 |
-| jsqr | QR Code 解碼 |
-| qrcode-reader | QR Code 讀取 |
-| pdfjs-dist | PDF 解析 |
-| pm2 | 程序管理 |
 
 ### Worker 依賴
 
 | 套件 | 用途 |
 |------|------|
 | @cloudflare/opaque-ts | OPAQUE PAKE 協定 (P-256) |
-| node:crypto (nodejs_compat) | AES-CMAC / HKDF-SHA256 / HMAC |
+| node:crypto (nodejs_compat) | AES-CMAC / HKDF-SHA256 / HMAC / JWT 驗證 |
 
 ### Frontend 工具與技術
 
@@ -1617,20 +1578,19 @@ wrangler kv namespace create AUTH_KV --env uat
 |------|------|
 | @playwright/test | E2E 測試框架 |
 | wrangler | Cloudflare CLI（Workers/D1/Pages） |
-| GitHub Actions | CI/CD（三階段自動部署） |
+| GitHub Actions | CI/CD（雙階段自動部署） |
 
 ### Infrastructure
 
 | 服務 | 用途 |
 |------|------|
-| Cloudflare Workers | 資料層 API + OPAQUE/SDM 認證 |
+| Cloudflare Workers | 統一後端 API + WebSocket（Durable Objects） |
 | Cloudflare D1 | SQLite 資料庫 |
-| Cloudflare KV | 短期 auth session 儲存 |
+| Cloudflare KV | 短期 auth session + Presence 儲存 |
 | Cloudflare R2 | 媒體物件儲存 |
 | Cloudflare Pages | 前端部署（esbuild bundle + Pages Functions） |
 | Cloudflare TURN | WebRTC 通話 relay（動態憑證） |
-| Linode VPS | Backend + WebSocket |
-| PM2 | 程序管理 + 自動重啟 |
+| Cloudflare Durable Objects | Per-account 有狀態 WebSocket 管理 |
 
 ---
 
