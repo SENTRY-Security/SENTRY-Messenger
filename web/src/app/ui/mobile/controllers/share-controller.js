@@ -2374,6 +2374,24 @@ export function setupShareController(options) {
       } catch (err) {
         log({ contactShareProfilePersistError: err?.message || err, peerAccountDigest: resolvedPeerDigest });
       }
+
+      // [FIX] Re-uplink contact to D1 with the real nickname/avatar from the
+      // contact-share.  The scanner's initial uplink (at deliver time) only had
+      // peerAccountDigest + conversation — no profile data — because the peer's
+      // name wasn't known yet.  Without this, pull-to-refresh after a D1 restore
+      // shows the fallback "好友 XXXX" instead of the real nickname.
+      try {
+        uplinkContactToD1({
+          peerAccountDigest: resolvedPeerDigest,
+          nickname: payload.nickname || null,
+          avatar: payload.avatar || null,
+          conversation,
+          profileUpdatedAt: payload.updatedAt || payload.addedAt || Date.now()
+        }).catch(err => console.warn('[share-controller] contact-share uplink failed', err));
+      } catch (uplinkErr) {
+        console.warn('[share-controller] contact-share uplink sync error', uplinkErr);
+      }
+
       const drInitRaw = conversation.dr_init || null;
       const normalizedBundle = drInitRaw?.guest_bundle ? normalizeGuestBundle(drInitRaw.guest_bundle) : null;
       // 只有當對方裝置等於本機（owner/responder 端）才允許 responder bootstrap；guest 端禁止。
@@ -2776,6 +2794,10 @@ export function setupShareController(options) {
           dispatchOk: refreshDispatchOk,
           error: refreshDispatchError
         }, LOG_CAP);
+        // Contact was created via handleContactInitEvent — remove the pending
+        // invite immediately so the syncing placeholder disappears and the real
+        // contact renders on the next contacts list refresh.
+        removePendingInvite(id);
         logCapped('inviteConsumeResult', { inviteId: id, ok: true }, LOG_CAP);
         console.log('[share-controller]', `[invite-consume] result=${JSON.stringify({ inviteId: id, ok: true })}`);
         setInviteActionState({ hasInvite: !!invite, expired: false, loading: false });

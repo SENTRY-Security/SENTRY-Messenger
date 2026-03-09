@@ -216,7 +216,7 @@ export class AccountWebSocket {
     if (url.pathname === '/presence') {
       const sockets = this.state.getWebSockets();
       const online = sockets.some(ws => {
-        const att = this.state.getWebSocketAttachment(ws);
+        const att = ws.deserializeAttachment();
         return att && att.authenticated;
       });
       return Response.json({ online, connections: sockets.length });
@@ -256,7 +256,7 @@ export class AccountWebSocket {
     this.state.acceptWebSocket(server, tags);
 
     // Store metadata as attachment
-    this.state.setWebSocketAttachment(server, {
+    server.serializeAttachment({
       authenticated: true,
       accountDigest: this.accountDigest,
       deviceId: canonicalDeviceId(deviceId),
@@ -295,7 +295,7 @@ export class AccountWebSocket {
     const targetDeviceId = canonicalDeviceId(payload.targetDeviceId);
 
     for (const ws of sockets) {
-      const att = this.state.getWebSocketAttachment(ws);
+      const att = ws.deserializeAttachment();
       if (!att || !att.authenticated) continue;
       // If targeting specific device, filter
       if (targetDeviceId && att.deviceId !== targetDeviceId) continue;
@@ -317,7 +317,7 @@ export class AccountWebSocket {
     } catch { return; }
     if (!msg || typeof msg !== 'object') return;
 
-    const att = this.state.getWebSocketAttachment(ws) || {};
+    const att = ws.deserializeAttachment() || {};
 
     // Auth message (re-auth or token refresh)
     if (msg.type === 'auth') {
@@ -362,13 +362,13 @@ export class AccountWebSocket {
   }
 
   async webSocketClose(ws, code, reason) {
-    const att = this.state.getWebSocketAttachment(ws) || {};
+    const att = ws.deserializeAttachment() || {};
     console.info(`[ws-do] close accountDigest=${att.accountDigest || 'unknown'} code=${code} reason=${reason || ''}`);
 
     // Update presence
     const remaining = this.state.getWebSockets().filter(s => s !== ws);
     const hasAuthenticated = remaining.some(s => {
-      const a = this.state.getWebSocketAttachment(s);
+      const a = s.deserializeAttachment();
       return a && a.authenticated;
     });
     if (!hasAuthenticated) {
@@ -396,7 +396,7 @@ export class AccountWebSocket {
 
     // Refresh presence TTL in KV
     const hasAuthenticated = sockets.some(ws => {
-      const att = this.state.getWebSocketAttachment(ws);
+      const att = ws.deserializeAttachment();
       return att && att.authenticated;
     });
     if (hasAuthenticated) {
@@ -450,7 +450,7 @@ export class AccountWebSocket {
     if (att.authenticated && att.accountDigest === tokenDigest) {
       if (sessionTs > (att.sessionTs || 0)) {
         att.sessionTs = sessionTs;
-        this.state.setWebSocketAttachment(ws, att);
+        ws.serializeAttachment(att);
       }
       ws.send(JSON.stringify({ type: 'auth', ok: true, exp: verification.payload.exp, reused: true }));
       return;
@@ -461,7 +461,7 @@ export class AccountWebSocket {
     let latestTs = 0;
     for (const s of sockets) {
       if (s === ws) continue;
-      const a = this.state.getWebSocketAttachment(s);
+      const a = s.deserializeAttachment();
       if (a && a.authenticated && a.sessionTs > latestTs) latestTs = a.sessionTs;
     }
     if (latestTs > 0 && sessionTs < latestTs) {
@@ -474,7 +474,7 @@ export class AccountWebSocket {
     if (sessionTs >= latestTs && latestTs > 0) {
       for (const s of sockets) {
         if (s === ws) continue;
-        const a = this.state.getWebSocketAttachment(s);
+        const a = s.deserializeAttachment();
         if (a && a.authenticated) {
           try { s.close(4409, 'replaced'); } catch {}
         }
@@ -483,7 +483,7 @@ export class AccountWebSocket {
 
     // Mark authenticated
     const deviceId = att.deviceId || canonicalDeviceId(msg.deviceId) || null;
-    this.state.setWebSocketAttachment(ws, {
+    ws.serializeAttachment({
       authenticated: true,
       accountDigest: tokenDigest,
       deviceId,
@@ -507,7 +507,7 @@ export class AccountWebSocket {
       if (online) {
         const deviceIds = [];
         for (const ws of this.state.getWebSockets()) {
-          const att = this.state.getWebSocketAttachment(ws);
+          const att = ws.deserializeAttachment();
           if (att?.authenticated && att.deviceId) deviceIds.push(att.deviceId);
         }
         await this.env.AUTH_KV.put(key, JSON.stringify({
@@ -588,7 +588,7 @@ export class AccountWebSocket {
 
     // Store which digests this socket watches (for cleanup)
     att.watching = normalized;
-    this.state.setWebSocketAttachment(ws, att);
+    ws.serializeAttachment(att);
 
     try {
       ws.send(JSON.stringify({
@@ -814,7 +814,7 @@ export class AccountWebSocket {
     const data = JSON.stringify(relayPayload);
     for (const s of this.state.getWebSockets()) {
       if (s === ws) continue;
-      const a = this.state.getWebSocketAttachment(s);
+      const a = s.deserializeAttachment();
       if (a?.authenticated) {
         try { s.send(data); } catch {}
       }

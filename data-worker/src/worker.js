@@ -2984,15 +2984,8 @@ async function handleMessagesRoutes(req, env) {
     });
   }
 
-  // [WS-AUTH] Token Endpoint (Mock/Stub or DO Entry)
-  if (req.method === 'POST' && (url.pathname === '/d1/ws/token' || url.pathname === '/api/v1/ws/token')) {
-    // Return a mock token for now to satisfy the client and allow connection logic to proceed (or fail gracefully at WS level)
-    return json({
-      ok: true,
-      token: 'mock-ws-token-' + Date.now(),
-      ttl: 3600
-    });
-  }
+  // [WS-AUTH] Token Endpoint — handled by handlePublicRoutes (real JWT)
+  // Mock removed: the public route at /api/v1/ws/token now issues proper JWT tokens.
 
   // [CALLS] Network Config Endpoint (Mock/Stub for WebRTC)
   if (req.method === 'GET' && (url.pathname === '/d1/calls/network-config' || url.pathname === '/api/v1/calls/network-config')) {
@@ -6056,17 +6049,16 @@ async function handleWsUpgrade(req, env, url) {
     const doId = env.ACCOUNT_WS.idFromName(accountDigest);
     const stub = env.ACCOUNT_WS.get(doId);
 
-    // Build a new request for the DO with metadata headers
-    const doReq = new Request('https://do/ws', {
-      headers: {
-        'Upgrade': 'websocket',
-        'x-account-digest': accountDigest,
-        'x-device-id': deviceId,
-        'x-session-ts': String(payload.iat || now)
-      }
-    });
+    // Clone from the original client Request (not just its URL) so that the
+    // Cloudflare runtime preserves the internal WebSocket upgrade state needed
+    // to bridge the client ↔ DO connection.  We override headers to inject
+    // our metadata while keeping the original WS upgrade headers intact.
+    const doHeaders = new Headers(req.headers);
+    doHeaders.set('x-account-digest', accountDigest);
+    doHeaders.set('x-device-id', deviceId);
+    doHeaders.set('x-session-ts', String(payload.iat || now));
 
-    return await stub.fetch(doReq);
+    return await stub.fetch(new Request(req, { headers: doHeaders }));
   } catch (err) {
     console.error('[ws-upgrade] DO fetch failed', { error: err?.message || String(err), stack: err?.stack, accountDigest });
     return json({
@@ -7687,17 +7679,6 @@ export default {
       // ── CORS preflight for public API ──
       if (req.method === 'OPTIONS' && (url.pathname.startsWith('/api/') || url.pathname.startsWith('/api'))) {
         return new Response(null, { status: 204, headers: buildCORSHeaders(req, env) });
-      }
-
-      // ── WS diagnostic (temporary) ──
-      if (url.pathname === '/ws/diag') {
-        return json({
-          hasAccountWs: !!env.ACCOUNT_WS,
-          hasWsTokenSecret: !!env.WS_TOKEN_SECRET,
-          hasAuthKv: !!env.AUTH_KV,
-          hasDb: !!env.DB,
-          hostname: url.hostname
-        });
       }
 
       // ── WebSocket upgrade → Durable Object ──
