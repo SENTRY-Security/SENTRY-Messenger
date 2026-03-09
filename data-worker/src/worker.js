@@ -8,33 +8,7 @@ export { AccountWebSocket } from './account-ws.js';
 // ---- 基本工具與正規化 ----
 const textEncoder = new TextEncoder();
 
-/**
- * Proxy an unmatched request to the Node.js origin server.
- * If NODEJS_ORIGIN is not configured, returns a 404 JSON response.
- */
-function proxyToNodejs(req, env, consumedBody) {
-  const origin = env.NODEJS_ORIGIN;
-  if (!origin) return json({ error: 'not_found' }, { status: 404 });
-  const target = new URL(req.url);
-  const parsed = new URL(origin);
-  target.hostname = parsed.hostname;
-  target.port = parsed.port;
-  target.protocol = parsed.protocol;
-  // If the body was already consumed (e.g. by req.json()), rebuild the request
-  // with the parsed body to avoid "ReadableStream is disturbed" errors.
-  const init = {
-    method: req.method,
-    headers: req.headers,
-    redirect: req.redirect
-  };
-  if (consumedBody !== undefined && consumedBody !== null) {
-    init.body = JSON.stringify(consumedBody);
-  } else if (req.method !== 'GET' && req.method !== 'HEAD') {
-    // Body not consumed yet, pass original request body
-    init.body = req.body;
-  }
-  return fetch(new Request(target.toString(), init));
-}
+// Node.js proxy removed — all routes are now served by Cloudflare Workers.
 const INVITE_INFO_TAG = 'contact-init/dropbox/v1';
 
 // ---- AES-CMAC (RFC 4493) implemented with Web Crypto API ----
@@ -6381,15 +6355,11 @@ async function handlePublicRoutes(req, env) {
   }
 
   // ── Parse body for POST requests ─────────────────────────────
-  // Store parsed body on req so proxyToNodejs can re-serialize it
-  // (the original ReadableStream becomes "disturbed" after .json()).
-  // Skip JSON parsing for non-JSON content types (e.g. multipart form-data)
-  // so they can be proxied to Node.js with body stream intact.
   let body = null;
   const contentType = (req.headers.get('content-type') || '').toLowerCase();
   const isJsonContent = !contentType || contentType.includes('application/json') || contentType.includes('text/');
   if (method === 'POST' && isJsonContent) {
-    try { body = await req.json(); req._parsedBody = body; } catch {
+    try { body = await req.json(); } catch {
       return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
     }
   }
@@ -7690,9 +7660,8 @@ export default {
       if (url.pathname.startsWith('/api/')) {
         const result = await handlePublicRoutes(req, env);
         if (result) return withCORS(result, req, env);
-        // Unmigrated public route → proxy to Node.js origin
-        // Pass parsed body since handlePublicRoutes consumed the stream via req.json()
-        return withCORS(await proxyToNodejs(req, env, req._parsedBody), req, env);
+        // No matching public route
+        return withCORS(json({ error: 'not_found', message: 'no matching route' }, { status: 404 }), req, env);
       }
 
       // ── Internal API (HMAC-protected, backward-compat) ──
@@ -7750,8 +7719,8 @@ export default {
       const contactsResult = await handleContactsRoutes(req, env);
       if (contactsResult) return contactsResult;
 
-      // Unmigrated internal route → proxy to Node.js origin
-      return proxyToNodejs(req, env);
+      // No matching internal route
+      return json({ error: 'not_found', message: 'no matching internal route' }, { status: 404 });
     } catch (err) {
       console.error('[global-trap] worker exception', err);
       try {
