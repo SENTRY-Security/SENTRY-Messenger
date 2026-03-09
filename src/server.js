@@ -3,10 +3,10 @@ import http from 'node:http';
 import app from './app.js';
 import { env } from './utils/env.js';
 import { logger } from './utils/logger.js';
-import { setupWebSocket } from './ws/index.js';
 
+// WebSocket server has been migrated to Cloudflare Durable Objects.
+// Node.js now only serves scan-upload and any remaining proxied routes.
 const server = http.createServer(app);
-setupWebSocket(server);
 
 server.listen(env.PORT, () => {
   logger.info({ port: env.PORT }, 'server_started');

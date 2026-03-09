@@ -32,6 +32,16 @@ database_id = "99728586-d8a9-4525-a1af-e68e84594047"
 binding = "AUTH_KV"
 id = "2ace4d55398742928e4b2ca79a371d0d"
 
+# Durable Objects for WebSocket connections (one DO per account)
+[durable_objects]
+bindings = [
+  { name = "ACCOUNT_WS", class_name = "AccountWebSocket" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["AccountWebSocket"]
+
 # ── UAT Environment ─────────────────────────────────────────────
 [env.uat]
 name = "message-data-uat"

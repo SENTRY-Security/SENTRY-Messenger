@@ -2,6 +2,9 @@ import crypto from 'node:crypto';
 import { toU8Strict } from './u8-strict.js';
 import { getOpaqueConfig, OpaqueID, OpaqueServer, KE1, KE3, RegistrationRequest, RegistrationRecord, ExpectedAuthResult } from '@cloudflare/opaque-ts';
 
+// Re-export Durable Object class so Cloudflare runtime can find it
+export { AccountWebSocket } from './account-ws.js';
+
 // ---- 基本工具與正規化 ----
 const textEncoder = new TextEncoder();
 
@@ -5614,43 +5617,6 @@ async function authorizeConversationDirect(env, { convId, accountDigest, deviceI
   return { ok: true };
 }
 
-/**
- * Fire-and-forget WebSocket notification to the Node.js WS server.
- * Returns a Promise so callers can use ctx.waitUntil() to prevent early termination.
- * env.WS_NOTIFY_URL or env.NODEJS_ORIGIN should point to the Node.js server.
- * If not configured, notifications are silently skipped.
- */
-async function notifyWsServer(env, payload) {
-  const baseUrl = env.WS_NOTIFY_URL || env.NODEJS_ORIGIN;
-  if (!baseUrl) {
-    console.info('[ws-notify] skip: no WS_NOTIFY_URL or NODEJS_ORIGIN configured');
-    return;
-  }
-  const secret = env.WS_NOTIFY_SECRET || env.DATA_API_HMAC || '';
-  const body = JSON.stringify(payload);
-  const headers = { 'content-type': 'application/json' };
-  const url = baseUrl.endsWith('/internal/ws-notify')
-    ? baseUrl
-    : `${baseUrl.replace(/\/$/, '')}/internal/ws-notify`;
-  try {
-    if (secret) {
-      const enc = new TextEncoder();
-      const key = await crypto.subtle.importKey(
-        'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
-      );
-      const sig = await crypto.subtle.sign('HMAC', key, enc.encode(body));
-      headers['x-ws-notify-hmac'] = btoa(String.fromCharCode(...new Uint8Array(sig)))
-        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    }
-    const res = await fetch(url, { method: 'POST', headers, body });
-    if (!res.ok) {
-      console.warn('[ws-notify] failed', { url, status: res.status, type: payload?.type });
-    }
-  } catch (err) {
-    console.warn('[ws-notify] error', { url, type: payload?.type, error: err?.message || String(err) });
-  }
-}
-
 // ── Direct D1 helpers for device & call operations (edge-direct) ──────────
 
 async function touchDeviceDirect(env, accountDigest, deviceId) {
@@ -6015,6 +5981,102 @@ async function createWsToken(env, { accountDigest, ttlSec = 300 }) {
     token: `${WS_JWT_HEADER_B64}.${bodyB64}.${signature}`,
     payload
   };
+}
+
+// ── WebSocket upgrade handler → Durable Object ──────────────────
+//
+// Flow:
+//   1. Client connects to /ws?token=<JWT>
+//   2. Worker verifies JWT, extracts accountDigest
+//   3. Worker looks up DO by accountDigest, forwards the upgrade request
+//
+async function handleWsUpgrade(req, env, url) {
+  // Token can come from query param (most WS clients) or header
+  const token = url.searchParams.get('token')
+    || (req.headers.get('sec-websocket-protocol') || '').split(',').map(s => s.trim()).find(s => s.startsWith('ey'))
+    || '';
+
+  if (!token) {
+    return json({ error: 'Unauthorized', message: 'token query param required' }, { status: 401 });
+  }
+
+  // Verify JWT (same secret as createWsToken)
+  const secret = env.WS_TOKEN_SECRET;
+  if (!secret) {
+    return json({ error: 'ConfigError', message: 'WS_TOKEN_SECRET not configured' }, { status: 500 });
+  }
+
+  const parts = token.split('.');
+  if (parts.length !== 3 || parts[0] !== WS_JWT_HEADER_B64) {
+    return json({ error: 'Unauthorized', message: 'invalid token format' }, { status: 401 });
+  }
+  const [headerB64, bodyB64, signature] = parts;
+  const expectedSig = await hmacSha256Sign(secret, `${headerB64}.${bodyB64}`);
+  if (signature !== expectedSig) {
+    return json({ error: 'Unauthorized', message: 'invalid token signature' }, { status: 401 });
+  }
+
+  let payload;
+  try {
+    const payloadStr = bodyB64.replace(/-/g, '+').replace(/_/g, '/');
+    const pad = payloadStr.length % 4 === 0 ? '' : '='.repeat(4 - (payloadStr.length % 4));
+    payload = JSON.parse(atob(payloadStr + pad));
+  } catch {
+    return json({ error: 'Unauthorized', message: 'invalid token payload' }, { status: 401 });
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  if (typeof payload.exp !== 'number' || now >= payload.exp) {
+    return json({ error: 'Unauthorized', message: 'token expired' }, { status: 401 });
+  }
+
+  const accountDigest = String(payload.accountDigest || '').replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+  if (accountDigest.length !== 64) {
+    return json({ error: 'Unauthorized', message: 'invalid accountDigest in token' }, { status: 401 });
+  }
+
+  // Forward to Durable Object
+  const doId = env.ACCOUNT_WS.idFromName(accountDigest);
+  const stub = env.ACCOUNT_WS.get(doId);
+
+  const deviceId = url.searchParams.get('deviceId') || req.headers.get('x-device-id') || '';
+
+  // Build a new request for the DO with metadata headers
+  const doReq = new Request('https://do/ws', {
+    headers: {
+      'Upgrade': 'websocket',
+      'x-account-digest': accountDigest,
+      'x-device-id': deviceId,
+      'x-session-ts': String(payload.iat || now)
+    }
+  });
+
+  return stub.fetch(doReq);
+}
+
+// ── Notify account via Durable Object (replaces notifyWsServer) ──
+async function notifyAccountDO(env, accountDigest, payload) {
+  if (!env.ACCOUNT_WS) {
+    console.warn('[notify-do] ACCOUNT_WS binding not available');
+    return;
+  }
+  const digest = String(accountDigest || '').replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+  if (digest.length !== 64) return;
+
+  try {
+    const doId = env.ACCOUNT_WS.idFromName(digest);
+    const stub = env.ACCOUNT_WS.get(doId);
+    const res = await stub.fetch('https://do/notify', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      console.warn('[notify-do] failed', { status: res.status, type: payload?.type, accountDigest: digest });
+    }
+  } catch (err) {
+    console.warn('[notify-do] error', { type: payload?.type, accountDigest: digest, error: err?.message || String(err) });
+  }
 }
 
 /**
@@ -6629,11 +6691,11 @@ async function handlePublicRoutes(req, env) {
         const ownerDigest = resData?.ownerAccountDigest || resData?.owner_account_digest;
         if (ownerDigest) {
           const targetDeviceId = body?.target_device_id || body?.targetDeviceId || null;
-          await notifyWsServer(env, {
+          await notifyAccountDO(env, ownerDigest, {
             type: 'invite-delivered',
-            targetAccountDigest: ownerDigest,
             targetDeviceId,
-            inviteId: intBody.inviteId
+            inviteId: intBody.inviteId,
+            ts: Date.now()
           });
         }
       } catch { /* best-effort */ }
@@ -6715,13 +6777,13 @@ async function handlePublicRoutes(req, env) {
     // WS notifications: contact removed
     if (result && result.status < 400) {
       const targetDeviceId = body?.target_device_id || body?.targetDeviceId || null;
-      await notifyWsServer(env, {
+      await notifyAccountDO(env, peerDigest, {
         type: 'contact-removed',
-        ownerAccountDigest: auth.accountDigest,
-        peerAccountDigest: peerDigest,
+        peerAccountDigest: auth.accountDigest,
         senderDeviceId,
         targetDeviceId,
-        conversationId
+        conversationId,
+        ts: Date.now()
       });
     }
     return result;
@@ -6744,17 +6806,19 @@ async function handlePublicRoutes(req, env) {
         const receiverDigest = body?.receiver_account_digest || body?.receiverAccountDigest;
         const convId = body?.conversation_id || body?.conversationId;
         if (receiverDigest && convId) {
-          await notifyWsServer(env, {
+          await notifyAccountDO(env, receiverDigest, {
             type: 'secure-message',
-            targetAccountDigest: receiverDigest,
             conversationId: convId,
             messageId: body?.id || body?.messageId || resData?.messageId || null,
             preview: body?.preview || '',
             ts: body?.created_at || body?.ts || Date.now(),
+            count: 1,
+            counter: body?.counter ?? null,
             senderAccountDigest: auth.accountDigest,
             senderDeviceId: deviceId,
             targetDeviceId: body?.receiver_device_id || body?.receiverDeviceId || null,
-            counter: body?.counter ?? null
+            peerAccountDigest: auth.accountDigest,
+            targetAccountDigest: receiverDigest
           });
         }
       } catch { /* best-effort */ }
@@ -6795,17 +6859,19 @@ async function handlePublicRoutes(req, env) {
     if (result && result.status < 400) {
       const receiverDigest = intBody.receiver_account_digest;
       if (receiverDigest) {
-        await notifyWsServer(env, {
+        await notifyAccountDO(env, receiverDigest, {
           type: 'secure-message',
-          targetAccountDigest: receiverDigest,
           conversationId: convId,
           messageId: intBody.id || null,
           preview: body?.preview || '',
           ts: Number(intBody.created_at || Date.now()),
+          count: 1,
+          counter: intBody.counter ?? null,
           senderAccountDigest: auth.accountDigest,
           senderDeviceId: deviceId,
           targetDeviceId: intBody.receiver_device_id || null,
-          counter: intBody.counter ?? null
+          peerAccountDigest: auth.accountDigest,
+          targetAccountDigest: receiverDigest
         });
       }
     }
@@ -6842,17 +6908,19 @@ async function handlePublicRoutes(req, env) {
     };
     const result = await handleMessagesRoutes(internalRequest('/d1/messages', 'POST', intBody, baseUrl), env);
     if (result && result.status < 400 && receiverDigest) {
-      await notifyWsServer(env, {
+      await notifyAccountDO(env, receiverDigest, {
         type: 'secure-message',
-        targetAccountDigest: receiverDigest,
         conversationId: convId,
         messageId: intBody.id || null,
         preview: body?.preview || body?.text || '',
         ts: Number(intBody.created_at || Date.now()),
+        count: 1,
+        counter: intBody.counter ?? null,
         senderAccountDigest: auth.accountDigest,
         senderDeviceId: deviceId,
         targetDeviceId: receiverDeviceId || null,
-        counter: intBody.counter ?? null
+        peerAccountDigest: auth.accountDigest,
+        targetAccountDigest: receiverDigest
       });
     }
     return result;
@@ -6995,9 +7063,15 @@ async function handlePublicRoutes(req, env) {
       try { session = (await sessionRes.json())?.session || null; } catch { session = null; }
     }
     // WS notification
-    await notifyWsServer(env, {
-      type: 'call-invite', callId, callerAccountDigest: auth.accountDigest,
-      calleeAccountDigest: peerDigest, targetDeviceId, senderDeviceId, mode: body?.mode || 'voice'
+    await notifyAccountDO(env, peerDigest, {
+      type: 'call-invite',
+      callId,
+      fromAccountDigest: auth.accountDigest,
+      toAccountDigest: peerDigest,
+      fromDeviceId: senderDeviceId,
+      toDeviceId: targetDeviceId,
+      mode: body?.mode || 'voice',
+      ts: Date.now()
     });
     return json({ ok: true, callId, targetDeviceId, session, expiresInSeconds: ttlSeconds });
   }
@@ -7555,11 +7629,22 @@ async function handlePublicRoutes(req, env) {
     // Step 3: WS forceLogout
     const logoutDigest = workerJson?.accountDigest || null;
     if (logoutDigest) {
-      await notifyWsServer(env, {
+      // Force logout via DO, then close all sockets
+      await notifyAccountDO(env, logoutDigest, {
         type: 'force-logout',
-        targetAccountDigest: logoutDigest,
-        reason: 'account purged'
+        reason: 'account purged',
+        ts: Date.now()
       });
+      // Also force-close all WS connections for this account
+      try {
+        const doId = env.ACCOUNT_WS.idFromName(logoutDigest.toUpperCase());
+        const stub = env.ACCOUNT_WS.get(doId);
+        await stub.fetch('https://do/force-close', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ reason: 'account_purged' })
+        });
+      } catch {}
     }
     return json(result);
   }
@@ -7576,6 +7661,11 @@ export default {
       // ── CORS preflight for public API ──
       if (req.method === 'OPTIONS' && (url.pathname.startsWith('/api/') || url.pathname.startsWith('/api'))) {
         return new Response(null, { status: 204, headers: buildCORSHeaders(req, env) });
+      }
+
+      // ── WebSocket upgrade → Durable Object ──
+      if ((url.pathname === '/ws' || url.pathname === '/api/ws') && req.headers.get('Upgrade') === 'websocket') {
+        return handleWsUpgrade(req, env, url);
       }
 
       // ── Public API routes (no HMAC, account-token auth) ──

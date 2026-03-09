@@ -152,7 +152,10 @@ export function createWsIntegration({ deps }) {
     }
     if (!baseHost) baseHost = location.host;
     if (!path.startsWith('/')) path = `/${path}`;
-    const wsUrl = `${proto}//${baseHost}${path}`;
+    // Pass token as query param for Cloudflare Worker DO WebSocket upgrade
+    const deviceId = getDeviceId() || ensureDeviceId() || '';
+    const tokenParam = encodeURIComponent(tokenInfo.token);
+    const wsUrl = `${proto}//${baseHost}${path}?token=${tokenParam}${deviceId ? `&deviceId=${encodeURIComponent(deviceId)}` : ''}`;
     if (wsDebugEnabled) {
       log({ wsConnectUrl: wsUrl });
     }
