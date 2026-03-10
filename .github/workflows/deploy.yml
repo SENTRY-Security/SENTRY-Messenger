@@ -48,7 +48,11 @@ jobs:
           node-version: 20
           cache: 'npm'
 
-      - name: Install Dependencies
+      - name: Install Root Dependencies
+        run: npm install
+
+      - name: Install Worker Dependencies
+        working-directory: data-worker
         run: npm install
 
       - name: Check Wrangler Authentication
