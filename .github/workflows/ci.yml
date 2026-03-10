@@ -1,0 +1,46 @@
+name: CI — Web
+
+on:
+  push:
+    paths:
+      - 'web/**'
+  pull_request:
+    paths:
+      - 'web/**'
+
+jobs:
+  check-web:
+    runs-on: ubuntu-latest
+    name: Typecheck + Test + Build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install Root Dependencies
+        run: npm install
+
+      - name: Install Web Dependencies
+        working-directory: web
+        run: npm install
+
+      - name: TypeScript Typecheck
+        working-directory: web
+        run: npm run typecheck
+
+      - name: Crypto Unit Tests
+        working-directory: web
+        run: npm run test:crypto
+
+      - name: Build
+        working-directory: web
+        run: npm run build
+        env:
+          CI: true
