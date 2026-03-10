@@ -1149,6 +1149,29 @@ export async function drDecryptText(st: DrState, packet: DrPacket, opts: DrDecry
       ['decrypt']
     );
     const aad = buildDrAadFromHeader(packet.header);
+    // [DEBUG] Enhanced decrypt diagnostics — log raw AAD string + key material hashes
+    try {
+      const aadStr = aad ? new TextDecoder().decode(aad) : null;
+      console.warn('[dr-debug:pre-decrypt-detail]', {
+        aadString: aadStr,
+        aadLen: aad?.byteLength ?? null,
+        aadHash: aad ? await hashPrefix(aad) : null,
+        mkHash: mk ? await hashPrefix(mk) : null,
+        mkLen: mk?.byteLength ?? null,
+        ivHash: decryptIv ? await hashPrefix(decryptIv) : null,
+        ivLen: decryptIv?.byteLength ?? null,
+        ctLen: decryptCt?.byteLength ?? null,
+        ctHash: decryptCt ? await hashPrefix(decryptCt) : null,
+        headerN: packet?.header?.n,
+        headerV: packet?.header?.v,
+        headerDeviceId: packet?.header?.device_id || packet?.header?.deviceId || null,
+        ratchetPerformed,
+        usedStoredKey,
+        workingNr: working?.Nr,
+        workingCkRHash: working?.ckR ? await hashPrefix(working.ckR) : null,
+        workingRkHash: working?.rk ? await hashPrefix(working.rk) : null
+      });
+    } catch { /* ignore log errors */ }
     const decryptParams: AesGcmParams = aad
       ? { name: 'AES-GCM', iv: decryptIv! as BufferSource, additionalData: aad as BufferSource }
       : { name: 'AES-GCM', iv: decryptIv! as BufferSource };
@@ -1225,6 +1248,31 @@ export async function drDecryptText(st: DrState, packet: DrPacket, opts: DrDecry
     const isAeadFailure = (drErr?.name === 'OperationError') ||
       (drErr?.code === 'OperationError') ||
       (typeof drErr?.message === 'string' && drErr.message.includes('OperationError'));
+
+    // [DEBUG] On AEAD failure, dump sender-vs-receiver state diagnostics
+    if (isAeadFailure) {
+      try {
+        const failAad = buildDrAadFromHeader(packet?.header);
+        const failAadStr = failAad ? new TextDecoder().decode(failAad) : null;
+        console.error('[dr-debug:AEAD-FAIL-DIAG]', {
+          aadString: failAadStr,
+          headerFull: packet?.header ? JSON.stringify(packet.header) : null,
+          snapshotRkHash: holderSnapshot?.rk ? await hashPrefix(holderSnapshot.rk) : null,
+          snapshotCkRHash: holderSnapshot?.ckR ? await hashPrefix(holderSnapshot.ckR) : null,
+          snapshotNr: holderSnapshot?.Nr,
+          snapshotNs: holderSnapshot?.Ns,
+          workingRkHash: working?.rk ? await hashPrefix(working.rk) : null,
+          workingCkRHash: working?.ckR ? await hashPrefix(working.ckR) : null,
+          workingNr: working?.Nr,
+          skipCount: newSkippedKeys.length,
+          nrAtDerive,
+          ratchetPerformed,
+          usedStoredKey,
+          dhOutHash,
+          ckRSeedHash
+        });
+      } catch { /* ignore */ }
+    }
 
     const ensureDrMeta = (): Record<string, unknown> => {
       if (!drErr.__drMeta) {
