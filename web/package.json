@@ -11,6 +11,9 @@
     "typecheck": "tsc --noEmit",
     "test:crypto": "node --experimental-strip-types --experimental-transform-types --test src/shared/crypto/__tests__/*.test.ts"
   },
+  "dependencies": {
+    "tweetnacl": "^1.0.3"
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "esbuild": "^0.24.0",
