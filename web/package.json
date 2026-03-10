@@ -7,9 +7,13 @@
     "build:raw": "cp -r src dist",
     "verify": "node scripts/verify-build.mjs",
     "verify:cdn": "node scripts/verify-build.mjs --check-cdn --verbose",
-    "preview": "wrangler pages dev ./src"
+    "preview": "wrangler pages dev ./src",
+    "typecheck": "tsc --noEmit",
+    "test:crypto": "node --experimental-strip-types --experimental-transform-types --test src/shared/crypto/__tests__/*.test.ts"
   },
   "devDependencies": {
-    "esbuild": "^0.24.0"
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0"
   }
 }

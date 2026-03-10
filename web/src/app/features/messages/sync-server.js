@@ -104,7 +104,6 @@ async function runServerCatchupJob(conversationId, deps) {
             peerAccountDigest: job.peerAccountDigest || null,
             sendReadReceipt: false,
             silent: true,
-            silent: true,
             sourceTag: `server-catchup:${job.source || 'unknown'}`
         }, deps);
 

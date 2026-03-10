@@ -1301,7 +1301,6 @@ export function hydrateDrStatesFromContactSecrets({ source = 'hydrateDrStatesFro
         peerDeviceId,
         snapshot,
         sourceTag: source || 'hydrateDrStatesFromContactSecrets',
-        sourceTag: source || 'hydrateDrStatesFromContactSecrets',
         // [FIX] PREVENT OVERWRITE: Do not force overwrite if local state is newer.
         // source === 'post-login-hydrate' should respect downgrade protection.
         force: source === 'restore_pipeline_stage3'
