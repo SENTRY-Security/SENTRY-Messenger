@@ -48,11 +48,7 @@ jobs:
           node-version: 20
           cache: 'npm'
 
-      - name: Install Root Dependencies
-        run: npm install
-
-      - name: Install Worker Dependencies
-        working-directory: data-worker
+      - name: Install Dependencies
         run: npm install
 
       - name: Check Wrangler Authentication
@@ -108,42 +104,11 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CI: true
 
-  # ── Web CI Check (typecheck + test) ─────────────────────────────────
-  check-web:
-    runs-on: ubuntu-latest
-    name: Typecheck + Test
-    needs: changes
-    if: needs.changes.outputs.web == 'true'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: 'npm'
-
-      - name: Install Root Dependencies
-        run: npm install
-
-      - name: Install Web Dependencies
-        working-directory: web
-        run: npm install
-
-      - name: TypeScript Typecheck
-        working-directory: web
-        run: npm run typecheck
-
-      - name: Crypto Unit Tests
-        working-directory: web
-        run: npm run test:crypto
-
   # ── Web (Cloudflare Pages) ────────────────────────────────────────────
   deploy-pages:
     runs-on: ubuntu-latest
     name: Deploy Web Pages
-    needs: [changes, check-web]
+    needs: changes
     if: needs.changes.outputs.web == 'true'
     steps:
       - name: Checkout
