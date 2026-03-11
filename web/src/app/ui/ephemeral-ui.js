@@ -1,9 +1,13 @@
 // /app/ui/ephemeral-ui.js
 // Guest-side ephemeral chat controller.
-// Consumes a one-time link token, establishes WS connection, handles timer + messaging.
+// Consumes a one-time link token, establishes E2EE via X3DH + Double Ratchet,
+// then handles timer + encrypted messaging.
 
 import { ephemeralConsume, ephemeralExtend, ephemeralWsToken } from '../api/ephemeral.js';
 import { initI18n, t } from '/locales/index.js';
+import { generateInitialBundle } from '../../shared/crypto/prekeys.js';
+import { x3dhInitiate, drEncryptText, drDecryptText } from '../../shared/crypto/dr.js';
+import { loadNacl, b64 } from '../../shared/crypto/nacl.js';
 
 // Use bootstrap translator until async i18n is ready, then use async t()
 function _t(key, params) {
@@ -16,6 +20,10 @@ let sessionState = null;   // { session_id, conversation_id, guest_digest, guest
 let ws = null;
 let timerInterval = null;
 let destroyed = false;
+
+// ── E2EE State (memory-only) ──
+let ephDrState = null;         // Double Ratchet session state
+let keyExchangeComplete = false; // true after owner sends ack
 
 // ── DOM refs ──
 const splash = document.getElementById('ephSplash');
@@ -43,6 +51,7 @@ const localVideo = document.getElementById('ephLocalVideo');
 const muteBtn = document.getElementById('ephMuteBtn');
 const camToggleBtn = document.getElementById('ephCamToggleBtn');
 const hangupBtn = document.getElementById('ephHangupBtn');
+const wsStatusEl = document.getElementById('ephWsStatus');
 
 // ── Particles ──
 function initParticles() {
@@ -160,16 +169,56 @@ function escapeHtml(str) {
   return d.innerHTML;
 }
 
+// ── WS Status Indicator ──
+function updateWsStatus(state) {
+  if (!wsStatusEl) return;
+  wsStatusEl.classList.remove('online', 'connecting', 'degraded');
+  const labelEl = wsStatusEl.querySelector('span:last-child');
+  if (state === 'online') {
+    wsStatusEl.classList.add('online');
+    if (labelEl) labelEl.textContent = _t('status.online');
+  } else if (state === 'connecting') {
+    wsStatusEl.classList.add('connecting');
+    if (labelEl) labelEl.textContent = _t('status.connecting');
+  } else if (state === 'degraded') {
+    wsStatusEl.classList.add('degraded');
+    if (labelEl) labelEl.textContent = _t('status.unstableNetwork');
+  } else {
+    if (labelEl) labelEl.textContent = _t('status.offline');
+  }
+}
+
 // ── Send ──
-function sendMessage() {
+async function sendMessage() {
   const text = inputEl.value.trim();
   if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
-  ws.send(JSON.stringify({
-    type: 'ephemeral-message',
-    conversationId: sessionState.conversation_id,
-    text,
-    ts: Date.now()
-  }));
+
+  // E2EE: encrypt with Double Ratchet if key exchange is complete
+  if (ephDrState && keyExchangeComplete) {
+    try {
+      const packet = await drEncryptText(ephDrState, text, {
+        deviceId: sessionState.guest_device_id,
+        version: 1
+      });
+      ws.send(JSON.stringify({
+        type: 'ephemeral-message',
+        conversationId: sessionState.conversation_id,
+        header: packet.header,
+        iv_b64: packet.iv_b64,
+        ciphertext_b64: packet.ciphertext_b64,
+        ts: Date.now()
+      }));
+    } catch (err) {
+      console.error('[EphE2EE] encrypt failed', err);
+      addSystemMessage('Encryption failed: ' + (err.message || ''));
+      return;
+    }
+  } else {
+    // Key exchange not yet complete — queue or reject
+    addSystemMessage(_t('ephemeral.e2eEstablished') ? 'Waiting for encryption setup...' : 'Encryption not ready');
+    return;
+  }
+
   addMessage(text, 'outgoing', Date.now());
   inputEl.value = '';
   sendBtn.disabled = true;
@@ -189,6 +238,7 @@ function connectWs() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${proto}//${location.host}/api/ws?token=${encodeURIComponent(sessionState.ws_token)}&deviceId=${encodeURIComponent(sessionState.guest_device_id)}`;
   ws = new WebSocket(wsUrl);
+  updateWsStatus('connecting');
 
   ws.onopen = () => {
     ws.send(JSON.stringify({
@@ -196,6 +246,11 @@ function connectWs() {
       accountDigest: sessionState.guest_digest,
       token: sessionState.ws_token
     }));
+
+    // Send key exchange once WS is connected
+    if (ephDrState && !keyExchangeComplete) {
+      sendKeyExchange();
+    }
   };
 
   ws.onmessage = (evt) => {
@@ -206,6 +261,7 @@ function connectWs() {
   };
 
   ws.onclose = () => {
+    updateWsStatus('offline');
     if (!destroyed) {
       // Reconnect after delay
       setTimeout(() => {
@@ -214,7 +270,9 @@ function connectWs() {
     }
   };
 
-  ws.onerror = () => { /* onclose will handle reconnect */ };
+  ws.onerror = () => {
+    updateWsStatus('offline');
+  };
 }
 
 async function refreshWsToken() {
@@ -227,11 +285,47 @@ async function refreshWsToken() {
   } catch { /* session may be expired */ }
 }
 
+// ── E2EE: Send key exchange to owner ──
+function sendKeyExchange() {
+  if (!ws || ws.readyState !== WebSocket.OPEN || !sessionState?._guestBundlePub || !ephDrState) return;
+  ws.send(JSON.stringify({
+    type: 'ephemeral-key-exchange',
+    sessionId: sessionState.session_id,
+    conversationId: sessionState.conversation_id,
+    guestBundle: {
+      ik_pub: sessionState._guestBundlePub.ik_pub,
+      spk_pub: sessionState._guestBundlePub.spk_pub,
+      spk_sig: sessionState._guestBundlePub.spk_sig,
+      ek_pub: b64(ephDrState.myRatchetPub),
+      opk_id: sessionState._usedOpkId
+    }
+  }));
+}
+
 function handleWsMessage(msg) {
   switch (msg.type) {
     case 'ephemeral-message':
       if (msg.conversationId === sessionState.conversation_id) {
-        addMessage(msg.text, 'incoming', msg.ts);
+        // E2EE: decrypt with Double Ratchet
+        if (ephDrState && msg.header && msg.ciphertext_b64) {
+          drDecryptText(ephDrState, {
+            header: msg.header,
+            iv_b64: msg.iv_b64,
+            ciphertext_b64: msg.ciphertext_b64
+          }).then(plaintext => {
+            addMessage(plaintext, 'incoming', msg.ts);
+          }).catch(err => {
+            console.error('[EphE2EE] decrypt failed', err);
+            addSystemMessage('Decryption failed');
+          });
+        }
+      }
+      break;
+    case 'ephemeral-key-exchange-ack':
+      if (msg.sessionId === sessionState.session_id) {
+        keyExchangeComplete = true;
+        addSystemMessage(_t('ephemeral.e2eEstablished'));
+        console.log('[EphE2EE] key exchange complete, encryption ready');
       }
       break;
     case 'ephemeral-extended':
@@ -255,6 +349,8 @@ function handleWsMessage(msg) {
       handleCallSignal(msg);
       break;
     case 'hello':
+      updateWsStatus('online');
+      break;
     case 'pong':
       break;
     case 'ping':
@@ -481,8 +577,10 @@ function destroyChat() {
   if (ws) { try { ws.close(); } catch {} }
   chatUI.style.display = 'none';
   destroyedEl.classList.add('active');
-  // Clear session data
+  // Clear all state including crypto
   sessionState = null;
+  ephDrState = null;
+  keyExchangeComplete = false;
   sessionStorage.clear();
 }
 
@@ -505,11 +603,36 @@ async function boot() {
     await sleep(400);
 
     setProgress(40, _t('ephemeral.generatingTempKey'));
-    await sleep(300);
 
-    setProgress(60, _t('ephemeral.exchangingProtocol'));
+    // Initialize crypto library
+    await loadNacl();
+
     const data = await ephemeralConsume({ token });
     sessionState = data;
+
+    setProgress(60, _t('ephemeral.exchangingProtocol'));
+
+    // ── E2EE: X3DH key exchange ──
+    const ownerBundle = data.prekey_bundle;
+    if (ownerBundle && ownerBundle.ik_pub && ownerBundle.spk_pub && ownerBundle.spk_sig && ownerBundle.opks?.length) {
+      // Owner provided a valid prekey bundle — perform X3DH
+      const { devicePriv: guestPriv, bundlePub: guestBundlePub } = await generateInitialBundle(1, 1);
+
+      const ownerBundleWithOpk = {
+        ik_pub: ownerBundle.ik_pub,
+        spk_pub: ownerBundle.spk_pub,
+        spk_sig: ownerBundle.spk_sig,
+        opk: ownerBundle.opks[0]
+      };
+
+      ephDrState = await x3dhInitiate(guestPriv, ownerBundleWithOpk);
+
+      // Store guest bundle info for sending key-exchange after WS connects
+      sessionState._guestBundlePub = guestBundlePub;
+      sessionState._usedOpkId = ownerBundleWithOpk.opk.id;
+    } else {
+      console.warn('[EphE2EE] Owner bundle missing or incomplete, E2EE unavailable');
+    }
 
     setProgress(80, _t('ephemeral.establishingChannel'));
     await sleep(300);

@@ -2431,6 +2431,7 @@ async function handleEphemeralRoutes(req, env) {
         type: 'ephemeral_session_started',
         sessionId,
         conversationId,
+        inviteToken: token,
         guestDigest,
         guestDeviceId,
         ownerDigest: invite.owner_digest,

@@ -664,18 +664,29 @@ export function createWsIntegration({ deps }) {
       return;
     }
     // ── Ephemeral chat events ──
-    if (type === 'ephemeral_session_started' || type === 'ephemeral-extended' || type === 'ephemeral-deleted' || type === 'ephemeral-message') {
+    if (type === 'ephemeral_session_started' || type === 'ephemeral-extended' || type === 'ephemeral-deleted'
+        || type === 'ephemeral-message' || type === 'ephemeral-key-exchange' || type === 'ephemeral-key-exchange-ack') {
       const mp = getMessagesPane();
       const handled = mp?.ephemeralController?.handleWsMessage?.(msg);
       if (type === 'ephemeral-message' && msg?.conversationId) {
-        // Also render in the active conversation if open
-        mp?.handleIncomingSecureMessage?.({
-          type: 'ephemeral-message',
-          conversationId: msg.conversationId,
-          text: msg.text,
-          ts: msg.ts,
-          senderAccountDigest: msg.senderDigest || msg.fromDigest || ''
-        });
+        // Decrypt the encrypted message, then render in the active conversation
+        const ctrl = mp?.ephemeralController;
+        if (ctrl && msg.header && msg.ciphertext_b64) {
+          // E2EE path: decrypt then render
+          ctrl.decryptIncomingMessage(msg).then(result => {
+            if (result) {
+              mp?.handleIncomingSecureMessage?.({
+                type: 'ephemeral-message',
+                conversationId: msg.conversationId,
+                text: result.text,
+                ts: result.ts,
+                senderAccountDigest: msg.senderDigest || msg.fromDigest || ''
+              });
+            }
+          }).catch(err => {
+            console.warn('[ws] ephemeral decrypt failed', err?.message);
+          });
+        }
       }
       return;
     }

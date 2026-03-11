@@ -5,12 +5,16 @@
  * - Ephemeral conversation list items (timer, colors, dashed border, swipe-delete)
  * - In-conversation timer bar + extend button
  * - WS event handling for ephemeral messages
+ * - E2EE: X3DH key exchange + Double Ratchet encrypt/decrypt
  */
 
 import { BaseController } from './base-controller.js';
 import { ephemeralCreateLink, ephemeralDelete, ephemeralList, ephemeralExtend } from '../../../api/ephemeral.js';
 import { escapeHtml } from '../ui-utils.js';
 import { t } from '/locales/index.js';
+import { generateInitialBundle } from '../../../../shared/crypto/prekeys.js';
+import { x3dhRespond, drEncryptText, drDecryptText } from '../../../../shared/crypto/dr.js';
+import { loadNacl } from '../../../../shared/crypto/nacl.js';
 
 const EPHEMERAL_TTL_SEC = 600; // 10 minutes
 
@@ -20,6 +24,14 @@ export class EphemeralController extends BaseController {
     /** @type {Map<string, {session_id, conversation_id, guest_digest, expires_at, extended_count, created_at}>} */
     this.ephemeralSessions = new Map();
     this._timerInterval = null;
+
+    // ── E2EE state (memory-only, destroyed with session) ──
+    /** @type {Map<string, object>} token → devicePriv (owner's ephemeral keypair, awaiting guest key-exchange) */
+    this._pendingInviteKeys = new Map();
+    /** @type {Map<string, object>} session_id → DR state (active Double Ratchet sessions) */
+    this._drStates = new Map();
+    /** @type {Map<string, string>} session_id → token (maps sessions back to invite tokens for key lookup) */
+    this._sessionTokenMap = new Map();
   }
 
   init() {
@@ -34,6 +46,10 @@ export class EphemeralController extends BaseController {
 
   destroy() {
     if (this._timerInterval) clearInterval(this._timerInterval);
+    // Clear all crypto state
+    this._drStates.clear();
+    this._pendingInviteKeys.clear();
+    this._sessionTokenMap.clear();
     super.destroy();
   }
 
@@ -78,8 +94,16 @@ export class EphemeralController extends BaseController {
     modal.setAttribute('aria-hidden', 'false');
 
     try {
-      const data = await ephemeralCreateLink({});
+      // Generate ephemeral X3DH keypair for this link (1 OPK is sufficient)
+      await loadNacl();
+      const { devicePriv, bundlePub } = await generateInitialBundle(1, 1);
+
+      const data = await ephemeralCreateLink({ prekeyBundle: bundlePub });
       const url = `${location.origin}/e/${data.token}`;
+
+      // Store private key material, awaiting guest key-exchange
+      this._pendingInviteKeys.set(data.token, devicePriv);
+
       if (loading) loading.style.display = 'none';
       if (urlInput) urlInput.value = url;
       if (result) result.style.display = 'block';
@@ -166,6 +190,9 @@ export class EphemeralController extends BaseController {
       const remaining = session.expires_at - now;
       if (remaining <= 0) {
         this.ephemeralSessions.delete(id);
+        // Clean up crypto state for expired session
+        this._drStates.delete(id);
+        this._sessionTokenMap.delete(id);
         needsRender = true;
         continue;
       }
@@ -340,11 +367,71 @@ export class EphemeralController extends BaseController {
     return null;
   }
 
+  /**
+   * Check if a DR session is established for the given session ID.
+   */
+  hasEncryptionReady(sessionId) {
+    return this._drStates.has(sessionId);
+  }
+
+  // ── E2EE: Send encrypted message ──
+  /**
+   * Encrypt and send a message for an ephemeral session.
+   * @param {string} sessionId
+   * @param {string} text - plaintext message
+   */
+  async sendEncryptedMessage(sessionId, text) {
+    const drSt = this._drStates.get(sessionId);
+    if (!drSt) throw new Error('no DR state for session');
+    const session = this.ephemeralSessions.get(sessionId);
+    if (!session) throw new Error('session not found');
+
+    const senderDeviceId = this.deps.ensureDeviceId?.() || '';
+    const packet = await drEncryptText(drSt, text, {
+      deviceId: senderDeviceId,
+      version: 1
+    });
+
+    this.deps.wsSend?.({
+      type: 'ephemeral-message',
+      conversationId: session.conversation_id,
+      header: packet.header,
+      iv_b64: packet.iv_b64,
+      ciphertext_b64: packet.ciphertext_b64,
+      ts: Date.now()
+    });
+  }
+
+  // ── E2EE: Decrypt incoming message ──
+  /**
+   * Decrypt an incoming ephemeral message.
+   * @returns {{ text: string, ts: number } | null}
+   */
+  async decryptIncomingMessage(msg) {
+    if (!msg?.conversationId) return null;
+    const session = this.getSessionByConversationId(msg.conversationId);
+    if (!session) return null;
+    const drSt = this._drStates.get(session.session_id);
+    if (!drSt) return null;
+
+    const plaintext = await drDecryptText(drSt, {
+      header: msg.header,
+      iv_b64: msg.iv_b64,
+      ciphertext_b64: msg.ciphertext_b64
+    });
+    return { text: plaintext, ts: msg.ts };
+  }
+
   // ── Delete ──
   async _deleteSession(sessionId) {
     try {
       await ephemeralDelete({ sessionId });
       this.ephemeralSessions.delete(sessionId);
+      // Clean up crypto state
+      this._drStates.delete(sessionId);
+      const token = this._sessionTokenMap.get(sessionId);
+      if (token) this._pendingInviteKeys.delete(token);
+      this._sessionTokenMap.delete(sessionId);
       this._requestListRender();
       this.hideConvTimerBar();
     } catch (err) {
@@ -357,12 +444,22 @@ export class EphemeralController extends BaseController {
     // This is called by the WS integration layer
   }
 
+  /**
+   * Find the owner's private key for a session by looking up the invite token.
+   * The session_started event includes the invite_token, which we map at that point.
+   */
+  _findPrivKeyForSession(sessionId) {
+    const token = this._sessionTokenMap.get(sessionId);
+    if (!token) return null;
+    return this._pendingInviteKeys.get(token) || null;
+  }
+
   handleWsMessage(msg) {
     if (!msg?.type) return false;
     switch (msg.type) {
       case 'ephemeral_session_started': {
         // Guest consumed the link — add session to owner's list
-        this.ephemeralSessions.set(msg.sessionId, {
+        const sessionData = {
           session_id: msg.sessionId,
           conversation_id: msg.conversationId,
           guest_digest: msg.guestDigest,
@@ -370,8 +467,26 @@ export class EphemeralController extends BaseController {
           expires_at: msg.expiresAt,
           extended_count: 0,
           created_at: Math.floor(Date.now() / 1000)
-        });
+        };
+        this.ephemeralSessions.set(msg.sessionId, sessionData);
+
+        // Map session_id → invite_token for key lookup
+        if (msg.inviteToken) {
+          this._sessionTokenMap.set(msg.sessionId, msg.inviteToken);
+        }
+
         this._requestListRender();
+        return true;
+      }
+      case 'ephemeral-key-exchange': {
+        // Guest sent their public key bundle — complete X3DH as responder
+        this._handleKeyExchange(msg).catch(err => {
+          console.warn('[Ephemeral] key-exchange failed', err?.message);
+        });
+        return true;
+      }
+      case 'ephemeral-key-exchange-ack': {
+        // Acknowledgement (owner side doesn't need to act on this)
         return true;
       }
       case 'ephemeral-extended': {
@@ -384,17 +499,55 @@ export class EphemeralController extends BaseController {
       }
       case 'ephemeral-deleted': {
         this.ephemeralSessions.delete(msg.sessionId);
+        this._drStates.delete(msg.sessionId);
+        this._sessionTokenMap.delete(msg.sessionId);
         this._requestListRender();
         this.hideConvTimerBar();
         return true;
       }
       case 'ephemeral-message': {
-        // Forward to the message rendering pipeline
-        return false; // Let normal message handler process it
+        // Encrypted message — decrypt and forward to rendering pipeline
+        // Decryption is handled by the WS integration layer calling decryptIncomingMessage()
+        return false; // Let WS integration handle it
       }
       default:
         return false;
     }
+  }
+
+  // ── E2EE: Handle key exchange from guest ──
+  async _handleKeyExchange(msg) {
+    const sessionId = msg.sessionId;
+    const session = this.ephemeralSessions.get(sessionId);
+    if (!session) {
+      console.warn('[Ephemeral] key-exchange: session not found', sessionId);
+      return;
+    }
+
+    const ownerPriv = this._findPrivKeyForSession(sessionId);
+    if (!ownerPriv) {
+      console.warn('[Ephemeral] key-exchange: no private key for session', sessionId);
+      return;
+    }
+
+    await loadNacl();
+
+    // X3DH: Owner as responder
+    const drSt = await x3dhRespond(ownerPriv, msg.guestBundle);
+    this._drStates.set(sessionId, drSt);
+
+    // Clean up pending invite key (no longer needed)
+    const token = this._sessionTokenMap.get(sessionId);
+    if (token) this._pendingInviteKeys.delete(token);
+
+    // Send ack to guest so they know encryption is ready
+    this.deps.wsSend?.({
+      type: 'ephemeral-key-exchange-ack',
+      sessionId,
+      targetAccountDigest: session.guest_digest
+    });
+
+    console.log('[Ephemeral] E2EE session established for', sessionId);
   }
 
   // ── Helpers ──

@@ -361,37 +361,47 @@ export class AccountWebSocket {
     }
     // Ephemeral chat message relay: forward to the target peer's DO
     if (msg.type === 'ephemeral-message') {
-      return this._handleEphemeralMessageRelay(ws, msg, att);
+      return this._handleEphemeralRelay(ws, msg, att);
+    }
+    // Ephemeral key exchange relay: forward key-exchange and ack between peers
+    if (msg.type === 'ephemeral-key-exchange' || msg.type === 'ephemeral-key-exchange-ack') {
+      return this._handleEphemeralRelay(ws, msg, att);
     }
   }
 
-  async _handleEphemeralMessageRelay(ws, msg, att) {
+  async _handleEphemeralRelay(ws, msg, att) {
+    // Generic relay for all ephemeral WS message types.
+    // Looks up the ephemeral session to find the target peer, then forwards the
+    // entire message payload as-is (the server never reads encrypted content).
     const conversationId = String(msg.conversationId || '').trim();
-    if (!conversationId) return;
-    // Look up the ephemeral session to find the target peer
+    const sessionId = String(msg.sessionId || '').trim();
+    if (!conversationId && !sessionId) return;
     try {
-      const session = await this.env.DB.prepare(
-        `SELECT owner_digest, guest_digest FROM ephemeral_sessions WHERE conversation_id = ? AND deleted_at IS NULL`
-      ).bind(conversationId).first();
+      // Look up session by conversationId or sessionId
+      let session;
+      if (conversationId) {
+        session = await this.env.DB.prepare(
+          `SELECT owner_digest, guest_digest FROM ephemeral_sessions WHERE conversation_id = ? AND deleted_at IS NULL`
+        ).bind(conversationId).first();
+      }
+      if (!session && sessionId) {
+        session = await this.env.DB.prepare(
+          `SELECT owner_digest, guest_digest FROM ephemeral_sessions WHERE session_id = ? AND deleted_at IS NULL`
+        ).bind(sessionId).first();
+      }
       if (!session) return;
-      // Determine target: if sender is owner, target is guest (but guest may not have a DO)
-      // If sender is guest, target is owner
       const senderDigest = att.accountDigest || '';
       const targetDigest = senderDigest === session.owner_digest ? session.guest_digest : session.owner_digest;
       if (!targetDigest) return;
-      // Forward via notify
+      // Forward entire message to target peer's DO (opaque relay — server cannot read content)
       const doId = this.env.ACCOUNT_WS.idFromName(targetDigest);
       const stub = this.env.ACCOUNT_WS.get(doId);
+      // Build relay payload: forward all fields from the original message, add senderDigest
+      const relayPayload = { ...msg, senderDigest: senderDigest };
       await stub.fetch('https://do/notify', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          type: 'ephemeral-message',
-          conversationId,
-          text: msg.text,
-          ts: msg.ts || Date.now(),
-          senderDigest: senderDigest
-        })
+        body: JSON.stringify(relayPayload)
       });
     } catch (err) {
       console.warn('[ws-do] ephemeral relay error:', err?.message || err);
