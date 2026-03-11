@@ -10,10 +10,14 @@ Ephemeral 對話目前為**完全明文通道**，與正常對話的 E2EE 標準
 
 ## 修復目標
 
-讓 ephemeral 對話的**訊息與通話信令**都走 E2EE，達到與正常對話相同的安全等級：
+讓 ephemeral 對話的**訊息**走 E2EE，達到與正常對話相同的安全等級：
 - X3DH 金鑰交換建立共享密鑰
-- Double Ratchet 加密所有訊息與通話信令
+- Double Ratchet 加密所有文字訊息
 - 伺服器僅中繼密文，無法讀取明文
+
+> **範圍限定**：通話信令（SDP/ICE）加密不在本次範圍。
+> 正常對話的通話信令目前也是明文走 WS（`calls/signaling.js`），
+> 後續統一升級正常對話與 ephemeral 的通話信令加密。
 
 ## 複用策略分析
 
@@ -30,8 +34,8 @@ Ephemeral **直接複用底層**，不經過上層：
 | `generateInitialBundle` | `shared/crypto/prekeys.js` | **直接 import** — 產生臨時 X3DH 金鑰對 |
 | `x3dhInitiate` | `shared/crypto/dr.js` | **直接 import** — Guest 側建立 DR state |
 | `x3dhRespond` | `shared/crypto/dr.js` | **直接 import** — Owner 側建立 DR state |
-| `drEncryptText` | `shared/crypto/dr.js` | **直接 import** — 加密訊息/信令 |
-| `drDecryptText` | `shared/crypto/dr.js` | **直接 import** — 解密訊息/信令 |
+| `drEncryptText` | `shared/crypto/dr.js` | **直接 import** — 加密訊息 |
+| `drDecryptText` | `shared/crypto/dr.js` | **直接 import** — 解密訊息 |
 | `loadNacl` | `shared/crypto/nacl.js` | **直接 import** — 確保 crypto 初始化 |
 
 ### 不複用的模組（上層耦合太深）
@@ -251,51 +255,7 @@ case 'ephemeral-message': {
 }
 ```
 
-### Step 6: 加密通話信令
-
-**檔案**: `web/src/app/ui/ephemeral-ui.js`
-
-所有通話信令（`call-offer`、`call-answer`、`call-ice-candidate`）的 payload 經 DR 加密後傳送：
-
-```javascript
-// Before (明文 SDP):
-wsSendJSON({
-  type: 'call-offer',
-  description: pc.localDescription.toJSON()
-});
-
-// After (加密 SDP):
-const sdpPacket = await drEncryptText(drState, JSON.stringify(pc.localDescription.toJSON()), {
-  deviceId: sessionState.guest_device_id,
-  version: 1
-});
-wsSendJSON({
-  type: 'call-offer',
-  callId,
-  targetAccountDigest: sessionState.owner_digest,
-  senderDeviceId: sessionState.guest_device_id,
-  encrypted: {
-    header: sdpPacket.header,
-    iv_b64: sdpPacket.iv_b64,
-    ciphertext_b64: sdpPacket.ciphertext_b64
-  }
-});
-```
-
-接收端解密：
-```javascript
-case 'call-answer':
-  if (msg.encrypted) {
-    const sdpJson = await drDecryptText(drState, msg.encrypted);
-    const description = JSON.parse(sdpJson);
-    pc.setRemoteDescription(new RTCSessionDescription(description));
-  }
-  break;
-```
-
-ICE candidates 同理。通話建立後的**媒體流**仍由 WebRTC DTLS-SRTP 保護（與正常對話相同）。
-
-### Step 7: 伺服器端中繼調整
+### Step 6: 伺服器端中繼調整
 
 **檔案**: `data-worker/src/account-ws.js`
 
@@ -310,20 +270,17 @@ body: JSON.stringify({
 
 // After: 轉發加密封包（伺服器看不到明文）
 body: JSON.stringify({
-  type: msg.type,  // 保留原始 type
+  type: 'ephemeral-message',
   conversationId,
   header: msg.header,
   iv_b64: msg.iv_b64,
   ciphertext_b64: msg.ciphertext_b64,
   ts: msg.ts || Date.now(),
-  senderDigest: senderDigest,
-  // 通話信令也走加密
-  ...(msg.encrypted ? { encrypted: msg.encrypted } : {}),
-  ...(msg.callId ? { callId: msg.callId } : {})
+  senderDigest: senderDigest
 })
 ```
 
-### Step 8: 清理與銷毀
+### Step 7: 清理與銷毀
 
 1. **Owner 端**：
    - `_deleteSession()` 時：`this._drStates.delete(sessionId)`
@@ -355,7 +312,7 @@ body: JSON.stringify({
 | Ratchet 推進 | 自動 (每次 send/recv) | **相同機制** |
 | State 儲存 | IndexedDB (持久化) | 記憶體 (session 結束銷毀) |
 | 訊息持久化 | `messages_secure` + vault | 不持久化（ephemeral 設計） |
-| 通話信令 | DR 加密 | DR 加密 |
+| 通話信令 | 明文 WS（`calls/signaling.js`） | 明文 WS（與正常對話一致，後續統一升級） |
 | 通話媒體 | DTLS-SRTP | DTLS-SRTP |
 
 ## 金鑰生命週期
@@ -373,7 +330,8 @@ Owner 收到 key-exchange:
   x3dhRespond(ownerPriv, guestBundle) → Owner DR state (記憶體)
   WS → 傳送 ack 給 Guest
   ↓
-雙方以 DR 加密通訊（訊息 + 通話信令）
+雙方以 DR 加密通訊（文字訊息）
+通話信令維持明文 WS（與正常對話一致，後續統一升級）
   ↓
 Session 過期/刪除:
   雙方清除記憶體中的 DR state
@@ -401,5 +359,10 @@ Session 過期/刪除:
 | 檔案 | 修改內容 |
 |------|---------|
 | `web/src/app/ui/mobile/controllers/ephemeral-controller.js` | 加入 prekey 生成、x3dhRespond、DR encrypt/decrypt |
-| `web/src/app/ui/ephemeral-ui.js` | 加入 prekey 生成、x3dhInitiate、DR encrypt/decrypt、通話信令加密 |
+| `web/src/app/ui/ephemeral-ui.js` | 加入 prekey 生成、x3dhInitiate、DR encrypt/decrypt |
 | `data-worker/src/account-ws.js` | 中繼改為轉發密文封包（不含 text）、新增 key-exchange 中繼 |
+
+## 不在本次範圍
+
+- **通話信令加密**：正常對話也是明文 WS，後續統一升級
+- **DR state 持久化**：頁面重整 = 對話終止，符合 ephemeral 設計精神
