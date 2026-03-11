@@ -133,6 +133,7 @@ import { MessageStatusController } from './controllers/message-status-controller
 import { ActiveConversationController } from './controllers/active-conversation-controller.js';
 import { MessageSendingController } from './controllers/message-sending-controller.js';
 import { MediaHandlingController } from './controllers/media-handling-controller.js';
+import { EphemeralController } from './controllers/ephemeral-controller.js';
 
 // sentCallLogIds, callLogPlaceholders removed (managed by CallLogController)
 
@@ -473,7 +474,8 @@ export function initMessagesPane({
     messageFlow: new MessageFlowController(deps), // Note: internal logic updated, bumping main dep later if needed, but import is static in module scope
     activeConversation: new ActiveConversationController(deps),
     messageSending: new MessageSendingController(deps),
-    mediaHandling: new MediaHandlingController(deps)
+    mediaHandling: new MediaHandlingController(deps),
+    ephemeral: new EphemeralController(deps)
   };
 
   // Inject circular dependencies into deps
@@ -1699,6 +1701,7 @@ export function initMessagesPane({
     },
     updateLayoutMode: (args) => controllers.layout.updateLayoutMode(args),
     renderConversationList: () => controllers.conversationList.renderConversationList(),
+    ephemeralController: controllers.ephemeral,
     refreshConversationPreviews: (args) => controllers.conversationList.refreshPreviews(args),
     syncConversationThreadsFromContacts: () => controllers.conversationList.syncFromContacts(),
     refreshContactsUnreadBadges: () => controllers.conversationList.refreshUnreadBadges(),

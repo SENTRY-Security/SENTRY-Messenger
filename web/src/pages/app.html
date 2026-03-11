@@ -559,6 +559,13 @@
             </div>
             <div id="groupDrafts" class="conversation-group-drafts" aria-live="polite" style="display:none"
               aria-hidden="true"></div>
+            <div class="conversation-ephemeral-actions">
+              <button id="btnCreateEphemeralLink" type="button" class="ephemeral-create-icon-btn" title="建立臨時對話連結" aria-label="建立臨時對話連結">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="3 2">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
+              </button>
+            </div>
             <ul id="conversationList" class="conversation-list"></ul>
           </aside>
           <div class="messages-thread">
@@ -813,6 +820,33 @@
             <button type="button" class="primary" id="customLogoutSave" data-i18n="common.save"></button>
           </div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Ephemeral Chat Link Modal -->
+  <div id="ephemeralLinkModal" class="modal ephemeral-link-modal" aria-hidden="true" style="display:none">
+    <div class="modal-backdrop" data-eph-close></div>
+    <div class="modal-panel ephemeral-link-panel" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <div class="modal-title">建立臨時對話連結</div>
+        <button class="modal-close" data-eph-close aria-label="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="ephemeral-link-desc">產生一次性連結，傳送給沒有此 App 的人即可開始臨時加密對話。連結僅能使用一次，對話限時 10 分鐘。</p>
+        <div id="ephLinkLoading" class="ephemeral-link-loading">
+          <div class="ephemeral-link-spinner"></div>
+          <span>產生連結中...</span>
+        </div>
+        <div id="ephLinkResult" class="ephemeral-link-result" style="display:none">
+          <div class="ephemeral-link-url-box">
+            <input id="ephLinkUrl" type="text" readonly class="ephemeral-link-url" />
+            <button id="ephLinkCopy" type="button" class="ephemeral-link-copy">複製</button>
+          </div>
+          <div id="ephLinkCopied" class="ephemeral-link-copied" style="display:none">✓ 已複製到剪貼簿</div>
+          <p class="ephemeral-link-note">⚠ 此連結僅能點擊一次，請勿重複分享</p>
+        </div>
+        <div id="ephLinkError" class="ephemeral-link-error" style="display:none"></div>
       </div>
     </div>
   </div>

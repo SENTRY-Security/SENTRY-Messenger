@@ -359,6 +359,43 @@ export class AccountWebSocket {
     if (msg.type === 'contacts-reload') {
       return this._handleContactsReloadRelay(ws, msg, att);
     }
+    // Ephemeral chat message relay: forward to the target peer's DO
+    if (msg.type === 'ephemeral-message') {
+      return this._handleEphemeralMessageRelay(ws, msg, att);
+    }
+  }
+
+  async _handleEphemeralMessageRelay(ws, msg, att) {
+    const conversationId = String(msg.conversationId || '').trim();
+    if (!conversationId) return;
+    // Look up the ephemeral session to find the target peer
+    try {
+      const session = await this.env.DB.prepare(
+        `SELECT owner_digest, guest_digest FROM ephemeral_sessions WHERE conversation_id = ? AND deleted_at IS NULL`
+      ).bind(conversationId).first();
+      if (!session) return;
+      // Determine target: if sender is owner, target is guest (but guest may not have a DO)
+      // If sender is guest, target is owner
+      const senderDigest = att.accountDigest || '';
+      const targetDigest = senderDigest === session.owner_digest ? session.guest_digest : session.owner_digest;
+      if (!targetDigest) return;
+      // Forward via notify
+      const doId = this.env.ACCOUNT_WS.idFromName(targetDigest);
+      const stub = this.env.ACCOUNT_WS.get(doId);
+      await stub.fetch('https://do/notify', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          type: 'ephemeral-message',
+          conversationId,
+          text: msg.text,
+          ts: msg.ts || Date.now(),
+          senderDigest: senderDigest
+        })
+      });
+    } catch (err) {
+      console.warn('[ws-do] ephemeral relay error:', err?.message || err);
+    }
   }
 
   async webSocketClose(ws, code, reason) {

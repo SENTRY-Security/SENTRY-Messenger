@@ -16,6 +16,12 @@ export const onRequest: PagesFunction<{
     }
   }
 
+  // --- Ephemeral chat link shorthand: /e/{token} → /pages/ephemeral.html#{token} ---
+  const ephMatch = normalised.match(/^\/e\/([a-f0-9]{32})$/i);
+  if (ephMatch) {
+    return Response.redirect(`${url.origin}/pages/ephemeral.html#${ephMatch[1]}`, 302);
+  }
+
   if (!url.pathname.startsWith('/api/')) {
     return next();
   }

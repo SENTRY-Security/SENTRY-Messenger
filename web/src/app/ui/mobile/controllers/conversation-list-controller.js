@@ -910,6 +910,9 @@ export class ConversationListController extends BaseController {
             this.deps.setupSwipe?.(li);
             this.elements.conversationList.appendChild(li);
         }
+
+        // Render ephemeral sessions pinned at top
+        this.deps.controllers?.ephemeral?.renderEphemeralItems?.(this.elements.conversationList);
     }
 
     /**

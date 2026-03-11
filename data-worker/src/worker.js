@@ -1468,6 +1468,35 @@ async function ensureDataTables(env) {
         console.warn('ensureDataTables: pairing_code columns add failed (may already exist)', alterErr?.message);
       }
     }
+    // Auto-create ephemeral_invites + ephemeral_sessions tables (migration 0010)
+    if (!tableNames.has('ephemeral_invites')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS ephemeral_invites (
+          token TEXT PRIMARY KEY, owner_digest TEXT NOT NULL, owner_device_id TEXT NOT NULL,
+          prekey_bundle_json TEXT NOT NULL, consumed_at INTEGER, expires_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          FOREIGN KEY (owner_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ephemeral_invites_owner ON ephemeral_invites(owner_digest)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ephemeral_invites_expires ON ephemeral_invites(expires_at)`).run();
+        console.log('ensureDataTables: created ephemeral_invites table');
+      } catch (e) { console.warn('ensureDataTables: ephemeral_invites create failed', e?.message); }
+    }
+    if (!tableNames.has('ephemeral_sessions')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS ephemeral_sessions (
+          session_id TEXT PRIMARY KEY, invite_token TEXT NOT NULL, owner_digest TEXT NOT NULL,
+          owner_device_id TEXT NOT NULL, guest_digest TEXT NOT NULL, guest_device_id TEXT NOT NULL,
+          conversation_id TEXT NOT NULL, expires_at INTEGER NOT NULL, extended_count INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), deleted_at INTEGER,
+          FOREIGN KEY (owner_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE,
+          FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ephemeral_sessions_owner ON ephemeral_sessions(owner_digest, deleted_at)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ephemeral_sessions_guest ON ephemeral_sessions(guest_digest)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ephemeral_sessions_conv ON ephemeral_sessions(conversation_id)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ephemeral_sessions_expires ON ephemeral_sessions(expires_at)`).run();
+        console.log('ensureDataTables: created ephemeral_sessions table');
+      } catch (e) { console.warn('ensureDataTables: ephemeral_sessions create failed', e?.message); }
+    }
     if (missingTables.length || missingColumns.length) {
       const detail = [
         ...missingTables.map((name) => `table:${name}`),
@@ -2294,6 +2323,266 @@ async function handleInviteDropboxRoutes(req, env) {
   }
 
   return null;
+}
+
+// ---- Ephemeral Chat Sessions ----
+const EPHEMERAL_TTL_SEC = 600; // 10 minutes
+const EPHEMERAL_MAX_PER_OWNER = 2;
+
+async function handleEphemeralRoutes(req, env) {
+  const url = new URL(req.url);
+
+  // POST /d1/ephemeral/create-link — owner creates a one-time link
+  if (req.method === 'POST' && url.pathname === '/d1/ephemeral/create-link') {
+    const body = await req.json();
+    const ownerDigest = normalizeAccountDigest(body.ownerDigest);
+    const ownerDeviceId = body.ownerDeviceId || '';
+    const prekeyBundleJson = body.prekeyBundleJson || '{}';
+    if (!ownerDigest) return json({ error: 'BadRequest', message: 'ownerDigest required' }, { status: 400 });
+
+    await ensureDataTables(env);
+    // Check active session count (max 2)
+    const activeCount = await env.DB.prepare(
+      `SELECT COUNT(*) as cnt FROM ephemeral_sessions WHERE owner_digest = ? AND deleted_at IS NULL AND expires_at > ?`
+    ).bind(ownerDigest, Math.floor(Date.now() / 1000)).first('cnt');
+    if (activeCount >= EPHEMERAL_MAX_PER_OWNER) {
+      return json({ error: 'LimitReached', message: `max ${EPHEMERAL_MAX_PER_OWNER} active ephemeral sessions` }, { status: 429 });
+    }
+
+    // Also count unconsumed invites
+    const pendingCount = await env.DB.prepare(
+      `SELECT COUNT(*) as cnt FROM ephemeral_invites WHERE owner_digest = ? AND consumed_at IS NULL AND expires_at > ?`
+    ).bind(ownerDigest, Math.floor(Date.now() / 1000)).first('cnt');
+    if ((activeCount + pendingCount) >= EPHEMERAL_MAX_PER_OWNER) {
+      return json({ error: 'LimitReached', message: `max ${EPHEMERAL_MAX_PER_OWNER} active ephemeral sessions (including pending links)` }, { status: 429 });
+    }
+
+    const token = generateNanoId(32);
+    const now = Math.floor(Date.now() / 1000);
+    const expiresAt = now + EPHEMERAL_TTL_SEC;
+
+    await env.DB.prepare(
+      `INSERT INTO ephemeral_invites (token, owner_digest, owner_device_id, prekey_bundle_json, expires_at) VALUES (?, ?, ?, ?, ?)`
+    ).bind(token, ownerDigest, ownerDeviceId, prekeyBundleJson, expiresAt).run();
+
+    return json({ token, expires_at: expiresAt });
+  }
+
+  // POST /d1/ephemeral/consume — guest consumes a link
+  if (req.method === 'POST' && url.pathname === '/d1/ephemeral/consume') {
+    const body = await req.json();
+    const token = (body.token || '').trim();
+    if (!token) return json({ error: 'BadRequest', message: 'token required' }, { status: 400 });
+
+    await ensureDataTables(env);
+    const now = Math.floor(Date.now() / 1000);
+
+    // Atomically consume: UPDATE WHERE consumed_at IS NULL
+    const result = await env.DB.prepare(
+      `UPDATE ephemeral_invites SET consumed_at = ? WHERE token = ? AND consumed_at IS NULL AND expires_at > ?`
+    ).bind(now, token, now).run();
+
+    if (!result?.changes) {
+      return json({ error: 'NotFound', message: 'link expired or already used' }, { status: 404 });
+    }
+
+    const invite = await env.DB.prepare(
+      `SELECT * FROM ephemeral_invites WHERE token = ?`
+    ).bind(token).first();
+
+    if (!invite) return json({ error: 'NotFound' }, { status: 404 });
+
+    // Generate guest ephemeral identity
+    const guestDigest = 'EPHEMERAL_' + generateNanoId(32).toUpperCase();
+    const guestDeviceId = 'eph-' + generateNanoId(16);
+    const sessionId = generateNanoId(32);
+    const conversationId = 'eph-' + generateNanoId(32);
+    const sessionExpiresAt = now + EPHEMERAL_TTL_SEC;
+
+    // Create conversation
+    await env.DB.prepare(
+      `INSERT INTO conversations (id, created_at) VALUES (?, ?)`
+    ).bind(conversationId, now).run();
+
+    // Create ACL for both parties
+    await env.DB.prepare(
+      `INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role) VALUES (?, ?, ?, 'owner')`
+    ).bind(conversationId, invite.owner_digest, invite.owner_device_id).run();
+    await env.DB.prepare(
+      `INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role) VALUES (?, ?, ?, 'ephemeral')`
+    ).bind(conversationId, guestDigest, guestDeviceId).run();
+
+    // Create ephemeral session
+    await env.DB.prepare(
+      `INSERT INTO ephemeral_sessions (session_id, invite_token, owner_digest, owner_device_id, guest_digest, guest_device_id, conversation_id, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(sessionId, token, invite.owner_digest, invite.owner_device_id, guestDigest, guestDeviceId, conversationId, sessionExpiresAt).run();
+
+    // Issue a WS token for the guest
+    let wsToken = null;
+    try {
+      const { token: jwt } = await createWsToken(env, { accountDigest: guestDigest, ttlSec: EPHEMERAL_TTL_SEC });
+      wsToken = jwt;
+    } catch { /* best-effort */ }
+
+    return json({
+      session_id: sessionId,
+      conversation_id: conversationId,
+      guest_digest: guestDigest,
+      guest_device_id: guestDeviceId,
+      owner_digest: invite.owner_digest,
+      owner_device_id: invite.owner_device_id,
+      prekey_bundle: JSON.parse(invite.prekey_bundle_json || '{}'),
+      expires_at: sessionExpiresAt,
+      ws_token: wsToken
+    });
+  }
+
+  // POST /d1/ephemeral/extend — either party extends timer
+  if (req.method === 'POST' && url.pathname === '/d1/ephemeral/extend') {
+    const body = await req.json();
+    const sessionId = (body.sessionId || body.session_id || '').trim();
+    const callerDigest = normalizeAccountDigest(body.callerDigest || body.caller_digest || '');
+    if (!sessionId) return json({ error: 'BadRequest', message: 'sessionId required' }, { status: 400 });
+
+    await ensureDataTables(env);
+    const now = Math.floor(Date.now() / 1000);
+
+    const session = await env.DB.prepare(
+      `SELECT * FROM ephemeral_sessions WHERE session_id = ? AND deleted_at IS NULL`
+    ).bind(sessionId).first();
+    if (!session) return json({ error: 'NotFound', message: 'session not found' }, { status: 404 });
+    if (session.expires_at <= now) return json({ error: 'Expired', message: 'session already expired' }, { status: 410 });
+
+    // Only allow extend when remaining < 5 minutes
+    const remaining = session.expires_at - now;
+    if (remaining > 300) return json({ error: 'TooEarly', message: 'can only extend when < 5 minutes remaining' }, { status: 400 });
+
+    // Verify caller is owner or guest
+    if (callerDigest && callerDigest !== session.owner_digest && callerDigest !== session.guest_digest) {
+      return json({ error: 'Forbidden', message: 'not a participant' }, { status: 403 });
+    }
+
+    const newExpiresAt = now + EPHEMERAL_TTL_SEC;
+    await env.DB.prepare(
+      `UPDATE ephemeral_sessions SET expires_at = ?, extended_count = extended_count + 1 WHERE session_id = ?`
+    ).bind(newExpiresAt, sessionId).run();
+
+    // Notify both parties via WS
+    try {
+      await notifyAccountDO(env, session.owner_digest, {
+        type: 'ephemeral-extended',
+        sessionId,
+        conversationId: session.conversation_id,
+        expiresAt: newExpiresAt,
+        ts: Date.now()
+      });
+    } catch { /* best-effort */ }
+
+    return json({ expires_at: newExpiresAt, extended_count: session.extended_count + 1 });
+  }
+
+  // POST /d1/ephemeral/delete — owner deletes session
+  if (req.method === 'POST' && url.pathname === '/d1/ephemeral/delete') {
+    const body = await req.json();
+    const sessionId = (body.sessionId || body.session_id || '').trim();
+    const ownerDigest = normalizeAccountDigest(body.ownerDigest || body.owner_digest || '');
+    if (!sessionId || !ownerDigest) return json({ error: 'BadRequest', message: 'sessionId and ownerDigest required' }, { status: 400 });
+
+    await ensureDataTables(env);
+    const session = await env.DB.prepare(
+      `SELECT * FROM ephemeral_sessions WHERE session_id = ? AND owner_digest = ? AND deleted_at IS NULL`
+    ).bind(sessionId, ownerDigest).first();
+    if (!session) return json({ error: 'NotFound' }, { status: 404 });
+
+    return await deleteEphemeralSession(env, session);
+  }
+
+  // POST /d1/ephemeral/list — owner lists active sessions
+  if (req.method === 'POST' && url.pathname === '/d1/ephemeral/list') {
+    const body = await req.json();
+    const ownerDigest = normalizeAccountDigest(body.ownerDigest || body.owner_digest || '');
+    if (!ownerDigest) return json({ error: 'BadRequest', message: 'ownerDigest required' }, { status: 400 });
+
+    await ensureDataTables(env);
+    const now = Math.floor(Date.now() / 1000);
+    const rows = await env.DB.prepare(
+      `SELECT session_id, conversation_id, guest_digest, guest_device_id, expires_at, extended_count, created_at
+       FROM ephemeral_sessions WHERE owner_digest = ? AND deleted_at IS NULL AND expires_at > ? ORDER BY created_at DESC`
+    ).bind(ownerDigest, now).all();
+
+    return json({ sessions: rows?.results || [] });
+  }
+
+  // POST /d1/ephemeral/cleanup — garbage-collect expired sessions
+  if (req.method === 'POST' && url.pathname === '/d1/ephemeral/cleanup') {
+    await ensureDataTables(env);
+    const now = Math.floor(Date.now() / 1000);
+    const expired = await env.DB.prepare(
+      `SELECT * FROM ephemeral_sessions WHERE deleted_at IS NULL AND expires_at <= ?`
+    ).bind(now).all();
+    const sessions = expired?.results || [];
+    let cleaned = 0;
+    for (const session of sessions) {
+      try {
+        await deleteEphemeralSession(env, session);
+        cleaned++;
+      } catch (e) { console.warn('ephemeral cleanup failed', session.session_id, e?.message); }
+    }
+    // Also clean expired unconsumed invites
+    await env.DB.prepare(`DELETE FROM ephemeral_invites WHERE expires_at <= ? AND consumed_at IS NULL`).bind(now).run();
+    return json({ cleaned });
+  }
+
+  // GET /d1/ephemeral/session-info — get session info (for guest reconnect)
+  if (req.method === 'POST' && url.pathname === '/d1/ephemeral/session-info') {
+    const body = await req.json();
+    const sessionId = (body.sessionId || body.session_id || '').trim();
+    if (!sessionId) return json({ error: 'BadRequest' }, { status: 400 });
+
+    await ensureDataTables(env);
+    const session = await env.DB.prepare(
+      `SELECT * FROM ephemeral_sessions WHERE session_id = ? AND deleted_at IS NULL`
+    ).bind(sessionId).first();
+    if (!session) return json({ error: 'NotFound' }, { status: 404 });
+    if (session.expires_at <= Math.floor(Date.now() / 1000)) {
+      return json({ error: 'Expired' }, { status: 410 });
+    }
+    return json({
+      session_id: session.session_id,
+      conversation_id: session.conversation_id,
+      owner_digest: session.owner_digest,
+      guest_digest: session.guest_digest,
+      expires_at: session.expires_at
+    });
+  }
+
+  return null;
+}
+
+async function deleteEphemeralSession(env, session) {
+  const now = Math.floor(Date.now() / 1000);
+  // Delete messages
+  await env.DB.prepare(`DELETE FROM messages_secure WHERE conversation_id = ?`).bind(session.conversation_id).run();
+  // Delete message key vault entries
+  await env.DB.prepare(`DELETE FROM message_key_vault WHERE conversation_id = ?`).bind(session.conversation_id).run();
+  // Delete ACL
+  await env.DB.prepare(`DELETE FROM conversation_acl WHERE conversation_id = ?`).bind(session.conversation_id).run();
+  // Delete conversation
+  await env.DB.prepare(`DELETE FROM conversations WHERE id = ?`).bind(session.conversation_id).run();
+  // Mark session deleted
+  await env.DB.prepare(`UPDATE ephemeral_sessions SET deleted_at = ? WHERE session_id = ?`).bind(now, session.session_id).run();
+
+  // Notify owner
+  try {
+    await notifyAccountDO(env, session.owner_digest, {
+      type: 'ephemeral-deleted',
+      sessionId: session.session_id,
+      conversationId: session.conversation_id,
+      ts: Date.now()
+    });
+  } catch { /* best-effort */ }
+
+  return json({ ok: true, deleted: session.session_id });
 }
 
 // ---- 主入口 ----
@@ -6006,8 +6295,12 @@ async function handleWsUpgrade(req, env, url) {
     return json({ error: 'Unauthorized', message: 'token expired' }, { status: 401 });
   }
 
-  const accountDigest = String(payload.accountDigest || '').replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
-  if (accountDigest.length !== 64) {
+  const rawAccountDigest = String(payload.accountDigest || '');
+  const isEphemeral = rawAccountDigest.startsWith('EPHEMERAL_');
+  const accountDigest = isEphemeral
+    ? rawAccountDigest
+    : rawAccountDigest.replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+  if (!isEphemeral && accountDigest.length !== 64) {
     return json({ error: 'Unauthorized', message: 'invalid accountDigest in token' }, { status: 401 });
   }
 
@@ -6745,6 +7038,82 @@ async function handlePublicRoutes(req, env) {
       accountDigest: auth.accountDigest
     };
     return handleInviteDropboxRoutes(internalRequest('/d1/invites/lookup-code', 'POST', intBody, baseUrl), env);
+  }
+
+  // ── Ephemeral Chat ──────────────────────────────────────────
+  if (path === '/api/v1/ephemeral/create-link' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const deviceId = (req.headers.get('x-device-id') || body?.device_id || body?.deviceId || '').trim();
+    const intBody = {
+      ownerDigest: auth.accountDigest,
+      ownerDeviceId: deviceId,
+      prekeyBundleJson: JSON.stringify(body?.prekey_bundle || body?.prekeyBundle || {})
+    };
+    return handleEphemeralRoutes(internalRequest('/d1/ephemeral/create-link', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/ephemeral/consume' && method === 'POST') {
+    // No auth required — guest has no account
+    const intBody = { token: body?.token };
+    return handleEphemeralRoutes(internalRequest('/d1/ephemeral/consume', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/ephemeral/extend' && method === 'POST') {
+    // Auth optional — guest may not have account
+    const auth = await resolvePublicAuth(req, env, { body }).catch(() => null);
+    const intBody = {
+      sessionId: body?.session_id || body?.sessionId,
+      callerDigest: auth?.accountDigest || body?.guest_digest || body?.guestDigest || ''
+    };
+    return handleEphemeralRoutes(internalRequest('/d1/ephemeral/extend', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/ephemeral/delete' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      sessionId: body?.session_id || body?.sessionId,
+      ownerDigest: auth.accountDigest
+    };
+    return handleEphemeralRoutes(internalRequest('/d1/ephemeral/delete', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/ephemeral/list' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = { ownerDigest: auth.accountDigest };
+    return handleEphemeralRoutes(internalRequest('/d1/ephemeral/list', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/ephemeral/session-info' && method === 'POST') {
+    const intBody = { sessionId: body?.session_id || body?.sessionId };
+    return handleEphemeralRoutes(internalRequest('/d1/ephemeral/session-info', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/ephemeral/ws-token' && method === 'POST') {
+    // Issue a fresh WS token for an ephemeral guest
+    const guestDigest = (body?.guest_digest || body?.guestDigest || '').trim();
+    const sessionId = (body?.session_id || body?.sessionId || '').trim();
+    if (!guestDigest || !sessionId) return json({ error: 'BadRequest' }, { status: 400 });
+    await ensureDataTables(env);
+    const session = await env.DB.prepare(
+      `SELECT * FROM ephemeral_sessions WHERE session_id = ? AND guest_digest = ? AND deleted_at IS NULL`
+    ).bind(sessionId, guestDigest).first();
+    if (!session) return json({ error: 'NotFound' }, { status: 404 });
+    const now = Math.floor(Date.now() / 1000);
+    if (session.expires_at <= now) return json({ error: 'Expired' }, { status: 410 });
+    const remaining = session.expires_at - now;
+    try {
+      const { token: jwt, payload } = await createWsToken(env, { accountDigest: guestDigest, ttlSec: remaining });
+      return json({ token: jwt, expires_at: payload.exp });
+    } catch (err) {
+      return json({ error: 'TokenError', message: err?.message }, { status: 500 });
+    }
+  }
+
+  if (path === '/api/v1/ephemeral/cleanup' && method === 'POST') {
+    return handleEphemeralRoutes(internalRequest('/d1/ephemeral/cleanup', 'POST', {}, baseUrl), env);
   }
 
   // ── Friends ───────────────────────────────────────────────────
@@ -7678,6 +8047,9 @@ export default {
 
       const inviteDropboxResult = await handleInviteDropboxRoutes(req, env);
       if (inviteDropboxResult) return inviteDropboxResult;
+
+      const ephemeralResult = await handleEphemeralRoutes(req, env);
+      if (ephemeralResult) return ephemeralResult;
 
       // Friends / Invites
       const friendsResult = await handleFriendsRoutes(req, env);

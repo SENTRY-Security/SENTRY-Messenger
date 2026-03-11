@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark" />
+  <title>SENTRY MESSENGER — Ephemeral Chat</title>
+  <link rel="icon" href="/assets/favicon.ico" type="image/x-icon" />
+  <script>
+    window.APP_VERSION = '0.1.10';
+    window.APP_ENV = 'uat';
+  </script>
+  <style>
+    :root {
+      --bg: #0f172a; --fg: #e2e8f0; --muted: #94a3b8;
+      --amber: #f59e0b; --amber-dim: rgba(245,158,11,0.12);
+      --green: #22c55e; --yellow: #eab308; --red: #ef4444;
+      --card: rgba(15,23,42,0.65);
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; background: #050a14; color: var(--fg); font-family: system-ui, -apple-system, sans-serif; overflow: hidden; }
+
+    /* ── Splash ── */
+    #ephSplash { position: fixed; inset: 0; z-index: 99999; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #050a14; transition: opacity .5s ease; overflow: hidden; }
+    #ephSplash.fade-out { opacity: 0; pointer-events: none; }
+    #ephSplash .splash-canvas { position: absolute; inset: 0; z-index: 0; }
+    #ephSplash .splash-overlay { position: absolute; inset: 0; z-index: 1; background: radial-gradient(ellipse at 50% 50%, transparent 0%, rgba(5,10,20,0.4) 60%, rgba(5,10,20,0.85) 100%); pointer-events: none; }
+    #ephSplash .splash-content { position: relative; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+    #ephSplash .splash-logo { width: 52px; height: 52px; filter: brightness(0) invert(1) drop-shadow(0 0 18px rgba(245,158,11,0.5)); animation: eph-pulse 3s ease-in-out infinite; }
+    #ephSplash .splash-brand { font-size: 18px; font-weight: 700; letter-spacing: 4px; color: #fef3c7; text-shadow: 0 0 20px rgba(245,158,11,0.5); }
+    #ephSplash .splash-sublabel { font-size: 11px; letter-spacing: 2.5px; color: rgba(245,158,11,0.6); text-transform: uppercase; margin-bottom: 24px; }
+    #ephSplash .splash-bar-track { width: 200px; height: 2px; border-radius: 1px; background: rgba(148,163,184,0.15); overflow: hidden; position: relative; margin-bottom: 12px; }
+    #ephSplash .splash-bar-fill { width: 0%; height: 100%; border-radius: 1px; background: linear-gradient(90deg, #f59e0b, #ef4444); box-shadow: 0 0 12px rgba(245,158,11,0.6); transition: width .4s ease; }
+    #ephSplash .splash-bar-scan { position: absolute; top: 0; height: 100%; width: 40px; background: linear-gradient(90deg, transparent, rgba(245,158,11,0.6), transparent); animation: eph-scan 2s linear infinite; }
+    #ephSplash .splash-status { font-size: 12px; color: rgba(148,163,184,0.7); letter-spacing: 1px; min-height: 1.4em; }
+    #ephSplash .splash-error { color: #fca5a5; font-size: 13px; margin-top: 16px; text-align: center; max-width: 300px; display: none; }
+
+    @keyframes eph-pulse { 0%,100% { filter: brightness(0) invert(1) drop-shadow(0 0 18px rgba(245,158,11,0.5)); } 50% { filter: brightness(0) invert(1) drop-shadow(0 0 28px rgba(245,158,11,0.8)); } }
+    @keyframes eph-scan { 0% { left: -40px; } 100% { left: calc(100% + 40px); } }
+
+    /* ── Chat UI ── */
+    #ephChat { display: none; position: fixed; inset: 0; flex-direction: column; background: var(--bg); }
+    #ephChat.active { display: flex; }
+
+    /* Timer bar */
+    .eph-timer-bar { flex-shrink: 0; display: flex; flex-direction: column; align-items: center; padding: 12px 16px 8px; background: linear-gradient(180deg, rgba(5,10,20,0.9), transparent); border-bottom: 1px dashed rgba(245,158,11,0.3); position: relative; z-index: 10; }
+    .eph-timer-gradient { position: absolute; top: 0; left: 0; right: 0; height: 4px; background: linear-gradient(90deg, var(--green), var(--green)); transition: background 1s ease; }
+    .eph-timer-gradient.yellow { background: linear-gradient(90deg, var(--yellow), var(--amber)); }
+    .eph-timer-gradient.red { background: linear-gradient(90deg, var(--red), #dc2626); animation: eph-breathe 1.5s ease-in-out infinite; }
+    .eph-timer-clock { font-size: 32px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 2px; color: var(--green); transition: color .5s ease; }
+    .eph-timer-clock.yellow { color: var(--yellow); }
+    .eph-timer-clock.red { color: var(--red); animation: eph-breathe-text 1.5s ease-in-out infinite; }
+    .eph-timer-label { font-size: 11px; color: var(--muted); letter-spacing: 0.5px; margin-top: 2px; }
+    .eph-extend-btn { display: none; margin-top: 8px; padding: 6px 20px; border: 1px solid var(--amber); border-radius: 20px; background: rgba(245,158,11,0.1); color: var(--amber); font-size: 13px; font-weight: 600; cursor: pointer; transition: background .2s, transform .1s; }
+    .eph-extend-btn.visible { display: inline-block; }
+    .eph-extend-btn:active { transform: translateY(1px); background: rgba(245,158,11,0.2); }
+
+    @keyframes eph-breathe { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+    @keyframes eph-breathe-text { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+
+    /* Messages area */
+    .eph-messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 8px; overscroll-behavior: contain; }
+    .eph-msg { max-width: 80%; padding: 10px 14px; border-radius: 16px; font-size: 14px; line-height: 1.5; word-break: break-word; position: relative; }
+    .eph-msg.incoming { align-self: flex-start; background: rgba(255,255,255,0.08); border: 1px solid rgba(148,163,184,0.15); color: var(--fg); border-bottom-left-radius: 4px; }
+    .eph-msg.outgoing { align-self: flex-end; background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.25); color: #fef3c7; border-bottom-right-radius: 4px; }
+    .eph-msg .msg-time { font-size: 10px; color: var(--muted); margin-top: 4px; text-align: right; }
+    .eph-msg.outgoing .msg-time { color: rgba(245,158,11,0.5); }
+
+    /* System messages */
+    .eph-system-msg { align-self: center; font-size: 11px; color: var(--muted); background: rgba(148,163,184,0.08); border-radius: 12px; padding: 4px 12px; }
+
+    /* Composer */
+    .eph-composer { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px dashed rgba(245,158,11,0.2); background: rgba(5,10,20,0.8); }
+    .eph-composer input { flex: 1; border: 1px solid rgba(148,163,184,0.2); border-radius: 20px; padding: 10px 16px; font-size: 14px; background: rgba(255,255,255,0.06); color: var(--fg); outline: none; transition: border-color .2s; }
+    .eph-composer input:focus { border-color: var(--amber); }
+    .eph-composer input::placeholder { color: rgba(148,163,184,0.4); }
+    .eph-send-btn { width: 40px; height: 40px; border-radius: 50%; border: none; background: linear-gradient(135deg, #f59e0b, #ea580c); color: #fff; font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: transform .1s; flex-shrink: 0; }
+    .eph-send-btn:active { transform: scale(0.92); }
+    .eph-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* Footer warning */
+    .eph-footer-warning { flex-shrink: 0; background: rgba(245,158,11,0.06); border-top: 1px dashed rgba(245,158,11,0.2); color: #fbbf24; font-size: 11px; text-align: center; padding: 6px; letter-spacing: 0.5px; }
+
+    /* Destroyed overlay */
+    #ephDestroyed { display: none; position: fixed; inset: 0; z-index: 99999; background: #050a14; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
+    #ephDestroyed.active { display: flex; animation: eph-destroy-in .6s ease forwards; }
+    #ephDestroyed .destroy-icon { font-size: 48px; opacity: 0.6; }
+    #ephDestroyed .destroy-title { font-size: 18px; font-weight: 700; color: var(--fg); letter-spacing: 1px; }
+    #ephDestroyed .destroy-sub { font-size: 13px; color: var(--muted); }
+    @keyframes eph-destroy-in { from { opacity: 0; } to { opacity: 1; } }
+
+    /* Particles (drifting ash effect) */
+    .eph-particles { position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
+    .eph-particle { position: absolute; width: 3px; height: 3px; border-radius: 50%; background: rgba(245,158,11,0.15); animation: eph-drift linear infinite; }
+    @keyframes eph-drift {
+      0% { transform: translateY(100vh) rotate(0deg); opacity: 0; }
+      10% { opacity: 1; }
+      90% { opacity: 1; }
+      100% { transform: translateY(-10vh) rotate(720deg); opacity: 0; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Splash -->
+  <div id="ephSplash">
+    <canvas class="splash-canvas" id="ephCanvas"></canvas>
+    <div class="splash-overlay"></div>
+    <div class="splash-content">
+      <img class="splash-logo" src="/assets/images/logo.svg" alt="" />
+      <div class="splash-brand">SENTRY MESSENGER</div>
+      <div class="splash-sublabel">EPHEMERAL LINK</div>
+      <div class="splash-bar-track">
+        <div class="splash-bar-fill" id="ephProgressBar"></div>
+        <div class="splash-bar-scan"></div>
+      </div>
+      <div class="splash-status" id="ephSplashStatus">Verifying link...</div>
+      <div class="splash-error" id="ephSplashError"></div>
+    </div>
+  </div>
+
+  <!-- Chat UI -->
+  <div id="ephChat">
+    <div class="eph-particles" id="ephParticles"></div>
+    <div class="eph-timer-bar">
+      <div class="eph-timer-gradient" id="ephTimerGradient"></div>
+      <div class="eph-timer-clock" id="ephTimerClock">10:00</div>
+      <div class="eph-timer-label" id="ephTimerLabel">此對話將在倒數結束後銷毀</div>
+      <button class="eph-extend-btn" id="ephExtendBtn">延長時間</button>
+    </div>
+    <div class="eph-messages" id="ephMessages">
+      <div class="eph-system-msg">已建立端對端加密臨時對話</div>
+    </div>
+    <div class="eph-composer">
+      <input type="text" id="ephInput" placeholder="輸入訊息..." autocomplete="off" autocorrect="off" spellcheck="false" />
+      <button class="eph-send-btn" id="ephSendBtn" disabled>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+      </button>
+    </div>
+    <div class="eph-footer-warning">⚠ 臨時對話 · 關閉頁面或倒數結束後所有內容將永久刪除</div>
+  </div>
+
+  <!-- Destroyed overlay -->
+  <div id="ephDestroyed">
+    <div class="destroy-icon">🔥</div>
+    <div class="destroy-title">對話已銷毀</div>
+    <div class="destroy-sub">所有訊息已永久清除</div>
+  </div>
+
+  <!-- Matrix Rain Canvas (same as login) -->
+  <script>
+  (function(){
+    var cvs, ctx, w, h, raf, columns, drops, running = false;
+    var CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789アイウエオカキクケコ$@#&%!?';
+    var FONT_SIZE = 13;
+    function init(){ cvs=document.getElementById('ephCanvas'); if(!cvs)return; ctx=cvs.getContext('2d'); resize(); window.addEventListener('resize',resize); }
+    function resize(){ if(!cvs)return; w=cvs.width=cvs.parentElement.clientWidth; h=cvs.height=cvs.parentElement.clientHeight; initM(); }
+    function initM(){ columns=Math.floor(w/FONT_SIZE); drops=[]; for(var i=0;i<columns;i++) drops[i]=-(Math.random()*80|0); }
+    function draw(){
+      ctx.font=FONT_SIZE+'px monospace';
+      for(var i=0;i<columns;i++){
+        if(drops[i]<0){drops[i]++;continue;}
+        var ch=CHARS[Math.random()*CHARS.length|0];
+        var y=drops[i]*FONT_SIZE;
+        ctx.fillStyle='rgba(245,158,11,0.5)';
+        ctx.fillText(ch,i*FONT_SIZE,y);
+        if(y>FONT_SIZE){ctx.fillStyle='rgba(245,158,11,0.06)';ctx.fillText(CHARS[Math.random()*CHARS.length|0],i*FONT_SIZE,y-FONT_SIZE);}
+        drops[i]++;
+        if(y>h&&Math.random()>0.975) drops[i]=0;
+      }
+    }
+    function tick(){ if(!running)return; ctx.fillStyle='rgba(5,10,20,0.12)'; ctx.fillRect(0,0,w,h); draw(); raf=requestAnimationFrame(tick); }
+    window.__ephCanvasStart=function(){ if(running)return; running=true; init(); if(ctx){ctx.fillStyle='#050a14';ctx.fillRect(0,0,w,h);} tick(); };
+    window.__ephCanvasStop=function(){ running=false; if(raf)cancelAnimationFrame(raf); };
+  })();
+  window.__ephCanvasStart();
+  </script>
+
+  <!-- Main ephemeral chat logic -->
+  <script>
+    const params = new URLSearchParams(location.search);
+    window.API_ORIGIN = params.get('api') || '';
+  </script>
+  <script type="module" src="/app/ui/ephemeral-ui.js"></script>
+</body>
+</html>

@@ -663,6 +663,22 @@ export function createWsIntegration({ deps }) {
       getMessagesPane()?.handleVaultAckEvent?.(msg);
       return;
     }
+    // ── Ephemeral chat events ──
+    if (type === 'ephemeral-extended' || type === 'ephemeral-deleted' || type === 'ephemeral-message') {
+      const mp = getMessagesPane();
+      const handled = mp?.ephemeralController?.handleWsMessage?.(msg);
+      if (type === 'ephemeral-message' && msg?.conversationId) {
+        // Also render in the active conversation if open
+        mp?.handleIncomingSecureMessage?.({
+          type: 'ephemeral-message',
+          conversationId: msg.conversationId,
+          text: msg.text,
+          ts: msg.ts,
+          senderAccountDigest: msg.senderDigest || msg.fromDigest || ''
+        });
+      }
+      return;
+    }
     if (type === 'secure-message' || type === 'message-new') {
       if (!isTargetingThisDevice(msg)) return;
       if (!msg?.senderDeviceId || !msg?.targetDeviceId) {
