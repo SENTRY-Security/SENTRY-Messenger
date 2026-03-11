@@ -37,7 +37,8 @@ const entryPoints = [
   'src/app/ui/app-mobile.js',      // main app (app.html)
   'src/app/ui/login-ui.js',        // login page (login.html)
   'src/app/ui/debug-page.js',      // debug page
-  'src/app/ui/media-permission-demo.js'  // mic-test page
+  'src/app/ui/media-permission-demo.js',  // mic-test page
+  'src/app/ui/ephemeral-ui.js'     // ephemeral chat guest page
 ];
 
 console.time('esbuild');
@@ -139,7 +140,8 @@ const jsEntryFiles = [
   'dist/app/ui/app-mobile.js',
   'dist/app/ui/login-ui.js',
   'dist/app/ui/debug-page.js',
-  'dist/app/ui/media-permission-demo.js'
+  'dist/app/ui/media-permission-demo.js',
+  'dist/app/ui/ephemeral-ui.js'
 ];
 for (const f of jsEntryFiles) {
   const abs = resolve(__dirname, f);
@@ -251,6 +253,23 @@ try {
   console.warn('Warning: could not inject SRI into app.html for JS:', err.message);
 }
 
+// ephemeral.html: inject integrity for ephemeral-ui.js
+const ephHtmlPath = resolve(dist, 'pages/ephemeral.html');
+try {
+  let html = readFileSync(ephHtmlPath, 'utf8');
+  const jsIntegrity = bundledSRI['/app/ui/ephemeral-ui.js'];
+  if (jsIntegrity) {
+    html = html.replace(
+      '<script type="module" src="/app/ui/ephemeral-ui.js"></script>',
+      `<script type="module" src="/app/ui/ephemeral-ui.js" integrity="${jsIntegrity}" crossorigin="anonymous"></script>`
+    );
+  }
+  writeFileSync(ephHtmlPath, html);
+  console.log('SRI injected into ephemeral.html');
+} catch (err) {
+  console.warn('Warning: could not inject SRI into ephemeral.html:', err.message);
+}
+
 // ============================================================================
 // Build Manifest: commit hash + file hashes for auditing
 // ============================================================================
@@ -270,7 +289,7 @@ console.log(`APP_ENV = '${appEnv}' (branch: ${gitBranch})`);
 
 // Inject commit hash + APP_ENV into app.html and login.html for version display
 // (must happen BEFORE manifest generation so hashes are final)
-for (const htmlPath of [appHtmlPath, loginHtmlPath]) {
+for (const htmlPath of [appHtmlPath, loginHtmlPath, ephHtmlPath]) {
   try {
     let html = readFileSync(htmlPath, 'utf8');
     // Override APP_ENV with build-time value

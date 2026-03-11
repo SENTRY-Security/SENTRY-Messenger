@@ -249,8 +249,8 @@ function destroyChat() {
 
 // ── Boot ──
 async function boot() {
-  const pathParts = location.pathname.split('/');
-  const token = pathParts[pathParts.length - 1] || new URLSearchParams(location.search).get('t');
+  const hash = location.hash ? location.hash.slice(1) : '';
+  const token = hash || new URLSearchParams(location.search).get('t');
   if (!token) {
     showError('無效的連結：缺少 token');
     return;
