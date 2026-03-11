@@ -1559,6 +1559,62 @@
   50% { opacity: 0.5; }
 }
 
+/* Ephemeral auto-logout warning modal */
+.eph-autologout-warn-panel {
+  max-width: 380px;
+}
+
+.eph-autologout-warn-desc {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #94a3b8;
+  margin-bottom: 16px;
+}
+
+.eph-autologout-warn-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border: 1px solid rgba(245,158,11,0.2);
+  border-radius: 12px;
+  background: rgba(245,158,11,0.04);
+  margin-bottom: 16px;
+}
+
+.eph-autologout-warn-toggle .settings-text strong {
+  font-size: 13px;
+}
+
+.eph-autologout-warn-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.eph-autologout-warn-actions button {
+  padding: 8px 20px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform .1s;
+}
+
+.eph-autologout-warn-actions button:active { transform: translateY(1px); }
+
+.eph-autologout-warn-actions .secondary {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--fg-muted, #94a3b8);
+}
+
+.eph-autologout-warn-actions .primary {
+  border: none;
+  background: linear-gradient(135deg, #f59e0b, #ea580c);
+  color: #fff;
+}
+
 /* Ephemeral link modal */
 .ephemeral-link-panel {
   max-width: 380px;

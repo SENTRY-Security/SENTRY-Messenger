@@ -15,6 +15,7 @@ import { t } from '/locales/index.js';
 import { generateInitialBundle } from '../../../../shared/crypto/prekeys.js';
 import { x3dhRespond, drEncryptText, drDecryptText } from '../../../../shared/crypto/dr.js';
 import { loadNacl } from '../../../../shared/crypto/nacl.js';
+import { saveSettings, DEFAULT_SETTINGS } from '../../../features/settings.js';
 
 const EPHEMERAL_TTL_SEC = 600; // 10 minutes
 
@@ -66,6 +67,65 @@ export class EphemeralController extends BaseController {
     } catch (err) {
       console.warn('[Ephemeral] loadSessions failed', err?.message);
     }
+  }
+
+  // ── Auto-Logout Warning ──
+  _isAutoLogoutEnabled() {
+    const ss = this.deps.sessionStore?.settingsState;
+    return !!(ss?.autoLogoutOnBackground ?? DEFAULT_SETTINGS.autoLogoutOnBackground);
+  }
+
+  /**
+   * Show a warning modal if autoLogoutOnBackground is enabled.
+   * Returns a Promise that resolves to true if user wants to continue,
+   * or false if they cancelled.
+   */
+  _showAutoLogoutWarning() {
+    return new Promise((resolve) => {
+      const modal = document.getElementById('ephAutoLogoutWarnModal');
+      if (!modal) { resolve(true); return; }
+
+      const toggle = document.getElementById('ephAutoLogoutToggle');
+      const continueBtn = document.getElementById('ephAutoLogoutWarnContinue');
+      const closeBtns = modal.querySelectorAll('[data-eph-warn-close]');
+
+      // Sync toggle with current setting
+      if (toggle) toggle.checked = this._isAutoLogoutEnabled();
+
+      // Show modal
+      modal.style.display = 'flex';
+      modal.setAttribute('aria-hidden', 'false');
+
+      const cleanup = () => {
+        modal.style.display = 'none';
+        modal.setAttribute('aria-hidden', 'true');
+        if (toggle) toggle.removeEventListener('change', onToggle);
+        if (continueBtn) continueBtn.removeEventListener('click', onContinue);
+        closeBtns.forEach(el => el.removeEventListener('click', onCancel));
+      };
+
+      const onToggle = async () => {
+        const newValue = toggle.checked;
+        // Update in-memory settings immediately
+        const ss = this.deps.sessionStore;
+        if (ss?.settingsState) {
+          ss.settingsState = { ...ss.settingsState, autoLogoutOnBackground: newValue };
+        }
+        // Persist to server
+        try {
+          await saveSettings(ss.settingsState);
+        } catch (err) {
+          console.warn('[Ephemeral] save settings failed', err?.message);
+        }
+      };
+
+      const onContinue = () => { cleanup(); resolve(true); };
+      const onCancel = () => { cleanup(); resolve(false); };
+
+      if (toggle) toggle.addEventListener('change', onToggle);
+      if (continueBtn) continueBtn.addEventListener('click', onContinue);
+      closeBtns.forEach(el => el.addEventListener('click', onCancel));
+    });
   }
 
   // ── Create Link Button ──
@@ -136,6 +196,11 @@ export class EphemeralController extends BaseController {
     const copied = document.getElementById('ephLinkCopied');
     if (copyBtn && urlInput) {
       copyBtn.addEventListener('click', async () => {
+        // Warn if auto-logout is on (user will paste in another app)
+        if (this._isAutoLogoutEnabled()) {
+          const proceed = await this._showAutoLogoutWarning();
+          if (!proceed) return;
+        }
         try {
           await navigator.clipboard.writeText(urlInput.value);
           if (copied) {
@@ -157,6 +222,11 @@ export class EphemeralController extends BaseController {
     const shareBtn = document.getElementById('ephLinkShare');
     if (shareBtn && urlInput) {
       shareBtn.addEventListener('click', async () => {
+        // Warn if auto-logout is on (share will switch app)
+        if (this._isAutoLogoutEnabled()) {
+          const proceed = await this._showAutoLogoutWarning();
+          if (!proceed) return;
+        }
         const url = urlInput.value;
         const shareText = t('ephemeral.shareText', { url });
         if (navigator.share) {

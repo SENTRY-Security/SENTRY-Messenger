@@ -824,6 +824,33 @@
     </div>
   </div>
 
+  <!-- Ephemeral Auto-Logout Warning Modal -->
+  <div id="ephAutoLogoutWarnModal" class="modal eph-autologout-warn-modal" aria-hidden="true" style="display:none">
+    <div class="modal-backdrop" data-eph-warn-close></div>
+    <div class="modal-panel eph-autologout-warn-panel" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <div class="modal-title" data-i18n="ephemeral.autoLogoutWarnTitle">Auto-Logout Warning</div>
+        <button class="modal-close" data-eph-warn-close aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="eph-autologout-warn-desc" data-i18n="ephemeral.autoLogoutWarnDesc">You have auto logout on background enabled. Switching to another app to share the link may trigger auto-logout.</p>
+        <div class="eph-autologout-warn-toggle">
+          <div class="settings-text">
+            <strong data-i18n="settings.autoLogoutOnBackground">Auto logout on background</strong>
+          </div>
+          <label class="settings-switch">
+            <input type="checkbox" id="ephAutoLogoutToggle" checked />
+            <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+          </label>
+        </div>
+        <div class="eph-autologout-warn-actions">
+          <button type="button" class="secondary" data-eph-warn-close data-i18n="common.cancel">Cancel</button>
+          <button type="button" class="primary" id="ephAutoLogoutWarnContinue" data-i18n="ephemeral.continueShare">Continue sharing</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Ephemeral Chat Link Modal -->
   <div id="ephemeralLinkModal" class="modal ephemeral-link-modal" aria-hidden="true" style="display:none">
     <div class="modal-backdrop" data-eph-close></div>
