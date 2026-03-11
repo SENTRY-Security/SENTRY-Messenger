@@ -158,6 +158,22 @@ export class ComposerController extends BaseController {
             return;
         }
 
+        // ── Ephemeral conversation: simpler availability logic ──
+        const ephCtrl = this.deps.controllers?.ephemeral;
+        if (state.conversationId && ephCtrl?.isEphemeralConversation?.(state.conversationId)) {
+            const session = ephCtrl.getSessionByConversationId(state.conversationId);
+            const encReady = session && ephCtrl.hasEncryptionReady(session.session_id);
+            this.elements.input.disabled = !encReady;
+            this.elements.sendBtn.disabled = !encReady;
+            this.elements.sendBtn.classList.toggle('disabled', !encReady);
+            this.elements.sendBtn.setAttribute('aria-disabled', encReady ? 'false' : 'true');
+            this.elements.input.placeholder = encReady
+                ? t('composer.inputPlaceholder')
+                : t('ephemeral.encryptionNotReady');
+            this.updateConversationActionsAvailability();
+            return;
+        }
+
         const subscriptionOk = this._isSubscriptionActive();
         const key = state.activePeerDigest ? String(state.activePeerDigest).toUpperCase() : null;
         const statusInfo = key ? this.deps.getCachedSecureStatus?.(key) : null;
@@ -168,7 +184,7 @@ export class ComposerController extends BaseController {
         const isLoading = !!state.loading;
 
         // [OPTIMIZATION] Unblock input during history sync (isLoading).
-        // Sending (Ns) and Receiving (Nr) are independent chains. 
+        // Sending (Ns) and Receiving (Nr) are independent chains.
         // Persistence is atomic (synchronous singleton state), so parallel operations are safe.
         const blocked = !subscriptionOk || status === SECURE_CONVERSATION_STATUS.PENDING || status === SECURE_CONVERSATION_STATUS.FAILED;
         const enabled = conversationReady && !blocked;
@@ -389,6 +405,13 @@ export class ComposerController extends BaseController {
         if (!text) return;
 
         const state = this.getMessageState();
+
+        // ── Ephemeral conversation: use dedicated E2EE send path ──
+        const ephCtrl = this.deps.controllers?.ephemeral;
+        if (state.conversationId && ephCtrl?.isEphemeralConversation?.(state.conversationId)) {
+            return this._handleEphemeralSend(text, state, ephCtrl);
+        }
+
         const contactEntryLog = state.activePeerDigest ? this.sessionStore.contactIndex?.get?.(state.activePeerDigest) : null;
 
         // UI Noise Logging
@@ -526,6 +549,41 @@ export class ComposerController extends BaseController {
                 this.deps.messageStatus?.applyOutgoingFailure(localMsg, err, t('messages.sendFailed'), 'UI_SEND_THROW');
                 this.deps.updateMessagesUI?.({ preserveScroll: true, forceFullRender: true });
             }
+        } finally {
+            if (this.elements.sendBtn) this.elements.sendBtn.disabled = false;
+        }
+    }
+
+    /**
+     * Send a message via ephemeral E2EE (Double Ratchet over WS).
+     */
+    async _handleEphemeralSend(text, state, ephCtrl) {
+        const session = ephCtrl.getSessionByConversationId(state.conversationId);
+        if (!session) {
+            this.setMessagesStatus(t('ephemeral.sessionExpired'), true);
+            return;
+        }
+        if (!ephCtrl.hasEncryptionReady(session.session_id)) {
+            this.setMessagesStatus(t('ephemeral.encryptionNotReady'), true);
+            return;
+        }
+
+        if (this.elements.sendBtn) this.elements.sendBtn.disabled = true;
+        const ts = Date.now();
+
+        // Append outgoing bubble immediately
+        this.deps.appendLocalOutgoingMessage?.({ text, ts, id: crypto.randomUUID() });
+
+        if (this.elements.input) {
+            this.elements.input.value = '';
+            this.elements.input.focus();
+        }
+
+        try {
+            await ephCtrl.sendEncryptedMessage(session.session_id, text);
+            this.deps.updateMessagesUI?.({ preserveScroll: true });
+        } catch (err) {
+            this.setMessagesStatus(t('messages.sendFailed') + '：' + (err?.message || err), true);
         } finally {
             if (this.elements.sendBtn) this.elements.sendBtn.disabled = false;
         }

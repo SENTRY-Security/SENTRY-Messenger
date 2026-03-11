@@ -233,6 +233,10 @@ inputEl?.addEventListener('input', () => {
 });
 
 // ── WebSocket ──
+let wsReconnectAttempts = 0;
+const WS_RECONNECT_BASE = 2000;
+const WS_RECONNECT_MAX = 30000;
+
 function connectWs() {
   if (!sessionState?.ws_token) return;
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -241,6 +245,7 @@ function connectWs() {
   updateWsStatus('connecting');
 
   ws.onopen = () => {
+    wsReconnectAttempts = 0; // Reset backoff on successful open
     ws.send(JSON.stringify({
       type: 'auth',
       accountDigest: sessionState.guest_digest,
@@ -263,16 +268,30 @@ function connectWs() {
   ws.onclose = () => {
     updateWsStatus('offline');
     if (!destroyed) {
-      // Reconnect after delay
-      setTimeout(() => {
-        refreshWsToken().then(connectWs).catch(() => {});
-      }, 3000);
+      scheduleReconnect();
     }
   };
 
   ws.onerror = () => {
     updateWsStatus('offline');
   };
+}
+
+function scheduleReconnect() {
+  const backoff = Math.min(WS_RECONNECT_BASE * Math.pow(2, wsReconnectAttempts), WS_RECONNECT_MAX);
+  const jitter = Math.floor(Math.random() * backoff * 0.3);
+  wsReconnectAttempts++;
+  setTimeout(async () => {
+    if (destroyed) return;
+    const ok = await refreshWsToken();
+    if (!ok) {
+      // Token refresh failed (session expired) — stop reconnecting
+      updateWsStatus('offline');
+      addSystemMessage(_t('ephemeral.sessionExpiredWs'));
+      return;
+    }
+    connectWs();
+  }, backoff + jitter);
 }
 
 async function refreshWsToken() {
@@ -282,7 +301,10 @@ async function refreshWsToken() {
       guestDigest: sessionState.guest_digest
     });
     sessionState.ws_token = data.token;
-  } catch { /* session may be expired */ }
+    return true;
+  } catch {
+    return false; // session expired or network failure
+  }
 }
 
 // ── E2EE: Send key exchange to owner ──
