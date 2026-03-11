@@ -174,6 +174,8 @@ export class EphemeralController extends BaseController {
       const msg = err?.message || '';
       const isMaxSessions = /max\s+\d+\s+active/i.test(msg);
       if (isMaxSessions) {
+        // Refresh sessions from server before rendering the list
+        await this._loadSessions();
         this._renderSessionListInModal(sessionList, error);
       } else if (error) {
         error.textContent = msg || t('ephemeral.createLinkFailed');
