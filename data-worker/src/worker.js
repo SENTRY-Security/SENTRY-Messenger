@@ -2383,7 +2383,7 @@ async function handleEphemeralRoutes(req, env) {
       `UPDATE ephemeral_invites SET consumed_at = ? WHERE token = ? AND consumed_at IS NULL AND expires_at > ?`
     ).bind(now, token, now).run();
 
-    if (!result?.changes) {
+    if (!result?.meta?.changes) {
       return json({ error: 'NotFound', message: 'link expired or already used' }, { status: 404 });
     }
 
@@ -4220,7 +4220,7 @@ async function handleMessageKeyVaultRoutes(req, env) {
         JSON.stringify(wrapContext),
         drStateSnapshot || null
       ).run();
-      if (result?.changes === 0) {
+      if (result?.meta?.changes === 0) {
         logMessageKeyVault('put', {
           accountDigestSuffix4: accountDigest.slice(-4),
           conversationIdPrefix8: conversationId.slice(0, 8),
@@ -4437,7 +4437,7 @@ async function handleMessageKeyVaultRoutes(req, env) {
           WHERE account_digest=?1 AND conversation_id=?2 AND message_id=?3 AND sender_device_id=?4`
       ).bind(accountDigest, conversationId, messageId, senderDeviceId).run();
 
-      const deleted = result?.changes > 0;
+      const deleted = result?.meta?.changes > 0;
       logMessageKeyVault('delete', {
         accountDigestSuffix4: accountDigest.slice(-4),
         conversationIdPrefix8: conversationId.slice(0, 8),
