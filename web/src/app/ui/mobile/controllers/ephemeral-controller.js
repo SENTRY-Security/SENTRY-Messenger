@@ -10,6 +10,7 @@
 import { BaseController } from './base-controller.js';
 import { ephemeralCreateLink, ephemeralDelete, ephemeralList, ephemeralExtend } from '../../../api/ephemeral.js';
 import { escapeHtml } from '../ui-utils.js';
+import { t } from '/locales/index.js';
 
 const EPHEMERAL_TTL_SEC = 600; // 10 minutes
 
@@ -85,7 +86,7 @@ export class EphemeralController extends BaseController {
     } catch (err) {
       if (loading) loading.style.display = 'none';
       if (error) {
-        error.textContent = err?.message || '建立連結失敗';
+        error.textContent = err?.message || t('ephemeral.createLinkFailed');
         error.style.display = 'block';
       }
     }
@@ -208,20 +209,21 @@ export class EphemeralController extends BaseController {
       li.dataset.conversationId = session.conversation_id;
       li.style.touchAction = 'pan-y';
 
+      const guestId = (session.guest_digest || '').slice(-4);
       li.innerHTML = `
         <div class="item-content conversation-item-content">
           <div class="conversation-avatar">⏳</div>
           <div class="conversation-content">
             <div class="conversation-row conversation-row-top">
-              <span class="conversation-name">臨時對話</span>
+              <span class="conversation-name">${escapeHtml(t('ephemeral.tempChat'))}</span>
               <span class="eph-timer-badge ${colorClass}">${escapeHtml(timerText)}</span>
             </div>
             <div class="conversation-row conversation-row-bottom">
-              <span class="conversation-snippet">訪客 #${(session.guest_digest || '').slice(-4)}</span>
+              <span class="conversation-snippet">${escapeHtml(t('ephemeral.guestLabel', { id: guestId }))}</span>
             </div>
           </div>
         </div>
-        <button type="button" class="item-delete" aria-label="刪除臨時對話"><i class='bx bx-trash'></i></button>
+        <button type="button" class="item-delete" aria-label="${escapeHtml(t('ephemeral.deleteTempChat'))}"><i class='bx bx-trash'></i></button>
       `;
 
       // Click → open ephemeral conversation
@@ -267,7 +269,7 @@ export class EphemeralController extends BaseController {
       timerBar.className = 'eph-conv-timer-bar';
       timerBar.innerHTML = `
         <span id="ephConvTimerClock" class="eph-conv-timer-clock" data-session-id="">--:--</span>
-        <button id="ephConvExtendBtn" class="eph-conv-extend-btn">延長時間</button>
+        <button id="ephConvExtendBtn" class="eph-conv-extend-btn">${escapeHtml(t('ephemeral.extendTime'))}</button>
       `;
       // Insert after messages-header
       const header = document.querySelector('.messages-header');

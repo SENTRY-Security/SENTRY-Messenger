@@ -3,6 +3,13 @@
 // Consumes a one-time link token, establishes WS connection, handles timer + messaging.
 
 import { ephemeralConsume, ephemeralExtend, ephemeralWsToken } from '../api/ephemeral.js';
+import { initI18n, t } from '/locales/index.js';
+
+// Use bootstrap translator until async i18n is ready, then use async t()
+function _t(key, params) {
+  try { return t(key, params); } catch { /* fallback */ }
+  return typeof window.__t === 'function' ? window.__t(key, params) : key;
+}
 
 // ── State ──
 let sessionState = null;   // { session_id, conversation_id, guest_digest, guest_device_id, owner_digest, expires_at, ws_token }
@@ -98,20 +105,20 @@ function updateTimer() {
 extendBtn?.addEventListener('click', async () => {
   try {
     extendBtn.disabled = true;
-    extendBtn.textContent = '延長中...';
+    extendBtn.textContent = _t('ephemeral.extending');
     const data = await ephemeralExtend({
       sessionId: sessionState.session_id,
       guestDigest: sessionState.guest_digest
     });
     sessionState.expires_at = data.expires_at;
-    extendBtn.textContent = '延長時間';
+    extendBtn.textContent = _t('ephemeral.extendTime');
     extendBtn.disabled = false;
     updateTimer();
-    addSystemMessage('對話已延長 10 分鐘');
+    addSystemMessage(_t('ephemeral.extendedTenMin'));
   } catch (err) {
-    extendBtn.textContent = '延長時間';
+    extendBtn.textContent = _t('ephemeral.extendTime');
     extendBtn.disabled = false;
-    addSystemMessage('延長失敗：' + (err.message || '未知錯誤'));
+    addSystemMessage(_t('ephemeral.extendFailed', { error: err.message || '' }));
   }
 });
 
@@ -217,7 +224,7 @@ function handleWsMessage(msg) {
       if (msg.sessionId === sessionState.session_id || msg.conversationId === sessionState.conversation_id) {
         sessionState.expires_at = msg.expiresAt;
         updateTimer();
-        addSystemMessage('對話已延長 10 分鐘');
+        addSystemMessage(_t('ephemeral.extendedTenMin'));
       }
       break;
     case 'ephemeral-deleted':
@@ -252,25 +259,28 @@ async function boot() {
   const hash = location.hash ? location.hash.slice(1) : '';
   const token = hash || new URLSearchParams(location.search).get('t');
   if (!token) {
-    showError('無效的連結：缺少 token');
+    showError(_t('ephemeral.invalidLinkMissingToken'));
     return;
   }
 
+  // Load async i18n (non-blocking; bootstrap __t already covers first paint)
+  initI18n().catch(() => {});
+
   try {
-    setProgress(20, '驗證連結有效性...');
+    setProgress(20, _t('ephemeral.verifyingLink'));
     await sleep(400);
 
-    setProgress(40, '產生臨時身分金鑰...');
+    setProgress(40, _t('ephemeral.generatingTempKey'));
     await sleep(300);
 
-    setProgress(60, '交換加密協議...');
+    setProgress(60, _t('ephemeral.exchangingProtocol'));
     const data = await ephemeralConsume({ token });
     sessionState = data;
 
-    setProgress(80, '建立端對端加密通道...');
+    setProgress(80, _t('ephemeral.establishingChannel'));
     await sleep(300);
 
-    setProgress(100, '連線完成');
+    setProgress(100, _t('ephemeral.connectionComplete'));
     await sleep(400);
 
     // Transition to chat
@@ -282,10 +292,10 @@ async function boot() {
 
   } catch (err) {
     const msg = err.status === 404
-      ? '此連結已失效或已被使用'
+      ? _t('ephemeral.linkExpiredOrUsed')
       : err.status === 410
-        ? '此連結已過期'
-        : `連線失敗：${err.message || '未知錯誤'}`;
+        ? _t('ephemeral.linkExpired')
+        : _t('ephemeral.connectionFailed', { error: err.message || '' });
     showError(msg);
   }
 }

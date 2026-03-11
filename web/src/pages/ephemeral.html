@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-Hant">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
@@ -10,6 +10,43 @@
   <script>
     window.APP_VERSION = '0.1.10';
     window.APP_ENV = 'uat';
+  </script>
+  <script>
+    // Inline i18n bootstrap — synchronous XHR so splash text is translated on first paint.
+    (function(){
+      var lang = 'en';
+      try { lang = navigator.language || 'en'; } catch {}
+      var tag = lang.toLowerCase();
+      if (tag==='zh-hant'||tag==='zh-tw'||tag==='zh-hk'||tag.indexOf('zh-hant')===0) tag='zh-Hant';
+      else if (tag==='zh-hans'||tag==='zh-cn'||tag==='zh-sg'||tag.indexOf('zh-hans')===0||tag==='zh') tag='zh-Hans';
+      else tag = tag.split('-')[0];
+      var supported = {en:1,'zh-Hant':1,'zh-Hans':1,ja:1,ko:1,th:1,vi:1};
+      if (!supported[tag]) tag = 'en';
+      var msgs = {}, fb = {};
+      function loadSync(url) {
+        try { var x = new XMLHttpRequest(); x.open('GET', url, false); x.send(); return x.status===200 ? JSON.parse(x.responseText) : {}; } catch(e) { return {}; }
+      }
+      fb = loadSync('/locales/en.json');
+      if (tag !== 'en') msgs = loadSync('/locales/' + tag + '.json');
+      function resolve(o, p) { return p.split('.').reduce(function(a,k){ return a&&a[k]; }, o); }
+      window.__t = function(key, params) {
+        var val = resolve(msgs, key) || resolve(fb, key) || key;
+        if (!params || typeof val !== 'string') return val;
+        return val.replace(/\{(\w+)\}/g, function(_, k) { return params[k] != null ? params[k] : '{'+k+'}'; });
+      };
+      window.__i18nApply = function() {
+        document.querySelectorAll('[data-i18n]').forEach(function(el) {
+          var k = el.getAttribute('data-i18n'); if (k) el.textContent = window.__t(k);
+        });
+        document.querySelectorAll('[data-i18n-placeholder]').forEach(function(el) {
+          var k = el.getAttribute('data-i18n-placeholder'); if (k) el.placeholder = window.__t(k);
+        });
+        document.querySelectorAll('[data-i18n-html]').forEach(function(el) {
+          var k = el.getAttribute('data-i18n-html'); if (k) el.innerHTML = window.__t(k);
+        });
+      };
+      document.documentElement.lang = tag;
+    })();
   </script>
   <style>
     :root {
@@ -114,7 +151,7 @@
         <div class="splash-bar-fill" id="ephProgressBar"></div>
         <div class="splash-bar-scan"></div>
       </div>
-      <div class="splash-status" id="ephSplashStatus">Verifying link...</div>
+      <div class="splash-status" id="ephSplashStatus" data-i18n="ephemeral.splashVerifying">Verifying link…</div>
       <div class="splash-error" id="ephSplashError"></div>
     </div>
   </div>
@@ -125,26 +162,26 @@
     <div class="eph-timer-bar">
       <div class="eph-timer-gradient" id="ephTimerGradient"></div>
       <div class="eph-timer-clock" id="ephTimerClock">10:00</div>
-      <div class="eph-timer-label" id="ephTimerLabel">此對話將在倒數結束後銷毀</div>
-      <button class="eph-extend-btn" id="ephExtendBtn">延長時間</button>
+      <div class="eph-timer-label" id="ephTimerLabel" data-i18n="ephemeral.timerLabel">This conversation will be destroyed when the countdown ends</div>
+      <button class="eph-extend-btn" id="ephExtendBtn" data-i18n="ephemeral.extendTime">Extend Time</button>
     </div>
     <div class="eph-messages" id="ephMessages">
-      <div class="eph-system-msg">已建立端對端加密臨時對話</div>
+      <div class="eph-system-msg" data-i18n="ephemeral.e2eEstablished">End-to-end encrypted temporary conversation established</div>
     </div>
     <div class="eph-composer">
-      <input type="text" id="ephInput" placeholder="輸入訊息..." autocomplete="off" autocorrect="off" spellcheck="false" />
+      <input type="text" id="ephInput" placeholder="Type a message…" data-i18n-placeholder="ephemeral.inputPlaceholder" autocomplete="off" autocorrect="off" spellcheck="false" />
       <button class="eph-send-btn" id="ephSendBtn" disabled>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
       </button>
     </div>
-    <div class="eph-footer-warning">⚠ 臨時對話 · 關閉頁面或倒數結束後所有內容將永久刪除</div>
+    <div class="eph-footer-warning" data-i18n-html="ephemeral.footerWarning">Temporary conversation — all content will be permanently deleted when you close this page or the countdown ends</div>
   </div>
 
   <!-- Destroyed overlay -->
   <div id="ephDestroyed">
     <div class="destroy-icon">🔥</div>
-    <div class="destroy-title">對話已銷毀</div>
-    <div class="destroy-sub">所有訊息已永久清除</div>
+    <div class="destroy-title" data-i18n="ephemeral.destroyedTitle">Conversation Destroyed</div>
+    <div class="destroy-sub" data-i18n="ephemeral.destroyedSub">All messages have been permanently erased</div>
   </div>
 
   <!-- Matrix Rain Canvas (same as login) -->
@@ -175,6 +212,9 @@
   })();
   window.__ephCanvasStart();
   </script>
+
+  <!-- Apply i18n to static DOM elements -->
+  <script>if (typeof window.__i18nApply === 'function') window.__i18nApply();</script>
 
   <!-- Main ephemeral chat logic -->
   <script>
