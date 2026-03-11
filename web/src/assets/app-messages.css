@@ -1625,6 +1625,21 @@
 
 .ephemeral-link-copy:active { transform: translateY(1px); }
 
+.ephemeral-link-share {
+  padding: 10px 16px;
+  border: 1px solid rgba(245,158,11,0.4);
+  border-radius: 12px;
+  background: rgba(245,158,11,0.1);
+  color: #f59e0b;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform .1s, background .2s;
+  flex-shrink: 0;
+}
+
+.ephemeral-link-share:active { transform: translateY(1px); background: rgba(245,158,11,0.2); }
+
 .ephemeral-link-copied {
   font-size: 12px;
   color: #22c55e;

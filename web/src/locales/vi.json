@@ -1007,7 +1007,10 @@
     "tempChat": "Chat tạm thời",
     "guestLabel": "Khách #{id}",
     "deleteTempChat": "Xóa cuộc trò chuyện tạm thời",
-    "createLinkFailed": "Tạo liên kết thất bại"
+    "createLinkFailed": "Tạo liên kết thất bại",
+    "copyBtn": "Sao chép",
+    "shareBtn": "Chia sẻ",
+    "copiedToast": "✓ Đã sao chép vào bộ nhớ tạm"
   },
   "loginStages": {
     "authenticating": "ĐANG XÁC THỰC...",

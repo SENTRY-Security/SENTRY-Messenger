@@ -1007,7 +1007,10 @@
     "tempChat": "Temp Chat",
     "guestLabel": "Guest #{id}",
     "deleteTempChat": "Delete temporary conversation",
-    "createLinkFailed": "Failed to create link"
+    "createLinkFailed": "Failed to create link",
+    "copyBtn": "Copy",
+    "shareBtn": "Share",
+    "copiedToast": "✓ Copied to clipboard"
   },
   "loginStages": {
     "authenticating": "AUTHENTICATING...",

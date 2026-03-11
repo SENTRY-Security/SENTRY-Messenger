@@ -1007,7 +1007,10 @@
     "tempChat": "แชทชั่วคราว",
     "guestLabel": "ผู้เยี่ยมชม #{id}",
     "deleteTempChat": "ลบการสนทนาชั่วคราว",
-    "createLinkFailed": "สร้างลิงก์ล้มเหลว"
+    "createLinkFailed": "สร้างลิงก์ล้มเหลว",
+    "copyBtn": "คัดลอก",
+    "shareBtn": "แชร์",
+    "copiedToast": "✓ คัดลอกไปยังคลิปบอร์ดแล้ว"
   },
   "loginStages": {
     "authenticating": "กำลังยืนยันตัวตน...",

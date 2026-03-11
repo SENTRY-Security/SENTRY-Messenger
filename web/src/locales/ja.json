@@ -1007,7 +1007,10 @@
     "tempChat": "一時チャット",
     "guestLabel": "ゲスト #{id}",
     "deleteTempChat": "一時的な会話を削除",
-    "createLinkFailed": "リンクの作成に失敗しました"
+    "createLinkFailed": "リンクの作成に失敗しました",
+    "copyBtn": "コピー",
+    "shareBtn": "共有",
+    "copiedToast": "✓ クリップボードにコピーしました"
   },
   "loginStages": {
     "authenticating": "認証中...",

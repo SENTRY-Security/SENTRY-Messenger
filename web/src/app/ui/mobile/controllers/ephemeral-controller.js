@@ -128,6 +128,26 @@ export class EphemeralController extends BaseController {
         }
       });
     }
+
+    // Share button (Web Share API → clipboard fallback)
+    const shareBtn = document.getElementById('ephLinkShare');
+    if (shareBtn && urlInput) {
+      shareBtn.addEventListener('click', async () => {
+        const url = urlInput.value;
+        if (navigator.share) {
+          try {
+            await navigator.share({ title: 'SENTRY Messenger', text: url });
+          } catch { /* user cancelled */ }
+        } else {
+          // Fallback: copy to clipboard
+          try { await navigator.clipboard.writeText(url); } catch { urlInput.select(); document.execCommand('copy'); }
+          if (copied) {
+            copied.style.display = 'block';
+            setTimeout(() => { copied.style.display = 'none'; }, 2000);
+          }
+        }
+      });
+    }
   }
 
   // ── Timer Tick (every second) ──

@@ -1007,7 +1007,10 @@
     "tempChat": "臨時對話",
     "guestLabel": "訪客 #{id}",
     "deleteTempChat": "刪除臨時對話",
-    "createLinkFailed": "建立連結失敗"
+    "createLinkFailed": "建立連結失敗",
+    "copyBtn": "複製",
+    "shareBtn": "分享",
+    "copiedToast": "✓ 已複製到剪貼簿"
   },
   "loginStages": {
     "authenticating": "驗證中...",

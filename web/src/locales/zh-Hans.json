@@ -1007,7 +1007,10 @@
     "tempChat": "临时对话",
     "guestLabel": "访客 #{id}",
     "deleteTempChat": "删除临时对话",
-    "createLinkFailed": "创建链接失败"
+    "createLinkFailed": "创建链接失败",
+    "copyBtn": "复制",
+    "shareBtn": "分享",
+    "copiedToast": "✓ 已复制到剪贴板"
   },
   "loginStages": {
     "authenticating": "验证中...",

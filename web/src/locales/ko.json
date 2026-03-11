@@ -1007,7 +1007,10 @@
     "tempChat": "임시 대화",
     "guestLabel": "게스트 #{id}",
     "deleteTempChat": "임시 대화 삭제",
-    "createLinkFailed": "링크 생성에 실패했습니다"
+    "createLinkFailed": "링크 생성에 실패했습니다",
+    "copyBtn": "복사",
+    "shareBtn": "공유",
+    "copiedToast": "✓ 클립보드에 복사되었습니다"
   },
   "loginStages": {
     "authenticating": "인증 중...",
