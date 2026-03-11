@@ -141,6 +141,7 @@ export class EphemeralController extends BaseController {
     const loading = document.getElementById('ephLinkLoading');
     const result = document.getElementById('ephLinkResult');
     const error = document.getElementById('ephLinkError');
+    const sessionList = document.getElementById('ephLinkSessionList');
     const urlInput = document.getElementById('ephLinkUrl');
     const copied = document.getElementById('ephLinkCopied');
 
@@ -148,6 +149,7 @@ export class EphemeralController extends BaseController {
     if (loading) loading.style.display = 'flex';
     if (result) result.style.display = 'none';
     if (error) error.style.display = 'none';
+    if (sessionList) sessionList.style.display = 'none';
     if (copied) copied.style.display = 'none';
 
     modal.style.display = 'flex';
@@ -169,11 +171,75 @@ export class EphemeralController extends BaseController {
       if (result) result.style.display = 'block';
     } catch (err) {
       if (loading) loading.style.display = 'none';
-      if (error) {
-        error.textContent = err?.message || t('ephemeral.createLinkFailed');
+      const msg = err?.message || '';
+      const isMaxSessions = /max\s+\d+\s+active/i.test(msg);
+      if (isMaxSessions) {
+        this._renderSessionListInModal(sessionList, error);
+      } else if (error) {
+        error.textContent = msg || t('ephemeral.createLinkFailed');
         error.style.display = 'block';
       }
     }
+  }
+
+  /**
+   * Render the active ephemeral session list inside the create-link modal
+   * so the user can terminate sessions to free up a slot.
+   */
+  _renderSessionListInModal(sessionListEl, errorEl) {
+    if (errorEl) {
+      errorEl.innerHTML = `<strong>${escapeHtml(t('ephemeral.maxSessionsReached'))}</strong><br/><span style="font-size:12px">${escapeHtml(t('ephemeral.maxSessionsDesc'))}</span>`;
+      errorEl.style.display = 'block';
+    }
+    if (!sessionListEl) return;
+
+    const now = Math.floor(Date.now() / 1000);
+    const sessions = Array.from(this.ephemeralSessions.values())
+      .filter(s => s.expires_at > now)
+      .sort((a, b) => b.created_at - a.created_at);
+
+    if (!sessions.length) return;
+
+    sessionListEl.innerHTML = '';
+    for (const session of sessions) {
+      const remaining = session.expires_at - now;
+      const min = Math.floor(remaining / 60);
+      const sec = remaining % 60;
+      const timerText = `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+      const guestId = (session.guest_digest || '').slice(-4);
+      const colorClass = remaining > 300 ? 'green' : remaining > 120 ? 'yellow' : 'red';
+
+      const row = document.createElement('div');
+      row.className = 'eph-session-row';
+      row.dataset.sessionId = session.session_id;
+      row.innerHTML = `
+        <div class="eph-session-info">
+          <span class="eph-session-name">${escapeHtml(t('ephemeral.tempChat'))}${guestId ? ' · ' + escapeHtml(guestId) : ''}</span>
+          <span class="eph-timer-badge ${colorClass}">${escapeHtml(timerText)}</span>
+        </div>
+        <button type="button" class="eph-session-terminate">${escapeHtml(t('ephemeral.terminateSession'))}</button>
+      `;
+      row.querySelector('.eph-session-terminate')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        btn.textContent = '…';
+        try {
+          await this._deleteSession(session.session_id);
+          row.remove();
+          // If no more sessions, auto-retry creating a link
+          const remaining = sessionListEl.querySelectorAll('.eph-session-row');
+          if (!remaining.length) {
+            sessionListEl.style.display = 'none';
+            this._showCreateModal();
+          }
+        } catch {
+          btn.disabled = false;
+          btn.textContent = t('ephemeral.terminateSession');
+        }
+      });
+      sessionListEl.appendChild(row);
+    }
+    sessionListEl.style.display = 'block';
   }
 
   _bindModalEvents() {

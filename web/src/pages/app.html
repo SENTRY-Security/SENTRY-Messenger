@@ -856,25 +856,26 @@
     <div class="modal-backdrop" data-eph-close></div>
     <div class="modal-panel ephemeral-link-panel" role="dialog" aria-modal="true">
       <div class="modal-head">
-        <div class="modal-title">建立臨時對話連結</div>
-        <button class="modal-close" data-eph-close aria-label="Close">×</button>
+        <div class="modal-title" data-i18n="ephemeral.createLinkTitle">Create Temporary Chat Link</div>
+        <button class="modal-close" data-eph-close aria-label="Close">&times;</button>
       </div>
       <div class="modal-body">
-        <p class="ephemeral-link-desc">產生一次性連結，傳送給沒有此 App 的人即可開始臨時加密對話。連結僅能使用一次，對話限時 10 分鐘。</p>
+        <p class="ephemeral-link-desc" data-i18n="ephemeral.createLinkDesc">Generate a one-time link for someone without this app to start a temporary encrypted conversation. The link can only be used once and the conversation is limited to 10 minutes.</p>
         <div id="ephLinkLoading" class="ephemeral-link-loading">
           <div class="ephemeral-link-spinner"></div>
-          <span>產生連結中...</span>
+          <span data-i18n="ephemeral.creatingLink">Generating link…</span>
         </div>
         <div id="ephLinkResult" class="ephemeral-link-result" style="display:none">
           <div class="ephemeral-link-url-box">
             <input id="ephLinkUrl" type="text" readonly class="ephemeral-link-url" />
-            <button id="ephLinkCopy" type="button" class="ephemeral-link-copy" data-i18n="ephemeral.copyBtn">複製</button>
-            <button id="ephLinkShare" type="button" class="ephemeral-link-share" data-i18n="ephemeral.shareBtn">分享</button>
+            <button id="ephLinkCopy" type="button" class="ephemeral-link-copy" data-i18n="ephemeral.copyBtn">Copy</button>
+            <button id="ephLinkShare" type="button" class="ephemeral-link-share" data-i18n="ephemeral.shareBtn">Share</button>
           </div>
-          <div id="ephLinkCopied" class="ephemeral-link-copied" style="display:none" data-i18n="ephemeral.copiedToast">✓ 已複製到剪貼簿</div>
-          <p class="ephemeral-link-note">⚠ 此連結僅能點擊一次，請勿重複分享</p>
+          <div id="ephLinkCopied" class="ephemeral-link-copied" style="display:none" data-i18n="ephemeral.copiedToast">✓ Copied to clipboard</div>
+          <p class="ephemeral-link-note" data-i18n="ephemeral.linkOneTimeNote">This link can only be used once — do not share it repeatedly</p>
         </div>
         <div id="ephLinkError" class="ephemeral-link-error" style="display:none"></div>
+        <div id="ephLinkSessionList" class="eph-session-list" style="display:none"></div>
       </div>
     </div>
   </div>

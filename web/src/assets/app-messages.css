@@ -1620,6 +1620,56 @@
   max-width: 380px;
 }
 
+/* Ephemeral session list (shown when max sessions reached) */
+.eph-session-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.eph-session-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border: 1px solid rgba(245,158,11,0.15);
+  border-radius: 10px;
+  background: rgba(245,158,11,0.04);
+}
+
+.eph-session-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.eph-session-name {
+  font-size: 13px;
+  color: var(--fg, #e2e8f0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.eph-session-terminate {
+  flex-shrink: 0;
+  padding: 5px 12px;
+  border: 1px solid rgba(239,68,68,0.4);
+  border-radius: 8px;
+  background: rgba(239,68,68,0.1);
+  color: #ef4444;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s, transform .1s;
+}
+
+.eph-session-terminate:hover { background: rgba(239,68,68,0.2); }
+.eph-session-terminate:active { transform: translateY(1px); }
+.eph-session-terminate:disabled { opacity: 0.5; cursor: default; }
+
 .ephemeral-link-desc {
   font-size: 13px;
   line-height: 1.6;
