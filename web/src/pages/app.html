@@ -861,6 +861,8 @@
       </div>
       <div class="modal-body">
         <p class="ephemeral-link-desc" data-i18n="ephemeral.createLinkDesc">Generate a one-time link for someone without this app to start a temporary encrypted conversation. The link can only be used once and the conversation is limited to 10 minutes.</p>
+        <div id="ephLinkSessionList" class="eph-session-list" style="display:none"></div>
+        <div id="ephLinkError" class="ephemeral-link-error" style="display:none"></div>
         <div id="ephLinkLoading" class="ephemeral-link-loading">
           <div class="ephemeral-link-spinner"></div>
           <span data-i18n="ephemeral.creatingLink">Generating link…</span>
@@ -874,8 +876,6 @@
           <div id="ephLinkCopied" class="ephemeral-link-copied" style="display:none" data-i18n="ephemeral.copiedToast">✓ Copied to clipboard</div>
           <p class="ephemeral-link-note" data-i18n="ephemeral.linkOneTimeNote">This link can only be used once — do not share it repeatedly</p>
         </div>
-        <div id="ephLinkError" class="ephemeral-link-error" style="display:none"></div>
-        <div id="ephLinkSessionList" class="eph-session-list" style="display:none"></div>
       </div>
     </div>
   </div>

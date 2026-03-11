@@ -148,38 +148,58 @@ export class EphemeralController extends BaseController {
     const urlInput = document.getElementById('ephLinkUrl');
     const copied = document.getElementById('ephLinkCopied');
 
-    // Reset state
+    // Reset link-generation area
     if (loading) loading.style.display = 'flex';
     if (result) result.style.display = 'none';
     if (error) error.style.display = 'none';
-    if (sessionList) sessionList.style.display = 'none';
     if (copied) copied.style.display = 'none';
+
+    // Always load sessions first so the list is up to date
+    await this._loadSessions();
+
+    // Render session list (always visible if there are sessions/invites)
+    this._renderSessionListInModal(sessionList);
 
     modal.style.display = 'flex';
     modal.setAttribute('aria-hidden', 'false');
 
+    await this._generateLink(loading, result, error, urlInput, sessionList);
+  }
+
+  /**
+   * Attempt to generate a link. On max-sessions error, show the error hint
+   * and keep the session list visible so the user can free a slot.
+   */
+  async _generateLink(loading, result, error, urlInput, sessionList) {
+    if (loading) loading.style.display = 'flex';
+    if (result) result.style.display = 'none';
+    if (error) error.style.display = 'none';
+
     try {
-      // Generate ephemeral X3DH keypair for this link (1 OPK is sufficient)
       await loadNacl();
       const { devicePriv, bundlePub } = await generateInitialBundle(1, 1);
 
       const data = await ephemeralCreateLink({ prekeyBundle: bundlePub });
       const url = `${location.origin}/e/${data.token}`;
 
-      // Store private key material, awaiting guest key-exchange
       this._pendingInviteKeys.set(data.token, devicePriv);
 
       if (loading) loading.style.display = 'none';
       if (urlInput) urlInput.value = url;
       if (result) result.style.display = 'block';
+
+      // Re-load sessions to show the new pending invite in the list
+      await this._loadSessions();
+      this._renderSessionListInModal(sessionList);
     } catch (err) {
       if (loading) loading.style.display = 'none';
       const msg = err?.message || '';
       const isMaxSessions = /max\s+\d+\s+active/i.test(msg);
       if (isMaxSessions) {
-        // Refresh sessions from server before rendering the list
-        await this._loadSessions();
-        this._renderSessionListInModal(sessionList, error);
+        if (error) {
+          error.innerHTML = `<strong>${escapeHtml(t('ephemeral.maxSessionsReached'))}</strong><br/><span style="font-size:12px">${escapeHtml(t('ephemeral.maxSessionsDesc'))}</span>`;
+          error.style.display = 'block';
+        }
       } else if (error) {
         error.textContent = msg || t('ephemeral.createLinkFailed');
         error.style.display = 'block';
@@ -188,14 +208,10 @@ export class EphemeralController extends BaseController {
   }
 
   /**
-   * Render the active ephemeral session list inside the create-link modal
-   * so the user can terminate sessions to free up a slot.
+   * Render the active ephemeral session list inside the create-link modal.
+   * Always shown so user can manage existing sessions alongside link generation.
    */
-  _renderSessionListInModal(sessionListEl, errorEl) {
-    if (errorEl) {
-      errorEl.innerHTML = `<strong>${escapeHtml(t('ephemeral.maxSessionsReached'))}</strong><br/><span style="font-size:12px">${escapeHtml(t('ephemeral.maxSessionsDesc'))}</span>`;
-      errorEl.style.display = 'block';
-    }
+  _renderSessionListInModal(sessionListEl) {
     if (!sessionListEl) return;
 
     const now = Math.floor(Date.now() / 1000);
@@ -231,7 +247,7 @@ export class EphemeralController extends BaseController {
         try {
           await this._deleteSession(session.session_id);
           row.remove();
-          this._autoRetryIfEmpty(sessionListEl);
+          this._onSlotFreed(sessionListEl);
         } catch {
           btn.disabled = false;
           btn.textContent = t('ephemeral.terminateSession');
@@ -259,10 +275,9 @@ export class EphemeralController extends BaseController {
         btn.textContent = '…';
         try {
           await ephemeralRevokeInvite({ token: invite.token });
-          // Also remove from local pending key store
           this._pendingInviteKeys.delete(invite.token);
           row.remove();
-          this._autoRetryIfEmpty(sessionListEl);
+          this._onSlotFreed(sessionListEl);
         } catch {
           btn.disabled = false;
           btn.textContent = t('ephemeral.revokeLink');
@@ -271,17 +286,20 @@ export class EphemeralController extends BaseController {
       sessionListEl.appendChild(row);
     }
 
-    if (sessions.length || pendingInvites.length) {
-      sessionListEl.style.display = 'block';
-    }
+    sessionListEl.style.display = (sessions.length || pendingInvites.length) ? 'block' : 'none';
   }
 
-  _autoRetryIfEmpty(sessionListEl) {
-    const remaining = sessionListEl.querySelectorAll('.eph-session-row');
-    if (!remaining.length) {
-      sessionListEl.style.display = 'none';
-      this._showCreateModal();
-    }
+  /**
+   * Called after a session/invite is removed. Immediately generates a new link.
+   */
+  async _onSlotFreed(sessionListEl) {
+    const loading = document.getElementById('ephLinkLoading');
+    const result = document.getElementById('ephLinkResult');
+    const error = document.getElementById('ephLinkError');
+    const urlInput = document.getElementById('ephLinkUrl');
+    const copied = document.getElementById('ephLinkCopied');
+    if (copied) copied.style.display = 'none';
+    await this._generateLink(loading, result, error, urlInput, sessionListEl);
   }
 
   _bindModalEvents() {

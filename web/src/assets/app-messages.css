@@ -1560,6 +1560,10 @@
 }
 
 /* Ephemeral auto-logout warning modal */
+.eph-autologout-warn-modal {
+  z-index: 1100;
+}
+
 .eph-autologout-warn-panel {
   max-width: 380px;
 }
@@ -1620,9 +1624,12 @@
   max-width: 380px;
 }
 
-/* Ephemeral session list (shown when max sessions reached) */
+/* Ephemeral session list — always visible when sessions/invites exist */
 .eph-session-list {
   margin-top: 12px;
+  margin-bottom: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(148,163,184,0.12);
   display: flex;
   flex-direction: column;
   gap: 8px;
