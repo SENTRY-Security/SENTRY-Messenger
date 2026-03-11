@@ -66,6 +66,10 @@ export class EphemeralController extends BaseController {
       this.ephemeralSessions.clear();
       for (const s of sessions) {
         this.ephemeralSessions.set(s.session_id, s);
+        // Populate sessionTokenMap from server data (covers missed WS notifications)
+        if (s.invite_token && !this._sessionTokenMap.has(s.session_id)) {
+          this._sessionTokenMap.set(s.session_id, s.invite_token);
+        }
       }
       this._pendingInvites = data?.pending_invites || [];
       this._requestListRender();
@@ -733,7 +737,16 @@ export class EphemeralController extends BaseController {
   // ── E2EE: Handle key exchange from guest ──
   async _handleKeyExchange(msg) {
     const sessionId = msg.sessionId;
-    const session = this.ephemeralSessions.get(sessionId);
+    let session = this.ephemeralSessions.get(sessionId);
+
+    // Session or key mapping may be missing if the ephemeral_session_started
+    // WS notification was lost (e.g. owner's WS was disconnected when the
+    // guest consumed the link). Fetch from server to recover.
+    if (!session || !this._sessionTokenMap.has(sessionId)) {
+      await this._loadSessions();
+      session = this.ephemeralSessions.get(sessionId);
+    }
+
     if (!session) {
       console.warn('[Ephemeral] key-exchange: session not found', sessionId);
       return;

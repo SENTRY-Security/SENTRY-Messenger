@@ -2539,7 +2539,7 @@ async function handleEphemeralRoutes(req, env) {
     await ensureDataTables(env);
     const now = Math.floor(Date.now() / 1000);
     const rows = await env.DB.prepare(
-      `SELECT session_id, conversation_id, guest_digest, guest_device_id, expires_at, extended_count, created_at
+      `SELECT session_id, conversation_id, guest_digest, guest_device_id, expires_at, extended_count, created_at, invite_token
        FROM ephemeral_sessions WHERE owner_digest = ? AND deleted_at IS NULL AND expires_at > ? ORDER BY created_at DESC`
     ).bind(ownerDigest, now).all();
 

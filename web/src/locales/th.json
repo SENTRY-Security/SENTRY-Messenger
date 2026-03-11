@@ -1019,6 +1019,7 @@
     "revokeLink": "เพิกถอน",
     "sessionExpired": "การสนทนาชั่วคราวนี้หมดอายุแล้ว",
     "encryptionNotReady": "การเข้ารหัสยังไม่พร้อม…",
+    "waitingEncryption": "กำลังรอตั้งค่าการเข้ารหัส…",
     "sessionExpiredWs": "เซสชันหมดอายุ — ปิดการเชื่อมต่อแล้ว",
     "createLinkFailed": "สร้างลิงก์ล้มเหลว",
     "copyBtn": "คัดลอก",

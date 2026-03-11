@@ -1019,6 +1019,7 @@
     "revokeLink": "Revoke",
     "sessionExpired": "This ephemeral session has expired",
     "encryptionNotReady": "Encryption not yet established…",
+    "waitingEncryption": "Waiting for encryption setup...",
     "sessionExpiredWs": "Session expired — connection closed",
     "createLinkFailed": "Failed to create link",
     "copyBtn": "Copy",

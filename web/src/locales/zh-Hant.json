@@ -1019,6 +1019,7 @@
     "revokeLink": "撤銷",
     "sessionExpired": "此臨時對話已過期",
     "encryptionNotReady": "加密尚未建立…",
+    "waitingEncryption": "等待加密建立中…",
     "sessionExpiredWs": "對話已過期 — 連線已關閉",
     "createLinkFailed": "建立連結失敗",
     "copyBtn": "複製",

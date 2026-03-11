@@ -1019,6 +1019,7 @@
     "revokeLink": "撤销",
     "sessionExpired": "此临时对话已过期",
     "encryptionNotReady": "加密尚未建立…",
+    "waitingEncryption": "等待加密建立中…",
     "sessionExpiredWs": "对话已过期 — 连接已关闭",
     "createLinkFailed": "创建链接失败",
     "copyBtn": "复制",

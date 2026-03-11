@@ -1019,6 +1019,7 @@
     "revokeLink": "取消",
     "sessionExpired": "この一時的な会話は期限切れです",
     "encryptionNotReady": "暗号化がまだ確立されていません…",
+    "waitingEncryption": "暗号化のセットアップを待機中…",
     "sessionExpiredWs": "セッション期限切れ — 接続を終了しました",
     "createLinkFailed": "リンクの作成に失敗しました",
     "copyBtn": "コピー",

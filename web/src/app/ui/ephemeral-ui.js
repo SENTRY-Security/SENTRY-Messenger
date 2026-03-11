@@ -215,7 +215,7 @@ async function sendMessage() {
     }
   } else {
     // Key exchange not yet complete — queue or reject
-    addSystemMessage(_t('ephemeral.e2eEstablished') ? 'Waiting for encryption setup...' : 'Encryption not ready');
+    addSystemMessage(_t('ephemeral.waitingEncryption') || 'Waiting for encryption setup...');
     return;
   }
 
