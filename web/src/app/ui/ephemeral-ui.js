@@ -259,8 +259,10 @@ function destroyChat() {
 
 // ── Boot ──
 async function boot() {
+  // Token can come from: /e/{token} path, #hash, or ?t= query param
+  const pathMatch = location.pathname.match(/\/e\/([A-Za-z0-9_-]+)/);
   const hash = location.hash ? location.hash.slice(1) : '';
-  const token = hash || new URLSearchParams(location.search).get('t');
+  const token = (pathMatch && pathMatch[1]) || hash || new URLSearchParams(location.search).get('t');
   if (!token) {
     showError(_t('ephemeral.invalidLinkMissingToken'));
     return;
