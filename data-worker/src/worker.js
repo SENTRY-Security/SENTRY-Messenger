@@ -2513,6 +2513,23 @@ async function handleEphemeralRoutes(req, env) {
     return await deleteEphemeralSession(env, session);
   }
 
+  // POST /d1/ephemeral/revoke-invite — owner revokes an unconsumed invite
+  if (req.method === 'POST' && url.pathname === '/d1/ephemeral/revoke-invite') {
+    const body = await req.json();
+    const token = (body.token || '').trim();
+    const ownerDigest = normalizeAccountDigest(body.ownerDigest || body.owner_digest || '');
+    if (!token || !ownerDigest) return json({ error: 'BadRequest', message: 'token and ownerDigest required' }, { status: 400 });
+
+    await ensureDataTables(env);
+    const invite = await env.DB.prepare(
+      `SELECT * FROM ephemeral_invites WHERE token = ? AND owner_digest = ? AND consumed_at IS NULL`
+    ).bind(token, ownerDigest).first();
+    if (!invite) return json({ error: 'NotFound', message: 'invite not found or already consumed' }, { status: 404 });
+
+    await env.DB.prepare(`DELETE FROM ephemeral_invites WHERE token = ?`).bind(token).run();
+    return json({ ok: true });
+  }
+
   // POST /d1/ephemeral/list — owner lists active sessions
   if (req.method === 'POST' && url.pathname === '/d1/ephemeral/list') {
     const body = await req.json();
@@ -2526,7 +2543,12 @@ async function handleEphemeralRoutes(req, env) {
        FROM ephemeral_sessions WHERE owner_digest = ? AND deleted_at IS NULL AND expires_at > ? ORDER BY created_at DESC`
     ).bind(ownerDigest, now).all();
 
-    return json({ sessions: rows?.results || [] });
+    // Also return unconsumed pending invites so the client can display/revoke them
+    const pendingRows = await env.DB.prepare(
+      `SELECT token, expires_at, created_at FROM ephemeral_invites WHERE owner_digest = ? AND consumed_at IS NULL AND expires_at > ? ORDER BY created_at DESC`
+    ).bind(ownerDigest, now).all();
+
+    return json({ sessions: rows?.results || [], pending_invites: pendingRows?.results || [] });
   }
 
   // POST /d1/ephemeral/cleanup — garbage-collect expired sessions
@@ -7093,6 +7115,26 @@ async function handlePublicRoutes(req, env) {
       ownerDigest: auth.accountDigest
     };
     return handleEphemeralRoutes(internalRequest('/d1/ephemeral/delete', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/ephemeral/revoke-invite' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      token: body?.token,
+      ownerDigest: auth.accountDigest
+    };
+    return handleEphemeralRoutes(internalRequest('/d1/ephemeral/revoke-invite', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/ephemeral/revoke-invite' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      token: body?.token,
+      ownerDigest: auth.accountDigest
+    };
+    return handleEphemeralRoutes(internalRequest('/d1/ephemeral/revoke-invite', 'POST', intBody, baseUrl), env);
   }
 
   if (path === '/api/v1/ephemeral/list' && method === 'POST') {

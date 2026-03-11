@@ -9,7 +9,7 @@
  */
 
 import { BaseController } from './base-controller.js';
-import { ephemeralCreateLink, ephemeralDelete, ephemeralList, ephemeralExtend } from '../../../api/ephemeral.js';
+import { ephemeralCreateLink, ephemeralDelete, ephemeralList, ephemeralExtend, ephemeralRevokeInvite } from '../../../api/ephemeral.js';
 import { escapeHtml } from '../ui-utils.js';
 import { t } from '/locales/index.js';
 import { generateInitialBundle } from '../../../../shared/crypto/prekeys.js';
@@ -33,6 +33,8 @@ export class EphemeralController extends BaseController {
     this._drStates = new Map();
     /** @type {Map<string, string>} session_id → token (maps sessions back to invite tokens for key lookup) */
     this._sessionTokenMap = new Map();
+    /** @type {Array<{token, expires_at, created_at}>} pending (unconsumed) invites from server */
+    this._pendingInvites = [];
   }
 
   init() {
@@ -63,6 +65,7 @@ export class EphemeralController extends BaseController {
       for (const s of sessions) {
         this.ephemeralSessions.set(s.session_id, s);
       }
+      this._pendingInvites = data?.pending_invites || [];
       this._requestListRender();
     } catch (err) {
       console.warn('[Ephemeral] loadSessions failed', err?.message);
@@ -196,13 +199,13 @@ export class EphemeralController extends BaseController {
     if (!sessionListEl) return;
 
     const now = Math.floor(Date.now() / 1000);
+    sessionListEl.innerHTML = '';
+
+    // ── Active sessions ──
     const sessions = Array.from(this.ephemeralSessions.values())
       .filter(s => s.expires_at > now)
       .sort((a, b) => b.created_at - a.created_at);
 
-    if (!sessions.length) return;
-
-    sessionListEl.innerHTML = '';
     for (const session of sessions) {
       const remaining = session.expires_at - now;
       const min = Math.floor(remaining / 60);
@@ -228,12 +231,7 @@ export class EphemeralController extends BaseController {
         try {
           await this._deleteSession(session.session_id);
           row.remove();
-          // If no more sessions, auto-retry creating a link
-          const remaining = sessionListEl.querySelectorAll('.eph-session-row');
-          if (!remaining.length) {
-            sessionListEl.style.display = 'none';
-            this._showCreateModal();
-          }
+          this._autoRetryIfEmpty(sessionListEl);
         } catch {
           btn.disabled = false;
           btn.textContent = t('ephemeral.terminateSession');
@@ -241,7 +239,49 @@ export class EphemeralController extends BaseController {
       });
       sessionListEl.appendChild(row);
     }
-    sessionListEl.style.display = 'block';
+
+    // ── Pending (unconsumed) invites ──
+    const pendingInvites = (this._pendingInvites || []).filter(inv => inv.expires_at > now);
+    for (const invite of pendingInvites) {
+      const row = document.createElement('div');
+      row.className = 'eph-session-row eph-session-pending';
+      row.dataset.token = invite.token;
+      row.innerHTML = `
+        <div class="eph-session-info">
+          <span class="eph-session-name">${escapeHtml(t('ephemeral.pendingLink'))}</span>
+          <span class="eph-timer-badge pending">${escapeHtml(t('ephemeral.pendingBadge'))}</span>
+        </div>
+        <button type="button" class="eph-session-terminate">${escapeHtml(t('ephemeral.revokeLink'))}</button>
+      `;
+      row.querySelector('.eph-session-terminate')?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        btn.textContent = '…';
+        try {
+          await ephemeralRevokeInvite({ token: invite.token });
+          // Also remove from local pending key store
+          this._pendingInviteKeys.delete(invite.token);
+          row.remove();
+          this._autoRetryIfEmpty(sessionListEl);
+        } catch {
+          btn.disabled = false;
+          btn.textContent = t('ephemeral.revokeLink');
+        }
+      });
+      sessionListEl.appendChild(row);
+    }
+
+    if (sessions.length || pendingInvites.length) {
+      sessionListEl.style.display = 'block';
+    }
+  }
+
+  _autoRetryIfEmpty(sessionListEl) {
+    const remaining = sessionListEl.querySelectorAll('.eph-session-row');
+    if (!remaining.length) {
+      sessionListEl.style.display = 'none';
+      this._showCreateModal();
+    }
   }
 
   _bindModalEvents() {

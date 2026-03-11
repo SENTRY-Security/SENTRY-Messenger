@@ -1670,6 +1670,13 @@
 .eph-session-terminate:active { transform: translateY(1px); }
 .eph-session-terminate:disabled { opacity: 0.5; cursor: default; }
 
+.eph-session-pending { border-color: rgba(148,163,184,0.2); background: rgba(148,163,184,0.04); }
+
+.eph-timer-badge.pending {
+  background: rgba(148,163,184,0.15);
+  color: #94a3b8;
+}
+
 .ephemeral-link-desc {
   font-size: 13px;
   line-height: 1.6;

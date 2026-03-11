@@ -60,6 +60,15 @@ export async function ephemeralDelete({ sessionId } = {}) {
   return data;
 }
 
+/** Owner revokes an unconsumed invite link. */
+export async function ephemeralRevokeInvite({ token } = {}) {
+  if (!token) throw new Error('token required');
+  const payload = withAuth({ token });
+  const { r, data } = await fetchJSON('/api/v1/ephemeral/revoke-invite', payload, deviceHeaders());
+  if (!r.ok) throw Object.assign(new Error(data?.message || 'revoke-invite failed'), { status: r.status, data });
+  return data;
+}
+
 /** Owner lists active ephemeral sessions. */
 export async function ephemeralList() {
   const payload = withAuth({});
