@@ -1011,7 +1011,8 @@
     "copyBtn": "복사",
     "shareBtn": "공유",
     "shareText": "SENTRY Messenger에서 일회성 보안 대화를 생성했습니다. 링크를 탭하여 참여하세요\n{url}",
-    "copiedToast": "✓ 클립보드에 복사되었습니다"
+    "copiedToast": "✓ 클립보드에 복사되었습니다",
+    "headerBadge": "일회성"
   },
   "loginStages": {
     "authenticating": "인증 중...",

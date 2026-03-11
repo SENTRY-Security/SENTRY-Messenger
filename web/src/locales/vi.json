@@ -1011,7 +1011,8 @@
     "copyBtn": "Sao chép",
     "shareBtn": "Chia sẻ",
     "shareText": "Tôi đã tạo cuộc trò chuyện mật một lần trên SENTRY Messenger. Nhấn vào liên kết để tham gia\n{url}",
-    "copiedToast": "✓ Đã sao chép vào bộ nhớ tạm"
+    "copiedToast": "✓ Đã sao chép vào bộ nhớ tạm",
+    "headerBadge": "Tạm thời"
   },
   "loginStages": {
     "authenticating": "ĐANG XÁC THỰC...",

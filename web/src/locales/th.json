@@ -1011,7 +1011,8 @@
     "copyBtn": "คัดลอก",
     "shareBtn": "แชร์",
     "shareText": "ฉันสร้างแชทลับครั้งเดียวบน SENTRY Messenger แตะลิงก์เพื่อเข้าร่วม\n{url}",
-    "copiedToast": "✓ คัดลอกไปยังคลิปบอร์ดแล้ว"
+    "copiedToast": "✓ คัดลอกไปยังคลิปบอร์ดแล้ว",
+    "headerBadge": "ครั้งเดียว"
   },
   "loginStages": {
     "authenticating": "กำลังยืนยันตัวตน...",

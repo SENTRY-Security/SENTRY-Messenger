@@ -664,7 +664,7 @@ export function createWsIntegration({ deps }) {
       return;
     }
     // ── Ephemeral chat events ──
-    if (type === 'ephemeral-extended' || type === 'ephemeral-deleted' || type === 'ephemeral-message') {
+    if (type === 'ephemeral_session_started' || type === 'ephemeral-extended' || type === 'ephemeral-deleted' || type === 'ephemeral-message') {
       const mp = getMessagesPane();
       const handled = mp?.ephemeralController?.handleWsMessage?.(msg);
       if (type === 'ephemeral-message' && msg?.conversationId) {

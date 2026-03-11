@@ -2425,6 +2425,20 @@ async function handleEphemeralRoutes(req, env) {
       wsToken = jwt;
     } catch { /* best-effort */ }
 
+    // Notify the owner that their ephemeral link was consumed
+    try {
+      await notifyAccountDO(env, invite.owner_digest, {
+        type: 'ephemeral_session_started',
+        sessionId,
+        conversationId,
+        guestDigest,
+        guestDeviceId,
+        ownerDigest: invite.owner_digest,
+        ownerDeviceId: invite.owner_device_id,
+        expiresAt: sessionExpiresAt
+      });
+    } catch (e) { console.warn('[ephemeral-consume] owner notify failed', e?.message); }
+
     return json({
       session_id: sessionId,
       conversation_id: conversationId,

@@ -360,6 +360,20 @@ export class EphemeralController extends BaseController {
   handleWsMessage(msg) {
     if (!msg?.type) return false;
     switch (msg.type) {
+      case 'ephemeral_session_started': {
+        // Guest consumed the link — add session to owner's list
+        this.ephemeralSessions.set(msg.sessionId, {
+          session_id: msg.sessionId,
+          conversation_id: msg.conversationId,
+          guest_digest: msg.guestDigest,
+          guest_device_id: msg.guestDeviceId,
+          expires_at: msg.expiresAt,
+          extended_count: 0,
+          created_at: Math.floor(Date.now() / 1000)
+        });
+        this._requestListRender();
+        return true;
+      }
       case 'ephemeral-extended': {
         const session = this.ephemeralSessions.get(msg.sessionId);
         if (session) {

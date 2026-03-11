@@ -1011,7 +1011,8 @@
     "copyBtn": "Copy",
     "shareBtn": "Share",
     "shareText": "I've created a one-time secure conversation on SENTRY Messenger. Tap the link to join:\n{url}",
-    "copiedToast": "✓ Copied to clipboard"
+    "copiedToast": "✓ Copied to clipboard",
+    "headerBadge": "EPHEMERAL"
   },
   "loginStages": {
     "authenticating": "AUTHENTICATING...",

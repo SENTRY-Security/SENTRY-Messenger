@@ -32,6 +32,8 @@ const inputEl = document.getElementById('ephInput');
 const sendBtn = document.getElementById('ephSendBtn');
 const destroyedEl = document.getElementById('ephDestroyed');
 const particlesEl = document.getElementById('ephParticles');
+const voiceCallBtn = document.getElementById('ephVoiceCallBtn');
+const videoCallBtn = document.getElementById('ephVideoCallBtn');
 
 // ── Particles ──
 function initParticles() {
@@ -244,6 +246,29 @@ function handleWsMessage(msg) {
   }
 }
 
+// ── Call Buttons ──
+function enableCallButtons() {
+  if (voiceCallBtn) voiceCallBtn.disabled = false;
+  if (videoCallBtn) videoCallBtn.disabled = false;
+}
+
+function handleCall(type) {
+  if (!sessionState || destroyed) return;
+  // TODO: integrate with calls infrastructure (WebRTC signaling via WS)
+  // For now, send a call-request signal through the ephemeral WS
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: 'call_request',
+      callType: type, // 'voice' or 'video'
+      sessionId: sessionState.session_id,
+      conversationId: sessionState.conversation_id
+    }));
+  }
+}
+
+if (voiceCallBtn) voiceCallBtn.addEventListener('click', () => handleCall('voice'));
+if (videoCallBtn) videoCallBtn.addEventListener('click', () => handleCall('video'));
+
 // ── Destroy ──
 function destroyChat() {
   if (destroyed) return;
@@ -294,6 +319,7 @@ async function boot() {
     initParticles();
     startTimer();
     connectWs();
+    enableCallButtons();
 
   } catch (err) {
     const msg = err.status === 404
