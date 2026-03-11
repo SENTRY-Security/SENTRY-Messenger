@@ -35,6 +35,8 @@ export class EphemeralController extends BaseController {
     this._sessionTokenMap = new Map();
     /** @type {Array<{token, expires_at, created_at}>} pending (unconsumed) invites from server */
     this._pendingInvites = [];
+    /** @type {boolean} prevents concurrent _generateLink calls */
+    this._generating = false;
   }
 
   init() {
@@ -171,6 +173,10 @@ export class EphemeralController extends BaseController {
    * and keep the session list visible so the user can free a slot.
    */
   async _generateLink(loading, result, error, urlInput, sessionList) {
+    // Prevent concurrent generation (e.g. rapid revoke clicks)
+    if (this._generating) return;
+    this._generating = true;
+
     if (loading) loading.style.display = 'flex';
     if (result) result.style.display = 'none';
     if (error) error.style.display = 'none';
@@ -204,6 +210,8 @@ export class EphemeralController extends BaseController {
         error.textContent = msg || t('ephemeral.createLinkFailed');
         error.style.display = 'block';
       }
+    } finally {
+      this._generating = false;
     }
   }
 
@@ -217,76 +225,87 @@ export class EphemeralController extends BaseController {
     const now = Math.floor(Date.now() / 1000);
     sessionListEl.innerHTML = '';
 
-    // ── Active sessions ──
+    // Merge active sessions + pending invites, sorted by created_at desc
     const sessions = Array.from(this.ephemeralSessions.values())
       .filter(s => s.expires_at > now)
-      .sort((a, b) => b.created_at - a.created_at);
+      .map(s => ({ ...s, _type: 'session' }));
+    const pendingInvites = (this._pendingInvites || [])
+      .filter(inv => inv.expires_at > now)
+      .map(inv => ({ ...inv, _type: 'invite' }));
+    const all = [...sessions, ...pendingInvites].sort((a, b) => a.created_at - b.created_at);
 
-    for (const session of sessions) {
-      const remaining = session.expires_at - now;
-      const min = Math.floor(remaining / 60);
-      const sec = remaining % 60;
-      const timerText = `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
-      const guestId = (session.guest_digest || '').slice(-4);
-      const colorClass = remaining > 300 ? 'green' : remaining > 120 ? 'yellow' : 'red';
-
+    all.forEach((item, idx) => {
+      const seq = idx + 1;
+      const createdTime = this._fmtTime(item.created_at);
       const row = document.createElement('div');
-      row.className = 'eph-session-row';
-      row.dataset.sessionId = session.session_id;
-      row.innerHTML = `
-        <div class="eph-session-info">
-          <span class="eph-session-name">${escapeHtml(t('ephemeral.tempChat'))}${guestId ? ' · ' + escapeHtml(guestId) : ''}</span>
-          <span class="eph-timer-badge ${colorClass}">${escapeHtml(timerText)}</span>
-        </div>
-        <button type="button" class="eph-session-terminate">${escapeHtml(t('ephemeral.terminateSession'))}</button>
-      `;
-      row.querySelector('.eph-session-terminate')?.addEventListener('click', async (e) => {
-        const btn = e.currentTarget;
-        btn.disabled = true;
-        btn.textContent = '…';
-        try {
-          await this._deleteSession(session.session_id);
-          row.remove();
-          this._onSlotFreed(sessionListEl);
-        } catch {
-          btn.disabled = false;
-          btn.textContent = t('ephemeral.terminateSession');
-        }
-      });
-      sessionListEl.appendChild(row);
-    }
 
-    // ── Pending (unconsumed) invites ──
-    const pendingInvites = (this._pendingInvites || []).filter(inv => inv.expires_at > now);
-    for (const invite of pendingInvites) {
-      const row = document.createElement('div');
-      row.className = 'eph-session-row eph-session-pending';
-      row.dataset.token = invite.token;
-      row.innerHTML = `
-        <div class="eph-session-info">
-          <span class="eph-session-name">${escapeHtml(t('ephemeral.pendingLink'))}</span>
-          <span class="eph-timer-badge pending">${escapeHtml(t('ephemeral.pendingBadge'))}</span>
-        </div>
-        <button type="button" class="eph-session-terminate">${escapeHtml(t('ephemeral.revokeLink'))}</button>
-      `;
-      row.querySelector('.eph-session-terminate')?.addEventListener('click', async (e) => {
-        const btn = e.currentTarget;
-        btn.disabled = true;
-        btn.textContent = '…';
-        try {
-          await ephemeralRevokeInvite({ token: invite.token });
-          this._pendingInviteKeys.delete(invite.token);
-          row.remove();
-          this._onSlotFreed(sessionListEl);
-        } catch {
-          btn.disabled = false;
-          btn.textContent = t('ephemeral.revokeLink');
-        }
-      });
-      sessionListEl.appendChild(row);
-    }
+      if (item._type === 'session') {
+        const remaining = item.expires_at - now;
+        const min = Math.floor(remaining / 60);
+        const sec = remaining % 60;
+        const timerText = `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+        const colorClass = remaining > 300 ? 'green' : remaining > 120 ? 'yellow' : 'red';
 
-    sessionListEl.style.display = (sessions.length || pendingInvites.length) ? 'block' : 'none';
+        row.className = 'eph-session-row';
+        row.dataset.sessionId = item.session_id;
+        row.innerHTML = `
+          <div class="eph-session-info">
+            <span class="eph-session-name">#${seq} · ${escapeHtml(t('ephemeral.tempChat'))}</span>
+            <span class="eph-session-meta">${escapeHtml(createdTime)}</span>
+            <span class="eph-timer-badge ${colorClass}">${escapeHtml(timerText)}</span>
+          </div>
+          <button type="button" class="eph-session-terminate">${escapeHtml(t('ephemeral.terminateSession'))}</button>
+        `;
+        row.querySelector('.eph-session-terminate')?.addEventListener('click', async (e) => {
+          const btn = e.currentTarget;
+          btn.disabled = true;
+          btn.textContent = '…';
+          try {
+            await this._deleteSession(item.session_id);
+            row.remove();
+            this._onSlotFreed(sessionListEl);
+          } catch {
+            btn.disabled = false;
+            btn.textContent = t('ephemeral.terminateSession');
+          }
+        });
+      } else {
+        row.className = 'eph-session-row eph-session-pending';
+        row.dataset.token = item.token;
+        row.innerHTML = `
+          <div class="eph-session-info">
+            <span class="eph-session-name">#${seq} · ${escapeHtml(t('ephemeral.pendingLink'))}</span>
+            <span class="eph-session-meta">${escapeHtml(createdTime)}</span>
+            <span class="eph-timer-badge pending">${escapeHtml(t('ephemeral.pendingBadge'))}</span>
+          </div>
+          <button type="button" class="eph-session-terminate">${escapeHtml(t('ephemeral.revokeLink'))}</button>
+        `;
+        row.querySelector('.eph-session-terminate')?.addEventListener('click', async (e) => {
+          const btn = e.currentTarget;
+          btn.disabled = true;
+          btn.textContent = '…';
+          try {
+            await ephemeralRevokeInvite({ token: item.token });
+            this._pendingInviteKeys.delete(item.token);
+            row.remove();
+            this._onSlotFreed(sessionListEl);
+          } catch {
+            btn.disabled = false;
+            btn.textContent = t('ephemeral.revokeLink');
+          }
+        });
+      }
+
+      sessionListEl.appendChild(row);
+    });
+
+    sessionListEl.style.display = all.length ? 'block' : 'none';
+  }
+
+  /** Format unix timestamp to HH:MM local time */
+  _fmtTime(ts) {
+    const d = new Date(ts * 1000);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   }
 
   /**

@@ -1654,10 +1654,17 @@
 
 .eph-session-name {
   font-size: 13px;
+  font-weight: 500;
   color: var(--fg, #e2e8f0);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.eph-session-meta {
+  font-size: 11px;
+  color: rgba(148,163,184,0.7);
+  white-space: nowrap;
 }
 
 .eph-session-terminate {
