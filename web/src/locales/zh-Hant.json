@@ -1012,7 +1012,14 @@
     "shareBtn": "分享",
     "shareText": "我使用 SENTRY Messenger 建立了一個臨時機密對話，請點擊連結進入對話\n{url}",
     "copiedToast": "✓ 已複製到剪貼簿",
-    "headerBadge": "單次機密"
+    "headerBadge": "單次機密",
+    "callDialing": "撥號中…",
+    "callConnecting": "連接中…",
+    "callConnected": "已連接",
+    "callEnded": "通話結束",
+    "callFailed": "通話失敗",
+    "callRejected": "通話被拒絕",
+    "callBusy": "對方忙碌中"
   },
   "loginStages": {
     "authenticating": "驗證中...",

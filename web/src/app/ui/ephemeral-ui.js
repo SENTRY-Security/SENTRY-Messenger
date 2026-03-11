@@ -34,6 +34,15 @@ const destroyedEl = document.getElementById('ephDestroyed');
 const particlesEl = document.getElementById('ephParticles');
 const voiceCallBtn = document.getElementById('ephVoiceCallBtn');
 const videoCallBtn = document.getElementById('ephVideoCallBtn');
+const callOverlay = document.getElementById('ephCallOverlay');
+const callModeIcon = document.getElementById('ephCallModeIcon');
+const callStatusEl = document.getElementById('ephCallStatus');
+const callTimerEl = document.getElementById('ephCallTimer');
+const remoteVideo = document.getElementById('ephRemoteVideo');
+const localVideo = document.getElementById('ephLocalVideo');
+const muteBtn = document.getElementById('ephMuteBtn');
+const camToggleBtn = document.getElementById('ephCamToggleBtn');
+const hangupBtn = document.getElementById('ephHangupBtn');
 
 // ── Particles ──
 function initParticles() {
@@ -237,6 +246,14 @@ function handleWsMessage(msg) {
         destroyChat();
       }
       break;
+    case 'call-answer':
+    case 'call-accept':
+    case 'call-reject':
+    case 'call-busy':
+    case 'call-ice-candidate':
+    case 'call-end':
+      handleCallSignal(msg);
+      break;
     case 'hello':
     case 'pong':
       break;
@@ -246,26 +263,213 @@ function handleWsMessage(msg) {
   }
 }
 
-// ── Call Buttons ──
+// ── Call System ──
+let callState = null; // { callId, mode, pc, localStream, muted, camOff, timerStart, timerInterval }
+const STUN_SERVERS = [{ urls: 'stun:stun.cloudflare.com:3478' }];
+
 function enableCallButtons() {
   if (voiceCallBtn) voiceCallBtn.disabled = false;
   if (videoCallBtn) videoCallBtn.disabled = false;
 }
 
-function handleCall(type) {
-  if (!sessionState || destroyed) return;
-  // TODO: integrate with calls infrastructure (WebRTC signaling via WS)
-  // For now, send a call-request signal through the ephemeral WS
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      type: 'call_request',
-      callType: type, // 'voice' or 'video'
-      sessionId: sessionState.session_id,
-      conversationId: sessionState.conversation_id
-    }));
+function generateCallId() {
+  const arr = new Uint8Array(16);
+  crypto.getRandomValues(arr);
+  return Array.from(arr, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function wsSendJSON(obj) {
+  if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+
+async function handleCall(mode) {
+  if (!sessionState || destroyed || callState) return;
+  const callId = generateCallId();
+
+  // Show call overlay immediately
+  showCallOverlay(mode, _t('ephemeral.callDialing') || 'Dialing…');
+
+  try {
+    // Request media
+    const constraints = { audio: true, video: mode === 'video' };
+    const stream = await navigator.mediaDevices.getUserMedia(constraints).catch(err => {
+      if (mode === 'video') return navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      throw err;
+    });
+
+    // Show local preview for video
+    if (stream.getVideoTracks().length > 0 && localVideo) {
+      localVideo.srcObject = stream;
+      localVideo.classList.add('visible');
+      if (camToggleBtn) camToggleBtn.style.display = '';
+    }
+
+    // Create peer connection
+    const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS, bundlePolicy: 'max-bundle' });
+
+    callState = { callId, mode, pc, localStream: stream, muted: false, camOff: false, timerStart: null, timerInterval: null };
+
+    // Add local tracks
+    for (const track of stream.getTracks()) {
+      pc.addTrack(track, stream);
+    }
+
+    // Handle remote tracks
+    pc.ontrack = (evt) => {
+      if (remoteVideo && evt.streams[0]) {
+        remoteVideo.srcObject = evt.streams[0];
+        if (evt.track.kind === 'video') remoteVideo.classList.add('visible');
+      }
+    };
+
+    // ICE candidates — send to peer
+    pc.onicecandidate = (evt) => {
+      if (evt.candidate) {
+        wsSendJSON({
+          type: 'call-ice-candidate',
+          callId,
+          targetAccountDigest: sessionState.owner_digest,
+          candidate: evt.candidate.toJSON()
+        });
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'connected') {
+        updateCallStatus(_t('ephemeral.callConnected') || 'Connected');
+        startCallTimer();
+      } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+        endCall();
+      }
+    };
+
+    // Create and send offer
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    // Send call invite + offer to owner
+    wsSendJSON({
+      type: 'call-invite',
+      callId,
+      targetAccountDigest: sessionState.owner_digest,
+      senderDeviceId: sessionState.guest_device_id,
+      mode,
+      conversationId: sessionState.conversation_id,
+      metadata: { displayName: _t('ephemeral.guestLabel', { id: sessionState.guest_device_id.slice(-4) }) || 'Guest' }
+    });
+    wsSendJSON({
+      type: 'call-offer',
+      callId,
+      targetAccountDigest: sessionState.owner_digest,
+      senderDeviceId: sessionState.guest_device_id,
+      description: pc.localDescription.toJSON()
+    });
+  } catch (err) {
+    console.error('[EphCall] failed to start call', err);
+    hideCallOverlay();
+    callState = null;
+    addSystemMessage(_t('ephemeral.callFailed') || 'Call failed: ' + (err.message || ''));
   }
 }
 
+function handleCallSignal(msg) {
+  if (!callState || msg.callId !== callState.callId) return;
+  const { pc } = callState;
+
+  switch (msg.type) {
+    case 'call-answer':
+      if (msg.description) {
+        pc.setRemoteDescription(new RTCSessionDescription(msg.description)).catch(console.error);
+      }
+      break;
+    case 'call-ice-candidate':
+      if (msg.candidate) {
+        pc.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(console.error);
+      }
+      break;
+    case 'call-accept':
+      updateCallStatus(_t('ephemeral.callConnecting') || 'Connecting…');
+      break;
+    case 'call-reject':
+    case 'call-busy':
+      updateCallStatus(msg.type === 'call-busy'
+        ? (_t('ephemeral.callBusy') || 'User is busy')
+        : (_t('ephemeral.callRejected') || 'Call declined'));
+      setTimeout(endCall, 1500);
+      break;
+    case 'call-end':
+      endCall(true);
+      break;
+  }
+}
+
+function endCall(fromRemote) {
+  if (!callState) return;
+  const { pc, localStream, callId, timerInterval: ti } = callState;
+  // Notify peer (only if we initiated the hangup)
+  if (!fromRemote) {
+    wsSendJSON({ type: 'call-end', callId, targetAccountDigest: sessionState?.owner_digest });
+  }
+  // Cleanup
+  if (ti) clearInterval(ti);
+  for (const track of localStream?.getTracks() || []) track.stop();
+  pc?.close();
+  if (remoteVideo) { remoteVideo.srcObject = null; remoteVideo.classList.remove('visible'); }
+  if (localVideo) { localVideo.srcObject = null; localVideo.classList.remove('visible'); }
+  callState = null;
+  hideCallOverlay();
+  addSystemMessage(_t('ephemeral.callEnded') || 'Call ended');
+}
+
+function showCallOverlay(mode, status) {
+  if (callModeIcon) callModeIcon.textContent = mode === 'video' ? '📹' : '📞';
+  updateCallStatus(status);
+  if (callTimerEl) callTimerEl.textContent = '';
+  if (callOverlay) callOverlay.classList.add('active');
+  if (muteBtn) muteBtn.classList.remove('active');
+  if (camToggleBtn) { camToggleBtn.classList.remove('active'); camToggleBtn.style.display = mode === 'video' ? '' : 'none'; }
+}
+
+function hideCallOverlay() {
+  if (callOverlay) callOverlay.classList.remove('active');
+}
+
+function updateCallStatus(text) {
+  if (callStatusEl) callStatusEl.textContent = text;
+}
+
+function startCallTimer() {
+  if (!callState) return;
+  callState.timerStart = Date.now();
+  callState.timerInterval = setInterval(() => {
+    if (!callState) return;
+    const elapsed = Math.floor((Date.now() - callState.timerStart) / 1000);
+    const m = Math.floor(elapsed / 60);
+    const s = elapsed % 60;
+    if (callTimerEl) callTimerEl.textContent = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  }, 1000);
+}
+
+// Mute toggle
+muteBtn?.addEventListener('click', () => {
+  if (!callState?.localStream) return;
+  callState.muted = !callState.muted;
+  for (const t of callState.localStream.getAudioTracks()) t.enabled = !callState.muted;
+  muteBtn.classList.toggle('active', callState.muted);
+});
+
+// Camera toggle
+camToggleBtn?.addEventListener('click', () => {
+  if (!callState?.localStream) return;
+  callState.camOff = !callState.camOff;
+  for (const t of callState.localStream.getVideoTracks()) t.enabled = !callState.camOff;
+  camToggleBtn.classList.toggle('active', callState.camOff);
+});
+
+// Hangup
+hangupBtn?.addEventListener('click', endCall);
+
+// Button click handlers
 if (voiceCallBtn) voiceCallBtn.addEventListener('click', () => handleCall('voice'));
 if (videoCallBtn) videoCallBtn.addEventListener('click', () => handleCall('video'));
 

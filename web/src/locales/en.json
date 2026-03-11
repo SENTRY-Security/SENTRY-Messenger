@@ -1012,7 +1012,14 @@
     "shareBtn": "Share",
     "shareText": "I've created a one-time secure conversation on SENTRY Messenger. Tap the link to join:\n{url}",
     "copiedToast": "✓ Copied to clipboard",
-    "headerBadge": "EPHEMERAL"
+    "headerBadge": "EPHEMERAL",
+    "callDialing": "Dialing…",
+    "callConnecting": "Connecting…",
+    "callConnected": "Connected",
+    "callEnded": "Call ended",
+    "callFailed": "Call failed",
+    "callRejected": "Call declined",
+    "callBusy": "User is busy"
   },
   "loginStages": {
     "authenticating": "AUTHENTICATING...",
