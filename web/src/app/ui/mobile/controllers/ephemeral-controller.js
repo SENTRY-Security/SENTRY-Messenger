@@ -769,13 +769,14 @@ export class EphemeralController extends BaseController {
     if (token) this._pendingInviteKeys.delete(token);
 
     // Send ack to guest so they know encryption is ready
-    this.deps.wsSend?.({
+    const sent = this.deps.wsSend?.({
       type: 'ephemeral-key-exchange-ack',
       sessionId,
+      conversationId: session.conversation_id,
       targetAccountDigest: session.guest_digest
     });
 
-    console.log('[Ephemeral] E2EE session established for', sessionId);
+    console.log('[Ephemeral] E2EE session established for', sessionId, 'ack sent:', sent);
   }
 
   // ── Helpers ──

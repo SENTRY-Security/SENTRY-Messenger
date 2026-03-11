@@ -216,6 +216,8 @@ async function sendMessage() {
   } else {
     // Key exchange not yet complete — queue or reject
     addSystemMessage(_t('ephemeral.waitingEncryption') || 'Waiting for encryption setup...');
+    // Re-trigger key exchange in case it was lost
+    if (ephDrState && !keyExchangeComplete) sendKeyExchange();
     return;
   }
 
@@ -308,8 +310,13 @@ async function refreshWsToken() {
 }
 
 // ── E2EE: Send key exchange to owner ──
+let keyExchangeRetryTimer = null;
+const KEY_EXCHANGE_RETRY_INTERVALS = [2000, 4000, 8000, 15000, 30000]; // progressive retry
+let keyExchangeRetryCount = 0;
+
 function sendKeyExchange() {
   if (!ws || ws.readyState !== WebSocket.OPEN || !sessionState?._guestBundlePub || !ephDrState) return;
+  console.log('[EphE2EE] sending key-exchange, attempt', keyExchangeRetryCount);
   ws.send(JSON.stringify({
     type: 'ephemeral-key-exchange',
     sessionId: sessionState.session_id,
@@ -322,6 +329,23 @@ function sendKeyExchange() {
       opk_id: sessionState._usedOpkId
     }
   }));
+  scheduleKeyExchangeRetry();
+}
+
+function scheduleKeyExchangeRetry() {
+  if (keyExchangeRetryTimer) clearTimeout(keyExchangeRetryTimer);
+  if (keyExchangeComplete || destroyed) return;
+  const delay = KEY_EXCHANGE_RETRY_INTERVALS[Math.min(keyExchangeRetryCount, KEY_EXCHANGE_RETRY_INTERVALS.length - 1)];
+  keyExchangeRetryCount++;
+  keyExchangeRetryTimer = setTimeout(() => {
+    if (keyExchangeComplete || destroyed) return;
+    console.log('[EphE2EE] key-exchange ack not received, retrying...');
+    sendKeyExchange();
+  }, delay);
+}
+
+function cancelKeyExchangeRetry() {
+  if (keyExchangeRetryTimer) { clearTimeout(keyExchangeRetryTimer); keyExchangeRetryTimer = null; }
 }
 
 function handleWsMessage(msg) {
@@ -346,6 +370,7 @@ function handleWsMessage(msg) {
     case 'ephemeral-key-exchange-ack':
       if (msg.sessionId === sessionState.session_id) {
         keyExchangeComplete = true;
+        cancelKeyExchangeRetry();
         addSystemMessage(_t('ephemeral.e2eEstablished'));
         console.log('[EphE2EE] key exchange complete, encryption ready');
       }
@@ -602,6 +627,7 @@ if (videoCallBtn) videoCallBtn.addEventListener('click', () => handleCall('video
 function destroyChat() {
   if (destroyed) return;
   destroyed = true;
+  cancelKeyExchangeRetry();
   if (timerInterval) clearInterval(timerInterval);
   if (ws) { try { ws.close(); } catch {} }
   chatUI.style.display = 'none';
