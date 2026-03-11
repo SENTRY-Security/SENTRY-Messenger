@@ -227,7 +227,10 @@ export function normalizeAccountDigest(value) {
   if (!value) return null;
   // Handle wrapped object if passed by mistake
   const raw = (typeof value === 'object') ? (value.peerAccountDigest ?? value.accountDigest ?? value.digest ?? String(value)) : value;
-  const cleaned = String(raw).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+  const str = String(raw).trim();
+  // Ephemeral guest digests: EPHEMERAL_<hex> — pass through as-is
+  if (str.startsWith('EPHEMERAL_')) return str;
+  const cleaned = str.replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
   return cleaned && cleaned.length === 64 ? cleaned : null;
 }
 export function normalizePeerUid(value) {
