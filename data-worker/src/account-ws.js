@@ -42,7 +42,10 @@ const CALL_RENEW_EVENTS = new Set([
 
 function canonicalAccountDigest(value) {
   if (!value) return null;
-  const cleaned = String(value).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+  const str = String(value);
+  // Ephemeral guest digests use EPHEMERAL_ prefix — pass through as-is
+  if (str.startsWith('EPHEMERAL_')) return str;
+  const cleaned = str.replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
   return cleaned.length === 64 ? cleaned : null;
 }
 

@@ -373,6 +373,13 @@ function handleWsMessage(msg) {
     case 'hello':
       updateWsStatus('online');
       break;
+    case 'auth':
+      if (msg.ok) updateWsStatus('online');
+      else {
+        console.warn('[Ephemeral WS] auth rejected:', msg.reason);
+        updateWsStatus('offline');
+      }
+      break;
     case 'pong':
       break;
     case 'ping':
