@@ -2326,7 +2326,8 @@ async function handleInviteDropboxRoutes(req, env) {
 }
 
 // ---- Ephemeral Chat Sessions ----
-const EPHEMERAL_TTL_SEC = 600; // 10 minutes
+const EPHEMERAL_TTL_SEC = 600;          // 10 minutes — session (conversation) lifetime
+const EPHEMERAL_INVITE_TTL_SEC = 86400; // 24 hours — invite link lifetime
 const EPHEMERAL_MAX_PER_OWNER = 2;
 
 async function handleEphemeralRoutes(req, env) {
@@ -2359,13 +2360,13 @@ async function handleEphemeralRoutes(req, env) {
 
     const token = generateNanoId(32);
     const now = Math.floor(Date.now() / 1000);
-    const expiresAt = now + EPHEMERAL_TTL_SEC;
+    const inviteExpiresAt = now + EPHEMERAL_INVITE_TTL_SEC;
 
     await env.DB.prepare(
       `INSERT INTO ephemeral_invites (token, owner_digest, owner_device_id, prekey_bundle_json, expires_at) VALUES (?, ?, ?, ?, ?)`
-    ).bind(token, ownerDigest, ownerDeviceId, prekeyBundleJson, expiresAt).run();
+    ).bind(token, ownerDigest, ownerDeviceId, prekeyBundleJson, inviteExpiresAt).run();
 
-    return json({ token, expires_at: expiresAt });
+    return json({ token, expires_at: inviteExpiresAt });
   }
 
   // POST /d1/ephemeral/consume — guest consumes a link
