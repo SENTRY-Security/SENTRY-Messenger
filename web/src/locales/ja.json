@@ -983,6 +983,7 @@
     "invalidUrl": "有効な http/https URL を入力するか、デフォルトログアウトページを選択してください。"
   },
   "ephemeral": {
+    "splashSublabel": "ワンタイム機密チャット",
     "splashVerifying": "リンクを検証中…",
     "verifyingLink": "リンクの有効性を検証中…",
     "generatingTempKey": "一時的なIDキーを生成中…",

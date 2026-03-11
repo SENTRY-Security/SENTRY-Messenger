@@ -54,6 +54,9 @@ function setProgress(pct, status) {
 }
 
 function showError(msg) {
+  if (progressBar) progressBar.style.display = 'none';
+  const scanEl = progressBar?.parentElement?.querySelector('.splash-bar-scan');
+  if (scanEl) scanEl.style.display = 'none';
   if (splashError) {
     splashError.textContent = msg;
     splashError.style.display = 'block';

@@ -983,6 +983,7 @@
     "invalidUrl": "Vui lòng nhập URL http/https hợp lệ, hoặc chọn trang đăng xuất mặc định."
   },
   "ephemeral": {
+    "splashSublabel": "TRÒ CHUYỆN MẬT MỘT LẦN",
     "splashVerifying": "Đang xác minh liên kết…",
     "verifyingLink": "Đang xác minh tính hợp lệ của liên kết…",
     "generatingTempKey": "Đang tạo khóa nhận dạng tạm thời…",

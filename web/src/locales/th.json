@@ -983,6 +983,7 @@
     "invalidUrl": "กรุณากรอก URL แบบ http/https ที่ถูกต้อง หรือเลือกหน้าออกจากระบบเริ่มต้น"
   },
   "ephemeral": {
+    "splashSublabel": "แชทลับครั้งเดียว",
     "splashVerifying": "กำลังตรวจสอบลิงก์…",
     "verifyingLink": "กำลังตรวจสอบความถูกต้องของลิงก์…",
     "generatingTempKey": "กำลังสร้างคีย์ตัวตนชั่วคราว…",

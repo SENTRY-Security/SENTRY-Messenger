@@ -983,6 +983,7 @@
     "invalidUrl": "Please enter a valid http/https URL, or select the default logout page."
   },
   "ephemeral": {
+    "splashSublabel": "ONE-TIME SECURE CHAT",
     "splashVerifying": "Verifying link…",
     "verifyingLink": "Verifying link validity…",
     "generatingTempKey": "Generating temporary identity key…",

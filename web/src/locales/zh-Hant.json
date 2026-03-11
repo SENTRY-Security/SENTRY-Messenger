@@ -983,6 +983,7 @@
     "invalidUrl": "請輸入有效的 http/https 網址，或改選預設登出頁面。"
   },
   "ephemeral": {
+    "splashSublabel": "單次機密對話",
     "splashVerifying": "驗證連結中…",
     "verifyingLink": "驗證連結有效性…",
     "generatingTempKey": "產生臨時身分金鑰…",

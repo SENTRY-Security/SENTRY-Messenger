@@ -66,7 +66,7 @@
     #ephSplash .splash-content { position: relative; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 8px; }
     #ephSplash .splash-logo { width: 52px; height: 52px; filter: brightness(0) invert(1) drop-shadow(0 0 18px rgba(245,158,11,0.5)); animation: eph-pulse 3s ease-in-out infinite; }
     #ephSplash .splash-brand { font-size: 18px; font-weight: 700; letter-spacing: 4px; color: #fef3c7; text-shadow: 0 0 20px rgba(245,158,11,0.5); }
-    #ephSplash .splash-sublabel { font-size: 11px; letter-spacing: 2.5px; color: rgba(245,158,11,0.6); text-transform: uppercase; margin-bottom: 24px; }
+    #ephSplash .splash-sublabel { font-size: 11px; letter-spacing: 2.5px; color: rgba(245,158,11,0.6); margin-bottom: 24px; }
     #ephSplash .splash-bar-track { width: 200px; height: 2px; border-radius: 1px; background: rgba(148,163,184,0.15); overflow: hidden; position: relative; margin-bottom: 12px; }
     #ephSplash .splash-bar-fill { width: 0%; height: 100%; border-radius: 1px; background: linear-gradient(90deg, #f59e0b, #ef4444); box-shadow: 0 0 12px rgba(245,158,11,0.6); transition: width .4s ease; }
     #ephSplash .splash-bar-scan { position: absolute; top: 0; height: 100%; width: 40px; background: linear-gradient(90deg, transparent, rgba(245,158,11,0.6), transparent); animation: eph-scan 2s linear infinite; }
@@ -146,7 +146,7 @@
     <div class="splash-content">
       <img class="splash-logo" src="/assets/images/logo.svg" alt="" />
       <div class="splash-brand">SENTRY MESSENGER</div>
-      <div class="splash-sublabel">EPHEMERAL LINK</div>
+      <div class="splash-sublabel" data-i18n="ephemeral.splashSublabel">EPHEMERAL LINK</div>
       <div class="splash-bar-track">
         <div class="splash-bar-fill" id="ephProgressBar"></div>
         <div class="splash-bar-scan"></div>
