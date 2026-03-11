@@ -1010,6 +1010,7 @@
     "createLinkFailed": "创建链接失败",
     "copyBtn": "复制",
     "shareBtn": "分享",
+    "shareText": "我使用 SENTRY Messenger 创建了一个临时机密对话，请点击链接进入对话\n{url}",
     "copiedToast": "✓ 已复制到剪贴板"
   },
   "loginStages": {

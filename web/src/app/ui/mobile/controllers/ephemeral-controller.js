@@ -134,13 +134,14 @@ export class EphemeralController extends BaseController {
     if (shareBtn && urlInput) {
       shareBtn.addEventListener('click', async () => {
         const url = urlInput.value;
+        const shareText = t('ephemeral.shareText', { url });
         if (navigator.share) {
           try {
-            await navigator.share({ title: 'SENTRY Messenger', text: url });
+            await navigator.share({ title: 'SENTRY Messenger', text: shareText });
           } catch { /* user cancelled */ }
         } else {
-          // Fallback: copy to clipboard
-          try { await navigator.clipboard.writeText(url); } catch { urlInput.select(); document.execCommand('copy'); }
+          // Fallback: copy full share text to clipboard
+          try { await navigator.clipboard.writeText(shareText); } catch { /* ignore */ }
           if (copied) {
             copied.style.display = 'block';
             setTimeout(() => { copied.style.display = 'none'; }, 2000);
