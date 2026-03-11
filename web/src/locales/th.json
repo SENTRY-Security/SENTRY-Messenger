@@ -1012,7 +1012,14 @@
     "shareBtn": "แชร์",
     "shareText": "ฉันสร้างแชทลับครั้งเดียวบน SENTRY Messenger แตะลิงก์เพื่อเข้าร่วม\n{url}",
     "copiedToast": "✓ คัดลอกไปยังคลิปบอร์ดแล้ว",
-    "headerBadge": "ครั้งเดียว"
+    "headerBadge": "ครั้งเดียว",
+    "callDialing": "กำลังโทร…",
+    "callConnecting": "กำลังเชื่อมต่อ…",
+    "callConnected": "เชื่อมต่อแล้ว",
+    "callEnded": "สิ้นสุดการโทร",
+    "callFailed": "การโทรล้มเหลว",
+    "callRejected": "การโทรถูกปฏิเสธ",
+    "callBusy": "สายไม่ว่าง"
   },
   "loginStages": {
     "authenticating": "กำลังยืนยันตัวตน...",

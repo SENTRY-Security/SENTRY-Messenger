@@ -1012,7 +1012,14 @@
     "shareBtn": "공유",
     "shareText": "SENTRY Messenger에서 일회성 보안 대화를 생성했습니다. 링크를 탭하여 참여하세요\n{url}",
     "copiedToast": "✓ 클립보드에 복사되었습니다",
-    "headerBadge": "일회성"
+    "headerBadge": "일회성",
+    "callDialing": "발신 중…",
+    "callConnecting": "연결 중…",
+    "callConnected": "연결됨",
+    "callEnded": "통화 종료",
+    "callFailed": "통화 실패",
+    "callRejected": "통화 거절됨",
+    "callBusy": "상대방 통화 중"
   },
   "loginStages": {
     "authenticating": "인증 중...",

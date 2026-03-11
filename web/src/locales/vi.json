@@ -1012,7 +1012,14 @@
     "shareBtn": "Chia sẻ",
     "shareText": "Tôi đã tạo cuộc trò chuyện mật một lần trên SENTRY Messenger. Nhấn vào liên kết để tham gia\n{url}",
     "copiedToast": "✓ Đã sao chép vào bộ nhớ tạm",
-    "headerBadge": "Tạm thời"
+    "headerBadge": "Tạm thời",
+    "callDialing": "Đang gọi…",
+    "callConnecting": "Đang kết nối…",
+    "callConnected": "Đã kết nối",
+    "callEnded": "Cuộc gọi kết thúc",
+    "callFailed": "Cuộc gọi thất bại",
+    "callRejected": "Cuộc gọi bị từ chối",
+    "callBusy": "Người dùng đang bận"
   },
   "loginStages": {
     "authenticating": "ĐANG XÁC THỰC...",
