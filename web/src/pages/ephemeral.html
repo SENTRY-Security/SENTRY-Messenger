@@ -65,7 +65,10 @@
     #ephSplash .splash-overlay { position: absolute; inset: 0; z-index: 1; background: radial-gradient(ellipse at 50% 50%, transparent 0%, rgba(5,10,20,0.4) 60%, rgba(5,10,20,0.85) 100%); pointer-events: none; }
     #ephSplash .splash-content { position: relative; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 8px; }
     #ephSplash .splash-logo { width: 52px; height: 52px; filter: brightness(0) invert(1) drop-shadow(0 0 18px rgba(245,158,11,0.5)); animation: eph-pulse 3s ease-in-out infinite; }
-    #ephSplash .splash-brand { font-size: 18px; font-weight: 700; letter-spacing: 4px; color: #fef3c7; text-shadow: 0 0 20px rgba(245,158,11,0.5); }
+    #ephSplash .splash-brand { font-size: 18px; font-weight: 700; letter-spacing: 4px; color: #fef3c7; text-shadow: 0 0 20px rgba(245,158,11,0.5); min-width: 220px; text-align: center; height: 1.4em; line-height: 1.4em; }
+    #ephSplash .splash-brand .char { display: inline-block; transition: color .15s ease, text-shadow .15s ease; }
+    #ephSplash .splash-brand .char.resolved { color: #fef3c7; }
+    #ephSplash .splash-brand .char.scrambling { color: #f59e0b; text-shadow: 0 0 8px rgba(245,158,11,0.8); }
     #ephSplash .splash-sublabel { font-size: 11px; letter-spacing: 2.5px; color: rgba(245,158,11,0.6); margin-bottom: 24px; }
     #ephSplash .splash-bar-track { width: 200px; height: 2px; border-radius: 1px; background: rgba(148,163,184,0.15); overflow: hidden; position: relative; margin-bottom: 12px; }
     #ephSplash .splash-bar-fill { width: 0%; height: 100%; border-radius: 1px; background: linear-gradient(90deg, #f59e0b, #ef4444); box-shadow: 0 0 12px rgba(245,158,11,0.6); transition: width .4s ease; }
@@ -145,7 +148,7 @@
     <div class="splash-overlay"></div>
     <div class="splash-content">
       <img class="splash-logo" src="/assets/images/logo.svg" alt="" />
-      <div class="splash-brand">SENTRY MESSENGER</div>
+      <div class="splash-brand" id="ephBrand" aria-label="SENTRY MESSENGER"></div>
       <div class="splash-sublabel" data-i18n="ephemeral.splashSublabel">EPHEMERAL LINK</div>
       <div class="splash-bar-track">
         <div class="splash-bar-fill" id="ephProgressBar"></div>
@@ -211,6 +214,59 @@
     window.__ephCanvasStop=function(){ running=false; if(raf)cancelAnimationFrame(raf); };
   })();
   window.__ephCanvasStart();
+  </script>
+
+  <!-- Brand Text Scramble/Decrypt Animation (same as login) -->
+  <script>
+  (function(){
+    var BRAND = 'SENTRY MESSENGER';
+    var GLYPHS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%&!?<>{}[]';
+    var el, chars, resolved, frame, raf, running;
+
+    function init(){
+      el = document.getElementById('ephBrand');
+      if(!el) return;
+      el.innerHTML = '';
+      chars = [];
+      resolved = [];
+      for(var i=0;i<BRAND.length;i++){
+        var span = document.createElement('span');
+        span.className = 'char scrambling';
+        span.textContent = BRAND[i] === ' ' ? '\u00A0' : GLYPHS[Math.random()*GLYPHS.length|0];
+        el.appendChild(span);
+        chars.push(span);
+        resolved.push(BRAND[i] === ' ');
+      }
+      frame = 0;
+    }
+
+    function tick(){
+      if(!running) return;
+      frame++;
+      var revealIdx = Math.floor(frame / 6);
+      for(var i=0;i<chars.length;i++){
+        if(BRAND[i] === ' ') continue;
+        if(i <= revealIdx){
+          if(!resolved[i]){
+            chars[i].textContent = BRAND[i];
+            chars[i].className = 'char resolved';
+            resolved[i] = true;
+          }
+        } else {
+          chars[i].textContent = GLYPHS[Math.random()*GLYPHS.length|0];
+        }
+      }
+      if(revealIdx >= BRAND.length){
+        running = false;
+        return;
+      }
+      raf = requestAnimationFrame(tick);
+    }
+
+    running = true;
+    init();
+    tick();
+  })();
   </script>
 
   <!-- Apply i18n to static DOM elements -->

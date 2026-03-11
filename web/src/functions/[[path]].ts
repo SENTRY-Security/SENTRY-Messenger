@@ -39,15 +39,8 @@ export const onRequest: PagesFunction<{ ORIGIN_API: string }> = async ({ request
 
   const upstreamBase = new URL(originApi);
 
-  // Rewrite /api/v1/* to /d1/* for upstream Worker
-  let targetPath = url.pathname;
-  if (targetPath.startsWith('/api/v1/')) {
-    targetPath = '/d1/' + targetPath.slice('/api/v1/'.length);
-  } else if (targetPath.startsWith('/api/')) {
-    targetPath = '/d1/' + targetPath.slice('/api/'.length);
-  }
-
-  const targetUrl = new URL(targetPath + url.search, upstreamBase);
+  // Forward /api/* paths as-is to upstream Worker (which has handlePublicRoutes for /api/v1/*)
+  const targetUrl = new URL(url.pathname + url.search, upstreamBase);
   console.log('[Proxy] Forwarding', { original: request.url, search: url.search, target: targetUrl.toString() });
 
   let response: Response;
