@@ -2640,7 +2640,7 @@ async function handleAtomicSendRoutes(req, env) {
     `).bind(conversationId, accountDigest, senderDeviceId).first();
     const maxCounter = Number(maxRow?.max_counter ?? -1);
     if (Number.isFinite(maxCounter) && maxCounter >= 0 && msgCounter <= maxCounter) {
-      return json({ error: 'CounterTooLow', message: 'counter must be greater than previous', maxCounter }, { status: 409 });
+      return json({ error: 'CounterTooLow', message: 'counter must be greater than previous', maxCounter, details: { max_counter: maxCounter, maxCounter } }, { status: 409 });
     }
 
     // 5. Construct Batch
@@ -3211,7 +3211,7 @@ async function handleMessagesRoutes(req, env) {
     `).bind(conversationId, senderAccountDigest, senderDeviceId).first();
     const maxCounter = Number(maxRow?.max_counter ?? -1);
     if (Number.isFinite(maxCounter) && maxCounter >= 0 && counter <= maxCounter) {
-      return json({ error: 'CounterTooLow', message: 'counter must be greater than previous', maxCounter }, { status: 409 });
+      return json({ error: 'CounterTooLow', message: 'counter must be greater than previous', maxCounter, details: { max_counter: maxCounter, maxCounter } }, { status: 409 });
     }
     await env.DB.prepare(`
       INSERT INTO conversations (id)

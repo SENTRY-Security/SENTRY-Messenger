@@ -111,7 +111,7 @@ export async function createMessage(body) {
     } catch {}
     const detail = res?.data || res;
     const errCode = detail?.error || detail?.code || null;
-    const maxCounter = detail?.details?.max_counter ?? detail?.details?.maxCounter;
+    const maxCounter = detail?.details?.max_counter ?? detail?.details?.maxCounter ?? detail?.maxCounter ?? detail?.max_counter;
     if (res?.r?.status === 409 && errCode === 'CounterTooLow' && Number.isFinite(maxCounter)) {
       // bump local counter and retry once
       try { setDeviceCounter(Number(maxCounter)); } catch {}
