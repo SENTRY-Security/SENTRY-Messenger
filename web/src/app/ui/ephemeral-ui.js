@@ -288,9 +288,8 @@ function scheduleReconnect() {
     if (destroyed) return;
     const ok = await refreshWsToken();
     if (!ok) {
-      // Token refresh failed (session expired) — stop reconnecting
-      updateWsStatus('offline');
-      addSystemMessage(_t('ephemeral.sessionExpiredWs'));
+      // Token refresh failed (session expired/deleted) — show cleanup screen
+      destroyChat({ reason: 'owner-terminated' });
       return;
     }
     connectWs();
