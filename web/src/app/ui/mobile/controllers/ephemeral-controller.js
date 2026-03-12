@@ -1136,13 +1136,14 @@ export class EphemeralController extends BaseController {
         this._requestListRender();
         this._refreshModalIfOpen();
         this.hideConvTimerBar();
-        // If owner is currently viewing this ephemeral conversation, navigate back to list
+        // If owner is currently viewing this ephemeral conversation, navigate back + show modal
         const glState = this.deps.getMessageState?.() || {};
         if (glConvId && glState.conversationId === glConvId) {
           glState.activePeerDigest = null;
           glState.conversationId = null;
           glState.viewMode = 'list';
           this.deps.applyMessagesLayout?.();
+          this._showGuestEndedModal();
         }
         return true;
       }
@@ -1321,6 +1322,33 @@ export class EphemeralController extends BaseController {
       this.deps.applyMessagesLayout?.();
     });
 
+    modal.classList.add('active');
+  }
+
+  _showGuestEndedModal() {
+    let modal = document.getElementById('ephGuestEndedModal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'ephGuestEndedModal';
+      modal.className = 'eph-end-confirm-modal';
+      modal.innerHTML = `
+        <div class="eph-end-confirm-backdrop" data-guest-ended-close></div>
+        <div class="eph-end-confirm-panel">
+          <div class="eph-end-confirm-icon">
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          </div>
+          <div class="eph-end-confirm-title">${escapeHtml(t('ephemeral.guestEndedTitle'))}</div>
+          <div class="eph-end-confirm-desc">${escapeHtml(t('ephemeral.guestEndedDesc'))}</div>
+          <div class="eph-end-confirm-actions">
+            <button class="eph-end-confirm-ok" data-guest-ended-close>${escapeHtml(t('ephemeral.guestEndedOk'))}</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+      modal.querySelectorAll('[data-guest-ended-close]').forEach(el => {
+        el.addEventListener('click', () => modal.classList.remove('active'));
+      });
+    }
     modal.classList.add('active');
   }
 
