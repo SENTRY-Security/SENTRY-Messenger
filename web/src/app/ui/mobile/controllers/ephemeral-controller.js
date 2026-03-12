@@ -65,6 +65,10 @@ export class EphemeralController extends BaseController {
     this._generating = false;
     /** @type {object|null} ephemeral call state: { callId, sessionId, mode, pc, localStream, muted, camOff, timerStart, timerInterval, direction } */
     this._callState = null;
+    /** @type {boolean} whether the remote peer is in foreground */
+    this._peerPresent = true;
+    /** @type {Function|null} visibility change handler ref (for cleanup) */
+    this._visibilityHandler = null;
   }
 
   init() {
@@ -73,6 +77,7 @@ export class EphemeralController extends BaseController {
     this._bindModalEvents();
     this._startTimerTick();
     this._listenWsEvents();
+    this._bindVisibilityChange();
     // Load active sessions on init
     this._loadSessions();
     // Periodic poll for pending key exchanges (every 5s while sessions exist)
@@ -82,6 +87,7 @@ export class EphemeralController extends BaseController {
   destroy() {
     if (this._kexPollInterval) clearInterval(this._kexPollInterval);
     if (this._timerInterval) clearInterval(this._timerInterval);
+    if (this._visibilityHandler) document.removeEventListener('visibilitychange', this._visibilityHandler);
     // Clear all crypto state (memory + storage)
     this._drStates.clear();
     this._pendingInviteKeys.clear();
@@ -555,8 +561,10 @@ export class EphemeralController extends BaseController {
     convTimerEl.textContent = `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
 
     // Calculate elapsed percentage (0% = just started, 100% = time's up)
-    const totalDuration = (session.created_at && session.expires_at)
-      ? (session.expires_at - session.created_at) : 600;
+    // Use _progressBase (set on extend) to reset the progress bar after extending
+    const baseTime = session._progressBase || session.created_at;
+    const totalDuration = (baseTime && session.expires_at)
+      ? (session.expires_at - baseTime) : 600;
     const elapsed = Math.max(0, Math.min(100, (1 - remaining / totalDuration) * 100));
 
     convTimerEl.className = 'eph-conv-timer-clock' + (elapsed >= 80 ? ' red' : '');
@@ -697,7 +705,11 @@ export class EphemeralController extends BaseController {
         try {
           const data = await ephemeralExtend({ sessionId: sid });
           const s = this.ephemeralSessions.get(sid);
-          if (s) s.expires_at = data.expires_at;
+          if (s) {
+            // Reset progress bar baseline so fire icon moves back to start
+            s._progressBase = Math.floor(Date.now() / 1000);
+            s.expires_at = data.expires_at;
+          }
         } catch (err) {
           console.warn('[Ephemeral] extend failed', err?.message);
         }
@@ -934,6 +946,13 @@ export class EphemeralController extends BaseController {
         }
         return true;
       }
+
+      if (ctrl._ctrl === 'peer-away' || ctrl._ctrl === 'peer-back') {
+        const convId = rawMsg?.conversationId;
+        if (convId) this._setPeerPresence(ctrl._ctrl === 'peer-back', convId);
+        return true;
+      }
+
       return false;
     } catch {
       return false;
@@ -960,6 +979,49 @@ export class EphemeralController extends BaseController {
   // ── WS Events ──
   _listenWsEvents() {
     // This is called by the WS integration layer
+  }
+
+  // ── Visibility-based presence for ephemeral sessions ──
+  _bindVisibilityChange() {
+    this._visibilityHandler = () => {
+      const hidden = document.hidden;
+      // Broadcast to ALL active ephemeral sessions
+      for (const [sid, session] of this.ephemeralSessions) {
+        if (!this._drStates.has(sid)) continue;
+        const ctrl = hidden ? { _ctrl: 'peer-away' } : { _ctrl: 'peer-back' };
+        this.sendEncryptedMessage(sid, JSON.stringify(ctrl)).catch(() => {});
+      }
+    };
+    document.addEventListener('visibilitychange', this._visibilityHandler);
+  }
+
+  /**
+   * Update peer presence state + show tombstone + manage composer.
+   */
+  _setPeerPresence(present, conversationId) {
+    this._peerPresent = present;
+    // Show system tombstone in timeline
+    const msgId = crypto.randomUUID();
+    const text = present ? t('ephemeral.peerBack') : t('ephemeral.peerAway');
+    appendUserMessage(conversationId, {
+      id: msgId, messageId: msgId,
+      text, ts: Date.now(),
+      direction: 'incoming', msgType: 'system',
+      status: 'received'
+    });
+    this.deps.updateMessagesUI?.({ preserveScroll: true });
+    this.deps.scrollMessagesToBottomSoon?.();
+    // Toggle composer warning
+    const composerInput = document.getElementById('composerInput') || document.querySelector('.messages-composer textarea');
+    if (composerInput) {
+      if (!present) {
+        composerInput.dataset.origPlaceholder = composerInput.placeholder;
+        composerInput.placeholder = t('ephemeral.peerAwayHint') || 'Peer is away — messages may not be delivered';
+      } else {
+        composerInput.placeholder = composerInput.dataset.origPlaceholder || t('composer.placeholder') || 'Type a message…';
+        delete composerInput.dataset.origPlaceholder;
+      }
+    }
   }
 
   /**
@@ -1014,6 +1076,7 @@ export class EphemeralController extends BaseController {
       case 'ephemeral-extended': {
         const session = this.ephemeralSessions.get(msg.sessionId);
         if (session) {
+          session._progressBase = Math.floor(Date.now() / 1000);
           session.expires_at = msg.expiresAt;
           this._requestListRender();
           this._refreshModalIfOpen();

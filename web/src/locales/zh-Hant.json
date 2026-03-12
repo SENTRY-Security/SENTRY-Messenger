@@ -1052,7 +1052,10 @@
     "comingSoonDesc": "商業對話功能尚未開放，敬請期待",
     "nicknameJoin": "加入對話",
     "onlyImagesAllowed": "臨時對話僅支援傳送圖片",
-    "imageTooLarge": "圖片大小不能超過 5 MB"
+    "imageTooLarge": "圖片大小不能超過 5 MB",
+    "peerAway": "⚠️ 對方離開了畫面 — 訊息可能無法送達",
+    "peerBack": "✅ 對方已回到畫面",
+    "peerAwayHint": "對方暫時離開 — 訊息可能無法送達"
   },
   "loginStages": {
     "authenticating": "驗證中...",

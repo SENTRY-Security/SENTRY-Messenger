@@ -21,6 +21,7 @@ let ws = null;
 let timerInterval = null;
 let destroyed = false;
 let guestNickname = '';        // temporary display name chosen by guest
+let peerPresent = true;        // whether the remote peer is in foreground
 
 // ── E2EE State (memory-only) ──
 let ephDrState = null;         // Double Ratchet session state
@@ -465,11 +466,13 @@ function handleWsMessage(msg) {
             iv_b64: msg.iv_b64,
             ciphertext_b64: msg.ciphertext_b64
           }).then(plaintext => {
-            // Skip control messages (e.g. nickname)
+            // Handle control messages and special types
             try {
               if (plaintext[0] === '{') {
                 const parsed = JSON.parse(plaintext);
-                if (parsed._ctrl) return;
+                if (parsed._ctrl === 'peer-away') { _handlePeerPresence(false); return; }
+                if (parsed._ctrl === 'peer-back') { _handlePeerPresence(true); return; }
+                if (parsed._ctrl) return; // other control messages (e.g. nickname)
                 if (parsed._type === 'image' && parsed.data) {
                   addImageMessage(parsed.data, 'incoming', msg.ts, parsed.name);
                   return;
@@ -928,10 +931,49 @@ function _enterChat() {
   startTimer();
   connectWs();
   enableCallButtons();
+  _bindVisibilityPresence();
 
   // Show "establishing secure connection" system message (before ack arrives)
   if (ephDrState && !keyExchangeComplete) {
     addSystemMessage(_t('ephemeral.establishingE2e'));
+  }
+}
+
+// ── Visibility-based presence notifications ──
+function _bindVisibilityPresence() {
+  document.addEventListener('visibilitychange', () => {
+    if (destroyed || !ephDrState || !keyExchangeComplete || !sessionState) return;
+    const ctrl = document.hidden ? { _ctrl: 'peer-away' } : { _ctrl: 'peer-back' };
+    const payload = JSON.stringify(ctrl);
+    drEncryptText(ephDrState, payload, {
+      deviceId: sessionState.guest_device_id, version: 1
+    }).then(packet => {
+      wsSendJSON({
+        type: 'ephemeral-message',
+        conversationId: sessionState.conversation_id,
+        header: packet.header,
+        iv_b64: packet.iv_b64,
+        ciphertext_b64: packet.ciphertext_b64,
+        ts: Date.now()
+      });
+    }).catch(() => {});
+  });
+}
+
+function _handlePeerPresence(present) {
+  peerPresent = present;
+  const text = present
+    ? (_t('ephemeral.peerBack') || 'Peer is back')
+    : (_t('ephemeral.peerAway') || 'Peer left the screen');
+  addSystemMessage(text);
+  // Update input placeholder as warning
+  if (inputEl) {
+    if (!present) {
+      inputEl.dataset.origPlaceholder = inputEl.placeholder;
+      inputEl.placeholder = _t('ephemeral.peerAwayHint') || 'Peer is away — messages may not be delivered';
+    } else {
+      inputEl.placeholder = inputEl.dataset.origPlaceholder || _t('ephemeral.inputPlaceholder') || 'Type a message…';
+    }
   }
 }
 

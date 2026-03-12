@@ -1052,7 +1052,10 @@
     "comingSoonDesc": "商业对话功能尚未开放，敬请期待",
     "nicknameJoin": "加入对话",
     "onlyImagesAllowed": "临时对话仅支持发送图片",
-    "imageTooLarge": "图片大小不能超过 5 MB"
+    "imageTooLarge": "图片大小不能超过 5 MB",
+    "peerAway": "⚠️ 对方离开了画面 — 消息可能无法送达",
+    "peerBack": "✅ 对方已回到画面",
+    "peerAwayHint": "对方暂时离开 — 消息可能无法送达"
   },
   "loginStages": {
     "authenticating": "验证中...",

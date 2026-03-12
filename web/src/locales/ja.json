@@ -1052,7 +1052,10 @@
     "comingSoonDesc": "ビジネスチャット機能は準備中です。お楽しみに！",
     "nicknameJoin": "会話に参加",
     "onlyImagesAllowed": "一時チャットでは画像のみ送信可能です",
-    "imageTooLarge": "画像は 5 MB 以下にしてください"
+    "imageTooLarge": "画像は 5 MB 以下にしてください",
+    "peerAway": "⚠️ 相手が画面を離れました — メッセージが届かない可能性があります",
+    "peerBack": "✅ 相手が戻りました",
+    "peerAwayHint": "相手が離席中 — メッセージが届かない可能性があります"
   },
   "loginStages": {
     "authenticating": "認証中...",

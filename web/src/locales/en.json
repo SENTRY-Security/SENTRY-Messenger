@@ -1052,7 +1052,10 @@
     "comingSoonDesc": "Business chat is not yet available. Stay tuned!",
     "nicknameJoin": "Join conversation",
     "onlyImagesAllowed": "Only images are supported in ephemeral chat",
-    "imageTooLarge": "Image must be under 5 MB"
+    "imageTooLarge": "Image must be under 5 MB",
+    "peerAway": "⚠️ Peer left the screen — messages may not be delivered",
+    "peerBack": "✅ Peer is back",
+    "peerAwayHint": "Peer is away — messages may not be delivered"
   },
   "loginStages": {
     "authenticating": "AUTHENTICATING...",
