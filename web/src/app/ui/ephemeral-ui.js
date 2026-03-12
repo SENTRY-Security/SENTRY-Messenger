@@ -263,6 +263,7 @@ function connectWs() {
   ws.onmessage = (evt) => {
     try {
       const msg = JSON.parse(evt.data);
+      console.log('[EphWS] recv', msg?.type, msg?.sessionId ? msg.sessionId.slice(0, 8) + '...' : '');
       handleWsMessage(msg);
     } catch { /* ignore non-JSON */ }
   };

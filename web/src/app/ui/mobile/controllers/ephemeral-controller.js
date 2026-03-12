@@ -780,7 +780,8 @@ export class EphemeralController extends BaseController {
     console.log('[Ephemeral] _handleKeyExchange START', sessionId,
       'sessions:', this.ephemeralSessions.size,
       'tokenMap:', this._sessionTokenMap.size,
-      'inviteKeys:', this._pendingInviteKeys.size);
+      'inviteKeys:', this._pendingInviteKeys.size,
+      'hasDrState:', this._drStates.has(sessionId));
 
     let session = this.ephemeralSessions.get(sessionId);
 
@@ -795,6 +796,23 @@ export class EphemeralController extends BaseController {
 
     if (!session) {
       console.error('[Ephemeral] key-exchange FAIL: session not found after server fetch', sessionId);
+      return;
+    }
+
+    // ── Idempotent: if x3dh was already completed, just resend the ack ──
+    // This handles the case where the first ack was lost (e.g. D1 replica lag
+    // in the relay, guest WS disconnected briefly). The guest retries the
+    // key-exchange, but the private key was already deleted after the first
+    // x3dhRespond. Without this check, ALL retries fail with "no private key".
+    if (this._drStates.has(sessionId)) {
+      console.log('[Ephemeral] key-exchange: DR state already exists, resending ack', sessionId);
+      const sent = this.deps.wsSend?.({
+        type: 'ephemeral-key-exchange-ack',
+        sessionId,
+        conversationId: session.conversation_id,
+        targetAccountDigest: session.guest_digest
+      });
+      console.log('[Ephemeral] re-sent ack for', sessionId, 'sent:', sent);
       return;
     }
 
@@ -816,7 +834,7 @@ export class EphemeralController extends BaseController {
     const drSt = await x3dhRespond(ownerPriv, msg.guestBundle);
     this._drStates.set(sessionId, drSt);
 
-    // Clean up pending invite key (no longer needed)
+    // Clean up pending invite key (no longer needed — DR state is established)
     if (token) {
       this._pendingInviteKeys.delete(token);
       _persistMap(STORAGE_KEY_INVITE_KEYS, this._pendingInviteKeys);
