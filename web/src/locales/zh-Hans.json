@@ -1009,6 +1009,7 @@
     "terminatedSub": "对方已终止此对话",
     "tempChat": "临时对话",
     "guestLabel": "访客 #{id}",
+    "ownerLabel": "账号持有者",
     "deleteTempChat": "删除临时对话",
     "createLinkTitle": "创建临时对话链接",
     "createLinkDesc": "生成一次性链接，发送给没有此 App 的人即可开始临时加密对话。链接仅能使用一次，对话限时 10 分钟。",

@@ -21,16 +21,19 @@ import { startOutgoingCallMedia } from './media-session.js';
 
 // ── Ephemeral context ──
 let _ephCtx = null;
+let _prevSignalSender = null; // stashed regular signal sender to restore on deactivation
 
 /**
  * Activate ephemeral call mode.
  * Installs a signal sender that translates call-* → ephemeral-call-* via WS relay.
+ * @param {Object} ctx.restoreSignalSender - optional function to restore as signal sender on deactivation
  */
 export function activateEphemeralCallMode(ctx) {
   if (!ctx?.wsSend || !ctx?.conversationId || !ctx?.peerDigest) {
     log({ ephCallAdapterActivateSkipped: true, reason: 'missing-context' });
     return;
   }
+  _prevSignalSender = ctx.restoreSignalSender || null;
   _ephCtx = {
     conversationId: ctx.conversationId,
     sessionId: ctx.sessionId || null,
@@ -46,10 +49,15 @@ export function activateEphemeralCallMode(ctx) {
   log({ ephCallAdapterActivated: true, side: _ephCtx.side });
 }
 
-/** Deactivate ephemeral call mode. */
+/** Deactivate ephemeral call mode and restore the previous signal sender. */
 export function deactivateEphemeralCallMode() {
   if (!_ephCtx) return;
   _ephCtx = null;
+  // Restore previous signal sender so regular calls continue working
+  if (_prevSignalSender) {
+    setCallSignalSender(_prevSignalSender);
+    _prevSignalSender = null;
+  }
   log({ ephCallAdapterDeactivated: true });
 }
 

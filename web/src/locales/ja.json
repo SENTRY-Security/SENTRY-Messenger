@@ -1009,6 +1009,7 @@
     "terminatedSub": "相手がこの会話を終了しました",
     "tempChat": "一時チャット",
     "guestLabel": "ゲスト #{id}",
+    "ownerLabel": "アカウント所有者",
     "deleteTempChat": "一時的な会話を削除",
     "createLinkTitle": "一時チャットリンクを作成",
     "createLinkDesc": "ワンタイムリンクを生成し、このアプリを持っていない人に送信して一時的な暗号化チャットを開始できます。リンクは1回のみ使用可能で、会話は10分間に制限されます。",

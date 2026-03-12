@@ -1009,6 +1009,7 @@
     "terminatedSub": "The conversation has been terminated by the other party",
     "tempChat": "Temp Chat",
     "guestLabel": "Guest #{id}",
+    "ownerLabel": "Account Owner",
     "deleteTempChat": "Delete temporary conversation",
     "createLinkTitle": "Create Temporary Chat Link",
     "createLinkDesc": "Generate a one-time link for someone without this app to start a temporary encrypted conversation. The link can only be used once and the conversation is limited to 10 minutes.",

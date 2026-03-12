@@ -1009,6 +1009,7 @@
     "terminatedSub": "Đối phương đã chấm dứt cuộc trò chuyện này",
     "tempChat": "Chat tạm thời",
     "guestLabel": "Khách #{id}",
+    "ownerLabel": "Chủ tài khoản",
     "deleteTempChat": "Xóa cuộc trò chuyện tạm thời",
     "createLinkTitle": "Tạo liên kết chat tạm thời",
     "createLinkDesc": "Tạo liên kết dùng một lần cho người không có ứng dụng này để bắt đầu cuộc trò chuyện mã hóa tạm thời. Liên kết chỉ sử dụng được một lần và cuộc trò chuyện giới hạn 10 phút.",

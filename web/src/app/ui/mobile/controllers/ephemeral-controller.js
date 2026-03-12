@@ -1130,6 +1130,12 @@ export class EphemeralController extends BaseController {
         this._requestListRender();
         this._refreshModalIfOpen();
         this.hideConvTimerBar();
+        // End any active call for this session
+        if (isEphemeralCallMode() && isCallActive()) {
+          endCallMediaSession('session-ended');
+          completeCallSession({ reason: 'session-ended' });
+          deactivateEphemeralCallMode();
+        }
         // If currently viewing this conversation, navigate back to list
         const delState = this.deps.getMessageState?.() || {};
         if (delConvId && delState.conversationId === delConvId) {
@@ -1154,6 +1160,12 @@ export class EphemeralController extends BaseController {
         this._requestListRender();
         this._refreshModalIfOpen();
         this.hideConvTimerBar();
+        // End any active call for this session
+        if (isEphemeralCallMode() && isCallActive()) {
+          endCallMediaSession('session-ended');
+          completeCallSession({ reason: 'session-ended' });
+          deactivateEphemeralCallMode();
+        }
         // If owner is currently viewing this ephemeral conversation, navigate back + show modal
         const glState = this.deps.getMessageState?.() || {};
         if (glConvId && glState.conversationId === glConvId) {
@@ -1399,7 +1411,9 @@ export class EphemeralController extends BaseController {
       selfDeviceId,
       wsSend: (msg) => this.deps.wsSend?.(msg),
       side: 'owner',
-      peerDisplayName: session.guest_nickname || t('ephemeral.guestLabel', { id: (session.guest_digest || '').slice(-4) })
+      peerDisplayName: session.guest_nickname || t('ephemeral.guestLabel', { id: (session.guest_digest || '').slice(-4) }),
+      // Restore the regular WS signal sender when ephemeral call ends
+      restoreSignalSender: this.deps.wsSend
     });
   }
 
