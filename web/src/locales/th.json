@@ -978,6 +978,7 @@
     "create": "สร้าง"
   },
   "misc": {
+    "ok": "ตกลง",
     "backToConversationList": "กลับไปรายการสนทนา",
     "urlOnlyHttps": "รับเฉพาะ URL แบบ HTTPS เท่านั้น",
     "invalidUrl": "กรุณากรอก URL แบบ http/https ที่ถูกต้อง หรือเลือกหน้าออกจากระบบเริ่มต้น"

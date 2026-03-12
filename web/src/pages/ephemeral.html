@@ -104,17 +104,19 @@
     .eph-header .eph-call-btn svg { width: 18px; height: 18px; }
 
     /* Timer bar */
-    .eph-timer-bar { flex-shrink: 0; display: flex; flex-direction: column; align-items: center; padding: 10px 16px 8px; background: linear-gradient(180deg, rgba(5,10,20,0.9), transparent); border-bottom: 1px dashed rgba(245,158,11,0.3); position: relative; z-index: 10; gap: 6px; }
+    .eph-timer-bar { flex-shrink: 0; display: flex; flex-direction: column; align-items: center; padding: 10px 16px 10px; background: linear-gradient(180deg, rgba(5,10,20,0.9), transparent); border-bottom: 1px dashed rgba(245,158,11,0.3); position: relative; z-index: 10; gap: 10px; }
     .eph-timer-control-row { display: flex; align-items: center; width: 100%; }
     .eph-timer-clock { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 2px; color: var(--fg); transition: color .5s ease; text-align: center; flex: 1; }
     .eph-timer-clock.red { color: var(--red); animation: eph-breathe-text 1.5s ease-in-out infinite; }
-    .eph-timer-control-spacer { width: 90px; flex-shrink: 0; }
+    .eph-end-btn { padding: 4px 14px; border: 1px solid rgba(239,68,68,0.4); border-radius: 16px; background: rgba(239,68,68,0.1); color: #ef4444; font-size: 12px; font-weight: 600; cursor: pointer; transition: background .2s, color .2s; width: 90px; text-align: center; }
+    .eph-end-btn:hover { background: rgba(239,68,68,0.2); }
+    .eph-end-btn:active { transform: translateY(1px); background: rgba(239,68,68,0.3); }
     .eph-timer-progress-wrap { position: relative; width: 100%; height: 8px; border-radius: 4px; background: linear-gradient(90deg, #22c55e 0%, #22c55e 48%, #eab308 52%, #eab308 78%, #ef4444 82%, #ef4444 100%); overflow: visible; }
     .eph-timer-progress-fill { position: absolute; top: 0; left: 0; height: 100%; border-radius: 4px 0 0 4px; background: #334155; transition: width 1s linear; z-index: 1; }
     .eph-timer-fire { position: absolute; top: 50%; transform: translate(-50%, -50%); font-size: 20px; line-height: 1; z-index: 2; filter: drop-shadow(0 0 4px rgba(245,158,11,0.7)); transition: left 1s linear; pointer-events: none; }
     .eph-timer-fire .fire-glow { position: absolute; inset: -6px; border-radius: 50%; background: radial-gradient(circle, rgba(245,158,11,0.4) 0%, transparent 70%); animation: eph-fire-glow 0.8s ease-in-out infinite alternate; pointer-events: none; }
     .eph-timer-label { font-size: 11px; color: var(--muted); letter-spacing: 0.5px; }
-    .eph-extend-btn { padding: 5px 14px; border: 1px solid rgba(148,163,184,0.25); border-radius: 16px; background: rgba(148,163,184,0.08); color: rgba(148,163,184,0.5); font-size: 12px; font-weight: 600; cursor: not-allowed; transition: background .2s, color .2s, border-color .2s; width: 90px; text-align: center; }
+    .eph-extend-btn { padding: 4px 14px; border: 1px solid rgba(148,163,184,0.25); border-radius: 16px; background: rgba(148,163,184,0.08); color: rgba(148,163,184,0.5); font-size: 12px; font-weight: 600; cursor: not-allowed; transition: background .2s, color .2s, border-color .2s; width: 90px; text-align: center; }
     .eph-extend-btn.active { border-color: rgba(245,158,11,0.4); background: rgba(245,158,11,0.1); color: var(--amber); cursor: pointer; }
     .eph-extend-btn.active:active { transform: translateY(1px); background: rgba(245,158,11,0.2); }
 
@@ -176,6 +178,19 @@
     .eph-nickname-btn { width: 100%; padding: 12px; border-radius: 10px; border: none; background: var(--amber); color: #0f172a; font-size: 14px; font-weight: 700; cursor: pointer; transition: opacity .2s; margin-top: 8px; }
     .eph-nickname-btn:disabled { opacity: 0.4; cursor: not-allowed; }
     .eph-nickname-btn:hover:not(:disabled) { opacity: 0.9; }
+
+    /* End confirm modal (guest) */
+    .eph-guest-end-modal { display: none; position: fixed; inset: 0; z-index: 10000; align-items: center; justify-content: center; }
+    .eph-guest-end-modal.active { display: flex; }
+    .eph-guest-end-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); }
+    .eph-guest-end-panel { position: relative; z-index: 1; background: #1e293b; border: 1px solid rgba(239,68,68,0.2); border-radius: 16px; padding: 28px 24px; max-width: 320px; width: 85vw; display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; }
+    .eph-guest-end-panel .end-icon { font-size: 36px; margin-bottom: 4px; }
+    .eph-guest-end-panel .end-title { font-size: 16px; font-weight: 700; color: #f1f5f9; }
+    .eph-guest-end-panel .end-desc { font-size: 13px; color: #94a3b8; line-height: 1.5; margin-bottom: 8px; }
+    .eph-guest-end-panel .end-actions { display: flex; gap: 12px; width: 100%; }
+    .eph-guest-end-panel .end-cancel { flex: 1; padding: 10px; border-radius: 10px; border: 1px solid rgba(148,163,184,0.3); background: transparent; color: #94a3b8; font-size: 14px; font-weight: 600; cursor: pointer; }
+    .eph-guest-end-panel .end-confirm { flex: 1; padding: 10px; border-radius: 10px; border: none; background: #ef4444; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; }
+    .eph-guest-end-panel .end-confirm:hover { background: #dc2626; }
 
     /* Destroyed overlay */
     #ephDestroyed { display: none; position: fixed; inset: 0; z-index: 99999; background: #050a14; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
@@ -249,7 +264,7 @@
       <div class="eph-timer-control-row">
         <button class="eph-extend-btn" id="ephExtendBtn" disabled data-i18n="ephemeral.extendTime">Extend Time</button>
         <div class="eph-timer-clock" id="ephTimerClock">10:00</div>
-        <div class="eph-timer-control-spacer"></div>
+        <button class="eph-end-btn" id="ephEndBtn" data-i18n="ephemeral.endConversation">End</button>
       </div>
       <div class="eph-timer-progress-wrap">
         <div class="eph-timer-progress-fill" id="ephTimerFill" style="width:0%"></div>
@@ -285,6 +300,20 @@
       <button class="call-ctrl-btn hangup" id="ephHangupBtn" title="Hang up">
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08c-.18-.17-.29-.42-.29-.7 0-.28.11-.53.29-.71C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.1-.7-.28-.79-.74-1.69-1.36-2.67-1.85-.33-.16-.56-.5-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg>
       </button>
+    </div>
+  </div>
+
+  <!-- Guest end-conversation confirm modal -->
+  <div id="ephGuestEndModal" class="eph-guest-end-modal">
+    <div class="eph-guest-end-backdrop" id="ephGuestEndBackdrop"></div>
+    <div class="eph-guest-end-panel">
+      <div class="end-icon">🔥</div>
+      <div class="end-title" data-i18n="ephemeral.endConversation">End</div>
+      <div class="end-desc" data-i18n="ephemeral.endConversationConfirm">End this conversation? All messages will be permanently deleted.</div>
+      <div class="end-actions">
+        <button class="end-cancel" id="ephGuestEndCancel" data-i18n="common.cancel">Cancel</button>
+        <button class="end-confirm" id="ephGuestEndConfirm" data-i18n="ephemeral.endConversation">End</button>
+      </div>
     </div>
   </div>
 

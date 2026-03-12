@@ -58,6 +58,11 @@ const wsStatusEl = document.getElementById('ephWsStatus');
 const nicknameScreen = document.getElementById('ephNickname');
 const nicknameInput = document.getElementById('ephNicknameInput');
 const nicknameBtn = document.getElementById('ephNicknameBtn');
+const endBtn = document.getElementById('ephEndBtn');
+const guestEndModal = document.getElementById('ephGuestEndModal');
+const guestEndBackdrop = document.getElementById('ephGuestEndBackdrop');
+const guestEndCancel = document.getElementById('ephGuestEndCancel');
+const guestEndConfirm = document.getElementById('ephGuestEndConfirm');
 
 // ── Particles ──
 function initParticles() {
@@ -684,12 +689,31 @@ hangupBtn?.addEventListener('click', endCall);
 if (voiceCallBtn) voiceCallBtn.addEventListener('click', () => handleCall('voice'));
 if (videoCallBtn) videoCallBtn.addEventListener('click', () => handleCall('video'));
 
+// ── End conversation (guest-initiated) ──
+endBtn?.addEventListener('click', () => {
+  if (guestEndModal) guestEndModal.classList.add('active');
+});
+guestEndBackdrop?.addEventListener('click', () => {
+  if (guestEndModal) guestEndModal.classList.remove('active');
+});
+guestEndCancel?.addEventListener('click', () => {
+  if (guestEndModal) guestEndModal.classList.remove('active');
+});
+guestEndConfirm?.addEventListener('click', () => {
+  if (guestEndModal) guestEndModal.classList.remove('active');
+  destroyChat({ reason: 'guest-terminated' });
+});
+
 // ── Destroy ──
 function destroyChat({ reason } = {}) {
   if (destroyed) return;
   destroyed = true;
   cancelKeyExchangeRetry();
   if (timerInterval) clearInterval(timerInterval);
+  // Notify owner when guest ends the conversation
+  if (reason === 'guest-terminated' && ws?.readyState === WebSocket.OPEN && sessionState) {
+    try { ws.send(JSON.stringify({ type: 'ephemeral-guest-leave', sessionId: sessionState.session_id, conversationId: sessionState.conversation_id })); } catch {}
+  }
   if (ws) { try { ws.close(); } catch {} }
   chatUI.style.display = 'none';
   // Show termination reason if owner terminated the session

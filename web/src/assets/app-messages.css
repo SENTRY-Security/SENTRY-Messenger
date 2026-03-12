@@ -1849,8 +1849,8 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 10px 16px 8px;
+  gap: 10px;
+  padding: 10px 16px 10px;
   background: linear-gradient(180deg, rgba(5,10,20,0.9), transparent);
   border-bottom: 1px dashed rgba(245,158,11,0.3);
   position: relative;
@@ -1926,7 +1926,7 @@
 @keyframes eph-breathe-text-owner { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
 
 .eph-conv-extend-btn {
-  padding: 5px 14px;
+  padding: 4px 14px;
   border: 1px solid rgba(148,163,184,0.25);
   border-radius: 16px;
   background: rgba(148,163,184,0.08);
@@ -1947,7 +1947,7 @@
 .eph-conv-extend-btn.active:active { transform: translateY(1px); background: rgba(245,158,11,0.2); }
 
 .eph-conv-end-btn {
-  padding: 5px 14px;
+  padding: 4px 14px;
   border: 1px solid rgba(239,68,68,0.4);
   border-radius: 16px;
   background: rgba(239,68,68,0.1);

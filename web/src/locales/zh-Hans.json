@@ -978,6 +978,7 @@
     "create": "创建"
   },
   "misc": {
+    "ok": "确定",
     "backToConversationList": "返回对话列表",
     "urlOnlyHttps": "仅接受 HTTPS 网址",
     "invalidUrl": "请输入有效的 http/https 网址，或改选默认退出页面。"

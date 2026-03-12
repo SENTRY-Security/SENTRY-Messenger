@@ -978,6 +978,7 @@
     "create": "作成"
   },
   "misc": {
+    "ok": "OK",
     "backToConversationList": "会話リストに戻る",
     "urlOnlyHttps": "HTTPS URL のみ使用できます",
     "invalidUrl": "有効な http/https URL を入力するか、デフォルトログアウトページを選択してください。"
