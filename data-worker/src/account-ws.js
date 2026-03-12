@@ -370,6 +370,10 @@ export class AccountWebSocket {
     if (msg.type === 'ephemeral-key-exchange' || msg.type === 'ephemeral-key-exchange-ack') {
       return this._handleEphemeralRelay(ws, msg, att);
     }
+    // Ephemeral call signaling relay: forward call signals between owner and guest
+    if (typeof msg.type === 'string' && msg.type.startsWith('ephemeral-call-')) {
+      return this._handleEphemeralRelay(ws, msg, att);
+    }
   }
 
   async _handleEphemeralRelay(ws, msg, att) {

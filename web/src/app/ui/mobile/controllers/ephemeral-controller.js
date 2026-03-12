@@ -21,6 +21,7 @@ import { appendUserMessage } from '../../../features/timeline-store.js';
 const EPHEMERAL_TTL_SEC = 600; // 10 minutes
 const STORAGE_KEY_INVITE_KEYS = '__eph_pending_invite_keys';
 const STORAGE_KEY_SESSION_TOKEN_MAP = '__eph_session_token_map';
+const STUN_SERVERS = [{ urls: 'stun:stun.cloudflare.com:3478' }];
 
 // ── sessionStorage helpers for E2EE key persistence ──
 // Private keys MUST survive page reloads / iOS background purges.
@@ -62,6 +63,8 @@ export class EphemeralController extends BaseController {
     this._pendingInvites = [];
     /** @type {boolean} prevents concurrent _generateLink calls */
     this._generating = false;
+    /** @type {object|null} ephemeral call state: { callId, sessionId, mode, pc, localStream, muted, camOff, timerStart, timerInterval, direction } */
+    this._callState = null;
   }
 
   init() {
@@ -612,6 +615,8 @@ export class EphemeralController extends BaseController {
       timerBar.innerHTML = `
         <span id="ephConvTimerClock" class="eph-conv-timer-clock" data-session-id="">--:--</span>
         <button id="ephConvExtendBtn" class="eph-conv-extend-btn">${escapeHtml(t('ephemeral.extendTime'))}</button>
+        <button id="ephConvVoiceCallBtn" class="eph-conv-call-btn" title="${escapeHtml(t('calls.voiceCall') || 'Voice Call')}"><i class='bx bx-phone'></i></button>
+        <button id="ephConvVideoCallBtn" class="eph-conv-call-btn" title="${escapeHtml(t('calls.videoCall') || 'Video Call')}"><i class='bx bx-video'></i></button>
         <button id="ephConvEndBtn" class="eph-conv-end-btn">${escapeHtml(t('ephemeral.endConversation'))}</button>
       `;
       // Insert after messages-header
@@ -645,6 +650,16 @@ export class EphemeralController extends BaseController {
         state.conversationId = null;
         state.viewMode = 'list';
         this.deps.applyMessagesLayout?.();
+      });
+
+      // Bind call buttons
+      document.getElementById('ephConvVoiceCallBtn')?.addEventListener('click', () => {
+        const sid = document.getElementById('ephConvTimerClock')?.dataset?.sessionId;
+        if (sid) this.initiateCall(sid, 'voice');
+      });
+      document.getElementById('ephConvVideoCallBtn')?.addEventListener('click', () => {
+        const sid = document.getElementById('ephConvTimerClock')?.dataset?.sessionId;
+        if (sid) this.initiateCall(sid, 'video');
       });
     }
 
@@ -856,6 +871,11 @@ export class EphemeralController extends BaseController {
         return false; // Let WS integration handle it
       }
       default:
+        // Handle ephemeral call signals
+        if (typeof msg.type === 'string' && msg.type.startsWith('ephemeral-call-')) {
+          this._handleCallSignal(msg);
+          return true;
+        }
         return false;
     }
   }
@@ -961,5 +981,336 @@ export class EphemeralController extends BaseController {
     if (!modal || modal.style.display === 'none' || modal.getAttribute('aria-hidden') === 'true') return;
     const sessionListEl = document.getElementById('ephLinkSessionList');
     if (sessionListEl) this._renderSessionListInModal(sessionListEl);
+  }
+
+  // ── Ephemeral Call System ──
+
+  _generateCallId() {
+    const arr = new Uint8Array(16);
+    crypto.getRandomValues(arr);
+    return Array.from(arr, b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  async initiateCall(sessionId, mode = 'voice') {
+    if (this._callState) return; // already in a call
+    const session = this.ephemeralSessions.get(sessionId);
+    if (!session) return;
+
+    const callId = this._generateCallId();
+    this._showCallOverlay(mode, t('ephemeral.callDialing'));
+
+    try {
+      const constraints = { audio: true, video: mode === 'video' };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints).catch(err => {
+        if (mode === 'video') return navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        throw err;
+      });
+
+      const localVideo = document.getElementById('ephOwnerLocalVideo');
+      if (stream.getVideoTracks().length > 0 && localVideo) {
+        localVideo.srcObject = stream;
+        localVideo.classList.add('visible');
+      }
+
+      const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS, bundlePolicy: 'max-bundle' });
+      this._callState = { callId, sessionId, mode, pc, localStream: stream, muted: false, camOff: false, timerStart: null, timerInterval: null, direction: 'outgoing' };
+
+      for (const track of stream.getTracks()) pc.addTrack(track, stream);
+
+      const remoteVideo = document.getElementById('ephOwnerRemoteVideo');
+      pc.ontrack = (evt) => {
+        if (remoteVideo && evt.streams[0]) {
+          remoteVideo.srcObject = evt.streams[0];
+          if (evt.track.kind === 'video') remoteVideo.classList.add('visible');
+        }
+      };
+
+      pc.onicecandidate = (evt) => {
+        if (evt.candidate) {
+          this.deps.wsSend?.({
+            type: 'ephemeral-call-ice-candidate',
+            callId,
+            conversationId: session.conversation_id,
+            sessionId,
+            candidate: evt.candidate.toJSON()
+          });
+        }
+      };
+
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'connected') {
+          this._updateCallStatus(t('ephemeral.callConnected'));
+          this._startCallTimer();
+        } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+          this.endCall();
+        }
+      };
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      this.deps.wsSend?.({
+        type: 'ephemeral-call-invite',
+        callId,
+        conversationId: session.conversation_id,
+        sessionId,
+        mode
+      });
+      this.deps.wsSend?.({
+        type: 'ephemeral-call-offer',
+        callId,
+        conversationId: session.conversation_id,
+        sessionId,
+        description: pc.localDescription.toJSON()
+      });
+    } catch (err) {
+      console.error('[EphCall] failed to start call', err);
+      this._hideCallOverlay();
+      this._callState = null;
+    }
+  }
+
+  async _handleCallSignal(msg) {
+    const type = msg.type;
+
+    // Incoming call invite — auto-accept (owner doesn't need a ringing UI for ephemeral)
+    if (type === 'ephemeral-call-invite') {
+      if (this._callState) {
+        // Already in a call — send busy
+        this.deps.wsSend?.({
+          type: 'ephemeral-call-busy',
+          callId: msg.callId,
+          conversationId: msg.conversationId,
+          sessionId: msg.sessionId
+        });
+        return;
+      }
+      // Find session
+      const session = msg.sessionId ? this.ephemeralSessions.get(msg.sessionId) : null;
+      const sessionForConv = session || (msg.conversationId ? this.getSessionByConversationId(msg.conversationId) : null);
+      if (!sessionForConv) return;
+
+      this._callState = {
+        callId: msg.callId,
+        sessionId: sessionForConv.session_id,
+        mode: msg.mode || 'voice',
+        pc: null, localStream: null,
+        muted: false, camOff: false,
+        timerStart: null, timerInterval: null,
+        direction: 'incoming'
+      };
+      this._showCallOverlay(msg.mode || 'voice', t('ephemeral.callConnecting'));
+
+      // Send accept
+      this.deps.wsSend?.({
+        type: 'ephemeral-call-accept',
+        callId: msg.callId,
+        conversationId: sessionForConv.conversation_id,
+        sessionId: sessionForConv.session_id
+      });
+      return;
+    }
+
+    if (!this._callState || msg.callId !== this._callState.callId) return;
+
+    if (type === 'ephemeral-call-offer') {
+      // Incoming offer — create PC, set remote desc, create answer
+      try {
+        const mode = this._callState.mode;
+        const constraints = { audio: true, video: mode === 'video' };
+        const stream = await navigator.mediaDevices.getUserMedia(constraints).catch(err => {
+          if (mode === 'video') return navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          throw err;
+        });
+
+        const localVideo = document.getElementById('ephOwnerLocalVideo');
+        if (stream.getVideoTracks().length > 0 && localVideo) {
+          localVideo.srcObject = stream;
+          localVideo.classList.add('visible');
+        }
+
+        const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS, bundlePolicy: 'max-bundle' });
+        this._callState.pc = pc;
+        this._callState.localStream = stream;
+
+        for (const track of stream.getTracks()) pc.addTrack(track, stream);
+
+        const remoteVideo = document.getElementById('ephOwnerRemoteVideo');
+        pc.ontrack = (evt) => {
+          if (remoteVideo && evt.streams[0]) {
+            remoteVideo.srcObject = evt.streams[0];
+            if (evt.track.kind === 'video') remoteVideo.classList.add('visible');
+          }
+        };
+
+        const session = this.ephemeralSessions.get(this._callState.sessionId);
+        pc.onicecandidate = (evt) => {
+          if (evt.candidate) {
+            this.deps.wsSend?.({
+              type: 'ephemeral-call-ice-candidate',
+              callId: this._callState?.callId,
+              conversationId: session?.conversation_id,
+              sessionId: this._callState?.sessionId,
+              candidate: evt.candidate.toJSON()
+            });
+          }
+        };
+
+        pc.onconnectionstatechange = () => {
+          if (pc.connectionState === 'connected') {
+            this._updateCallStatus(t('ephemeral.callConnected'));
+            this._startCallTimer();
+          } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+            this.endCall();
+          }
+        };
+
+        await pc.setRemoteDescription(new RTCSessionDescription(msg.description));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        this.deps.wsSend?.({
+          type: 'ephemeral-call-answer',
+          callId: this._callState.callId,
+          conversationId: session?.conversation_id,
+          sessionId: this._callState.sessionId,
+          description: pc.localDescription.toJSON()
+        });
+      } catch (err) {
+        console.error('[EphCall] failed to handle offer', err);
+        this.endCall();
+      }
+      return;
+    }
+
+    if (type === 'ephemeral-call-answer' && this._callState.pc) {
+      if (msg.description) {
+        this._callState.pc.setRemoteDescription(new RTCSessionDescription(msg.description)).catch(console.error);
+      }
+      return;
+    }
+
+    if (type === 'ephemeral-call-ice-candidate' && this._callState.pc) {
+      if (msg.candidate) {
+        this._callState.pc.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(console.error);
+      }
+      return;
+    }
+
+    if (type === 'ephemeral-call-accept') {
+      this._updateCallStatus(t('ephemeral.callConnecting'));
+      return;
+    }
+
+    if (type === 'ephemeral-call-reject' || type === 'ephemeral-call-busy') {
+      this._updateCallStatus(type === 'ephemeral-call-busy' ? t('ephemeral.callBusy') : t('ephemeral.callRejected'));
+      setTimeout(() => this.endCall(), 1500);
+      return;
+    }
+
+    if (type === 'ephemeral-call-end') {
+      this.endCall(true);
+      return;
+    }
+  }
+
+  endCall(fromRemote = false) {
+    if (!this._callState) return;
+    const { pc, localStream, callId, timerInterval: ti, sessionId } = this._callState;
+    const session = this.ephemeralSessions.get(sessionId);
+    if (!fromRemote && session) {
+      this.deps.wsSend?.({
+        type: 'ephemeral-call-end',
+        callId,
+        conversationId: session.conversation_id,
+        sessionId
+      });
+    }
+    if (ti) clearInterval(ti);
+    for (const track of localStream?.getTracks() || []) track.stop();
+    pc?.close();
+    const remoteVideo = document.getElementById('ephOwnerRemoteVideo');
+    const localVideo = document.getElementById('ephOwnerLocalVideo');
+    if (remoteVideo) { remoteVideo.srcObject = null; remoteVideo.classList.remove('visible'); }
+    if (localVideo) { localVideo.srcObject = null; localVideo.classList.remove('visible'); }
+    this._callState = null;
+    this._hideCallOverlay();
+  }
+
+  toggleMute() {
+    if (!this._callState?.localStream) return;
+    this._callState.muted = !this._callState.muted;
+    for (const t of this._callState.localStream.getAudioTracks()) t.enabled = !this._callState.muted;
+    const btn = document.getElementById('ephOwnerMuteBtn');
+    if (btn) btn.classList.toggle('active', this._callState.muted);
+  }
+
+  toggleCamera() {
+    if (!this._callState?.localStream) return;
+    this._callState.camOff = !this._callState.camOff;
+    for (const t of this._callState.localStream.getVideoTracks()) t.enabled = !this._callState.camOff;
+    const btn = document.getElementById('ephOwnerCamToggleBtn');
+    if (btn) btn.classList.toggle('active', this._callState.camOff);
+  }
+
+  _showCallOverlay(mode, status) {
+    let overlay = document.getElementById('ephOwnerCallOverlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'ephOwnerCallOverlay';
+      overlay.className = 'eph-owner-call-overlay';
+      overlay.innerHTML = `
+        <video class="call-remote-video" id="ephOwnerRemoteVideo" autoplay playsinline></video>
+        <video class="call-local-video" id="ephOwnerLocalVideo" autoplay playsinline muted></video>
+        <div class="call-mode-icon" id="ephOwnerCallModeIcon"></div>
+        <div class="call-status" id="ephOwnerCallStatus"></div>
+        <div class="call-timer" id="ephOwnerCallTimer"></div>
+        <div class="call-controls">
+          <button class="call-ctrl-btn mute" id="ephOwnerMuteBtn"><i class='bx bx-microphone'></i></button>
+          <button class="call-ctrl-btn cam-toggle" id="ephOwnerCamToggleBtn" style="display:none"><i class='bx bx-video'></i></button>
+          <button class="call-ctrl-btn hangup" id="ephOwnerHangupBtn"><i class='bx bx-phone-off'></i></button>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+
+      document.getElementById('ephOwnerMuteBtn')?.addEventListener('click', () => this.toggleMute());
+      document.getElementById('ephOwnerCamToggleBtn')?.addEventListener('click', () => this.toggleCamera());
+      document.getElementById('ephOwnerHangupBtn')?.addEventListener('click', () => this.endCall());
+    }
+
+    const modeIcon = document.getElementById('ephOwnerCallModeIcon');
+    if (modeIcon) modeIcon.textContent = mode === 'video' ? '📹' : '📞';
+    this._updateCallStatus(status);
+    const timerEl = document.getElementById('ephOwnerCallTimer');
+    if (timerEl) timerEl.textContent = '';
+    overlay.classList.add('active');
+
+    const muteBtn = document.getElementById('ephOwnerMuteBtn');
+    if (muteBtn) muteBtn.classList.remove('active');
+    const camBtn = document.getElementById('ephOwnerCamToggleBtn');
+    if (camBtn) { camBtn.classList.remove('active'); camBtn.style.display = mode === 'video' ? '' : 'none'; }
+  }
+
+  _hideCallOverlay() {
+    const overlay = document.getElementById('ephOwnerCallOverlay');
+    if (overlay) overlay.classList.remove('active');
+  }
+
+  _updateCallStatus(text) {
+    const el = document.getElementById('ephOwnerCallStatus');
+    if (el) el.textContent = text;
+  }
+
+  _startCallTimer() {
+    if (!this._callState) return;
+    this._callState.timerStart = Date.now();
+    this._callState.timerInterval = setInterval(() => {
+      if (!this._callState) return;
+      const elapsed = Math.floor((Date.now() - this._callState.timerStart) / 1000);
+      const m = Math.floor(elapsed / 60);
+      const s = elapsed % 60;
+      const timerEl = document.getElementById('ephOwnerCallTimer');
+      if (timerEl) timerEl.textContent = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }, 1000);
   }
 }

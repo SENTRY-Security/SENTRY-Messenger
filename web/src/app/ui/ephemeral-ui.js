@@ -416,12 +416,12 @@ function handleWsMessage(msg) {
         destroyChat({ reason: 'owner-terminated' });
       }
       break;
-    case 'call-answer':
-    case 'call-accept':
-    case 'call-reject':
-    case 'call-busy':
-    case 'call-ice-candidate':
-    case 'call-end':
+    case 'ephemeral-call-answer':
+    case 'ephemeral-call-accept':
+    case 'ephemeral-call-reject':
+    case 'ephemeral-call-busy':
+    case 'ephemeral-call-ice-candidate':
+    case 'ephemeral-call-end':
       handleCallSignal(msg);
       break;
     case 'hello':
@@ -511,7 +511,7 @@ async function handleCall(mode) {
     pc.onicecandidate = (evt) => {
       if (evt.candidate) {
         wsSendJSON({
-          type: 'call-ice-candidate',
+          type: 'ephemeral-call-ice-candidate',
           callId,
           targetAccountDigest: sessionState.owner_digest,
           candidate: evt.candidate.toJSON()
@@ -534,7 +534,7 @@ async function handleCall(mode) {
 
     // Send call invite + offer to owner
     wsSendJSON({
-      type: 'call-invite',
+      type: 'ephemeral-call-invite',
       callId,
       targetAccountDigest: sessionState.owner_digest,
       senderDeviceId: sessionState.guest_device_id,
@@ -543,7 +543,7 @@ async function handleCall(mode) {
       metadata: { displayName: _t('ephemeral.guestLabel', { id: sessionState.guest_device_id.slice(-4) }) || 'Guest' }
     });
     wsSendJSON({
-      type: 'call-offer',
+      type: 'ephemeral-call-offer',
       callId,
       targetAccountDigest: sessionState.owner_digest,
       senderDeviceId: sessionState.guest_device_id,
@@ -562,27 +562,27 @@ function handleCallSignal(msg) {
   const { pc } = callState;
 
   switch (msg.type) {
-    case 'call-answer':
+    case 'ephemeral-call-answer':
       if (msg.description) {
         pc.setRemoteDescription(new RTCSessionDescription(msg.description)).catch(console.error);
       }
       break;
-    case 'call-ice-candidate':
+    case 'ephemeral-call-ice-candidate':
       if (msg.candidate) {
         pc.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(console.error);
       }
       break;
-    case 'call-accept':
+    case 'ephemeral-call-accept':
       updateCallStatus(_t('ephemeral.callConnecting') || 'Connecting…');
       break;
-    case 'call-reject':
-    case 'call-busy':
-      updateCallStatus(msg.type === 'call-busy'
+    case 'ephemeral-call-reject':
+    case 'ephemeral-call-busy':
+      updateCallStatus(msg.type === 'ephemeral-call-busy'
         ? (_t('ephemeral.callBusy') || 'User is busy')
         : (_t('ephemeral.callRejected') || 'Call declined'));
       setTimeout(endCall, 1500);
       break;
-    case 'call-end':
+    case 'ephemeral-call-end':
       endCall(true);
       break;
   }
@@ -593,7 +593,7 @@ function endCall(fromRemote) {
   const { pc, localStream, callId, timerInterval: ti } = callState;
   // Notify peer (only if we initiated the hangup)
   if (!fromRemote) {
-    wsSendJSON({ type: 'call-end', callId, targetAccountDigest: sessionState?.owner_digest });
+    wsSendJSON({ type: 'ephemeral-call-end', callId, targetAccountDigest: sessionState?.owner_digest });
   }
   // Cleanup
   if (ti) clearInterval(ti);

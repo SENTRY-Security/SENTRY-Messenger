@@ -1844,3 +1844,97 @@
 }
 .eph-conv-end-btn:hover { background: rgba(239,68,68,0.2); }
 .eph-conv-end-btn:active { transform: translateY(1px); background: rgba(239,68,68,0.3); }
+
+.eph-conv-call-btn {
+  padding: 4px 8px;
+  border: 1px solid rgba(245,158,11,0.3);
+  border-radius: 50%;
+  background: rgba(245,158,11,0.06);
+  color: #f59e0b;
+  font-size: 16px;
+  cursor: pointer;
+  transition: background .2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+}
+.eph-conv-call-btn:hover { background: rgba(245,158,11,0.15); }
+.eph-conv-call-btn:active { transform: translateY(1px); }
+
+/* Owner-side ephemeral call overlay */
+.eph-owner-call-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: #111;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+}
+.eph-owner-call-overlay.active { display: flex; }
+.eph-owner-call-overlay .call-remote-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: none;
+}
+.eph-owner-call-overlay .call-remote-video.visible { display: block; }
+.eph-owner-call-overlay .call-local-video {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 120px;
+  height: 160px;
+  object-fit: cover;
+  border-radius: 12px;
+  border: 2px solid rgba(255,255,255,0.2);
+  display: none;
+  z-index: 2;
+}
+.eph-owner-call-overlay .call-local-video.visible { display: block; }
+.eph-owner-call-overlay .call-mode-icon {
+  font-size: 48px;
+  z-index: 1;
+}
+.eph-owner-call-overlay .call-status {
+  font-size: 18px;
+  color: #fff;
+  z-index: 1;
+}
+.eph-owner-call-overlay .call-timer {
+  font-size: 14px;
+  color: rgba(255,255,255,0.7);
+  font-variant-numeric: tabular-nums;
+  z-index: 1;
+}
+.eph-owner-call-overlay .call-controls {
+  position: absolute;
+  bottom: 48px;
+  display: flex;
+  gap: 24px;
+  z-index: 2;
+}
+.eph-owner-call-overlay .call-ctrl-btn {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: rgba(255,255,255,0.15);
+  transition: background .2s;
+}
+.eph-owner-call-overlay .call-ctrl-btn:hover { background: rgba(255,255,255,0.25); }
+.eph-owner-call-overlay .call-ctrl-btn.active { background: rgba(239,68,68,0.6); }
+.eph-owner-call-overlay .call-ctrl-btn.hangup { background: #ef4444; }
+.eph-owner-call-overlay .call-ctrl-btn.hangup:hover { background: #dc2626; }
