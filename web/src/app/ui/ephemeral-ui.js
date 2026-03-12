@@ -3,7 +3,7 @@
 // Consumes a one-time link token, establishes E2EE via X3DH + Double Ratchet,
 // then handles timer + encrypted messaging.
 
-import { ephemeralConsume, ephemeralExtend, ephemeralWsToken } from '../api/ephemeral.js';
+import { ephemeralConsume, ephemeralExtend, ephemeralWsToken, ephemeralKeyExchangeSubmit } from '../api/ephemeral.js';
 import { initI18n, t } from '/locales/index.js';
 import { generateInitialBundle } from '../../shared/crypto/prekeys.js';
 import { x3dhInitiate, drEncryptText, drDecryptText } from '../../shared/crypto/dr.js';
@@ -315,23 +315,48 @@ async function refreshWsToken() {
 let keyExchangeRetryTimer = null;
 const KEY_EXCHANGE_RETRY_INTERVALS = [2000, 4000, 8000, 15000, 30000]; // progressive retry
 let keyExchangeRetryCount = 0;
+let httpFallbackSent = false;
+
+function _buildGuestBundle() {
+  if (!sessionState?._guestBundlePub || !ephDrState) return null;
+  return {
+    ik_pub: sessionState._guestBundlePub.ik_pub,
+    spk_pub: sessionState._guestBundlePub.spk_pub,
+    spk_sig: sessionState._guestBundlePub.spk_sig,
+    ek_pub: b64(ephDrState.myRatchetPub),
+    opk_id: sessionState._usedOpkId
+  };
+}
 
 function sendKeyExchange() {
-  if (!ws || ws.readyState !== WebSocket.OPEN || !sessionState?._guestBundlePub || !ephDrState) return;
+  const bundle = _buildGuestBundle();
+  if (!bundle) return;
   console.log('[EphE2EE] sending key-exchange, attempt', keyExchangeRetryCount);
-  ws.send(JSON.stringify({
-    type: 'ephemeral-key-exchange',
-    sessionId: sessionState.session_id,
-    conversationId: sessionState.conversation_id,
-    targetDigest: sessionState.owner_digest,
-    guestBundle: {
-      ik_pub: sessionState._guestBundlePub.ik_pub,
-      spk_pub: sessionState._guestBundlePub.spk_pub,
-      spk_sig: sessionState._guestBundlePub.spk_sig,
-      ek_pub: b64(ephDrState.myRatchetPub),
-      opk_id: sessionState._usedOpkId
-    }
-  }));
+  // Always try WS path
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: 'ephemeral-key-exchange',
+      sessionId: sessionState.session_id,
+      conversationId: sessionState.conversation_id,
+      targetDigest: sessionState.owner_digest,
+      guestBundle: bundle
+    }));
+  }
+  // After 2 failed WS attempts, also try HTTP fallback (persists in D1)
+  if (keyExchangeRetryCount >= 2 && !httpFallbackSent) {
+    httpFallbackSent = true;
+    console.log('[EphE2EE] WS key-exchange not acked, trying HTTP fallback');
+    ephemeralKeyExchangeSubmit({
+      sessionId: sessionState.session_id,
+      guestDigest: sessionState.guest_digest,
+      guestBundle: bundle
+    }).then(() => {
+      console.log('[EphE2EE] HTTP key-exchange submitted successfully');
+    }).catch(err => {
+      console.warn('[EphE2EE] HTTP key-exchange submit failed:', err?.message);
+      httpFallbackSent = false; // allow retry
+    });
+  }
   scheduleKeyExchangeRetry();
 }
 

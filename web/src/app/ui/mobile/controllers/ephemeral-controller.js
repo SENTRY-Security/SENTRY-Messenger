@@ -9,7 +9,7 @@
  */
 
 import { BaseController } from './base-controller.js';
-import { ephemeralCreateLink, ephemeralDelete, ephemeralList, ephemeralExtend, ephemeralRevokeInvite } from '../../../api/ephemeral.js';
+import { ephemeralCreateLink, ephemeralDelete, ephemeralList, ephemeralExtend, ephemeralRevokeInvite, ephemeralClearPendingKeyExchange } from '../../../api/ephemeral.js';
 import { escapeHtml } from '../ui-utils.js';
 import { t } from '/locales/index.js';
 import { generateInitialBundle } from '../../../../shared/crypto/prekeys.js';
@@ -72,9 +72,12 @@ export class EphemeralController extends BaseController {
     this._listenWsEvents();
     // Load active sessions on init
     this._loadSessions();
+    // Periodic poll for pending key exchanges (every 5s while sessions exist)
+    this._kexPollInterval = setInterval(() => this._pollPendingKeyExchanges(), 5000);
   }
 
   destroy() {
+    if (this._kexPollInterval) clearInterval(this._kexPollInterval);
     if (this._timerInterval) clearInterval(this._timerInterval);
     // Clear all crypto state (memory + storage)
     this._drStates.clear();
@@ -101,9 +104,40 @@ export class EphemeralController extends BaseController {
       _persistMap(STORAGE_KEY_SESSION_TOKEN_MAP, this._sessionTokenMap);
       this._pendingInvites = data?.pending_invites || [];
       this._requestListRender();
+
+      // ── Process any pending key exchanges stored via HTTP fallback ──
+      for (const s of sessions) {
+        if (s.pending_key_exchange_json && !this._drStates.has(s.session_id)) {
+          try {
+            const guestBundle = typeof s.pending_key_exchange_json === 'string'
+              ? JSON.parse(s.pending_key_exchange_json) : s.pending_key_exchange_json;
+            console.log('[Ephemeral] processing pending key-exchange from D1 for', s.session_id);
+            await this._handleKeyExchange({
+              sessionId: s.session_id,
+              guestBundle
+            });
+          } catch (err) {
+            console.warn('[Ephemeral] pending key-exchange processing failed', s.session_id, err?.message);
+          }
+        }
+      }
     } catch (err) {
       console.warn('[Ephemeral] loadSessions failed', err?.message);
     }
+  }
+
+  /**
+   * Periodic poll: check if any sessions have pending key exchanges that
+   * haven't been processed yet. This catches the case where the WS relay
+   * failed but the HTTP fallback stored the bundle in D1.
+   */
+  async _pollPendingKeyExchanges() {
+    // Only poll if there are sessions without established DR state
+    const needsPoll = [...this.ephemeralSessions.values()].some(s => !this._drStates.has(s.session_id));
+    if (!needsPoll) return;
+    try {
+      await this._loadSessions();
+    } catch { /* swallowed — _loadSessions has its own error handling */ }
   }
 
   // ── Auto-Logout Warning ──
@@ -886,6 +920,9 @@ export class EphemeralController extends BaseController {
     });
 
     console.log('[Ephemeral] E2EE session established for', sessionId, 'ack sent:', sent);
+
+    // Clear the pending key exchange from D1 (best-effort)
+    ephemeralClearPendingKeyExchange({ sessionId }).catch(() => {});
 
     // Notify the UI that encryption is now ready (enables composer input)
     this.deps.updateComposerAvailability?.();

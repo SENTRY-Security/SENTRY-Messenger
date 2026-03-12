@@ -85,6 +85,27 @@ export async function ephemeralSessionInfo({ sessionId } = {}) {
   return data;
 }
 
+/** Guest submits key-exchange via HTTP (fallback when WS relay fails). */
+export async function ephemeralKeyExchangeSubmit({ sessionId, guestDigest, guestBundle } = {}) {
+  if (!sessionId || !guestDigest || !guestBundle) throw new Error('sessionId, guestDigest, and guestBundle required');
+  const { r, data } = await fetchJSON('/api/v1/ephemeral/key-exchange-submit', {
+    session_id: sessionId,
+    guest_digest: guestDigest,
+    guest_bundle: guestBundle
+  });
+  if (!r.ok) throw Object.assign(new Error(data?.message || 'key-exchange-submit failed'), { status: r.status, data });
+  return data;
+}
+
+/** Owner clears the pending key exchange after processing it. */
+export async function ephemeralClearPendingKeyExchange({ sessionId } = {}) {
+  if (!sessionId) throw new Error('sessionId required');
+  const payload = withAuth({ session_id: sessionId });
+  const { r, data } = await fetchJSON('/api/v1/ephemeral/clear-pending-kex', payload, deviceHeaders());
+  if (!r.ok) throw Object.assign(new Error(data?.message || 'clear-pending-kex failed'), { status: r.status, data });
+  return data;
+}
+
 /** Guest requests a fresh WS token. */
 export async function ephemeralWsToken({ sessionId, guestDigest } = {}) {
   if (!sessionId || !guestDigest) throw new Error('sessionId and guestDigest required');

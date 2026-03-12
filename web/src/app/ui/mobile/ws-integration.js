@@ -667,6 +667,8 @@ export function createWsIntegration({ deps }) {
     if (type === 'ephemeral_session_started' || type === 'ephemeral-extended' || type === 'ephemeral-deleted'
         || type === 'ephemeral-message' || type === 'ephemeral-key-exchange' || type === 'ephemeral-key-exchange-ack') {
       const mp = getMessagesPane();
+      console.log('[ws] ephemeral event received:', type, msg?.sessionId?.slice(0, 8) || '',
+        'controller:', !!mp?.ephemeralController);
       if (!mp?.ephemeralController) {
         console.warn('[ws] ephemeral event dropped — controller not ready', { type, sessionId: msg?.sessionId?.slice(0, 8) });
       }
