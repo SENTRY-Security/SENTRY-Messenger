@@ -811,6 +811,7 @@ export class EphemeralController extends BaseController {
         type: 'ephemeral-key-exchange-ack',
         sessionId,
         conversationId: session.conversation_id,
+        targetDigest: session.guest_digest,
         targetAccountDigest: session.guest_digest
       });
       console.log('[Ephemeral] re-sent ack for', sessionId, 'sent:', sent);
@@ -846,6 +847,7 @@ export class EphemeralController extends BaseController {
       type: 'ephemeral-key-exchange-ack',
       sessionId,
       conversationId: session.conversation_id,
+      targetDigest: session.guest_digest,
       targetAccountDigest: session.guest_digest
     });
 

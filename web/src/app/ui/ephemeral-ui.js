@@ -322,6 +322,7 @@ function sendKeyExchange() {
     type: 'ephemeral-key-exchange',
     sessionId: sessionState.session_id,
     conversationId: sessionState.conversation_id,
+    targetDigest: sessionState.owner_digest,
     guestBundle: {
       ik_pub: sessionState._guestBundlePub.ik_pub,
       spk_pub: sessionState._guestBundlePub.spk_pub,

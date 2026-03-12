@@ -392,12 +392,26 @@ export class AccountWebSocket {
           `SELECT owner_digest, guest_digest FROM ephemeral_sessions WHERE session_id = ? AND deleted_at IS NULL`
         ).bind(sessionId).first();
       }
-      if (!session) {
-        console.warn('[ws-do] ephemeral relay: session not found in D1', { type: msg.type, conversationId, sessionId });
-        return;
-      }
+
       const senderDigest = att.accountDigest || '';
-      const targetDigest = senderDigest === session.owner_digest ? session.guest_digest : session.owner_digest;
+      let targetDigest;
+
+      if (session) {
+        targetDigest = senderDigest === session.owner_digest ? session.guest_digest : session.owner_digest;
+      } else {
+        // D1 read replica may lag after session creation. For key-exchange and
+        // ack messages the client includes a targetDigest hint so the relay can
+        // still forward without waiting for replication to catch up.
+        const hint = String(msg.targetDigest || '').trim();
+        if (hint && (msg.type === 'ephemeral-key-exchange' || msg.type === 'ephemeral-key-exchange-ack')) {
+          targetDigest = hint;
+          console.warn('[ws-do] ephemeral relay: D1 miss, using targetDigest hint', { type: msg.type, target: hint?.slice(0, 16) });
+        } else {
+          console.warn('[ws-do] ephemeral relay: session not found in D1', { type: msg.type, conversationId, sessionId });
+          return;
+        }
+      }
+
       if (!targetDigest) {
         console.warn('[ws-do] ephemeral relay: no target digest', { type: msg.type, senderDigest: senderDigest?.slice(0, 12) });
         return;
@@ -413,7 +427,7 @@ export class AccountWebSocket {
         body: JSON.stringify(relayPayload)
       });
       const relayResult = await relayRes.json().catch(() => ({}));
-      console.log('[ws-do] ephemeral relay OK', { type: msg.type, target: targetDigest?.slice(0, 12), sent: relayResult?.sent });
+      console.log('[ws-do] ephemeral relay OK', { type: msg.type, target: targetDigest?.slice(0, 16), sent: relayResult?.sent });
     } catch (err) {
       console.warn('[ws-do] ephemeral relay error:', err?.message || err);
     }
