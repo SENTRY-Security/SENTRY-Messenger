@@ -131,11 +131,13 @@ function updateTimer() {
   // Clock turns red when <20% remaining (fire past 80% mark)
   timerClock.className = 'eph-timer-clock' + (elapsed >= 80 ? ' red' : '');
 
-  // Extend button visibility
+  // Extend button: always visible, enabled when ≤5min remaining
   if (remaining <= 300) {
-    extendBtn.classList.add('visible');
+    extendBtn.classList.add('active');
+    extendBtn.disabled = false;
   } else {
-    extendBtn.classList.remove('visible');
+    extendBtn.classList.remove('active');
+    extendBtn.disabled = true;
   }
 }
 

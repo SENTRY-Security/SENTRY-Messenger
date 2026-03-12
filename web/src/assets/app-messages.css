@@ -1857,6 +1857,12 @@
   z-index: 10;
 }
 
+.eph-conv-timer-control-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
 .eph-conv-timer-clock {
   font-size: 28px;
   font-weight: 700;
@@ -1865,6 +1871,7 @@
   color: #e2e8f0;
   transition: color .5s ease;
   text-align: center;
+  flex: 1;
 }
 
 .eph-conv-timer-clock.red { color: #ef4444; animation: eph-breathe-text-owner 1.5s ease-in-out infinite; }
@@ -1873,13 +1880,6 @@
   font-size: 11px;
   color: #94a3b8;
   letter-spacing: 0.5px;
-}
-
-.eph-conv-timer-actions {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
 }
 
 .eph-conv-progress-wrap {
@@ -1926,23 +1926,28 @@
 @keyframes eph-breathe-text-owner { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
 
 .eph-conv-extend-btn {
-  display: none;
-  padding: 6px 20px;
-  border: 1px solid rgba(245,158,11,0.4);
-  border-radius: 20px;
+  padding: 5px 14px;
+  border: 1px solid rgba(148,163,184,0.25);
+  border-radius: 16px;
+  background: rgba(148,163,184,0.08);
+  color: rgba(148,163,184,0.5);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: not-allowed;
+  transition: background .2s, color .2s, border-color .2s;
+  width: 90px;
+  text-align: center;
+}
+.eph-conv-extend-btn.active {
+  border-color: rgba(245,158,11,0.4);
   background: rgba(245,158,11,0.1);
   color: #f59e0b;
-  font-size: 13px;
-  font-weight: 600;
   cursor: pointer;
-  transition: background .2s, transform .1s;
 }
-
-.eph-conv-extend-btn.visible { display: inline-block; }
-.eph-conv-extend-btn:active { transform: translateY(1px); background: rgba(245,158,11,0.2); }
+.eph-conv-extend-btn.active:active { transform: translateY(1px); background: rgba(245,158,11,0.2); }
 
 .eph-conv-end-btn {
-  padding: 4px 14px;
+  padding: 5px 14px;
   border: 1px solid rgba(239,68,68,0.4);
   border-radius: 16px;
   background: rgba(239,68,68,0.1);
@@ -1951,6 +1956,8 @@
   font-weight: 600;
   cursor: pointer;
   transition: background .2s;
+  width: 90px;
+  text-align: center;
 }
 .eph-conv-end-btn:hover { background: rgba(239,68,68,0.2); }
 .eph-conv-end-btn:active { transform: translateY(1px); background: rgba(239,68,68,0.3); }

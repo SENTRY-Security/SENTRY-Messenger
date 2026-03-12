@@ -105,16 +105,18 @@
 
     /* Timer bar */
     .eph-timer-bar { flex-shrink: 0; display: flex; flex-direction: column; align-items: center; padding: 10px 16px 8px; background: linear-gradient(180deg, rgba(5,10,20,0.9), transparent); border-bottom: 1px dashed rgba(245,158,11,0.3); position: relative; z-index: 10; gap: 6px; }
-    .eph-timer-clock { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 2px; color: var(--fg); transition: color .5s ease; text-align: center; }
+    .eph-timer-control-row { display: flex; align-items: center; width: 100%; }
+    .eph-timer-clock { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 2px; color: var(--fg); transition: color .5s ease; text-align: center; flex: 1; }
     .eph-timer-clock.red { color: var(--red); animation: eph-breathe-text 1.5s ease-in-out infinite; }
+    .eph-timer-control-spacer { width: 90px; flex-shrink: 0; }
     .eph-timer-progress-wrap { position: relative; width: 100%; height: 8px; border-radius: 4px; background: linear-gradient(90deg, #22c55e 0%, #22c55e 48%, #eab308 52%, #eab308 78%, #ef4444 82%, #ef4444 100%); overflow: visible; }
     .eph-timer-progress-fill { position: absolute; top: 0; left: 0; height: 100%; border-radius: 4px 0 0 4px; background: #334155; transition: width 1s linear; z-index: 1; }
     .eph-timer-fire { position: absolute; top: 50%; transform: translate(-50%, -50%); font-size: 20px; line-height: 1; z-index: 2; filter: drop-shadow(0 0 4px rgba(245,158,11,0.7)); transition: left 1s linear; pointer-events: none; }
     .eph-timer-fire .fire-glow { position: absolute; inset: -6px; border-radius: 50%; background: radial-gradient(circle, rgba(245,158,11,0.4) 0%, transparent 70%); animation: eph-fire-glow 0.8s ease-in-out infinite alternate; pointer-events: none; }
     .eph-timer-label { font-size: 11px; color: var(--muted); letter-spacing: 0.5px; }
-    .eph-extend-btn { display: none; padding: 6px 20px; border: 1px solid var(--amber); border-radius: 20px; background: rgba(245,158,11,0.1); color: var(--amber); font-size: 13px; font-weight: 600; cursor: pointer; transition: background .2s, transform .1s; }
-    .eph-extend-btn.visible { display: inline-block; }
-    .eph-extend-btn:active { transform: translateY(1px); background: rgba(245,158,11,0.2); }
+    .eph-extend-btn { padding: 5px 14px; border: 1px solid rgba(148,163,184,0.25); border-radius: 16px; background: rgba(148,163,184,0.08); color: rgba(148,163,184,0.5); font-size: 12px; font-weight: 600; cursor: not-allowed; transition: background .2s, color .2s, border-color .2s; width: 90px; text-align: center; }
+    .eph-extend-btn.active { border-color: rgba(245,158,11,0.4); background: rgba(245,158,11,0.1); color: var(--amber); cursor: pointer; }
+    .eph-extend-btn.active:active { transform: translateY(1px); background: rgba(245,158,11,0.2); }
 
     @keyframes eph-fire-glow { 0% { opacity: 0.5; transform: scale(0.8); } 100% { opacity: 1; transform: scale(1.2); } }
     @keyframes eph-breathe-text { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
@@ -244,13 +246,16 @@
       </button>
     </div>
     <div class="eph-timer-bar">
-      <div class="eph-timer-clock" id="ephTimerClock">10:00</div>
+      <div class="eph-timer-control-row">
+        <button class="eph-extend-btn" id="ephExtendBtn" disabled data-i18n="ephemeral.extendTime">Extend Time</button>
+        <div class="eph-timer-clock" id="ephTimerClock">10:00</div>
+        <div class="eph-timer-control-spacer"></div>
+      </div>
       <div class="eph-timer-progress-wrap">
         <div class="eph-timer-progress-fill" id="ephTimerFill" style="width:0%"></div>
         <div class="eph-timer-fire" id="ephTimerFire" style="left:0%">🔥<span class="fire-glow"></span></div>
       </div>
       <div class="eph-timer-label" id="ephTimerLabel" data-i18n="ephemeral.timerLabel">This conversation will be destroyed when the countdown ends</div>
-      <button class="eph-extend-btn" id="ephExtendBtn" data-i18n="ephemeral.extendTime">Extend Time</button>
     </div>
     <div class="eph-messages" id="ephMessages">
     </div>

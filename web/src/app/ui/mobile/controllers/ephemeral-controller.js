@@ -560,8 +560,13 @@ export class EphemeralController extends BaseController {
       fireEl.style.left = elapsed + '%';
     }
     if (extendBtnEl) {
-      if (remaining <= 300) extendBtnEl.classList.add('visible');
-      else extendBtnEl.classList.remove('visible');
+      if (remaining <= 300) {
+        extendBtnEl.classList.add('active');
+        extendBtnEl.disabled = false;
+      } else {
+        extendBtnEl.classList.remove('active');
+        extendBtnEl.disabled = true;
+      }
     }
   }
 
@@ -643,6 +648,11 @@ export class EphemeralController extends BaseController {
     this.deps.setActiveConversation?.(peerKey, session.conversation_id, null);
     // Show timer bar in messages thread
     this._showConvTimerBar(session);
+    // Update header name to show guest nickname
+    const guestId = (session.guest_digest || '').slice(-4);
+    const displayName = session.guest_nickname || t('ephemeral.guestLabel', { id: guestId });
+    const peerNameEl = document.querySelector('.messages-header strong');
+    if (peerNameEl) peerNameEl.textContent = displayName;
   }
 
   _showConvTimerBar(session) {
@@ -653,16 +663,16 @@ export class EphemeralController extends BaseController {
       timerBar.id = 'ephConvTimerBar';
       timerBar.className = 'eph-conv-timer-bar';
       timerBar.innerHTML = `
-        <div id="ephConvTimerClock" class="eph-conv-timer-clock" data-session-id="">--:--</div>
+        <div class="eph-conv-timer-control-row">
+          <button id="ephConvExtendBtn" class="eph-conv-extend-btn" disabled>${escapeHtml(t('ephemeral.extendTime'))}</button>
+          <div id="ephConvTimerClock" class="eph-conv-timer-clock" data-session-id="">--:--</div>
+          <button id="ephConvEndBtn" class="eph-conv-end-btn">${escapeHtml(t('ephemeral.endConversation'))}</button>
+        </div>
         <div class="eph-conv-progress-wrap">
           <div id="ephConvProgressFill" class="eph-conv-progress-fill" style="width:0%"></div>
           <div id="ephConvProgressFire" class="eph-conv-progress-fire" style="left:0%">🔥<span class="fire-glow"></span></div>
         </div>
         <div class="eph-conv-timer-label">${escapeHtml(t('ephemeral.timerLabel'))}</div>
-        <div class="eph-conv-timer-actions">
-          <button id="ephConvExtendBtn" class="eph-conv-extend-btn">${escapeHtml(t('ephemeral.extendTime'))}</button>
-          <button id="ephConvEndBtn" class="eph-conv-end-btn">${escapeHtml(t('ephemeral.endConversation'))}</button>
-        </div>
       `;
       // Insert after messages-header
       const header = document.querySelector('.messages-header');
