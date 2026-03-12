@@ -20,6 +20,7 @@ let sessionState = null;   // { session_id, conversation_id, guest_digest, guest
 let ws = null;
 let timerInterval = null;
 let destroyed = false;
+let guestNickname = '';        // temporary display name chosen by guest
 
 // ── E2EE State (memory-only) ──
 let ephDrState = null;         // Double Ratchet session state
@@ -52,6 +53,9 @@ const muteBtn = document.getElementById('ephMuteBtn');
 const camToggleBtn = document.getElementById('ephCamToggleBtn');
 const hangupBtn = document.getElementById('ephHangupBtn');
 const wsStatusEl = document.getElementById('ephWsStatus');
+const nicknameScreen = document.getElementById('ephNickname');
+const nicknameInput = document.getElementById('ephNicknameInput');
+const nicknameBtn = document.getElementById('ephNicknameBtn');
 
 // ── Particles ──
 function initParticles() {
@@ -387,6 +391,8 @@ function handleWsMessage(msg) {
             iv_b64: msg.iv_b64,
             ciphertext_b64: msg.ciphertext_b64
           }).then(plaintext => {
+            // Skip control messages (e.g. nickname)
+            try { if (plaintext[0] === '{' && JSON.parse(plaintext)._ctrl) return; } catch {}
             addMessage(plaintext, 'incoming', msg.ts);
           }).catch(err => {
             console.error('[EphE2EE] decrypt failed', err);
@@ -402,6 +408,8 @@ function handleWsMessage(msg) {
         cancelKeyExchangeRetry();
         addSystemMessage(_t('ephemeral.e2eEstablished'));
         console.log('[EphE2EE] key exchange complete, encryption ready');
+        // Send nickname via encrypted control message
+        if (guestNickname) _sendNicknameControl();
       }
       break;
     case 'ephemeral-extended':
@@ -749,17 +757,14 @@ async function boot() {
     setProgress(100, _t('ephemeral.connectionComplete'));
     await sleep(400);
 
-    // Transition to chat
+    // Show nickname input instead of going directly to chat
     hideSplash();
-    chatUI.classList.add('active');
-    initParticles();
-    startTimer();
-    connectWs();
-    enableCallButtons();
-
-    // Show "establishing secure connection" system message (before ack arrives)
-    if (ephDrState && !keyExchangeComplete) {
-      addSystemMessage(_t('ephemeral.establishingE2e'));
+    if (nicknameScreen) {
+      nicknameScreen.style.display = 'flex';
+      nicknameInput?.focus();
+    } else {
+      // Fallback: skip nickname step
+      _enterChat();
     }
 
   } catch (err) {
@@ -771,6 +776,57 @@ async function boot() {
     showError(msg);
   }
 }
+
+function _enterChat() {
+  if (nicknameScreen) nicknameScreen.style.display = 'none';
+  chatUI.classList.add('active');
+  initParticles();
+  startTimer();
+  connectWs();
+  enableCallButtons();
+
+  // Show "establishing secure connection" system message (before ack arrives)
+  if (ephDrState && !keyExchangeComplete) {
+    addSystemMessage(_t('ephemeral.establishingE2e'));
+  }
+}
+
+function _sendNicknameControl() {
+  // Send nickname as an encrypted control message through DR
+  if (!ephDrState || !guestNickname) return;
+  const controlMsg = JSON.stringify({ _ctrl: 'set-nickname', nickname: guestNickname });
+  drEncryptText(ephDrState, controlMsg, { deviceId: sessionState?.guest_device_id || '', version: 1 })
+    .then(packet => {
+      wsSendJSON({
+        type: 'ephemeral-message',
+        conversationId: sessionState.conversation_id,
+        header: packet.header,
+        iv_b64: packet.iv_b64,
+        ciphertext_b64: packet.ciphertext_b64,
+        ts: Date.now()
+      });
+      console.log('[EphE2EE] nickname control message sent');
+    })
+    .catch(err => console.warn('[EphE2EE] failed to send nickname control', err?.message));
+}
+
+// Nickname button handler
+nicknameBtn?.addEventListener('click', () => {
+  guestNickname = (nicknameInput?.value || '').trim();
+  if (!guestNickname) {
+    nicknameInput?.focus();
+    return;
+  }
+  _enterChat();
+});
+
+// Enter key on nickname input
+nicknameInput?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    nicknameBtn?.click();
+  }
+});
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));

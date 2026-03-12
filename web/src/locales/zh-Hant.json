@@ -1041,7 +1041,11 @@
     "callBusy": "對方忙碌中",
     "endConversation": "結束對話",
     "endConversationConfirm": "確定結束此對話？所有訊息將永久刪除。",
-    "establishingE2e": "正在建立安全連線…"
+    "establishingE2e": "正在建立安全連線…",
+    "nicknameTitle": "輸入您的顯示名稱",
+    "nicknameDesc": "為此對話選擇一個臨時名稱",
+    "nicknamePlaceholder": "您的名稱…",
+    "nicknameJoin": "加入對話"
   },
   "loginStages": {
     "authenticating": "驗證中...",

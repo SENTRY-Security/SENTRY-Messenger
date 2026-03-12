@@ -1041,7 +1041,11 @@
     "callBusy": "상대방 통화 중",
     "endConversation": "종료",
     "endConversationConfirm": "이 대화를 종료하시겠습니까? 모든 메시지가 영구적으로 삭제됩니다.",
-    "establishingE2e": "보안 연결 설정 중…"
+    "establishingE2e": "보안 연결 설정 중…",
+    "nicknameTitle": "표시 이름 입력",
+    "nicknameDesc": "이 대화에 사용할 임시 이름을 선택하세요",
+    "nicknamePlaceholder": "이름…",
+    "nicknameJoin": "대화 참여"
   },
   "loginStages": {
     "authenticating": "인증 중...",

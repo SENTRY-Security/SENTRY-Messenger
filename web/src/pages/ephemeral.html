@@ -163,6 +163,18 @@
     .call-ctrl-btn.cam-toggle { background: rgba(255,255,255,0.1); color: var(--fg); border: 1px solid rgba(148,163,184,0.3); }
     .call-ctrl-btn.cam-toggle.active { background: rgba(245,158,11,0.2); color: var(--amber); border-color: var(--amber); }
 
+    /* Nickname input */
+    #ephNickname { position: fixed; inset: 0; z-index: 100; background: #050a14; display: flex; align-items: center; justify-content: center; }
+    #ephNickname.active { display: flex; animation: eph-fade-in .4s ease; }
+    .eph-nickname-card { background: var(--card); border: 1px solid rgba(245,158,11,0.15); border-radius: 16px; padding: 32px 28px; max-width: 360px; width: 90vw; display: flex; flex-direction: column; align-items: center; gap: 8px; z-index: 1; backdrop-filter: blur(16px); }
+    .eph-nickname-title { font-size: 16px; font-weight: 700; color: var(--fg); letter-spacing: 0.5px; }
+    .eph-nickname-desc { font-size: 12px; color: var(--muted); text-align: center; margin-bottom: 8px; }
+    .eph-nickname-input { width: 100%; padding: 12px 16px; border-radius: 10px; border: 1px solid rgba(245,158,11,0.2); background: rgba(15,23,42,0.8); color: var(--fg); font-size: 16px; outline: none; transition: border-color .2s; text-align: center; }
+    .eph-nickname-input:focus { border-color: var(--amber); }
+    .eph-nickname-btn { width: 100%; padding: 12px; border-radius: 10px; border: none; background: var(--amber); color: #0f172a; font-size: 14px; font-weight: 700; cursor: pointer; transition: opacity .2s; margin-top: 8px; }
+    .eph-nickname-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .eph-nickname-btn:hover:not(:disabled) { opacity: 0.9; }
+
     /* Destroyed overlay */
     #ephDestroyed { display: none; position: fixed; inset: 0; z-index: 99999; background: #050a14; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
     #ephDestroyed.active { display: flex; animation: eph-destroy-in .6s ease forwards; }
@@ -197,6 +209,18 @@
       </div>
       <div class="splash-status" id="ephSplashStatus" data-i18n="ephemeral.splashVerifying">Verifying link…</div>
       <div class="splash-error" id="ephSplashError"></div>
+    </div>
+  </div>
+
+  <!-- Nickname Input (shown after link verified, before chat) -->
+  <div id="ephNickname" style="display:none">
+    <div class="eph-particles" id="ephNicknameParticles"></div>
+    <div class="eph-nickname-card">
+      <img class="splash-logo" src="/assets/images/logo.svg" alt="" style="width:48px;height:48px;margin-bottom:12px" />
+      <div class="eph-nickname-title" data-i18n="ephemeral.nicknameTitle">Enter your display name</div>
+      <div class="eph-nickname-desc" data-i18n="ephemeral.nicknameDesc">Choose a temporary name for this conversation</div>
+      <input type="text" id="ephNicknameInput" class="eph-nickname-input" maxlength="20" autocomplete="off" autocorrect="off" spellcheck="false" data-i18n-placeholder="ephemeral.nicknamePlaceholder" placeholder="Your name…" />
+      <button id="ephNicknameBtn" class="eph-nickname-btn" data-i18n="ephemeral.nicknameJoin">Join conversation</button>
     </div>
   </div>
 

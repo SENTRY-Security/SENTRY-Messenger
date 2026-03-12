@@ -1041,7 +1041,11 @@
     "callBusy": "สายไม่ว่าง",
     "endConversation": "จบการสนทนา",
     "endConversationConfirm": "ต้องการจบการสนทนานี้หรือไม่? ข้อความทั้งหมดจะถูกลบอย่างถาวร",
-    "establishingE2e": "กำลังสร้างการเชื่อมต่อที่ปลอดภัย…"
+    "establishingE2e": "กำลังสร้างการเชื่อมต่อที่ปลอดภัย…",
+    "nicknameTitle": "ใส่ชื่อที่แสดง",
+    "nicknameDesc": "เลือกชื่อชั่วคราวสำหรับการสนทนานี้",
+    "nicknamePlaceholder": "ชื่อของคุณ…",
+    "nicknameJoin": "เข้าร่วมการสนทนา"
   },
   "loginStages": {
     "authenticating": "กำลังยืนยันตัวตน...",

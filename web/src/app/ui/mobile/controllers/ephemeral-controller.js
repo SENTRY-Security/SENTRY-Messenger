@@ -554,16 +554,17 @@ export class EphemeralController extends BaseController {
       li.style.touchAction = 'pan-y';
 
       const guestId = (session.guest_digest || '').slice(-4);
+      const displayName = session.guest_nickname || t('ephemeral.guestLabel', { id: guestId });
       li.innerHTML = `
         <div class="item-content conversation-item-content">
           <div class="conversation-avatar">⏳</div>
           <div class="conversation-content">
             <div class="conversation-row conversation-row-top">
-              <span class="conversation-name">${escapeHtml(t('ephemeral.tempChat'))}</span>
+              <span class="conversation-name">${escapeHtml(session.guest_nickname || t('ephemeral.tempChat'))}</span>
               <span class="eph-timer-badge ${colorClass}">${escapeHtml(timerText)}</span>
             </div>
             <div class="conversation-row conversation-row-bottom">
-              <span class="conversation-snippet">${escapeHtml(t('ephemeral.guestLabel', { id: guestId }))}</span>
+              <span class="conversation-snippet">${escapeHtml(session.guest_nickname ? t('ephemeral.tempChat') : displayName)}</span>
             </div>
           </div>
         </div>
@@ -639,17 +640,10 @@ export class EphemeralController extends BaseController {
       });
 
       // Bind end conversation button
-      document.getElementById('ephConvEndBtn')?.addEventListener('click', async () => {
+      document.getElementById('ephConvEndBtn')?.addEventListener('click', () => {
         const sid = document.getElementById('ephConvTimerClock')?.dataset?.sessionId;
         if (!sid) return;
-        if (!confirm(t('ephemeral.endConversationConfirm'))) return;
-        await this._deleteSession(sid);
-        // Navigate back to conversation list
-        const state = this.deps.getMessageState?.() || {};
-        state.activePeerDigest = null;
-        state.conversationId = null;
-        state.viewMode = 'list';
-        this.deps.applyMessagesLayout?.();
+        this._showEndConfirmModal(sid);
       });
 
       // Bind call buttons
@@ -755,6 +749,9 @@ export class EphemeralController extends BaseController {
     const result = await this.decryptIncomingMessage(msg);
     if (!result) return;
 
+    // Handle encrypted control messages (e.g. nickname)
+    if (this._handleControlMessage(result.text, msg)) return;
+
     const messageId = crypto.randomUUID();
     appendUserMessage(msg.conversationId, {
       id: messageId,
@@ -770,6 +767,39 @@ export class EphemeralController extends BaseController {
 
     this.deps.updateMessagesUI?.({ preserveScroll: true });
     this.deps.scrollMessagesToBottomSoon?.();
+  }
+
+  /**
+   * Handle encrypted control messages (not rendered as chat).
+   * Returns true if the message was a control message and was consumed.
+   */
+  _handleControlMessage(text, rawMsg) {
+    try {
+      if (!text || text[0] !== '{') return false;
+      const ctrl = JSON.parse(text);
+      if (!ctrl._ctrl) return false;
+
+      if (ctrl._ctrl === 'set-nickname' && ctrl.nickname) {
+        const session = rawMsg?.conversationId
+          ? this.getSessionByConversationId(rawMsg.conversationId)
+          : null;
+        if (session) {
+          session.guest_nickname = ctrl.nickname;
+          // Update peer name display if this conversation is active
+          const state = this.deps.getMessageState?.() || {};
+          if (state.conversationId === session.conversation_id) {
+            const peerNameEl = document.querySelector('.messages-header strong');
+            if (peerNameEl) peerNameEl.textContent = ctrl.nickname;
+          }
+          this._requestListRender();
+          console.log('[Ephemeral] guest nickname set:', ctrl.nickname);
+        }
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
   }
 
   // ── Delete ──
@@ -981,6 +1011,54 @@ export class EphemeralController extends BaseController {
     if (!modal || modal.style.display === 'none' || modal.getAttribute('aria-hidden') === 'true') return;
     const sessionListEl = document.getElementById('ephLinkSessionList');
     if (sessionListEl) this._renderSessionListInModal(sessionListEl);
+  }
+
+  // ── End Conversation Confirm Modal ──
+  _showEndConfirmModal(sessionId) {
+    let modal = document.getElementById('ephEndConfirmModal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'ephEndConfirmModal';
+      modal.className = 'eph-end-confirm-modal';
+      modal.innerHTML = `
+        <div class="eph-end-confirm-backdrop" data-eph-end-close></div>
+        <div class="eph-end-confirm-panel">
+          <div class="eph-end-confirm-icon">🔥</div>
+          <div class="eph-end-confirm-title">${escapeHtml(t('ephemeral.endConversation'))}</div>
+          <div class="eph-end-confirm-desc">${escapeHtml(t('ephemeral.endConversationConfirm'))}</div>
+          <div class="eph-end-confirm-actions">
+            <button class="eph-end-confirm-cancel" data-eph-end-close>${escapeHtml(t('common.cancel') || 'Cancel')}</button>
+            <button class="eph-end-confirm-ok" id="ephEndConfirmOk">${escapeHtml(t('ephemeral.endConversation'))}</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+
+      // Close on backdrop click
+      modal.querySelector('[data-eph-end-close]')?.addEventListener('click', () => {
+        modal.classList.remove('active');
+      });
+      modal.querySelectorAll('[data-eph-end-close]').forEach(el => {
+        el.addEventListener('click', () => modal.classList.remove('active'));
+      });
+    }
+
+    // Bind confirm action (replace handler each time for correct sessionId)
+    const okBtn = document.getElementById('ephEndConfirmOk');
+    const newOk = okBtn.cloneNode(true);
+    okBtn.parentNode.replaceChild(newOk, okBtn);
+    newOk.id = 'ephEndConfirmOk';
+    newOk.addEventListener('click', async () => {
+      modal.classList.remove('active');
+      await this._deleteSession(sessionId);
+      const state = this.deps.getMessageState?.() || {};
+      state.activePeerDigest = null;
+      state.conversationId = null;
+      state.viewMode = 'list';
+      this.deps.applyMessagesLayout?.();
+    });
+
+    modal.classList.add('active');
   }
 
   // ── Ephemeral Call System ──

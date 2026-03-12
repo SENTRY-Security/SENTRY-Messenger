@@ -1041,7 +1041,11 @@
     "callBusy": "Người dùng đang bận",
     "endConversation": "Kết thúc",
     "endConversationConfirm": "Kết thúc cuộc trò chuyện này? Tất cả tin nhắn sẽ bị xóa vĩnh viễn.",
-    "establishingE2e": "Đang thiết lập kết nối an toàn…"
+    "establishingE2e": "Đang thiết lập kết nối an toàn…",
+    "nicknameTitle": "Nhập tên hiển thị",
+    "nicknameDesc": "Chọn tên tạm thời cho cuộc trò chuyện này",
+    "nicknamePlaceholder": "Tên của bạn…",
+    "nicknameJoin": "Tham gia trò chuyện"
   },
   "loginStages": {
     "authenticating": "ĐANG XÁC THỰC...",
