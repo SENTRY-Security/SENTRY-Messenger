@@ -521,20 +521,17 @@ export class EphemeralController extends BaseController {
     const sec = remaining % 60;
     convTimerEl.textContent = `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
 
-    // Calculate progress percentage
-    const now = Math.floor(Date.now() / 1000);
+    // Calculate elapsed percentage (0% = just started, 100% = time's up)
     const totalDuration = (session.created_at && session.expires_at)
       ? (session.expires_at - session.created_at) : 600;
-    const pct = Math.max(0, Math.min(100, (remaining / totalDuration) * 100));
-    const colorCls = pct > 50 ? '' : pct > 20 ? 'yellow' : 'red';
+    const elapsed = Math.max(0, Math.min(100, (1 - remaining / totalDuration) * 100));
 
-    convTimerEl.className = 'eph-conv-timer-clock' + (colorCls === 'red' ? ' red' : '');
+    convTimerEl.className = 'eph-conv-timer-clock' + (elapsed >= 80 ? ' red' : '');
     if (fillEl) {
-      fillEl.style.width = pct + '%';
-      fillEl.className = 'eph-conv-progress-fill' + (colorCls ? ' ' + colorCls : '');
+      fillEl.style.width = elapsed + '%';
     }
     if (fireEl) {
-      fireEl.style.left = pct + '%';
+      fireEl.style.left = elapsed + '%';
     }
     if (extendBtnEl) {
       if (remaining <= 300) extendBtnEl.classList.add('visible');
@@ -632,8 +629,8 @@ export class EphemeralController extends BaseController {
       timerBar.innerHTML = `
         <div id="ephConvTimerClock" class="eph-conv-timer-clock" data-session-id="">--:--</div>
         <div class="eph-conv-progress-wrap">
-          <div id="ephConvProgressFill" class="eph-conv-progress-fill" style="width:100%"></div>
-          <div id="ephConvProgressFire" class="eph-conv-progress-fire" style="left:100%">🔥<span class="fire-glow"></span></div>
+          <div id="ephConvProgressFill" class="eph-conv-progress-fill" style="width:0%"></div>
+          <div id="ephConvProgressFire" class="eph-conv-progress-fire" style="left:0%">🔥<span class="fire-glow"></span></div>
         </div>
         <div class="eph-conv-timer-label">${escapeHtml(t('ephemeral.timerLabel'))}</div>
         <div class="eph-conv-timer-actions">

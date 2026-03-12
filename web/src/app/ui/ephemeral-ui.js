@@ -120,18 +120,16 @@ function updateTimer() {
   const sec = remaining % 60;
   timerClock.textContent = `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
 
-  // Progress bar: percentage of time remaining
-  const pct = Math.max(0, Math.min(100, (remaining / timerTotalDuration) * 100));
-  // Color: green >50%, yellow 20-50%, red <20%
-  const colorCls = pct > 50 ? '' : pct > 20 ? 'yellow' : 'red';
+  // Progress bar: elapsed percentage (0% = just started, 100% = time's up)
+  const elapsed = Math.max(0, Math.min(100, (1 - remaining / timerTotalDuration) * 100));
   if (timerFill) {
-    timerFill.style.width = pct + '%';
-    timerFill.className = 'eph-timer-progress-fill' + (colorCls ? ' ' + colorCls : '');
+    timerFill.style.width = elapsed + '%';
   }
   if (timerFire) {
-    timerFire.style.left = pct + '%';
+    timerFire.style.left = elapsed + '%';
   }
-  timerClock.className = 'eph-timer-clock' + (colorCls === 'red' ? ' red' : '');
+  // Clock turns red when <20% remaining (fire past 80% mark)
+  timerClock.className = 'eph-timer-clock' + (elapsed >= 80 ? ' red' : '');
 
   // Extend button visibility
   if (remaining <= 300) {
