@@ -19,12 +19,7 @@ import {
 import { initCallOverlay } from './mobile/call-overlay.js';
 import {
   initCallMediaSession,
-  endCallMediaSession,
-  sendCallSignal,
-  getCallSessionSnapshot,
-  isCallActive,
-  completeCallSession,
-  setCallSignalSender
+  sendCallSignal
 } from '../features/calls/index.js';
 
 // Use bootstrap translator until async i18n is ready, then use async t()
@@ -656,6 +651,8 @@ function destroyChat({ reason } = {}) {
   if (destroyed) return;
   destroyed = true;
   cancelKeyExchangeRetry();
+  // End any active call
+  deactivateEphemeralCallMode();
   if (timerInterval) clearInterval(timerInterval);
   // Notify owner when guest ends the conversation
   if (reason === 'guest-terminated' && ws?.readyState === WebSocket.OPEN && sessionState) {

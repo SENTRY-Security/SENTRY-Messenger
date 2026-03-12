@@ -164,26 +164,7 @@
     /* Footer warning */
     .eph-footer-warning { flex-shrink: 0; background: rgba(245,158,11,0.06); border-top: 1px dashed rgba(245,158,11,0.2); color: #fbbf24; font-size: 11px; text-align: center; padding: 6px; letter-spacing: 0.5px; }
 
-    /* Call overlay */
-    #ephCallOverlay { display: none; position: fixed; inset: 0; z-index: 50000; background: rgba(5,10,20,0.95); flex-direction: column; align-items: center; justify-content: center; gap: 16px; backdrop-filter: blur(8px); }
-    #ephCallOverlay.active { display: flex; animation: eph-fade-in .3s ease; }
-    @keyframes eph-fade-in { from { opacity: 0; } to { opacity: 1; } }
-    #ephCallOverlay .call-mode-icon { font-size: 48px; opacity: 0.8; }
-    #ephCallOverlay .call-status { font-size: 16px; font-weight: 600; color: var(--fg); letter-spacing: 1px; }
-    #ephCallOverlay .call-timer { font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums; min-height: 1.2em; }
-    #ephCallOverlay .call-remote-video { width: 100%; max-width: 480px; max-height: 50vh; border-radius: 12px; background: #000; display: none; }
-    #ephCallOverlay .call-remote-video.visible { display: block; }
-    #ephCallOverlay .call-local-video { position: absolute; top: 16px; right: 16px; width: 120px; height: 90px; border-radius: 8px; background: #000; object-fit: cover; display: none; z-index: 1; border: 2px solid rgba(245,158,11,0.3); }
-    #ephCallOverlay .call-local-video.visible { display: block; }
-    .call-controls { display: flex; gap: 16px; margin-top: 24px; }
-    .call-ctrl-btn { width: 56px; height: 56px; border-radius: 50%; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: transform .1s, opacity .2s; }
-    .call-ctrl-btn:active { transform: scale(0.9); }
-    .call-ctrl-btn svg { width: 24px; height: 24px; }
-    .call-ctrl-btn.hangup { background: #ef4444; color: #fff; }
-    .call-ctrl-btn.mute { background: rgba(255,255,255,0.1); color: var(--fg); border: 1px solid rgba(148,163,184,0.3); }
-    .call-ctrl-btn.mute.active { background: rgba(245,158,11,0.2); color: var(--amber); border-color: var(--amber); }
-    .call-ctrl-btn.cam-toggle { background: rgba(255,255,255,0.1); color: var(--fg); border: 1px solid rgba(148,163,184,0.3); }
-    .call-ctrl-btn.cam-toggle.active { background: rgba(245,158,11,0.2); color: var(--amber); border-color: var(--amber); }
+    /* Call overlay CSS removed — now handled by call-overlay.js */
 
     /* Nickname logo with flame ring */
     .eph-nickname-logo-wrap {
@@ -364,25 +345,7 @@
     <div class="eph-footer-warning" data-i18n-html="ephemeral.footerWarning">Temporary conversation — all content will be permanently deleted when you close this page or the countdown ends</div>
   </div>
 
-  <!-- Call overlay -->
-  <div id="ephCallOverlay">
-    <video class="call-remote-video" id="ephRemoteVideo" autoplay playsinline></video>
-    <video class="call-local-video" id="ephLocalVideo" autoplay playsinline muted></video>
-    <div class="call-mode-icon" id="ephCallModeIcon"></div>
-    <div class="call-status" id="ephCallStatus"></div>
-    <div class="call-timer" id="ephCallTimer"></div>
-    <div class="call-controls">
-      <button class="call-ctrl-btn mute" id="ephMuteBtn" title="Mute">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
-      </button>
-      <button class="call-ctrl-btn cam-toggle" id="ephCamToggleBtn" title="Camera" style="display:none">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
-      </button>
-      <button class="call-ctrl-btn hangup" id="ephHangupBtn" title="Hang up">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08c-.18-.17-.29-.42-.29-.7 0-.28.11-.53.29-.71C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.1-.7-.28-.79-.74-1.69-1.36-2.67-1.85-.33-.16-.56-.5-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg>
-      </button>
-    </div>
-  </div>
+  <!-- Call overlay is now created dynamically by call-overlay.js -->
 
   <!-- Guest end-conversation confirm modal -->
   <div id="ephGuestEndModal" class="eph-guest-end-modal">
