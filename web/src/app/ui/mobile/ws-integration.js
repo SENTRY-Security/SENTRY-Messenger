@@ -667,6 +667,9 @@ export function createWsIntegration({ deps }) {
     if (type === 'ephemeral_session_started' || type === 'ephemeral-extended' || type === 'ephemeral-deleted'
         || type === 'ephemeral-message' || type === 'ephemeral-key-exchange' || type === 'ephemeral-key-exchange-ack') {
       const mp = getMessagesPane();
+      if (!mp?.ephemeralController) {
+        console.warn('[ws] ephemeral event dropped — controller not ready', { type, sessionId: msg?.sessionId?.slice(0, 8) });
+      }
       const handled = mp?.ephemeralController?.handleWsMessage?.(msg);
       if (type === 'ephemeral-message' && msg?.conversationId) {
         // Decrypt and render directly via ephemeral controller.

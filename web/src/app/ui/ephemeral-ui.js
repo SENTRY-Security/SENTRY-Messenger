@@ -194,6 +194,7 @@ async function sendMessage() {
   if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
 
   // E2EE: encrypt with Double Ratchet if key exchange is complete
+  console.log('[EphE2EE] sendMessage state:', { hasDrState: !!ephDrState, keyExchangeComplete, wsOpen: ws?.readyState === WebSocket.OPEN });
   if (ephDrState && keyExchangeComplete) {
     try {
       const packet = await drEncryptText(ephDrState, text, {
@@ -255,6 +256,7 @@ function connectWs() {
     }));
 
     // Send key exchange once WS is connected
+    console.log('[EphE2EE] WS open, state:', { hasDrState: !!ephDrState, keyExchangeComplete });
     if (ephDrState && !keyExchangeComplete) {
       sendKeyExchange();
     }
@@ -369,6 +371,7 @@ function handleWsMessage(msg) {
       }
       break;
     case 'ephemeral-key-exchange-ack':
+      console.log('[EphE2EE] received ack', { msgSession: msg.sessionId?.slice(0, 8), mySession: sessionState.session_id?.slice(0, 8), match: msg.sessionId === sessionState.session_id });
       if (msg.sessionId === sessionState.session_id) {
         keyExchangeComplete = true;
         cancelKeyExchangeRetry();
@@ -400,8 +403,14 @@ function handleWsMessage(msg) {
       updateWsStatus('online');
       break;
     case 'auth':
-      if (msg.ok) updateWsStatus('online');
-      else {
+      if (msg.ok) {
+        updateWsStatus('online');
+        // Trigger key exchange on auth success (belt-and-suspenders with onopen)
+        if (ephDrState && !keyExchangeComplete) {
+          console.log('[EphE2EE] auth confirmed, triggering key exchange');
+          sendKeyExchange();
+        }
+      } else {
         console.warn('[Ephemeral WS] auth rejected:', msg.reason);
         updateWsStatus('offline');
       }
@@ -677,6 +686,15 @@ async function boot() {
 
     // ── E2EE: X3DH key exchange ──
     const ownerBundle = data.prekey_bundle;
+    console.log('[EphE2EE] ownerBundle received:', {
+      hasBundle: !!ownerBundle,
+      ik_pub: !!ownerBundle?.ik_pub,
+      spk_pub: !!ownerBundle?.spk_pub,
+      spk_sig: !!ownerBundle?.spk_sig,
+      opks: ownerBundle?.opks?.length ?? 0,
+      bundleType: typeof ownerBundle,
+      bundleKeys: ownerBundle ? Object.keys(ownerBundle) : []
+    });
     if (ownerBundle && ownerBundle.ik_pub && ownerBundle.spk_pub && ownerBundle.spk_sig && ownerBundle.opks?.length) {
       // Owner provided a valid prekey bundle — perform X3DH
       const { devicePriv: guestPriv, bundlePub: guestBundlePub } = await generateInitialBundle(1, 1);
@@ -689,12 +707,15 @@ async function boot() {
       };
 
       ephDrState = await x3dhInitiate(guestPriv, ownerBundleWithOpk);
+      console.log('[EphE2EE] x3dhInitiate SUCCESS, ephDrState:', !!ephDrState);
 
       // Store guest bundle info for sending key-exchange after WS connects
       sessionState._guestBundlePub = guestBundlePub;
       sessionState._usedOpkId = ownerBundleWithOpk.opk.id;
     } else {
-      console.warn('[EphE2EE] Owner bundle missing or incomplete, E2EE unavailable');
+      console.error('[EphE2EE] Owner bundle missing or incomplete, E2EE unavailable.',
+        'Raw prekey_bundle:', JSON.stringify(ownerBundle).slice(0, 200));
+      addSystemMessage(_t('ephemeral.e2eUnavailable') || 'End-to-end encryption unavailable — owner key bundle missing');
     }
 
     setProgress(80, _t('ephemeral.establishingChannel'));
