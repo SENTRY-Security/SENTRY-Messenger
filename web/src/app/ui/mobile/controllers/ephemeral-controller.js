@@ -90,39 +90,43 @@ export class EphemeralController extends BaseController {
 
   // ── Load sessions from server ──
   async _loadSessions() {
+    let data;
     try {
-      const data = await ephemeralList();
-      const sessions = data?.sessions || [];
-      this.ephemeralSessions.clear();
-      for (const s of sessions) {
-        this.ephemeralSessions.set(s.session_id, s);
-        // Populate sessionTokenMap from server data (covers missed WS notifications)
-        if (s.invite_token && !this._sessionTokenMap.has(s.session_id)) {
-          this._sessionTokenMap.set(s.session_id, s.invite_token);
-        }
-      }
-      _persistMap(STORAGE_KEY_SESSION_TOKEN_MAP, this._sessionTokenMap);
-      this._pendingInvites = data?.pending_invites || [];
-      this._requestListRender();
-
-      // ── Process any pending key exchanges stored via HTTP fallback ──
-      for (const s of sessions) {
-        if (s.pending_key_exchange_json && !this._drStates.has(s.session_id)) {
-          try {
-            const guestBundle = typeof s.pending_key_exchange_json === 'string'
-              ? JSON.parse(s.pending_key_exchange_json) : s.pending_key_exchange_json;
-            console.log('[Ephemeral] processing pending key-exchange from D1 for', s.session_id);
-            await this._handleKeyExchange({
-              sessionId: s.session_id,
-              guestBundle
-            });
-          } catch (err) {
-            console.warn('[Ephemeral] pending key-exchange processing failed', s.session_id, err?.message);
-          }
-        }
-      }
+      data = await ephemeralList();
     } catch (err) {
       console.warn('[Ephemeral] loadSessions failed', err?.message);
+      return; // Keep existing in-memory sessions intact on failure
+    }
+
+    const sessions = data?.sessions || [];
+    // Only clear AFTER successful fetch — never lose WS-sourced sessions on API failure
+    this.ephemeralSessions.clear();
+    for (const s of sessions) {
+      this.ephemeralSessions.set(s.session_id, s);
+      // Populate sessionTokenMap from server data (covers missed WS notifications)
+      if (s.invite_token && !this._sessionTokenMap.has(s.session_id)) {
+        this._sessionTokenMap.set(s.session_id, s.invite_token);
+      }
+    }
+    _persistMap(STORAGE_KEY_SESSION_TOKEN_MAP, this._sessionTokenMap);
+    this._pendingInvites = data?.pending_invites || [];
+    this._requestListRender();
+
+    // ── Process any pending key exchanges stored via HTTP fallback ──
+    for (const s of sessions) {
+      if (s.pending_key_exchange_json && !this._drStates.has(s.session_id)) {
+        try {
+          const guestBundle = typeof s.pending_key_exchange_json === 'string'
+            ? JSON.parse(s.pending_key_exchange_json) : s.pending_key_exchange_json;
+          console.log('[Ephemeral] processing pending key-exchange from D1 for', s.session_id);
+          await this._handleKeyExchange({
+            sessionId: s.session_id,
+            guestBundle
+          });
+        } catch (err) {
+          console.warn('[Ephemeral] pending key-exchange processing failed', s.session_id, err?.message);
+        }
+      }
     }
   }
 
