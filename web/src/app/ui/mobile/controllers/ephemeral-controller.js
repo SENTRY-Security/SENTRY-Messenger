@@ -729,9 +729,12 @@ export class EphemeralController extends BaseController {
         if (msg.inviteToken) {
           this._sessionTokenMap.set(msg.sessionId, msg.inviteToken);
           _persistMap(STORAGE_KEY_SESSION_TOKEN_MAP, this._sessionTokenMap);
+          // Remove consumed invite from pending list
+          this._pendingInvites = this._pendingInvites.filter(inv => inv.token !== msg.inviteToken);
         }
 
         this._requestListRender();
+        this._refreshModalIfOpen();
         return true;
       }
       case 'ephemeral-key-exchange': {
@@ -750,6 +753,7 @@ export class EphemeralController extends BaseController {
         if (session) {
           session.expires_at = msg.expiresAt;
           this._requestListRender();
+          this._refreshModalIfOpen();
         }
         return true;
       }
@@ -762,6 +766,7 @@ export class EphemeralController extends BaseController {
         _persistMap(STORAGE_KEY_INVITE_KEYS, this._pendingInviteKeys);
         _persistMap(STORAGE_KEY_SESSION_TOKEN_MAP, this._sessionTokenMap);
         this._requestListRender();
+        this._refreshModalIfOpen();
         this.hideConvTimerBar();
         return true;
       }
@@ -857,5 +862,16 @@ export class EphemeralController extends BaseController {
   // ── Helpers ──
   _requestListRender() {
     this.deps.renderConversationList?.();
+  }
+
+  /**
+   * If the create-link modal is currently visible, re-render its session list
+   * so it reflects real-time changes (e.g. guest joined, session extended/deleted).
+   */
+  _refreshModalIfOpen() {
+    const modal = document.getElementById('ephemeralLinkModal');
+    if (!modal || modal.style.display === 'none' || modal.getAttribute('aria-hidden') === 'true') return;
+    const sessionListEl = document.getElementById('ephLinkSessionList');
+    if (sessionListEl) this._renderSessionListInModal(sessionListEl);
   }
 }
