@@ -544,6 +544,16 @@ function handleWsMessage(msg) {
     case 'buffered-messages-end':
       console.log('[EphWS] buffered messages done, count:', msg.count);
       break;
+    case 'ephemeral-peer-reconnected':
+      if (msg.conversationId === sessionState?.conversation_id) {
+        _handlePeerPresence(true);
+      }
+      break;
+    case 'ephemeral-peer-disconnected':
+      if (msg.conversationId === sessionState?.conversation_id) {
+        _handlePeerPresence(false);
+      }
+      break;
     case 'ping':
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'pong' }));
       break;

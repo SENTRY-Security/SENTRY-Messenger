@@ -285,6 +285,9 @@ export class AccountWebSocket {
     // Flush any buffered ephemeral messages from while this account was offline
     await this._flushEphemeralBuffers(server);
 
+    // Notify ephemeral peers that this account is back online
+    await this._notifyEphemeralPeersReconnect();
+
     // Set alarm for heartbeat monitoring
     const currentAlarm = await this.state.storage.getAlarm();
     if (!currentAlarm) {
@@ -474,6 +477,8 @@ export class AccountWebSocket {
     // Notify presence watchers if going offline
     if (!hasAuthenticated && att.accountDigest) {
       await this._notifyPresenceWatchers(att.accountDigest, false);
+      // Notify ephemeral peers that this account went offline
+      await this._notifyEphemeralPeersDisconnect();
     }
   }
 
@@ -1082,6 +1087,71 @@ export class AccountWebSocket {
 
     if (flushed > 0) {
       console.log('[ws-do] ephemeral buffer flushed', { account: this.accountDigest?.slice(0, 16), flushed });
+    }
+  }
+
+  async _notifyEphemeralPeersReconnect() {
+    if (!this.accountDigest || !this.env.DB) return;
+    try {
+      // Find all active ephemeral sessions where this account is a participant
+      const rows = await this.env.DB.prepare(
+        `SELECT conversation_id, owner_digest, guest_digest FROM ephemeral_sessions
+         WHERE (owner_digest = ? OR guest_digest = ?) AND deleted_at IS NULL AND expires_at > ?`
+      ).bind(this.accountDigest, this.accountDigest, Math.floor(Date.now() / 1000)).all();
+      if (!rows?.results?.length) return;
+
+      for (const row of rows.results) {
+        const peerDigest = this.accountDigest === row.owner_digest
+          ? row.guest_digest : row.owner_digest;
+        if (!peerDigest) continue;
+        // Send unencrypted system-level reconnect notification to the peer's DO
+        const doId = this.env.ACCOUNT_WS.idFromName(peerDigest);
+        const stub = this.env.ACCOUNT_WS.get(doId);
+        await stub.fetch('https://do/notify', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            type: 'ephemeral-peer-reconnected',
+            conversationId: row.conversation_id,
+            peerDigest: this.accountDigest,
+            ts: Date.now()
+          })
+        }).catch(() => {});
+      }
+      console.log('[ws-do] ephemeral peer reconnect notified', { account: this.accountDigest?.slice(0, 16), sessions: rows.results.length });
+    } catch (err) {
+      console.warn('[ws-do] ephemeral peer reconnect notify failed:', err?.message || err);
+    }
+  }
+
+  async _notifyEphemeralPeersDisconnect() {
+    if (!this.accountDigest || !this.env.DB) return;
+    try {
+      const rows = await this.env.DB.prepare(
+        `SELECT conversation_id, owner_digest, guest_digest FROM ephemeral_sessions
+         WHERE (owner_digest = ? OR guest_digest = ?) AND deleted_at IS NULL AND expires_at > ?`
+      ).bind(this.accountDigest, this.accountDigest, Math.floor(Date.now() / 1000)).all();
+      if (!rows?.results?.length) return;
+
+      for (const row of rows.results) {
+        const peerDigest = this.accountDigest === row.owner_digest
+          ? row.guest_digest : row.owner_digest;
+        if (!peerDigest) continue;
+        const doId = this.env.ACCOUNT_WS.idFromName(peerDigest);
+        const stub = this.env.ACCOUNT_WS.get(doId);
+        await stub.fetch('https://do/notify', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            type: 'ephemeral-peer-disconnected',
+            conversationId: row.conversation_id,
+            peerDigest: this.accountDigest,
+            ts: Date.now()
+          })
+        }).catch(() => {});
+      }
+    } catch (err) {
+      console.warn('[ws-do] ephemeral peer disconnect notify failed:', err?.message || err);
     }
   }
 

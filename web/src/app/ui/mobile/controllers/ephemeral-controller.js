@@ -1110,6 +1110,18 @@ export class EphemeralController extends BaseController {
         this.hideConvTimerBar();
         return true;
       }
+      case 'ephemeral-peer-reconnected': {
+        // Peer came back online after a disconnection — show tombstone
+        const convId = msg.conversationId;
+        if (convId) this._setPeerPresence(true, convId);
+        return true;
+      }
+      case 'ephemeral-peer-disconnected': {
+        // Peer went offline — show tombstone
+        const dcConvId = msg.conversationId;
+        if (dcConvId) this._setPeerPresence(false, dcConvId);
+        return true;
+      }
       case 'ephemeral-message': {
         // Encrypted message — decrypt and forward to rendering pipeline
         // Decryption is handled by the WS integration layer calling decryptIncomingMessage()
