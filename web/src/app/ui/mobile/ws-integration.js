@@ -663,6 +663,15 @@ export function createWsIntegration({ deps }) {
       getMessagesPane()?.handleVaultAckEvent?.(msg);
       return;
     }
+    // ── Buffered message markers (ephemeral DO buffer) ──
+    if (type === 'buffered-messages-start') {
+      log({ wsBufferedMessagesStart: true, ts: msg?.ts });
+      return;
+    }
+    if (type === 'buffered-messages-end') {
+      log({ wsBufferedMessagesEnd: true, count: msg?.count, ts: msg?.ts });
+      return;
+    }
     // ── Ephemeral chat events ──
     if (type === 'ephemeral_session_started' || type === 'ephemeral-extended' || type === 'ephemeral-deleted'
         || type === 'ephemeral-message' || type === 'ephemeral-key-exchange' || type === 'ephemeral-key-exchange-ack'

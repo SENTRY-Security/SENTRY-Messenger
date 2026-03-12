@@ -538,6 +538,12 @@ function handleWsMessage(msg) {
       break;
     case 'pong':
       break;
+    case 'buffered-messages-start':
+      console.log('[EphWS] receiving buffered messages...');
+      break;
+    case 'buffered-messages-end':
+      console.log('[EphWS] buffered messages done, count:', msg.count);
+      break;
     case 'ping':
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'pong' }));
       break;

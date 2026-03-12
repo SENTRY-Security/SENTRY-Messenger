@@ -27,6 +27,15 @@ const MAX_SIGNAL_STRING_BYTES = 4096;
 const PRESENCE_TTL_SEC = 120; // KV expiration for presence keys
 const HEARTBEAT_INTERVAL_MS = 30_000;
 
+// ── Ephemeral message buffer constants ──────────────────────────
+const EPH_BUFFER_MAX_PER_CONV = 50;   // Max buffered messages per conversationId
+const EPH_BUFFER_TTL_MS = 5 * 60_000; // 5 minutes
+const EPH_BUFFERABLE_TYPES = new Set([
+  'ephemeral-message',
+  'ephemeral-key-exchange',
+  'ephemeral-key-exchange-ack'
+]);
+
 const CALL_SIGNAL_TYPES = new Set([
   'call-invite', 'call-ringing', 'call-accept', 'call-reject',
   'call-cancel', 'call-busy', 'call-end', 'call-ice-candidate',
@@ -273,6 +282,9 @@ export class AccountWebSocket {
     // Update presence
     await this._updatePresence(true);
 
+    // Flush any buffered ephemeral messages from while this account was offline
+    await this._flushEphemeralBuffers(server);
+
     // Set alarm for heartbeat monitoring
     const currentAlarm = await this.state.storage.getAlarm();
     if (!currentAlarm) {
@@ -306,6 +318,15 @@ export class AccountWebSocket {
         ws.send(data);
         sent++;
       } catch {}
+    }
+
+    // Buffer ephemeral messages when no active socket received them
+    if (sent === 0 && EPH_BUFFERABLE_TYPES.has(payload.type)) {
+      const convId = String(payload.conversationId || '').trim();
+      if (convId) {
+        await this._bufferEphemeralMessage(convId, payload);
+        console.log('[ws-do] ephemeral msg buffered', { type: payload.type, convId: convId.slice(0, 16) });
+      }
     }
 
     return Response.json({ ok: true, sent });
@@ -484,6 +505,9 @@ export class AccountWebSocket {
     for (const [key, entry] of this.callLocks) {
       if (entry.expiresAt <= now) this.callLocks.delete(key);
     }
+
+    // Clean expired ephemeral message buffers
+    await this._cleanExpiredBuffers();
 
     // Reschedule alarm
     await this.state.storage.setAlarm(Date.now() + HEARTBEAT_INTERVAL_MS);
@@ -1005,6 +1029,73 @@ export class AccountWebSocket {
       const err = new Error('call event persist failed');
       err.status = resp.status;
       throw err;
+    }
+  }
+
+  // ── Ephemeral message buffer ────────────────────────────────────
+  // Buffers ephemeral messages in DO transactional storage when the target
+  // has no active WebSocket. Messages are flushed on reconnect.
+
+  async _bufferEphemeralMessage(conversationId, payload) {
+    const key = `msgbuf:${conversationId}`;
+    const buf = await this.state.storage.get(key) || [];
+    buf.push({ payload, ts: Date.now() });
+    // FIFO eviction if over limit
+    while (buf.length > EPH_BUFFER_MAX_PER_CONV) buf.shift();
+    await this.state.storage.put(key, buf);
+  }
+
+  async _flushEphemeralBuffers(ws) {
+    // Find all msgbuf:* keys and flush to this socket
+    const allKeys = await this.state.storage.list({ prefix: 'msgbuf:' });
+    if (!allKeys.size) return;
+
+    const now = Date.now();
+    let flushed = 0;
+
+    // Signal start of buffered replay
+    try { ws.send(JSON.stringify({ type: 'buffered-messages-start', ts: now })); } catch {}
+
+    for (const [key, buf] of allKeys) {
+      if (!Array.isArray(buf) || !buf.length) {
+        await this.state.storage.delete(key);
+        continue;
+      }
+      // Filter expired entries
+      const valid = buf.filter(e => (now - e.ts) < EPH_BUFFER_TTL_MS);
+      if (!valid.length) {
+        await this.state.storage.delete(key);
+        continue;
+      }
+      // Send in chronological order
+      for (const entry of valid) {
+        try {
+          ws.send(JSON.stringify(entry.payload));
+          flushed++;
+        } catch {}
+      }
+      await this.state.storage.delete(key);
+    }
+
+    // Signal end of buffered replay
+    try { ws.send(JSON.stringify({ type: 'buffered-messages-end', ts: now, count: flushed })); } catch {}
+
+    if (flushed > 0) {
+      console.log('[ws-do] ephemeral buffer flushed', { account: this.accountDigest?.slice(0, 16), flushed });
+    }
+  }
+
+  async _cleanExpiredBuffers() {
+    const allKeys = await this.state.storage.list({ prefix: 'msgbuf:' });
+    const now = Date.now();
+    for (const [key, buf] of allKeys) {
+      if (!Array.isArray(buf)) { await this.state.storage.delete(key); continue; }
+      const valid = buf.filter(e => (now - e.ts) < EPH_BUFFER_TTL_MS);
+      if (!valid.length) {
+        await this.state.storage.delete(key);
+      } else if (valid.length < buf.length) {
+        await this.state.storage.put(key, valid);
+      }
     }
   }
 
