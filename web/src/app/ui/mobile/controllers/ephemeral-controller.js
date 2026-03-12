@@ -18,6 +18,29 @@ import { loadNacl } from '../../../../shared/crypto/nacl.js';
 import { saveSettings, DEFAULT_SETTINGS } from '../../../features/settings.js';
 
 const EPHEMERAL_TTL_SEC = 600; // 10 minutes
+const STORAGE_KEY_INVITE_KEYS = '__eph_pending_invite_keys';
+const STORAGE_KEY_SESSION_TOKEN_MAP = '__eph_session_token_map';
+
+// ── sessionStorage helpers for E2EE key persistence ──
+// Private keys MUST survive page reloads / iOS background purges.
+// Without persistence, switching apps to share the link causes key loss
+// and the key exchange can NEVER complete (the root cause of always-fail).
+function _persistMap(storageKey, map) {
+  try {
+    const obj = {};
+    for (const [k, v] of map) obj[k] = v;
+    sessionStorage.setItem(storageKey, JSON.stringify(obj));
+  } catch { /* quota exceeded or private browsing */ }
+}
+
+function _restoreMap(storageKey) {
+  try {
+    const raw = sessionStorage.getItem(storageKey);
+    if (!raw) return new Map();
+    const obj = JSON.parse(raw);
+    return new Map(Object.entries(obj));
+  } catch { return new Map(); }
+}
 
 export class EphemeralController extends BaseController {
   constructor(deps) {
@@ -26,13 +49,14 @@ export class EphemeralController extends BaseController {
     this.ephemeralSessions = new Map();
     this._timerInterval = null;
 
-    // ── E2EE state (memory-only, destroyed with session) ──
+    // ── E2EE state ──
+    // Restored from sessionStorage so keys survive page reloads / iOS background purges.
     /** @type {Map<string, object>} token → devicePriv (owner's ephemeral keypair, awaiting guest key-exchange) */
-    this._pendingInviteKeys = new Map();
+    this._pendingInviteKeys = _restoreMap(STORAGE_KEY_INVITE_KEYS);
     /** @type {Map<string, object>} session_id → DR state (active Double Ratchet sessions) */
     this._drStates = new Map();
     /** @type {Map<string, string>} session_id → token (maps sessions back to invite tokens for key lookup) */
-    this._sessionTokenMap = new Map();
+    this._sessionTokenMap = _restoreMap(STORAGE_KEY_SESSION_TOKEN_MAP);
     /** @type {Array<{token, expires_at, created_at}>} pending (unconsumed) invites from server */
     this._pendingInvites = [];
     /** @type {boolean} prevents concurrent _generateLink calls */
@@ -51,10 +75,12 @@ export class EphemeralController extends BaseController {
 
   destroy() {
     if (this._timerInterval) clearInterval(this._timerInterval);
-    // Clear all crypto state
+    // Clear all crypto state (memory + storage)
     this._drStates.clear();
     this._pendingInviteKeys.clear();
     this._sessionTokenMap.clear();
+    try { sessionStorage.removeItem(STORAGE_KEY_INVITE_KEYS); } catch {}
+    try { sessionStorage.removeItem(STORAGE_KEY_SESSION_TOKEN_MAP); } catch {}
     super.destroy();
   }
 
@@ -71,6 +97,7 @@ export class EphemeralController extends BaseController {
           this._sessionTokenMap.set(s.session_id, s.invite_token);
         }
       }
+      _persistMap(STORAGE_KEY_SESSION_TOKEN_MAP, this._sessionTokenMap);
       this._pendingInvites = data?.pending_invites || [];
       this._requestListRender();
     } catch (err) {
@@ -193,6 +220,7 @@ export class EphemeralController extends BaseController {
       const url = `${location.origin}/e/${data.token}`;
 
       this._pendingInviteKeys.set(data.token, devicePriv);
+      _persistMap(STORAGE_KEY_INVITE_KEYS, this._pendingInviteKeys);
 
       if (loading) loading.style.display = 'none';
       if (urlInput) urlInput.value = url;
@@ -291,6 +319,7 @@ export class EphemeralController extends BaseController {
           try {
             await ephemeralRevokeInvite({ token: item.token });
             this._pendingInviteKeys.delete(item.token);
+            _persistMap(STORAGE_KEY_INVITE_KEYS, this._pendingInviteKeys);
             row.remove();
             this._onSlotFreed(sessionListEl);
           } catch {
@@ -411,7 +440,9 @@ export class EphemeralController extends BaseController {
         this.ephemeralSessions.delete(id);
         // Clean up crypto state for expired session
         this._drStates.delete(id);
+        const expiredToken = this._sessionTokenMap.get(id);
         this._sessionTokenMap.delete(id);
+        if (expiredToken) this._pendingInviteKeys.delete(expiredToken);
         needsRender = true;
         continue;
       }
@@ -429,7 +460,11 @@ export class EphemeralController extends BaseController {
       this._updateConvTimer(session, remaining);
     }
 
-    if (needsRender) this._requestListRender();
+    if (needsRender) {
+      _persistMap(STORAGE_KEY_INVITE_KEYS, this._pendingInviteKeys);
+      _persistMap(STORAGE_KEY_SESSION_TOKEN_MAP, this._sessionTokenMap);
+      this._requestListRender();
+    }
   }
 
   _updateConvTimer(session, remaining) {
@@ -692,6 +727,7 @@ export class EphemeralController extends BaseController {
         // Map session_id → invite_token for key lookup
         if (msg.inviteToken) {
           this._sessionTokenMap.set(msg.sessionId, msg.inviteToken);
+          _persistMap(STORAGE_KEY_SESSION_TOKEN_MAP, this._sessionTokenMap);
         }
 
         this._requestListRender();
@@ -717,9 +753,13 @@ export class EphemeralController extends BaseController {
         return true;
       }
       case 'ephemeral-deleted': {
+        const delToken = this._sessionTokenMap.get(msg.sessionId);
         this.ephemeralSessions.delete(msg.sessionId);
         this._drStates.delete(msg.sessionId);
         this._sessionTokenMap.delete(msg.sessionId);
+        if (delToken) this._pendingInviteKeys.delete(delToken);
+        _persistMap(STORAGE_KEY_INVITE_KEYS, this._pendingInviteKeys);
+        _persistMap(STORAGE_KEY_SESSION_TOKEN_MAP, this._sessionTokenMap);
         this._requestListRender();
         this.hideConvTimerBar();
         return true;
@@ -737,24 +777,36 @@ export class EphemeralController extends BaseController {
   // ── E2EE: Handle key exchange from guest ──
   async _handleKeyExchange(msg) {
     const sessionId = msg.sessionId;
+    console.log('[Ephemeral] _handleKeyExchange START', sessionId,
+      'sessions:', this.ephemeralSessions.size,
+      'tokenMap:', this._sessionTokenMap.size,
+      'inviteKeys:', this._pendingInviteKeys.size);
+
     let session = this.ephemeralSessions.get(sessionId);
 
     // Session or key mapping may be missing if the ephemeral_session_started
     // WS notification was lost (e.g. owner's WS was disconnected when the
     // guest consumed the link). Fetch from server to recover.
     if (!session || !this._sessionTokenMap.has(sessionId)) {
+      console.log('[Ephemeral] key-exchange: session/token missing, fetching from server...');
       await this._loadSessions();
       session = this.ephemeralSessions.get(sessionId);
     }
 
     if (!session) {
-      console.warn('[Ephemeral] key-exchange: session not found', sessionId);
+      console.error('[Ephemeral] key-exchange FAIL: session not found after server fetch', sessionId);
       return;
     }
 
+    const token = this._sessionTokenMap.get(sessionId);
+    console.log('[Ephemeral] key-exchange: token lookup', sessionId, '→', token ? token.slice(0, 8) + '...' : 'NULL',
+      'hasKey:', token ? this._pendingInviteKeys.has(token) : false);
+
     const ownerPriv = this._findPrivKeyForSession(sessionId);
     if (!ownerPriv) {
-      console.warn('[Ephemeral] key-exchange: no private key for session', sessionId);
+      console.error('[Ephemeral] key-exchange FAIL: no private key for session', sessionId,
+        'token:', token ? token.slice(0, 8) + '...' : 'NULL',
+        'allTokens:', [...this._pendingInviteKeys.keys()].map(k => k.slice(0, 8) + '...'));
       return;
     }
 
@@ -765,8 +817,10 @@ export class EphemeralController extends BaseController {
     this._drStates.set(sessionId, drSt);
 
     // Clean up pending invite key (no longer needed)
-    const token = this._sessionTokenMap.get(sessionId);
-    if (token) this._pendingInviteKeys.delete(token);
+    if (token) {
+      this._pendingInviteKeys.delete(token);
+      _persistMap(STORAGE_KEY_INVITE_KEYS, this._pendingInviteKeys);
+    }
 
     // Send ack to guest so they know encryption is ready
     const sent = this.deps.wsSend?.({

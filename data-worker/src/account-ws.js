@@ -392,20 +392,28 @@ export class AccountWebSocket {
           `SELECT owner_digest, guest_digest FROM ephemeral_sessions WHERE session_id = ? AND deleted_at IS NULL`
         ).bind(sessionId).first();
       }
-      if (!session) return;
+      if (!session) {
+        console.warn('[ws-do] ephemeral relay: session not found in D1', { type: msg.type, conversationId, sessionId });
+        return;
+      }
       const senderDigest = att.accountDigest || '';
       const targetDigest = senderDigest === session.owner_digest ? session.guest_digest : session.owner_digest;
-      if (!targetDigest) return;
+      if (!targetDigest) {
+        console.warn('[ws-do] ephemeral relay: no target digest', { type: msg.type, senderDigest: senderDigest?.slice(0, 12) });
+        return;
+      }
       // Forward entire message to target peer's DO (opaque relay — server cannot read content)
       const doId = this.env.ACCOUNT_WS.idFromName(targetDigest);
       const stub = this.env.ACCOUNT_WS.get(doId);
       // Build relay payload: forward all fields from the original message, add senderDigest
       const relayPayload = { ...msg, senderDigest: senderDigest };
-      await stub.fetch('https://do/notify', {
+      const relayRes = await stub.fetch('https://do/notify', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(relayPayload)
       });
+      const relayResult = await relayRes.json().catch(() => ({}));
+      console.log('[ws-do] ephemeral relay OK', { type: msg.type, target: targetDigest?.slice(0, 12), sent: relayResult?.sent });
     } catch (err) {
       console.warn('[ws-do] ephemeral relay error:', err?.message || err);
     }
