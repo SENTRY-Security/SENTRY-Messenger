@@ -8,6 +8,24 @@ import { initI18n, t } from '/locales/index.js';
 import { generateInitialBundle } from '../../shared/crypto/prekeys.js';
 import { x3dhInitiate, drEncryptText, drDecryptText } from '../../shared/crypto/dr.js';
 import { loadNacl, b64 } from '../../shared/crypto/nacl.js';
+import { setDeviceId, setAccountDigest } from '../core/store.js';
+import {
+  activateEphemeralCallMode,
+  deactivateEphemeralCallMode,
+  handleEphemeralCallMessage,
+  initiateEphemeralCall,
+  isEphemeralCallMode
+} from '../features/calls/ephemeral-call-adapter.js';
+import { initCallOverlay } from './mobile/call-overlay.js';
+import {
+  initCallMediaSession,
+  endCallMediaSession,
+  sendCallSignal,
+  getCallSessionSnapshot,
+  isCallActive,
+  completeCallSession,
+  setCallSignalSender
+} from '../features/calls/index.js';
 
 // Use bootstrap translator until async i18n is ready, then use async t()
 function _t(key, params) {
@@ -26,6 +44,9 @@ let peerPresent = true;        // whether the remote peer is in foreground
 // ── E2EE State (memory-only) ──
 let ephDrState = null;         // Double Ratchet session state
 let keyExchangeComplete = false; // true after owner sends ack
+
+// ── Pre-cached media stream from gesture unlock ──
+let _cachedMediaStream = null;
 
 // ── DOM refs ──
 const splash = document.getElementById('ephSplash');
@@ -48,15 +69,7 @@ const attachBtn = document.getElementById('ephAttachBtn');
 const fileInput = document.getElementById('ephFileInput');
 const voiceCallBtn = document.getElementById('ephVoiceCallBtn');
 const videoCallBtn = document.getElementById('ephVideoCallBtn');
-const callOverlay = document.getElementById('ephCallOverlay');
-const callModeIcon = document.getElementById('ephCallModeIcon');
-const callStatusEl = document.getElementById('ephCallStatus');
-const callTimerEl = document.getElementById('ephCallTimer');
-const remoteVideo = document.getElementById('ephRemoteVideo');
-const localVideo = document.getElementById('ephLocalVideo');
-const muteBtn = document.getElementById('ephMuteBtn');
-const camToggleBtn = document.getElementById('ephCamToggleBtn');
-const hangupBtn = document.getElementById('ephHangupBtn');
+// Old call overlay DOM refs removed — call-overlay.js creates its own DOM elements
 const wsStatusEl = document.getElementById('ephWsStatus');
 const nicknameScreen = document.getElementById('ephNickname');
 const nicknameInput = document.getElementById('ephNicknameInput');
@@ -512,13 +525,15 @@ function handleWsMessage(msg) {
         destroyChat({ reason: 'owner-terminated' });
       }
       break;
+    case 'ephemeral-call-invite':
+    case 'ephemeral-call-offer':
     case 'ephemeral-call-answer':
     case 'ephemeral-call-accept':
     case 'ephemeral-call-reject':
     case 'ephemeral-call-busy':
     case 'ephemeral-call-ice-candidate':
     case 'ephemeral-call-end':
-      handleCallSignal(msg);
+      handleEphemeralCallMessage(msg);
       break;
     case 'hello':
       updateWsStatus('online');
@@ -560,215 +575,26 @@ function handleWsMessage(msg) {
   }
 }
 
-// ── Call System ──
-let callState = null; // { callId, mode, pc, localStream, muted, camOff, timerStart, timerInterval }
-const STUN_SERVERS = [{ urls: 'stun:stun.cloudflare.com:3478' }];
+// ── Call System (now powered by standard call pipeline via ephemeral-call-adapter) ──
 
 function enableCallButtons() {
   if (voiceCallBtn) voiceCallBtn.disabled = false;
   if (videoCallBtn) videoCallBtn.disabled = false;
 }
 
-function generateCallId() {
-  const arr = new Uint8Array(16);
-  crypto.getRandomValues(arr);
-  return Array.from(arr, b => b.toString(16).padStart(2, '0')).join('');
-}
-
 function wsSendJSON(obj) {
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
 
-async function handleCall(mode) {
-  if (!sessionState || destroyed || callState) return;
-  const callId = generateCallId();
+// Old inline call functions removed — now powered by standard call pipeline via ephemeral-call-adapter
 
-  // Show call overlay immediately
-  showCallOverlay(mode, _t('ephemeral.callDialing') || 'Dialing…');
-
-  try {
-    // Request media
-    const constraints = { audio: true, video: mode === 'video' };
-    const stream = await navigator.mediaDevices.getUserMedia(constraints).catch(err => {
-      if (mode === 'video') return navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      throw err;
-    });
-
-    // Show local preview for video
-    if (stream.getVideoTracks().length > 0 && localVideo) {
-      localVideo.srcObject = stream;
-      localVideo.classList.add('visible');
-      if (camToggleBtn) camToggleBtn.style.display = '';
-    }
-
-    // Create peer connection
-    const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS, bundlePolicy: 'max-bundle' });
-
-    callState = { callId, mode, pc, localStream: stream, muted: false, camOff: false, timerStart: null, timerInterval: null };
-
-    // Add local tracks
-    for (const track of stream.getTracks()) {
-      pc.addTrack(track, stream);
-    }
-
-    // Handle remote tracks
-    pc.ontrack = (evt) => {
-      if (remoteVideo && evt.streams[0]) {
-        remoteVideo.srcObject = evt.streams[0];
-        if (evt.track.kind === 'video') remoteVideo.classList.add('visible');
-      }
-    };
-
-    // ICE candidates — send to peer
-    pc.onicecandidate = (evt) => {
-      if (evt.candidate) {
-        wsSendJSON({
-          type: 'ephemeral-call-ice-candidate',
-          callId,
-          targetAccountDigest: sessionState.owner_digest,
-          candidate: evt.candidate.toJSON()
-        });
-      }
-    };
-
-    pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'connected') {
-        updateCallStatus(_t('ephemeral.callConnected') || 'Connected');
-        startCallTimer();
-      } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-        endCall();
-      }
-    };
-
-    // Create and send offer
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-
-    // Send call invite + offer to owner
-    wsSendJSON({
-      type: 'ephemeral-call-invite',
-      callId,
-      targetAccountDigest: sessionState.owner_digest,
-      senderDeviceId: sessionState.guest_device_id,
-      mode,
-      conversationId: sessionState.conversation_id,
-      metadata: { displayName: _t('ephemeral.guestLabel', { id: sessionState.guest_device_id.slice(-4) }) || 'Guest' }
-    });
-    wsSendJSON({
-      type: 'ephemeral-call-offer',
-      callId,
-      targetAccountDigest: sessionState.owner_digest,
-      senderDeviceId: sessionState.guest_device_id,
-      description: pc.localDescription.toJSON()
-    });
-  } catch (err) {
-    console.error('[EphCall] failed to start call', err);
-    hideCallOverlay();
-    callState = null;
-    addSystemMessage(_t('ephemeral.callFailed') || 'Call failed: ' + (err.message || ''));
-  }
-}
-
-function handleCallSignal(msg) {
-  if (!callState || msg.callId !== callState.callId) return;
-  const { pc } = callState;
-
-  switch (msg.type) {
-    case 'ephemeral-call-answer':
-      if (msg.description) {
-        pc.setRemoteDescription(new RTCSessionDescription(msg.description)).catch(console.error);
-      }
-      break;
-    case 'ephemeral-call-ice-candidate':
-      if (msg.candidate) {
-        pc.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(console.error);
-      }
-      break;
-    case 'ephemeral-call-accept':
-      updateCallStatus(_t('ephemeral.callConnecting') || 'Connecting…');
-      break;
-    case 'ephemeral-call-reject':
-    case 'ephemeral-call-busy':
-      updateCallStatus(msg.type === 'ephemeral-call-busy'
-        ? (_t('ephemeral.callBusy') || 'User is busy')
-        : (_t('ephemeral.callRejected') || 'Call declined'));
-      setTimeout(endCall, 1500);
-      break;
-    case 'ephemeral-call-end':
-      endCall(true);
-      break;
-  }
-}
-
-function endCall(fromRemote) {
-  if (!callState) return;
-  const { pc, localStream, callId, timerInterval: ti } = callState;
-  // Notify peer (only if we initiated the hangup)
-  if (!fromRemote) {
-    wsSendJSON({ type: 'ephemeral-call-end', callId, targetAccountDigest: sessionState?.owner_digest });
-  }
-  // Cleanup
-  if (ti) clearInterval(ti);
-  for (const track of localStream?.getTracks() || []) track.stop();
-  pc?.close();
-  if (remoteVideo) { remoteVideo.srcObject = null; remoteVideo.classList.remove('visible'); }
-  if (localVideo) { localVideo.srcObject = null; localVideo.classList.remove('visible'); }
-  callState = null;
-  hideCallOverlay();
-  addSystemMessage(_t('ephemeral.callEnded') || 'Call ended');
-}
-
-function showCallOverlay(mode, status) {
-  if (callModeIcon) callModeIcon.textContent = mode === 'video' ? '📹' : '📞';
-  updateCallStatus(status);
-  if (callTimerEl) callTimerEl.textContent = '';
-  if (callOverlay) callOverlay.classList.add('active');
-  if (muteBtn) muteBtn.classList.remove('active');
-  if (camToggleBtn) { camToggleBtn.classList.remove('active'); camToggleBtn.style.display = mode === 'video' ? '' : 'none'; }
-}
-
-function hideCallOverlay() {
-  if (callOverlay) callOverlay.classList.remove('active');
-}
-
-function updateCallStatus(text) {
-  if (callStatusEl) callStatusEl.textContent = text;
-}
-
-function startCallTimer() {
-  if (!callState) return;
-  callState.timerStart = Date.now();
-  callState.timerInterval = setInterval(() => {
-    if (!callState) return;
-    const elapsed = Math.floor((Date.now() - callState.timerStart) / 1000);
-    const m = Math.floor(elapsed / 60);
-    const s = elapsed % 60;
-    if (callTimerEl) callTimerEl.textContent = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-  }, 1000);
-}
-
-// Mute toggle
-muteBtn?.addEventListener('click', () => {
-  if (!callState?.localStream) return;
-  callState.muted = !callState.muted;
-  for (const t of callState.localStream.getAudioTracks()) t.enabled = !callState.muted;
-  muteBtn.classList.toggle('active', callState.muted);
+// Button click handlers — use adapter for calls
+if (voiceCallBtn) voiceCallBtn.addEventListener('click', () => {
+  if (isEphemeralCallMode()) initiateEphemeralCall({ mode: 'voice' });
 });
-
-// Camera toggle
-camToggleBtn?.addEventListener('click', () => {
-  if (!callState?.localStream) return;
-  callState.camOff = !callState.camOff;
-  for (const t of callState.localStream.getVideoTracks()) t.enabled = !callState.camOff;
-  camToggleBtn.classList.toggle('active', callState.camOff);
+if (videoCallBtn) videoCallBtn.addEventListener('click', () => {
+  if (isEphemeralCallMode()) initiateEphemeralCall({ mode: 'video' });
 });
-
-// Hangup
-hangupBtn?.addEventListener('click', endCall);
-
-// Button click handlers
-if (voiceCallBtn) voiceCallBtn.addEventListener('click', () => handleCall('voice'));
-if (videoCallBtn) videoCallBtn.addEventListener('click', () => handleCall('video'));
 
 // Image attach
 if (attachBtn) attachBtn.addEventListener('click', () => fileInput?.click());
@@ -949,10 +775,84 @@ function _enterChat() {
   enableCallButtons();
   _bindVisibilityPresence();
 
+  // Gesture-unlock: play a silent-ish click to unlock Web Audio API,
+  // then pre-request microphone + camera permissions so call setup is instant.
+  _gestureUnlockMedia();
+
+  // Initialize the standard call system for guest use
+  _initCallSystem();
+
   // Show "establishing secure connection" system message (before ack arrives)
   if (ephDrState && !keyExchangeComplete) {
     addSystemMessage(_t('ephemeral.establishingE2e'));
   }
+}
+
+/** Initialize the standard call system (overlay, media-session, adapter) for guest side. */
+function _initCallSystem() {
+  if (!sessionState) return;
+
+  // Set guest identity in store so call modules can use ensureDeviceId()/getAccountDigest()
+  setDeviceId(sessionState.guest_device_id);
+  setAccountDigest(sessionState.guest_digest);
+
+  // Initialize call overlay UI (injects CSS + creates DOM, subscribes to call events)
+  const showToast = (msg) => addSystemMessage(msg);
+  initCallOverlay({ showToast });
+
+  // Initialize call media session (subscribes to call signals/state)
+  initCallMediaSession({
+    sendSignalFn: (type, payload) => sendCallSignal(type, payload),
+    showToastFn: showToast
+  });
+
+  // Activate ephemeral call adapter — translates call-* ↔ ephemeral-call-*
+  activateEphemeralCallMode({
+    conversationId: sessionState.conversation_id,
+    sessionId: sessionState.session_id,
+    peerDigest: sessionState.owner_digest,
+    peerDeviceId: 'owner-device', // Owner's device ID is unknown; will be set from incoming signals
+    selfDeviceId: sessionState.guest_device_id,
+    wsSend: (msg) => wsSendJSON(msg),
+    side: 'guest',
+    peerDisplayName: _t('ephemeral.ownerLabel') || 'Owner'
+  });
+}
+
+/** Play short audio to unlock Web Audio via user gesture, then pre-cache media permissions. */
+function _gestureUnlockMedia() {
+  // 1) Unlock Web Audio API with a short sound
+  try {
+    const audio = new Audio('/assets/audio/click.mp3');
+    audio.volume = 0.01; // nearly silent
+    audio.play().catch(() => {});
+  } catch {}
+  // 2) Pre-request mic + camera so permissions are cached for call setup
+  navigator.mediaDevices?.getUserMedia?.({ audio: true, video: true })
+    .then(stream => {
+      // Cache the stream reference for first call, stop tracks after a brief moment
+      _cachedMediaStream = stream;
+      setTimeout(() => {
+        if (_cachedMediaStream === stream) {
+          for (const t of stream.getTracks()) t.stop();
+          _cachedMediaStream = null;
+        }
+      }, 60_000); // keep alive for 60s to reuse in first call
+    })
+    .catch(() => {
+      // If video denied, try audio-only
+      navigator.mediaDevices?.getUserMedia?.({ audio: true, video: false })
+        .then(stream => {
+          _cachedMediaStream = stream;
+          setTimeout(() => {
+            if (_cachedMediaStream === stream) {
+              for (const t of stream.getTracks()) t.stop();
+              _cachedMediaStream = null;
+            }
+          }, 60_000);
+        })
+        .catch(() => {}); // both denied — calls will fail gracefully later
+    });
 }
 
 // ── Visibility-based presence notifications ──

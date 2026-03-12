@@ -74,3 +74,12 @@ export {
   isFaceBlurSupported,
   BLUR_MODE
 } from './face-blur.js';
+export {
+  activateEphemeralCallMode,
+  deactivateEphemeralCallMode,
+  updateEphemeralCallContext,
+  isEphemeralCallMode,
+  getEphemeralCallContext,
+  handleEphemeralCallMessage,
+  initiateEphemeralCall
+} from './ephemeral-call-adapter.js';
