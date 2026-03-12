@@ -279,7 +279,7 @@ export class EphemeralController extends BaseController {
         const colorClass = remaining > 300 ? 'green' : remaining > 120 ? 'yellow' : 'red';
 
         row.className = 'eph-session-row';
-        row.dataset.sessionId = item.session_id;
+        row.dataset.ephSession = item.session_id;
         row.innerHTML = `
           <div class="eph-session-info">
             <span class="eph-session-name">#${seq} · ${escapeHtml(t('ephemeral.tempChat'))}</span>

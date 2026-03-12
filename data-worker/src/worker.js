@@ -2328,7 +2328,7 @@ async function handleInviteDropboxRoutes(req, env) {
 // ---- Ephemeral Chat Sessions ----
 const EPHEMERAL_TTL_SEC = 600;          // 10 minutes — session (conversation) lifetime
 const EPHEMERAL_INVITE_TTL_SEC = 86400; // 24 hours — invite link lifetime
-const EPHEMERAL_MAX_PER_OWNER = 2;
+const EPHEMERAL_MAX_PER_OWNER = 1;
 
 async function handleEphemeralRoutes(req, env) {
   const url = new URL(req.url);
