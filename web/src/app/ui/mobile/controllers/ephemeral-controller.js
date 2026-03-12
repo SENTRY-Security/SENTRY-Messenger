@@ -446,13 +446,13 @@ export class EphemeralController extends BaseController {
         needsRender = true;
         continue;
       }
-      // Update DOM timer directly for performance
-      const timerEl = document.querySelector(`[data-eph-session="${id}"] .eph-timer-badge`);
-      if (timerEl) {
-        const min = Math.floor(remaining / 60);
-        const sec = remaining % 60;
-        timerEl.textContent = `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
-        const colorClass = remaining > 300 ? 'green' : remaining > 120 ? 'yellow' : 'red';
+      // Update ALL DOM timers (conversation list + modal both have matching elements)
+      const min = Math.floor(remaining / 60);
+      const sec = remaining % 60;
+      const timerText = `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+      const colorClass = remaining > 300 ? 'green' : remaining > 120 ? 'yellow' : 'red';
+      for (const timerEl of document.querySelectorAll(`[data-eph-session="${id}"] .eph-timer-badge`)) {
+        timerEl.textContent = timerText;
         timerEl.className = 'eph-timer-badge ' + colorClass;
       }
 
