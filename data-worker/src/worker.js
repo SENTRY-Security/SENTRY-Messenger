@@ -1490,8 +1490,6 @@ async function ensureDataTables(env) {
           created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), deleted_at INTEGER,
           FOREIGN KEY (owner_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE,
           FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE)`).run();
-        // Add pending_key_exchange_json column (safe to re-run — ALTER TABLE IF NOT EXISTS is not SQL standard, so we swallow the error)
-        await env.DB.prepare(`ALTER TABLE ephemeral_sessions ADD COLUMN pending_key_exchange_json TEXT`).run().catch(() => {});
         await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ephemeral_sessions_owner ON ephemeral_sessions(owner_digest, deleted_at)`).run();
         await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ephemeral_sessions_guest ON ephemeral_sessions(guest_digest)`).run();
         await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ephemeral_sessions_conv ON ephemeral_sessions(conversation_id)`).run();
@@ -2540,10 +2538,19 @@ async function handleEphemeralRoutes(req, env) {
 
     await ensureDataTables(env);
     const now = Math.floor(Date.now() / 1000);
-    const rows = await env.DB.prepare(
-      `SELECT session_id, conversation_id, guest_digest, guest_device_id, expires_at, extended_count, created_at, invite_token, pending_key_exchange_json
-       FROM ephemeral_sessions WHERE owner_digest = ? AND deleted_at IS NULL AND expires_at > ? ORDER BY created_at DESC`
-    ).bind(ownerDigest, now).all();
+    // Try with pending_key_exchange_json column; fall back if migration hasn't run yet
+    let rows;
+    try {
+      rows = await env.DB.prepare(
+        `SELECT session_id, conversation_id, guest_digest, guest_device_id, expires_at, extended_count, created_at, invite_token, pending_key_exchange_json
+         FROM ephemeral_sessions WHERE owner_digest = ? AND deleted_at IS NULL AND expires_at > ? ORDER BY created_at DESC`
+      ).bind(ownerDigest, now).all();
+    } catch {
+      rows = await env.DB.prepare(
+        `SELECT session_id, conversation_id, guest_digest, guest_device_id, expires_at, extended_count, created_at, invite_token
+         FROM ephemeral_sessions WHERE owner_digest = ? AND deleted_at IS NULL AND expires_at > ? ORDER BY created_at DESC`
+      ).bind(ownerDigest, now).all();
+    }
 
     // Also return unconsumed pending invites so the client can display/revoke them
     const pendingRows = await env.DB.prepare(
@@ -7217,10 +7224,14 @@ async function handlePublicRoutes(req, env) {
     if (!session) return json({ error: 'NotFound' }, { status: 404 });
     const now = Math.floor(Date.now() / 1000);
     if (session.expires_at <= now) return json({ error: 'Expired' }, { status: 410 });
-    // Store guest bundle in D1 for owner to pick up
-    await env.DB.prepare(
-      `UPDATE ephemeral_sessions SET pending_key_exchange_json = ? WHERE session_id = ?`
-    ).bind(JSON.stringify(guestBundle), sessionId).run();
+    // Store guest bundle in D1 for owner to pick up (column added in migration 0011)
+    try {
+      await env.DB.prepare(
+        `UPDATE ephemeral_sessions SET pending_key_exchange_json = ? WHERE session_id = ?`
+      ).bind(JSON.stringify(guestBundle), sessionId).run();
+    } catch (e) {
+      console.warn('[ephemeral] D1 store failed (migration pending?):', e?.message);
+    }
     // Also try WS relay to owner (best-effort)
     try {
       await notifyAccountDO(env, session.owner_digest, {
@@ -7241,9 +7252,11 @@ async function handlePublicRoutes(req, env) {
     const sessionId = (body?.session_id || body?.sessionId || '').trim();
     if (!sessionId) return json({ error: 'BadRequest' }, { status: 400 });
     await ensureDataTables(env);
-    await env.DB.prepare(
-      `UPDATE ephemeral_sessions SET pending_key_exchange_json = NULL WHERE session_id = ? AND owner_digest = ?`
-    ).bind(sessionId, auth.accountDigest).run();
+    try {
+      await env.DB.prepare(
+        `UPDATE ephemeral_sessions SET pending_key_exchange_json = NULL WHERE session_id = ? AND owner_digest = ?`
+      ).bind(sessionId, auth.accountDigest).run();
+    } catch { /* column may not exist yet — migration pending */ }
     return json({ ok: true });
   }
 
