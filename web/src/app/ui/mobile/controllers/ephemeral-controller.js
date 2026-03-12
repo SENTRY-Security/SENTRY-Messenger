@@ -612,6 +612,7 @@ export class EphemeralController extends BaseController {
       timerBar.innerHTML = `
         <span id="ephConvTimerClock" class="eph-conv-timer-clock" data-session-id="">--:--</span>
         <button id="ephConvExtendBtn" class="eph-conv-extend-btn">${escapeHtml(t('ephemeral.extendTime'))}</button>
+        <button id="ephConvEndBtn" class="eph-conv-end-btn">${escapeHtml(t('ephemeral.endConversation'))}</button>
       `;
       // Insert after messages-header
       const header = document.querySelector('.messages-header');
@@ -630,6 +631,20 @@ export class EphemeralController extends BaseController {
         } catch (err) {
           console.warn('[Ephemeral] extend failed', err?.message);
         }
+      });
+
+      // Bind end conversation button
+      document.getElementById('ephConvEndBtn')?.addEventListener('click', async () => {
+        const sid = document.getElementById('ephConvTimerClock')?.dataset?.sessionId;
+        if (!sid) return;
+        if (!confirm(t('ephemeral.endConversationConfirm'))) return;
+        await this._deleteSession(sid);
+        // Navigate back to conversation list
+        const state = this.deps.getMessageState?.() || {};
+        state.activePeerDigest = null;
+        state.conversationId = null;
+        state.viewMode = 'list';
+        this.deps.applyMessagesLayout?.();
       });
     }
 

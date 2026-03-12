@@ -1038,7 +1038,10 @@
     "callEnded": "통화 종료",
     "callFailed": "통화 실패",
     "callRejected": "통화 거절됨",
-    "callBusy": "상대방 통화 중"
+    "callBusy": "상대방 통화 중",
+    "endConversation": "종료",
+    "endConversationConfirm": "이 대화를 종료하시겠습니까? 모든 메시지가 영구적으로 삭제됩니다.",
+    "establishingE2e": "보안 연결 설정 중…"
   },
   "loginStages": {
     "authenticating": "인증 중...",

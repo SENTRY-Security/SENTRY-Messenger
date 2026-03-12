@@ -773,8 +773,9 @@ export class ConversationListController extends BaseController {
         const contacts = Array.isArray(this.sessionStore.contactState) ? [...this.sessionStore.contactState] : [];
         let state = this.getMessageState();
 
-        // Handle active peer removed from contacts
-        if (state.activePeerDigest) {
+        // Handle active peer removed from contacts (skip for ephemeral conversations)
+        const isEphemeralActive = state.activePeerDigest && this.deps.controllers?.ephemeral?.isEphemeralConversation?.(state.conversationId);
+        if (state.activePeerDigest && !isEphemeralActive) {
             const exists = contacts.some((c) => this._contactPeerKey(c) === state.activePeerDigest);
             if (!exists) {
                 const { digest: activeDigest, deviceId: activeDeviceId } = splitPeerKey(state.activePeerDigest || null);

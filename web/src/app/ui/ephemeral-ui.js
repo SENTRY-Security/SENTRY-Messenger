@@ -396,8 +396,8 @@ function handleWsMessage(msg) {
       }
       break;
     case 'ephemeral-key-exchange-ack':
-      console.log('[EphE2EE] received ack', { msgSession: msg.sessionId?.slice(0, 8), mySession: sessionState.session_id?.slice(0, 8), match: msg.sessionId === sessionState.session_id });
-      if (msg.sessionId === sessionState.session_id) {
+      console.log('[EphE2EE] received ack', { msgSession: msg.sessionId?.slice(0, 8), mySession: sessionState.session_id?.slice(0, 8), match: msg.sessionId === sessionState.session_id, alreadyComplete: keyExchangeComplete });
+      if (msg.sessionId === sessionState.session_id && !keyExchangeComplete) {
         keyExchangeComplete = true;
         cancelKeyExchangeRetry();
         addSystemMessage(_t('ephemeral.e2eEstablished'));
@@ -756,6 +756,11 @@ async function boot() {
     startTimer();
     connectWs();
     enableCallButtons();
+
+    // Show "establishing secure connection" system message (before ack arrives)
+    if (ephDrState && !keyExchangeComplete) {
+      addSystemMessage(_t('ephemeral.establishingE2e'));
+    }
 
   } catch (err) {
     const msg = err.status === 404

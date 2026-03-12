@@ -1038,7 +1038,10 @@
     "callEnded": "通話終了",
     "callFailed": "通話失敗",
     "callRejected": "通話が拒否されました",
-    "callBusy": "相手は通話中です"
+    "callBusy": "相手は通話中です",
+    "endConversation": "終了",
+    "endConversationConfirm": "この会話を終了しますか？すべてのメッセージが完全に削除されます。",
+    "establishingE2e": "安全な接続を確立中…"
   },
   "loginStages": {
     "authenticating": "認証中...",

@@ -1038,7 +1038,10 @@
     "callEnded": "Cuộc gọi kết thúc",
     "callFailed": "Cuộc gọi thất bại",
     "callRejected": "Cuộc gọi bị từ chối",
-    "callBusy": "Người dùng đang bận"
+    "callBusy": "Người dùng đang bận",
+    "endConversation": "Kết thúc",
+    "endConversationConfirm": "Kết thúc cuộc trò chuyện này? Tất cả tin nhắn sẽ bị xóa vĩnh viễn.",
+    "establishingE2e": "Đang thiết lập kết nối an toàn…"
   },
   "loginStages": {
     "authenticating": "ĐANG XÁC THỰC...",

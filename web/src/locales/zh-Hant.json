@@ -1009,7 +1009,7 @@
     "tempChat": "臨時對話",
     "guestLabel": "訪客 #{id}",
     "deleteTempChat": "刪除臨時對話",
-    "createLinkTitle": "建立臨時對話連結",
+    "createLinkTitle": "建立臨時對話",
     "createLinkDesc": "產生一次性連結，傳送給沒有此 App 的人即可開始臨時加密對話。連結僅能使用一次，對話限時 10 分鐘。",
     "creatingLink": "產生連結中…",
     "linkOneTimeNote": "此連結僅能點擊一次，請勿重複分享",
@@ -1038,7 +1038,10 @@
     "callEnded": "通話結束",
     "callFailed": "通話失敗",
     "callRejected": "通話被拒絕",
-    "callBusy": "對方忙碌中"
+    "callBusy": "對方忙碌中",
+    "endConversation": "結束對話",
+    "endConversationConfirm": "確定結束此對話？所有訊息將永久刪除。",
+    "establishingE2e": "正在建立安全連線…"
   },
   "loginStages": {
     "authenticating": "驗證中...",

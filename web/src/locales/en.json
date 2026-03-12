@@ -1038,7 +1038,10 @@
     "callEnded": "Call ended",
     "callFailed": "Call failed",
     "callRejected": "Call declined",
-    "callBusy": "User is busy"
+    "callBusy": "User is busy",
+    "endConversation": "End",
+    "endConversationConfirm": "End this conversation? All messages will be permanently deleted.",
+    "establishingE2e": "Establishing secure connection…"
   },
   "loginStages": {
     "authenticating": "AUTHENTICATING...",

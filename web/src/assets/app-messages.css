@@ -1829,3 +1829,18 @@
 
 .eph-conv-extend-btn.visible { display: inline-block; }
 .eph-conv-extend-btn:active { transform: translateY(1px); }
+
+.eph-conv-end-btn {
+  margin-left: auto;
+  padding: 4px 14px;
+  border: 1px solid rgba(239,68,68,0.4);
+  border-radius: 16px;
+  background: rgba(239,68,68,0.1);
+  color: #ef4444;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .2s;
+}
+.eph-conv-end-btn:hover { background: rgba(239,68,68,0.2); }
+.eph-conv-end-btn:active { transform: translateY(1px); background: rgba(239,68,68,0.3); }

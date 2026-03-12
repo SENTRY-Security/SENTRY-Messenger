@@ -1038,7 +1038,10 @@
     "callEnded": "通话结束",
     "callFailed": "通话失败",
     "callRejected": "通话被拒绝",
-    "callBusy": "对方忙碌中"
+    "callBusy": "对方忙碌中",
+    "endConversation": "结束对话",
+    "endConversationConfirm": "确定结束此对话？所有消息将永久删除。",
+    "establishingE2e": "正在建立安全连接…"
   },
   "loginStages": {
     "authenticating": "验证中...",

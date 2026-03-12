@@ -1038,7 +1038,10 @@
     "callEnded": "สิ้นสุดการโทร",
     "callFailed": "การโทรล้มเหลว",
     "callRejected": "การโทรถูกปฏิเสธ",
-    "callBusy": "สายไม่ว่าง"
+    "callBusy": "สายไม่ว่าง",
+    "endConversation": "จบการสนทนา",
+    "endConversationConfirm": "ต้องการจบการสนทนานี้หรือไม่? ข้อความทั้งหมดจะถูกลบอย่างถาวร",
+    "establishingE2e": "กำลังสร้างการเชื่อมต่อที่ปลอดภัย…"
   },
   "loginStages": {
     "authenticating": "กำลังยืนยันตัวตน...",

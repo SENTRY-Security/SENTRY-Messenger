@@ -572,7 +572,8 @@ export class ComposerController extends BaseController {
         const ts = Date.now();
 
         // Append outgoing bubble immediately
-        this.deps.appendLocalOutgoingMessage?.({ text, ts, id: crypto.randomUUID() });
+        const msgId = crypto.randomUUID();
+        const localMsg = this.deps.appendLocalOutgoingMessage?.({ text, ts, id: msgId });
 
         if (this.elements.input) {
             this.elements.input.value = '';
@@ -581,9 +582,25 @@ export class ComposerController extends BaseController {
 
         try {
             await ephCtrl.sendEncryptedMessage(session.session_id, text);
+            // Mark as sent (ephemeral has no server ACK — WS send is fire-and-forget)
+            if (localMsg) {
+                localMsg.status = 'sent';
+                localMsg.pending = false;
+            }
+            upsertTimelineEntry(state.conversationId, {
+                messageId: msgId,
+                status: 'sent',
+                pending: false,
+                error: null
+            });
             this.deps.updateMessagesUI?.({ preserveScroll: true });
         } catch (err) {
             this.setMessagesStatus(t('messages.sendFailed') + '：' + (err?.message || err), true);
+            if (localMsg) {
+                localMsg.status = 'failed';
+                localMsg.pending = false;
+            }
+            this.deps.updateMessagesUI?.({ preserveScroll: true });
         } finally {
             if (this.elements.sendBtn) this.elements.sendBtn.disabled = false;
         }
