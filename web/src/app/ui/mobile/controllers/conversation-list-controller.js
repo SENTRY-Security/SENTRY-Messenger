@@ -828,7 +828,7 @@ export class ConversationListController extends BaseController {
             li.className = 'conversation-item disabled';
             li.innerHTML = `<div class="conversation-empty">${t('messages.noMessages')}</div>`;
             this.elements.conversationList.appendChild(li);
-            return;
+            // Don't return — ephemeral items still need to render below
         }
 
         for (const thread of threadEntries) {

@@ -666,7 +666,7 @@ export function createWsIntegration({ deps }) {
     // ── Ephemeral chat events ──
     if (type === 'ephemeral_session_started' || type === 'ephemeral-extended' || type === 'ephemeral-deleted'
         || type === 'ephemeral-message' || type === 'ephemeral-key-exchange' || type === 'ephemeral-key-exchange-ack'
-        || type.startsWith('ephemeral-call-')) {
+        || type === 'ephemeral-guest-leave' || type.startsWith('ephemeral-call-')) {
       const mp = getMessagesPane();
       console.log('[ws] ephemeral event received:', type, msg?.sessionId?.slice(0, 8) || '',
         'controller:', !!mp?.ephemeralController);

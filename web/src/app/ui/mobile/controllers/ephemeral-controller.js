@@ -102,9 +102,16 @@ export class EphemeralController extends BaseController {
     }
 
     const sessions = data?.sessions || [];
+    // Preserve client-only fields (e.g. guest_nickname) across server reloads
+    const preserved = new Map();
+    for (const [id, s] of this.ephemeralSessions) {
+      if (s.guest_nickname) preserved.set(id, { guest_nickname: s.guest_nickname });
+    }
     // Only clear AFTER successful fetch — never lose WS-sourced sessions on API failure
     this.ephemeralSessions.clear();
     for (const s of sessions) {
+      const prev = preserved.get(s.session_id);
+      if (prev?.guest_nickname) s.guest_nickname = prev.guest_nickname;
       this.ephemeralSessions.set(s.session_id, s);
       // Populate sessionTokenMap from server data (covers missed WS notifications)
       if (s.invite_token && !this._sessionTokenMap.has(s.session_id)) {
@@ -933,6 +940,20 @@ export class EphemeralController extends BaseController {
         this._drStates.delete(msg.sessionId);
         this._sessionTokenMap.delete(msg.sessionId);
         if (delToken) this._pendingInviteKeys.delete(delToken);
+        _persistMap(STORAGE_KEY_INVITE_KEYS, this._pendingInviteKeys);
+        _persistMap(STORAGE_KEY_SESSION_TOKEN_MAP, this._sessionTokenMap);
+        this._requestListRender();
+        this._refreshModalIfOpen();
+        this.hideConvTimerBar();
+        return true;
+      }
+      case 'ephemeral-guest-leave': {
+        // Guest ended the conversation — clean up just like ephemeral-deleted
+        const glToken = this._sessionTokenMap.get(msg.sessionId);
+        this.ephemeralSessions.delete(msg.sessionId);
+        this._drStates.delete(msg.sessionId);
+        this._sessionTokenMap.delete(msg.sessionId);
+        if (glToken) this._pendingInviteKeys.delete(glToken);
         _persistMap(STORAGE_KEY_INVITE_KEYS, this._pendingInviteKeys);
         _persistMap(STORAGE_KEY_SESSION_TOKEN_MAP, this._sessionTokenMap);
         this._requestListRender();
