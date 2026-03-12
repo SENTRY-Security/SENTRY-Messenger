@@ -185,6 +185,62 @@
     .call-ctrl-btn.cam-toggle { background: rgba(255,255,255,0.1); color: var(--fg); border: 1px solid rgba(148,163,184,0.3); }
     .call-ctrl-btn.cam-toggle.active { background: rgba(245,158,11,0.2); color: var(--amber); border-color: var(--amber); }
 
+    /* Nickname logo with flame ring */
+    .eph-nickname-logo-wrap {
+      position: relative;
+      width: 56px;
+      height: 56px;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      background: radial-gradient(circle at 50% 60%, rgba(239,68,68,0.25) 0%, rgba(220,38,38,0.10) 60%, transparent 80%);
+    }
+    .eph-nickname-flame-ring {
+      position: absolute;
+      inset: -3px;
+      border-radius: 50%;
+      background: conic-gradient(
+        from 0deg,
+        rgba(239,68,68,0.0) 0%,
+        rgba(239,68,68,0.5) 15%,
+        rgba(249,115,22,0.6) 30%,
+        rgba(234,179,8,0.4) 45%,
+        rgba(239,68,68,0.0) 55%,
+        rgba(220,38,38,0.5) 70%,
+        rgba(249,115,22,0.4) 85%,
+        rgba(239,68,68,0.0) 100%
+      );
+      animation: eph-avatar-flame-spin 3s linear infinite;
+      mask: radial-gradient(circle, transparent 58%, black 60%);
+      -webkit-mask: radial-gradient(circle, transparent 58%, black 60%);
+    }
+    .eph-nickname-logo-wrap::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      box-shadow: 0 0 0 2px rgba(239,68,68,0.35), 0 0 8px rgba(239,68,68,0.15);
+      animation: eph-nickname-flame-border 2s ease-in-out infinite;
+    }
+    .eph-nickname-logo-icon {
+      width: 30px;
+      height: 30px;
+      background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Cpath fill='%23ef4444' d='M7.24,24.01v11.3l12,8.08-1.23-11.99s-3.03-1.09-4.77-2.18-1.78-2.87-1.78-2.87l-4.22-2.33Z'/%3E%3Cpath fill='%23ef4444' d='M40.7,21.2L15.97,14.48v-.76l8.03-2.18,16.71,4.54,.06-6.92L24.01,4.61v.02s-.02-.02-.02-.02L7.24,9.16h0s0,.01,0,.01v9.88h.09s14.75,4.02,14.75,4.02h0v11.76l1.98,1.44,1.93-1.44v-6.09l10.79-3.69-.34,1.92c-.17,.62-.59,1.56-1.67,2.24-1.75,1.1-4.77,2.18-4.77,2.18l-1.23,11.99,12-8.08v-11.3l-.04,.02-.03-2.84Z'/%3E%3C/svg%3E") no-repeat center / contain;
+      position: relative;
+      z-index: 1;
+      filter: drop-shadow(0 0 4px rgba(239,68,68,0.6));
+    }
+    @keyframes eph-avatar-flame-spin {
+      from { transform: rotate(0deg); }
+      to   { transform: rotate(360deg); }
+    }
+    @keyframes eph-nickname-flame-border {
+      0%, 100% { box-shadow: 0 0 0 2px rgba(239,68,68,0.35), 0 0 8px rgba(239,68,68,0.15); }
+      50%      { box-shadow: 0 0 0 2px rgba(249,115,22,0.5), 0 0 14px rgba(239,68,68,0.3); }
+    }
+
     /* Nickname input */
     #ephNickname { position: fixed; inset: 0; z-index: 100; background: #050a14; display: flex; align-items: center; justify-content: center; }
     #ephNickname.active { display: flex; animation: eph-fade-in .4s ease; }
@@ -251,7 +307,10 @@
   <div id="ephNickname" style="display:none">
     <div class="eph-particles" id="ephNicknameParticles"></div>
     <div class="eph-nickname-card">
-      <img class="splash-logo" src="/assets/images/logo.svg" alt="" style="width:48px;height:48px;margin-bottom:12px" />
+      <div class="eph-nickname-logo-wrap">
+        <div class="eph-nickname-flame-ring"></div>
+        <div class="eph-nickname-logo-icon"></div>
+      </div>
       <div class="eph-nickname-title" data-i18n="ephemeral.nicknameTitle">Enter your display name</div>
       <div class="eph-nickname-desc" data-i18n="ephemeral.nicknameDesc">Choose a temporary name for this conversation</div>
       <input type="text" id="ephNicknameInput" class="eph-nickname-input" maxlength="20" autocomplete="off" autocorrect="off" spellcheck="false" data-i18n-placeholder="ephemeral.nicknamePlaceholder" placeholder="Your name…" />
