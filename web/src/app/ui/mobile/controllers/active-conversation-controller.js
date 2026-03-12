@@ -159,6 +159,10 @@ export class ActiveConversationController extends BaseController {
             return;
         }
 
+        // Clear ephemeral avatar styling (re-applied by _openEphemeralConversation if needed)
+        document.getElementById('messagesList')?.classList.remove('ephemeral-active');
+        this.deps.controllers?.ephemeral?.hideConvTimerBar?.();
+
         // Save draft for the conversation we're leaving
         this.deps.controllers?.composer?.saveDraft();
 
