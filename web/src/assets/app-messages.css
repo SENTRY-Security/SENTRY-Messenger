@@ -1844,8 +1844,9 @@
   left: 0;
   height: 100%;
   border-radius: 4px 0 0 4px;
-  background: rgba(148,163,184,0.18);
+  background: #334155;
   transition: width 1s linear;
+  z-index: 1;
 }
 
 .eph-conv-progress-fire {
