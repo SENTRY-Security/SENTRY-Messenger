@@ -555,8 +555,9 @@ export class EphemeralController extends BaseController {
   // ── Open ephemeral conversation ──
   _openEphemeralConversation(session) {
     // Use the existing setActiveConversation mechanism
-    // The guest_digest serves as the "peer" for the owner
-    const peerKey = session.guest_digest;
+    // Must include both digest and device_id (format: "digest::deviceId")
+    // otherwise normalizePeerIdentity returns null → "invalid contact"
+    const peerKey = `${session.guest_digest}::${session.guest_device_id}`;
     this.deps.setActiveConversation?.(peerKey, session.conversation_id, null);
     // Show timer bar in messages thread
     this._showConvTimerBar(session);
