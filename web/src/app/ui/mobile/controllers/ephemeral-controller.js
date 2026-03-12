@@ -653,8 +653,9 @@ export class EphemeralController extends BaseController {
     // otherwise normalizePeerIdentity returns null → "invalid contact"
     const peerKey = `${session.guest_digest}::${session.guest_device_id}`;
     this.deps.setActiveConversation?.(peerKey, session.conversation_id, null);
-    // Mark messages list as ephemeral for avatar styling
+    // Mark messages list + header avatar as ephemeral for styling
     document.getElementById('messagesList')?.classList.add('ephemeral-active');
+    document.getElementById('messagesPeerAvatar')?.classList.add('ephemeral-active');
     // Show timer bar in messages thread
     this._showConvTimerBar(session);
     // Update header name to show guest nickname
@@ -720,6 +721,7 @@ export class EphemeralController extends BaseController {
     const timerBar = document.getElementById('ephConvTimerBar');
     if (timerBar) timerBar.style.display = 'none';
     document.getElementById('messagesList')?.classList.remove('ephemeral-active');
+    document.getElementById('messagesPeerAvatar')?.classList.remove('ephemeral-active');
   }
 
   /**

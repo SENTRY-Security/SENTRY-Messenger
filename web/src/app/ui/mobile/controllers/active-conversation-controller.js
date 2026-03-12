@@ -161,6 +161,7 @@ export class ActiveConversationController extends BaseController {
 
         // Clear ephemeral avatar styling (re-applied by _openEphemeralConversation if needed)
         document.getElementById('messagesList')?.classList.remove('ephemeral-active');
+        document.getElementById('messagesPeerAvatar')?.classList.remove('ephemeral-active');
         this.deps.controllers?.ephemeral?.hideConvTimerBar?.();
 
         // Save draft for the conversation we're leaving
