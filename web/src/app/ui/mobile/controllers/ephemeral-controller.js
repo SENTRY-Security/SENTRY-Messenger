@@ -630,18 +630,17 @@ export class EphemeralController extends BaseController {
       timerBar.id = 'ephConvTimerBar';
       timerBar.className = 'eph-conv-timer-bar';
       timerBar.innerHTML = `
-        <div class="eph-conv-timer-top">
-          <span id="ephConvTimerClock" class="eph-conv-timer-clock" data-session-id="">--:--</span>
-          <div class="eph-conv-timer-actions">
-            <button id="ephConvExtendBtn" class="eph-conv-extend-btn">${escapeHtml(t('ephemeral.extendTime'))}</button>
-            <button id="ephConvVoiceCallBtn" class="eph-conv-call-btn" title="${escapeHtml(t('calls.voiceCall') || 'Voice Call')}"><i class='bx bx-phone'></i></button>
-            <button id="ephConvVideoCallBtn" class="eph-conv-call-btn" title="${escapeHtml(t('calls.videoCall') || 'Video Call')}"><i class='bx bx-video'></i></button>
-            <button id="ephConvEndBtn" class="eph-conv-end-btn">${escapeHtml(t('ephemeral.endConversation'))}</button>
-          </div>
-        </div>
+        <div id="ephConvTimerClock" class="eph-conv-timer-clock" data-session-id="">--:--</div>
         <div class="eph-conv-progress-wrap">
           <div id="ephConvProgressFill" class="eph-conv-progress-fill" style="width:100%"></div>
           <div id="ephConvProgressFire" class="eph-conv-progress-fire" style="left:100%">🔥<span class="fire-glow"></span></div>
+        </div>
+        <div class="eph-conv-timer-label">${escapeHtml(t('ephemeral.timerLabel'))}</div>
+        <div class="eph-conv-timer-actions">
+          <button id="ephConvExtendBtn" class="eph-conv-extend-btn">${escapeHtml(t('ephemeral.extendTime'))}</button>
+          <button id="ephConvVoiceCallBtn" class="eph-conv-call-btn" title="${escapeHtml(t('calls.voiceCall') || 'Voice Call')}"><i class='bx bx-phone'></i></button>
+          <button id="ephConvVideoCallBtn" class="eph-conv-call-btn" title="${escapeHtml(t('calls.videoCall') || 'Video Call')}"><i class='bx bx-video'></i></button>
+          <button id="ephConvEndBtn" class="eph-conv-end-btn">${escapeHtml(t('ephemeral.endConversation'))}</button>
         </div>
       `;
       // Insert after messages-header
