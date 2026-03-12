@@ -669,21 +669,12 @@ export function createWsIntegration({ deps }) {
       const mp = getMessagesPane();
       const handled = mp?.ephemeralController?.handleWsMessage?.(msg);
       if (type === 'ephemeral-message' && msg?.conversationId) {
-        // Decrypt the encrypted message, then render in the active conversation
+        // Decrypt and render directly via ephemeral controller.
+        // Cannot use handleIncomingSecureMessage — it requires targetDeviceId/senderDeviceId
+        // which ephemeral WS relay messages don't carry.
         const ctrl = mp?.ephemeralController;
         if (ctrl && msg.header && msg.ciphertext_b64) {
-          // E2EE path: decrypt then render
-          ctrl.decryptIncomingMessage(msg).then(result => {
-            if (result) {
-              mp?.handleIncomingSecureMessage?.({
-                type: 'ephemeral-message',
-                conversationId: msg.conversationId,
-                text: result.text,
-                ts: result.ts,
-                senderAccountDigest: msg.senderDigest || msg.fromDigest || ''
-              });
-            }
-          }).catch(err => {
+          ctrl.decryptAndRender(msg).catch(err => {
             console.warn('[ws] ephemeral decrypt failed', err?.message);
           });
         }

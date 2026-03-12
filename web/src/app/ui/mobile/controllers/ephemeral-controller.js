@@ -16,6 +16,7 @@ import { generateInitialBundle } from '../../../../shared/crypto/prekeys.js';
 import { x3dhRespond, drEncryptText, drDecryptText } from '../../../../shared/crypto/dr.js';
 import { loadNacl } from '../../../../shared/crypto/nacl.js';
 import { saveSettings, DEFAULT_SETTINGS } from '../../../features/settings.js';
+import { appendUserMessage } from '../../../features/timeline-store.js';
 
 const EPHEMERAL_TTL_SEC = 600; // 10 minutes
 const STORAGE_KEY_INVITE_KEYS = '__eph_pending_invite_keys';
@@ -677,6 +678,32 @@ export class EphemeralController extends BaseController {
     return { text: plaintext, ts: msg.ts };
   }
 
+  /**
+   * Decrypt an incoming ephemeral message and render it in the timeline.
+   * This bypasses the regular handleIncomingSecureMessage path which
+   * requires targetDeviceId/senderDeviceId (not present in ephemeral WS relay).
+   */
+  async decryptAndRender(msg) {
+    const result = await this.decryptIncomingMessage(msg);
+    if (!result) return;
+
+    const messageId = crypto.randomUUID();
+    appendUserMessage(msg.conversationId, {
+      id: messageId,
+      messageId,
+      text: result.text,
+      ts: result.ts || Date.now(),
+      direction: 'incoming',
+      senderDigest: msg.senderDigest || msg.fromDigest || '',
+      msgType: 'text',
+      status: 'received',
+      decrypted: true
+    });
+
+    this.deps.updateMessagesUI?.({ preserveScroll: true });
+    this.deps.scrollMessagesToBottomSoon?.();
+  }
+
   // ── Delete ──
   async _deleteSession(sessionId) {
     try {
@@ -820,6 +847,8 @@ export class EphemeralController extends BaseController {
         targetAccountDigest: session.guest_digest
       });
       console.log('[Ephemeral] re-sent ack for', sessionId, 'sent:', sent);
+      // Ensure composer is enabled even on duplicate key-exchange
+      this.deps.updateComposerAvailability?.();
       return;
     }
 
@@ -857,6 +886,9 @@ export class EphemeralController extends BaseController {
     });
 
     console.log('[Ephemeral] E2EE session established for', sessionId, 'ack sent:', sent);
+
+    // Notify the UI that encryption is now ready (enables composer input)
+    this.deps.updateComposerAvailability?.();
   }
 
   // ── Helpers ──
