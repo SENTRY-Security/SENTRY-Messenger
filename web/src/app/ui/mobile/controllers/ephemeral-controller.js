@@ -1100,6 +1100,8 @@ export class EphemeralController extends BaseController {
         return true;
       }
       case 'ephemeral-deleted': {
+        const delSession = this.ephemeralSessions.get(msg.sessionId);
+        const delConvId = delSession?.conversation_id || msg.conversationId;
         const delToken = this._sessionTokenMap.get(msg.sessionId);
         this.ephemeralSessions.delete(msg.sessionId);
         this._drStates.delete(msg.sessionId);
@@ -1110,10 +1112,20 @@ export class EphemeralController extends BaseController {
         this._requestListRender();
         this._refreshModalIfOpen();
         this.hideConvTimerBar();
+        // If currently viewing this conversation, navigate back to list
+        const delState = this.deps.getMessageState?.() || {};
+        if (delConvId && delState.conversationId === delConvId) {
+          delState.activePeerDigest = null;
+          delState.conversationId = null;
+          delState.viewMode = 'list';
+          this.deps.applyMessagesLayout?.();
+        }
         return true;
       }
       case 'ephemeral-guest-leave': {
         // Guest ended the conversation — clean up just like ephemeral-deleted
+        const glSession = this.ephemeralSessions.get(msg.sessionId);
+        const glConvId = glSession?.conversation_id || msg.conversationId;
         const glToken = this._sessionTokenMap.get(msg.sessionId);
         this.ephemeralSessions.delete(msg.sessionId);
         this._drStates.delete(msg.sessionId);
@@ -1124,6 +1136,14 @@ export class EphemeralController extends BaseController {
         this._requestListRender();
         this._refreshModalIfOpen();
         this.hideConvTimerBar();
+        // If owner is currently viewing this ephemeral conversation, navigate back to list
+        const glState = this.deps.getMessageState?.() || {};
+        if (glConvId && glState.conversationId === glConvId) {
+          glState.activePeerDigest = null;
+          glState.conversationId = null;
+          glState.viewMode = 'list';
+          this.deps.applyMessagesLayout?.();
+        }
         return true;
       }
       case 'ephemeral-peer-reconnected': {
