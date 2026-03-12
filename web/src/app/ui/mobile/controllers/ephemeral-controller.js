@@ -635,8 +635,6 @@ export class EphemeralController extends BaseController {
         <div class="eph-conv-timer-label">${escapeHtml(t('ephemeral.timerLabel'))}</div>
         <div class="eph-conv-timer-actions">
           <button id="ephConvExtendBtn" class="eph-conv-extend-btn">${escapeHtml(t('ephemeral.extendTime'))}</button>
-          <button id="ephConvVoiceCallBtn" class="eph-conv-call-btn" title="${escapeHtml(t('calls.voiceCall') || 'Voice Call')}"><i class='bx bx-phone'></i></button>
-          <button id="ephConvVideoCallBtn" class="eph-conv-call-btn" title="${escapeHtml(t('calls.videoCall') || 'Video Call')}"><i class='bx bx-video'></i></button>
           <button id="ephConvEndBtn" class="eph-conv-end-btn">${escapeHtml(t('ephemeral.endConversation'))}</button>
         </div>
       `;
@@ -644,6 +642,23 @@ export class EphemeralController extends BaseController {
       const header = document.querySelector('.messages-header');
       if (header && header.parentNode) {
         header.parentNode.insertBefore(timerBar, header.nextSibling);
+      }
+
+      // Inject call buttons into messages-header actions area
+      const actionsArea = header?.querySelector('.messages-actions');
+      if (actionsArea) {
+        const voiceBtn = document.createElement('button');
+        voiceBtn.id = 'ephConvVoiceCallBtn';
+        voiceBtn.className = 'messages-action-btn';
+        voiceBtn.title = t('calls.voiceCall') || 'Voice Call';
+        voiceBtn.innerHTML = '<i class="bx bx-phone"></i>';
+        const videoBtn = document.createElement('button');
+        videoBtn.id = 'ephConvVideoCallBtn';
+        videoBtn.className = 'messages-action-btn';
+        videoBtn.title = t('calls.videoCall') || 'Video Call';
+        videoBtn.innerHTML = '<i class="bx bx-video"></i>';
+        actionsArea.prepend(videoBtn);
+        actionsArea.prepend(voiceBtn);
       }
 
       // Bind extend button
@@ -685,6 +700,8 @@ export class EphemeralController extends BaseController {
   hideConvTimerBar() {
     const timerBar = document.getElementById('ephConvTimerBar');
     if (timerBar) timerBar.style.display = 'none';
+    document.getElementById('ephConvVoiceCallBtn')?.remove();
+    document.getElementById('ephConvVideoCallBtn')?.remove();
   }
 
   /**
