@@ -385,7 +385,7 @@ function handleWsMessage(msg) {
       break;
     case 'ephemeral-deleted':
       if (msg.sessionId === sessionState.session_id || msg.conversationId === sessionState.conversation_id) {
-        destroyChat();
+        destroyChat({ reason: 'owner-terminated' });
       }
       break;
     case 'call-answer':
@@ -625,13 +625,20 @@ if (voiceCallBtn) voiceCallBtn.addEventListener('click', () => handleCall('voice
 if (videoCallBtn) videoCallBtn.addEventListener('click', () => handleCall('video'));
 
 // ── Destroy ──
-function destroyChat() {
+function destroyChat({ reason } = {}) {
   if (destroyed) return;
   destroyed = true;
   cancelKeyExchangeRetry();
   if (timerInterval) clearInterval(timerInterval);
   if (ws) { try { ws.close(); } catch {} }
   chatUI.style.display = 'none';
+  // Show termination reason if owner terminated the session
+  if (reason === 'owner-terminated') {
+    const titleEl = destroyedEl.querySelector('.destroy-title');
+    const subEl = destroyedEl.querySelector('.destroy-sub');
+    if (titleEl) titleEl.textContent = _t('ephemeral.terminatedTitle');
+    if (subEl) subEl.textContent = _t('ephemeral.terminatedSub');
+  }
   destroyedEl.classList.add('active');
   // Clear all state including crypto
   sessionState = null;

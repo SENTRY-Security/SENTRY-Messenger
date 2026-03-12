@@ -1004,6 +1004,8 @@
     "footerWarning": "임시 대화 · 페이지를 닫거나 카운트다운이 끝나면 모든 내용이 영구 삭제됩니다",
     "destroyedTitle": "대화가 삭제되었습니다",
     "destroyedSub": "모든 메시지가 영구적으로 삭제되었습니다",
+    "terminatedTitle": "대화가 종료되었습니다",
+    "terminatedSub": "상대방이 이 대화를 종료했습니다",
     "tempChat": "임시 대화",
     "guestLabel": "게스트 #{id}",
     "deleteTempChat": "임시 대화 삭제",

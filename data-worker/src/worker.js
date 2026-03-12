@@ -2620,6 +2620,16 @@ async function deleteEphemeralSession(env, session) {
     });
   } catch { /* best-effort */ }
 
+  // Notify guest (EPHEMERAL_ digest DO)
+  try {
+    await notifyEphemeralDO(env, session.guest_digest, {
+      type: 'ephemeral-deleted',
+      sessionId: session.session_id,
+      conversationId: session.conversation_id,
+      ts: Date.now()
+    });
+  } catch { /* best-effort */ }
+
   return json({ ok: true, deleted: session.session_id });
 }
 
@@ -6396,6 +6406,27 @@ async function notifyAccountDO(env, accountDigest, payload) {
     }
   } catch (err) {
     console.warn('[notify-do] error', { type: payload?.type, accountDigest: digest, error: err?.message || String(err) });
+  }
+}
+
+/** Notify an ephemeral guest DO (EPHEMERAL_ prefixed digest). */
+async function notifyEphemeralDO(env, ephemeralDigest, payload) {
+  if (!env.ACCOUNT_WS) return;
+  const digest = String(ephemeralDigest || '');
+  if (!digest.startsWith('EPHEMERAL_')) return;
+  try {
+    const doId = env.ACCOUNT_WS.idFromName(digest);
+    const stub = env.ACCOUNT_WS.get(doId);
+    const res = await stub.fetch('https://do/notify', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      console.warn('[notify-eph-do] failed', { status: res.status, type: payload?.type });
+    }
+  } catch (err) {
+    console.warn('[notify-eph-do] error', { type: payload?.type, error: err?.message || String(err) });
   }
 }
 

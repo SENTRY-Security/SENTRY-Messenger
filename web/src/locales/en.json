@@ -1004,6 +1004,8 @@
     "footerWarning": "Temporary conversation — all content will be permanently deleted when you close this page or the countdown ends",
     "destroyedTitle": "Conversation Destroyed",
     "destroyedSub": "All messages have been permanently erased",
+    "terminatedTitle": "Conversation Terminated",
+    "terminatedSub": "The conversation has been terminated by the other party",
     "tempChat": "Temp Chat",
     "guestLabel": "Guest #{id}",
     "deleteTempChat": "Delete temporary conversation",

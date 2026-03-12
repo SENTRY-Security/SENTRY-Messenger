@@ -1004,6 +1004,8 @@
     "footerWarning": "一時的な会話 · ページを閉じるかカウントダウン終了後、すべての内容が永久に削除されます",
     "destroyedTitle": "会話が破棄されました",
     "destroyedSub": "すべてのメッセージが完全に消去されました",
+    "terminatedTitle": "会話が終了されました",
+    "terminatedSub": "相手がこの会話を終了しました",
     "tempChat": "一時チャット",
     "guestLabel": "ゲスト #{id}",
     "deleteTempChat": "一時的な会話を削除",

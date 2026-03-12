@@ -1004,6 +1004,8 @@
     "footerWarning": "Trò chuyện tạm thời · Tất cả nội dung sẽ bị xóa vĩnh viễn khi bạn đóng trang hoặc khi đếm ngược kết thúc",
     "destroyedTitle": "Cuộc trò chuyện đã bị hủy",
     "destroyedSub": "Tất cả tin nhắn đã bị xóa vĩnh viễn",
+    "terminatedTitle": "Cuộc trò chuyện đã bị chấm dứt",
+    "terminatedSub": "Đối phương đã chấm dứt cuộc trò chuyện này",
     "tempChat": "Chat tạm thời",
     "guestLabel": "Khách #{id}",
     "deleteTempChat": "Xóa cuộc trò chuyện tạm thời",

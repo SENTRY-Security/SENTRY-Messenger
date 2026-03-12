@@ -1004,6 +1004,8 @@
     "footerWarning": "临时对话 · 关闭页面或倒计时结束后所有内容将永久删除",
     "destroyedTitle": "对话已销毁",
     "destroyedSub": "所有消息已永久清除",
+    "terminatedTitle": "对话已被终止",
+    "terminatedSub": "对方已终止此对话",
     "tempChat": "临时对话",
     "guestLabel": "访客 #{id}",
     "deleteTempChat": "删除临时对话",
