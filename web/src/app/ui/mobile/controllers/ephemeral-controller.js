@@ -512,14 +512,30 @@ export class EphemeralController extends BaseController {
   _updateConvTimer(session, remaining) {
     const convTimerEl = document.getElementById('ephConvTimerClock');
     const extendBtnEl = document.getElementById('ephConvExtendBtn');
+    const fillEl = document.getElementById('ephConvProgressFill');
+    const fireEl = document.getElementById('ephConvProgressFire');
     if (!convTimerEl) return;
     if (convTimerEl.dataset.sessionId !== session.session_id) return;
 
     const min = Math.floor(remaining / 60);
     const sec = remaining % 60;
     convTimerEl.textContent = `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
-    const cls = remaining > 300 ? '' : remaining > 120 ? 'yellow' : 'red';
-    convTimerEl.className = 'eph-conv-timer-clock' + (cls ? ' ' + cls : '');
+
+    // Calculate progress percentage
+    const now = Math.floor(Date.now() / 1000);
+    const totalDuration = (session.created_at && session.expires_at)
+      ? (session.expires_at - session.created_at) : 600;
+    const pct = Math.max(0, Math.min(100, (remaining / totalDuration) * 100));
+    const colorCls = pct > 50 ? '' : pct > 20 ? 'yellow' : 'red';
+
+    convTimerEl.className = 'eph-conv-timer-clock' + (colorCls === 'red' ? ' red' : '');
+    if (fillEl) {
+      fillEl.style.width = pct + '%';
+      fillEl.className = 'eph-conv-progress-fill' + (colorCls ? ' ' + colorCls : '');
+    }
+    if (fireEl) {
+      fireEl.style.left = pct + '%';
+    }
     if (extendBtnEl) {
       if (remaining <= 300) extendBtnEl.classList.add('visible');
       else extendBtnEl.classList.remove('visible');
@@ -614,11 +630,19 @@ export class EphemeralController extends BaseController {
       timerBar.id = 'ephConvTimerBar';
       timerBar.className = 'eph-conv-timer-bar';
       timerBar.innerHTML = `
-        <span id="ephConvTimerClock" class="eph-conv-timer-clock" data-session-id="">--:--</span>
-        <button id="ephConvExtendBtn" class="eph-conv-extend-btn">${escapeHtml(t('ephemeral.extendTime'))}</button>
-        <button id="ephConvVoiceCallBtn" class="eph-conv-call-btn" title="${escapeHtml(t('calls.voiceCall') || 'Voice Call')}"><i class='bx bx-phone'></i></button>
-        <button id="ephConvVideoCallBtn" class="eph-conv-call-btn" title="${escapeHtml(t('calls.videoCall') || 'Video Call')}"><i class='bx bx-video'></i></button>
-        <button id="ephConvEndBtn" class="eph-conv-end-btn">${escapeHtml(t('ephemeral.endConversation'))}</button>
+        <div class="eph-conv-timer-top">
+          <span id="ephConvTimerClock" class="eph-conv-timer-clock" data-session-id="">--:--</span>
+          <div class="eph-conv-timer-actions">
+            <button id="ephConvExtendBtn" class="eph-conv-extend-btn">${escapeHtml(t('ephemeral.extendTime'))}</button>
+            <button id="ephConvVoiceCallBtn" class="eph-conv-call-btn" title="${escapeHtml(t('calls.voiceCall') || 'Voice Call')}"><i class='bx bx-phone'></i></button>
+            <button id="ephConvVideoCallBtn" class="eph-conv-call-btn" title="${escapeHtml(t('calls.videoCall') || 'Video Call')}"><i class='bx bx-video'></i></button>
+            <button id="ephConvEndBtn" class="eph-conv-end-btn">${escapeHtml(t('ephemeral.endConversation'))}</button>
+          </div>
+        </div>
+        <div class="eph-conv-progress-wrap">
+          <div id="ephConvProgressFill" class="eph-conv-progress-fill" style="width:100%"></div>
+          <div id="ephConvProgressFire" class="eph-conv-progress-fire" style="left:100%">🔥<span class="fire-glow"></span></div>
+        </div>
       `;
       // Insert after messages-header
       const header = document.querySelector('.messages-header');

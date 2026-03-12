@@ -33,9 +33,11 @@ const splashStatus = document.getElementById('ephSplashStatus');
 const splashError = document.getElementById('ephSplashError');
 const chatUI = document.getElementById('ephChat');
 const timerClock = document.getElementById('ephTimerClock');
-const timerGradient = document.getElementById('ephTimerGradient');
+const timerFill = document.getElementById('ephTimerFill');
+const timerFire = document.getElementById('ephTimerFire');
 const timerLabel = document.getElementById('ephTimerLabel');
 const extendBtn = document.getElementById('ephExtendBtn');
+let timerTotalDuration = 0; // captured at timer start
 const messagesEl = document.getElementById('ephMessages');
 const inputEl = document.getElementById('ephInput');
 const sendBtn = document.getElementById('ephSendBtn');
@@ -98,6 +100,9 @@ function hideSplash() {
 
 // ── Timer ──
 function startTimer() {
+  const now = Math.floor(Date.now() / 1000);
+  timerTotalDuration = sessionState.expires_at - now;
+  if (timerTotalDuration <= 0) timerTotalDuration = 600;
   updateTimer();
   timerInterval = setInterval(updateTimer, 1000);
 }
@@ -115,10 +120,18 @@ function updateTimer() {
   const sec = remaining % 60;
   timerClock.textContent = `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
 
-  // Color states
-  const cls = remaining > 300 ? '' : remaining > 120 ? 'yellow' : 'red';
-  timerClock.className = 'eph-timer-clock' + (cls ? ' ' + cls : '');
-  timerGradient.className = 'eph-timer-gradient' + (cls ? ' ' + cls : '');
+  // Progress bar: percentage of time remaining
+  const pct = Math.max(0, Math.min(100, (remaining / timerTotalDuration) * 100));
+  // Color: green >50%, yellow 20-50%, red <20%
+  const colorCls = pct > 50 ? '' : pct > 20 ? 'yellow' : 'red';
+  if (timerFill) {
+    timerFill.style.width = pct + '%';
+    timerFill.className = 'eph-timer-progress-fill' + (colorCls ? ' ' + colorCls : '');
+  }
+  if (timerFire) {
+    timerFire.style.left = pct + '%';
+  }
+  timerClock.className = 'eph-timer-clock' + (colorCls === 'red' ? ' red' : '');
 
   // Extend button visibility
   if (remaining <= 300) {
@@ -138,6 +151,9 @@ extendBtn?.addEventListener('click', async () => {
       guestDigest: sessionState.guest_digest
     });
     sessionState.expires_at = data.expires_at;
+    // Recalculate total duration so progress bar resets properly
+    const nowExt = Math.floor(Date.now() / 1000);
+    timerTotalDuration = sessionState.expires_at - nowExt;
     extendBtn.textContent = _t('ephemeral.extendTime');
     extendBtn.disabled = false;
     updateTimer();
@@ -415,6 +431,8 @@ function handleWsMessage(msg) {
     case 'ephemeral-extended':
       if (msg.sessionId === sessionState.session_id || msg.conversationId === sessionState.conversation_id) {
         sessionState.expires_at = msg.expiresAt;
+        const nowUpd = Math.floor(Date.now() / 1000);
+        timerTotalDuration = sessionState.expires_at - nowUpd;
         updateTimer();
         addSystemMessage(_t('ephemeral.extendedTenMin'));
       }
