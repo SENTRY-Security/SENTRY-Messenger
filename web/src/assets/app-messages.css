@@ -1249,6 +1249,13 @@
   letter-spacing: -0.4px;
   min-width: 14px;
   text-align: right;
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+}
+.message-status svg {
+  display: inline-block;
+  vertical-align: middle;
 }
 
 .message-status.read {

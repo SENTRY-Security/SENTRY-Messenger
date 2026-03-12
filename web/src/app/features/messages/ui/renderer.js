@@ -1019,6 +1019,10 @@ export class MessageRenderer {
 
 
             const RETRY_ICON = '<svg viewBox="0 0 24 24" fill="none" class="w-4 h-4" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>';
+            // Lucide-style SVG status icons (14×14, inline)
+            const ICON_CHECK = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+            const ICON_CHECK_CHECK = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 7 17l-5-5"/><path d="m22 10-9.17 9.17L11 17.34"/></svg>';
+            const ICON_CIRCLE_ALERT = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>';
 
             if (messageType !== 'call-log') {
                 const statusSpan = document.createElement('span');
@@ -1065,7 +1069,7 @@ export class MessageRenderer {
                         statusSpan.title = t('messages.networkSendFailed');
                     } else {
                         statusSpan.className = 'message-status failed';
-                        statusSpan.textContent = '!';
+                        statusSpan.innerHTML = ICON_CIRCLE_ALERT;
                         const failureTip = msg?.failureReason || msg?.failureCode || '';
                         if (failureTip) statusSpan.title = failureTip;
                     }
@@ -1086,10 +1090,10 @@ export class MessageRenderer {
 
                 } else if (delivered) {
                     statusSpan.className = 'message-status delivered';
-                    statusSpan.textContent = '✓✓';
+                    statusSpan.innerHTML = ICON_CHECK_CHECK;
                 } else {
                     statusSpan.className = 'message-status sent';
-                    statusSpan.textContent = '✓';
+                    statusSpan.innerHTML = ICON_CHECK;
                 }
                 metaRow.appendChild(statusSpan);
             }
