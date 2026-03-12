@@ -178,6 +178,11 @@ export function createControllerDeps(context) {
         // Swipe dependencies
         setupSwipe: context.setupSwipe,
         closeSwipe: context.closeSwipe,
-        closeOpenSwipe: context.closeOpenSwipe
+        closeOpenSwipe: context.closeOpenSwipe,
+        // WS send (used by ephemeral E2EE key-exchange ack)
+        wsSend: context.wsSend,
+        // Misc
+        ensureDeviceId: context.ensureDeviceId,
+        scrollMessagesToBottomSoon: context.scrollMessagesToBottomSoon
     };
 }
