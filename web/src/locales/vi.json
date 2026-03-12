@@ -1045,6 +1045,10 @@
     "nicknameTitle": "Nhập tên hiển thị",
     "nicknameDesc": "Chọn tên tạm thời cho cuộc trò chuyện này",
     "nicknamePlaceholder": "Tên của bạn…",
+    "quickAction": "Chat tạm",
+    "businessChat": "Doanh nghiệp",
+    "comingSoonTitle": "Đang phát triển",
+    "comingSoonDesc": "Tính năng chat doanh nghiệp chưa được mở. Hãy chờ đón!",
     "nicknameJoin": "Tham gia trò chuyện"
   },
   "loginStages": {

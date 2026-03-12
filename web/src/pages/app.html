@@ -559,11 +559,22 @@
             </div>
             <div id="groupDrafts" class="conversation-group-drafts" aria-live="polite" style="display:none"
               aria-hidden="true"></div>
-            <div class="conversation-ephemeral-actions">
-              <button id="btnCreateEphemeralLink" type="button" class="ephemeral-create-icon-btn" title="建立臨時對話連結" aria-label="建立臨時對話連結">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="3 2">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-                </svg>
+            <div class="conversation-quick-actions">
+              <button id="btnCreateEphemeralLink" type="button" class="quick-action-btn quick-action-ephemeral" aria-label="建立臨時對話連結">
+                <span class="quick-action-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="3 2">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                  </svg>
+                </span>
+                <span class="quick-action-label" data-i18n="ephemeral.quickAction">Temp Chat</span>
+              </button>
+              <button id="btnCreateBusinessChat" type="button" class="quick-action-btn quick-action-business" aria-label="建立商業對話">
+                <span class="quick-action-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/><line x1="12" y1="12" x2="12" y2="12.01"/>
+                  </svg>
+                </span>
+                <span class="quick-action-label" data-i18n="ephemeral.businessChat">Business</span>
               </button>
             </div>
             <ul id="conversationList" class="conversation-list"></ul>

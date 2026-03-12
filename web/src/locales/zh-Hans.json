@@ -1045,6 +1045,10 @@
     "nicknameTitle": "输入您的显示名称",
     "nicknameDesc": "为此对话选择一个临时名称",
     "nicknamePlaceholder": "您的名称…",
+    "quickAction": "临时对话",
+    "businessChat": "商业对话",
+    "comingSoonTitle": "功能开发中",
+    "comingSoonDesc": "商业对话功能尚未开放，敬请期待",
     "nicknameJoin": "加入对话"
   },
   "loginStages": {

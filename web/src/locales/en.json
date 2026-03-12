@@ -1045,6 +1045,10 @@
     "nicknameTitle": "Enter your display name",
     "nicknameDesc": "Choose a temporary name for this conversation",
     "nicknamePlaceholder": "Your name…",
+    "quickAction": "Temp Chat",
+    "businessChat": "Business",
+    "comingSoonTitle": "Coming Soon",
+    "comingSoonDesc": "Business chat is not yet available. Stay tuned!",
     "nicknameJoin": "Join conversation"
   },
   "loginStages": {

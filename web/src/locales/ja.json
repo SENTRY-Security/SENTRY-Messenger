@@ -1045,6 +1045,10 @@
     "nicknameTitle": "表示名を入力",
     "nicknameDesc": "この会話の一時的な名前を選択してください",
     "nicknamePlaceholder": "お名前…",
+    "quickAction": "一時チャット",
+    "businessChat": "ビジネス",
+    "comingSoonTitle": "開発中",
+    "comingSoonDesc": "ビジネスチャット機能は準備中です。お楽しみに！",
     "nicknameJoin": "会話に参加"
   },
   "loginStages": {

@@ -211,6 +211,32 @@ export class EphemeralController extends BaseController {
     const btn = document.getElementById('btnCreateEphemeralLink');
     if (!btn) return;
     btn.addEventListener('click', () => this._showCreateModal());
+
+    // Business chat button (coming soon)
+    const bizBtn = document.getElementById('btnCreateBusinessChat');
+    if (bizBtn) bizBtn.addEventListener('click', () => this._showComingSoonModal());
+  }
+
+  _showComingSoonModal() {
+    let modal = document.getElementById('comingSoonModal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'comingSoonModal';
+      modal.className = 'coming-soon-modal';
+      modal.innerHTML = `
+        <div class="coming-soon-backdrop"></div>
+        <div class="coming-soon-panel">
+          <div class="coming-soon-icon">🚧</div>
+          <div class="coming-soon-title">${escapeHtml(t('ephemeral.comingSoonTitle') || '功能開發中')}</div>
+          <div class="coming-soon-desc">${escapeHtml(t('ephemeral.comingSoonDesc') || '商業對話功能尚未開放，敬請期待')}</div>
+          <button class="coming-soon-ok">${escapeHtml(t('misc.ok') || 'OK')}</button>
+        </div>
+      `;
+      document.body.appendChild(modal);
+      modal.querySelector('.coming-soon-backdrop')?.addEventListener('click', () => modal.classList.remove('active'));
+      modal.querySelector('.coming-soon-ok')?.addEventListener('click', () => modal.classList.remove('active'));
+    }
+    modal.classList.add('active');
   }
 
   async _showCreateModal() {
@@ -644,23 +670,6 @@ export class EphemeralController extends BaseController {
         header.parentNode.insertBefore(timerBar, header.nextSibling);
       }
 
-      // Inject call buttons into messages-header actions area
-      const actionsArea = header?.querySelector('.messages-actions');
-      if (actionsArea) {
-        const voiceBtn = document.createElement('button');
-        voiceBtn.id = 'ephConvVoiceCallBtn';
-        voiceBtn.className = 'messages-action-btn';
-        voiceBtn.title = t('calls.voiceCall') || 'Voice Call';
-        voiceBtn.innerHTML = '<i class="bx bx-phone"></i>';
-        const videoBtn = document.createElement('button');
-        videoBtn.id = 'ephConvVideoCallBtn';
-        videoBtn.className = 'messages-action-btn';
-        videoBtn.title = t('calls.videoCall') || 'Video Call';
-        videoBtn.innerHTML = '<i class="bx bx-video"></i>';
-        actionsArea.prepend(videoBtn);
-        actionsArea.prepend(voiceBtn);
-      }
-
       // Bind extend button
       document.getElementById('ephConvExtendBtn')?.addEventListener('click', async () => {
         const sid = document.getElementById('ephConvTimerClock')?.dataset?.sessionId;
@@ -681,15 +690,6 @@ export class EphemeralController extends BaseController {
         this._showEndConfirmModal(sid);
       });
 
-      // Bind call buttons
-      document.getElementById('ephConvVoiceCallBtn')?.addEventListener('click', () => {
-        const sid = document.getElementById('ephConvTimerClock')?.dataset?.sessionId;
-        if (sid) this.initiateCall(sid, 'voice');
-      });
-      document.getElementById('ephConvVideoCallBtn')?.addEventListener('click', () => {
-        const sid = document.getElementById('ephConvTimerClock')?.dataset?.sessionId;
-        if (sid) this.initiateCall(sid, 'video');
-      });
     }
 
     const clockEl = document.getElementById('ephConvTimerClock');
@@ -700,8 +700,6 @@ export class EphemeralController extends BaseController {
   hideConvTimerBar() {
     const timerBar = document.getElementById('ephConvTimerBar');
     if (timerBar) timerBar.style.display = 'none';
-    document.getElementById('ephConvVoiceCallBtn')?.remove();
-    document.getElementById('ephConvVideoCallBtn')?.remove();
   }
 
   /**

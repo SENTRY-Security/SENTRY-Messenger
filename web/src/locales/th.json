@@ -1045,6 +1045,10 @@
     "nicknameTitle": "ใส่ชื่อที่แสดง",
     "nicknameDesc": "เลือกชื่อชั่วคราวสำหรับการสนทนานี้",
     "nicknamePlaceholder": "ชื่อของคุณ…",
+    "quickAction": "แชทชั่วคราว",
+    "businessChat": "ธุรกิจ",
+    "comingSoonTitle": "กำลังพัฒนา",
+    "comingSoonDesc": "ฟีเจอร์แชทธุรกิจยังไม่เปิดให้บริการ โปรดรอติดตาม!",
     "nicknameJoin": "เข้าร่วมการสนทนา"
   },
   "loginStages": {
