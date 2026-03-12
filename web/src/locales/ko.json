@@ -1050,7 +1050,9 @@
     "businessChat": "비즈니스",
     "comingSoonTitle": "개발 중",
     "comingSoonDesc": "비즈니스 채팅 기능은 아직 준비 중입니다. 기대해 주세요!",
-    "nicknameJoin": "대화 참여"
+    "nicknameJoin": "대화 참여",
+    "onlyImagesAllowed": "임시 채팅에서는 이미지만 전송할 수 있습니다",
+    "imageTooLarge": "이미지는 5 MB 이하여야 합니다"
   },
   "loginStages": {
     "authenticating": "인증 중...",

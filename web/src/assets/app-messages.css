@@ -628,6 +628,23 @@
   cursor: pointer;
 }
 
+/* ── Ephemeral inline image (DR-encrypted, no R2) ── */
+.eph-inline-image {
+  max-width: 240px;
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.eph-inline-image img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 320px;
+  object-fit: contain;
+  border-radius: 10px;
+}
+
 .message-bubble.message-placeholder {
   position: relative;
   overflow: hidden;

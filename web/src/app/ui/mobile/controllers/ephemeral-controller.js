@@ -775,6 +775,73 @@ export class EphemeralController extends BaseController {
     });
   }
 
+  /**
+   * Compress an image file via canvas, return base64 JPEG.
+   */
+  async _compressImage(file) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 1024;
+        let w = img.width, h = img.height;
+        if (w > MAX || h > MAX) {
+          const scale = MAX / Math.max(w, h);
+          w = Math.round(w * scale);
+          h = Math.round(h * scale);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        URL.revokeObjectURL(img.src);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+        resolve(dataUrl); // "data:image/jpeg;base64,..."
+      };
+      img.onerror = () => { URL.revokeObjectURL(img.src); reject(new Error('image load failed')); };
+      img.src = URL.createObjectURL(file);
+    });
+  }
+
+  /**
+   * Send an encrypted image in ephemeral chat (inline, no R2 upload).
+   */
+  async sendEncryptedImage(sessionId, file, conversationId, uiDeps) {
+    const dataUrl = await this._compressImage(file);
+    // payload: JSON with _type marker so receiver knows it's an image
+    const payload = JSON.stringify({ _type: 'image', data: dataUrl, name: file.name || 'image.jpg' });
+
+    const drSt = this._drStates.get(sessionId);
+    if (!drSt) throw new Error('no DR state for session');
+    const session = this.ephemeralSessions.get(sessionId);
+    if (!session) throw new Error('session not found');
+
+    const senderDeviceId = this.deps.ensureDeviceId?.() || '';
+    const packet = await drEncryptText(drSt, payload, { deviceId: senderDeviceId, version: 1 });
+
+    // Append local outgoing image bubble
+    const msgId = crypto.randomUUID();
+    const ts = Date.now();
+    appendUserMessage(conversationId, {
+      id: msgId, messageId: msgId,
+      text: `📷 ${file.name || 'Image'}`,
+      ts, direction: 'outgoing',
+      msgType: 'text', status: 'sent', decrypted: true,
+      _ephImage: dataUrl
+    });
+
+    this.deps.wsSend?.({
+      type: 'ephemeral-message',
+      conversationId: session.conversation_id,
+      header: packet.header,
+      iv_b64: packet.iv_b64,
+      ciphertext_b64: packet.ciphertext_b64,
+      ts
+    });
+
+    uiDeps?.updateMessagesUI?.({ preserveScroll: true });
+    uiDeps?.scrollMessagesToBottomSoon?.();
+  }
+
   // ── E2EE: Decrypt incoming message ──
   /**
    * Decrypt an incoming ephemeral message.
@@ -807,17 +874,31 @@ export class EphemeralController extends BaseController {
     // Handle encrypted control messages (e.g. nickname)
     if (this._handleControlMessage(result.text, msg)) return;
 
+    // Check for inline image message
+    let ephImage = null;
+    let displayText = result.text;
+    try {
+      if (result.text && result.text[0] === '{') {
+        const parsed = JSON.parse(result.text);
+        if (parsed._type === 'image' && parsed.data) {
+          ephImage = parsed.data;
+          displayText = `📷 ${parsed.name || 'Image'}`;
+        }
+      }
+    } catch { /* not JSON, treat as text */ }
+
     const messageId = crypto.randomUUID();
     appendUserMessage(msg.conversationId, {
       id: messageId,
       messageId,
-      text: result.text,
+      text: displayText,
       ts: result.ts || Date.now(),
       direction: 'incoming',
       senderDigest: msg.senderDigest || msg.fromDigest || '',
       msgType: 'text',
       status: 'received',
-      decrypted: true
+      decrypted: true,
+      _ephImage: ephImage
     });
 
     this.deps.updateMessagesUI?.({ preserveScroll: true });

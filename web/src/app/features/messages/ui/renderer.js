@@ -988,6 +988,20 @@ export class MessageRenderer {
 
             if (messageType === 'media' && msg.media) {
                 this.renderMediaBubble(bubble, msg);
+            } else if (msg._ephImage) {
+                // Inline ephemeral image (DR-encrypted, no R2)
+                const imgWrap = document.createElement('div');
+                imgWrap.className = 'eph-inline-image';
+                const imgEl = document.createElement('img');
+                imgEl.src = msg._ephImage;
+                imgEl.alt = msg.text || 'Image';
+                imgEl.loading = 'lazy';
+                imgEl.addEventListener('click', () => {
+                    this.callbacks.onEphImageClick?.({ url: msg._ephImage, name: msg.text || 'Image' });
+                });
+                imgWrap.appendChild(imgEl);
+                bubble.appendChild(imgWrap);
+                bubble.classList.add('message-has-media');
             } else {
                 bubble.textContent = msg.text || msg.error || t('renderer.cannotDecrypt');
             }

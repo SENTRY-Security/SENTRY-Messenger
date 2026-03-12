@@ -1050,7 +1050,9 @@
     "businessChat": "ธุรกิจ",
     "comingSoonTitle": "กำลังพัฒนา",
     "comingSoonDesc": "ฟีเจอร์แชทธุรกิจยังไม่เปิดให้บริการ โปรดรอติดตาม!",
-    "nicknameJoin": "เข้าร่วมการสนทนา"
+    "nicknameJoin": "เข้าร่วมการสนทนา",
+    "onlyImagesAllowed": "แชทชั่วคราวรองรับเฉพาะรูปภาพเท่านั้น",
+    "imageTooLarge": "ขนาดรูปภาพต้องไม่เกิน 5 MB"
   },
   "loginStages": {
     "authenticating": "กำลังยืนยันตัวตน...",

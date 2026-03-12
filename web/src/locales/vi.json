@@ -1050,7 +1050,9 @@
     "businessChat": "Doanh nghiệp",
     "comingSoonTitle": "Đang phát triển",
     "comingSoonDesc": "Tính năng chat doanh nghiệp chưa được mở. Hãy chờ đón!",
-    "nicknameJoin": "Tham gia trò chuyện"
+    "nicknameJoin": "Tham gia trò chuyện",
+    "onlyImagesAllowed": "Chat tạm thời chỉ hỗ trợ gửi hình ảnh",
+    "imageTooLarge": "Hình ảnh phải nhỏ hơn 5 MB"
   },
   "loginStages": {
     "authenticating": "ĐANG XÁC THỰC...",

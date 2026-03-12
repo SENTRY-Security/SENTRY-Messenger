@@ -1050,7 +1050,9 @@
     "businessChat": "商业对话",
     "comingSoonTitle": "功能开发中",
     "comingSoonDesc": "商业对话功能尚未开放，敬请期待",
-    "nicknameJoin": "加入对话"
+    "nicknameJoin": "加入对话",
+    "onlyImagesAllowed": "临时对话仅支持发送图片",
+    "imageTooLarge": "图片大小不能超过 5 MB"
   },
   "loginStages": {
     "authenticating": "验证中...",

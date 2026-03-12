@@ -217,6 +217,18 @@ export class ComposerController extends BaseController {
      */
     async handleConversationAction(type) {
         const state = this.getMessageState();
+
+        // ── Ephemeral conversation: route to ephemeral call system ──
+        const ephCtrl = this.deps.controllers?.ephemeral;
+        if (state.conversationId && ephCtrl?.isEphemeralConversation?.(state.conversationId)) {
+            const session = ephCtrl.getSessionByConversationId(state.conversationId);
+            if (session) {
+                const mode = type === 'video' ? 'video' : 'voice';
+                ephCtrl.initiateCall(session.session_id, mode);
+            }
+            return;
+        }
+
         const preconditionMissing = [];
         if (!state.activePeerDigest) preconditionMissing.push('activePeerDigest');
         if (!state.conversationToken) preconditionMissing.push('conversationToken');

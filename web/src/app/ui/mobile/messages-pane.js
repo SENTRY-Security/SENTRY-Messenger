@@ -1293,6 +1293,10 @@ export function initMessagesPane({
 
     elements.attachBtn?.addEventListener('click', () => {
       if (!requireSubscriptionActive()) return;
+      // Restrict to images in ephemeral chat
+      const msgState = getMessageState();
+      const isEph = msgState.conversationId && controllers.ephemeral?.isEphemeralConversation?.(msgState.conversationId);
+      if (elements.fileInput) elements.fileInput.accept = isEph ? 'image/*' : '';
       elements.fileInput.click();
     });
 

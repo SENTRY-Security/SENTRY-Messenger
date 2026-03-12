@@ -152,13 +152,41 @@ export class MessageSendingController extends BaseController {
         const files = input?.files ? Array.from(input.files).filter(Boolean) : [];
         if (!files.length) return;
 
+        // ── Ephemeral conversation: inline image send (no R2 upload) ──
+        const state = this.getMessageState();
+        const ephCtrl = this.deps.controllers?.ephemeral;
+        if (state.conversationId && ephCtrl?.isEphemeralConversation?.(state.conversationId)) {
+            if (input) input.value = '';
+            const session = ephCtrl.getSessionByConversationId(state.conversationId);
+            if (!session || !ephCtrl.hasEncryptionReady(session.session_id)) {
+                this.deps.showToast?.(t('ephemeral.encryptionNotReady'));
+                return;
+            }
+            for (const file of files) {
+                if (!file.type.startsWith('image/')) {
+                    this.deps.showToast?.(t('ephemeral.onlyImagesAllowed') || 'Only images are supported in ephemeral chat');
+                    continue;
+                }
+                if (file.size > 5 * 1024 * 1024) {
+                    this.deps.showToast?.(t('ephemeral.imageTooLarge') || 'Image must be under 5 MB');
+                    continue;
+                }
+                try {
+                    await ephCtrl.sendEncryptedImage(session.session_id, file, state.conversationId, this.deps);
+                } catch (err) {
+                    console.warn('[Ephemeral] image send failed', err);
+                    this.deps.showToast?.(t('messages.sendFailed'));
+                }
+            }
+            return;
+        }
+
         if (isUploadBusy()) {
             this.deps.showToast?.(t('fileSending.fileCurrentlyUploading'));
             if (input) input.value = '';
             return;
         }
 
-        const state = this.getMessageState();
         if (!state.activePeerDigest || !state.conversationToken) {
             this.deps.setMessagesStatus?.(t('composer.selectSecureFriendForSend'), true);
             return;

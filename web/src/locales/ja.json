@@ -1050,7 +1050,9 @@
     "businessChat": "ビジネス",
     "comingSoonTitle": "開発中",
     "comingSoonDesc": "ビジネスチャット機能は準備中です。お楽しみに！",
-    "nicknameJoin": "会話に参加"
+    "nicknameJoin": "会話に参加",
+    "onlyImagesAllowed": "一時チャットでは画像のみ送信可能です",
+    "imageTooLarge": "画像は 5 MB 以下にしてください"
   },
   "loginStages": {
     "authenticating": "認証中...",

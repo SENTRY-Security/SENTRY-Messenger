@@ -1050,7 +1050,9 @@
     "businessChat": "Business",
     "comingSoonTitle": "Coming Soon",
     "comingSoonDesc": "Business chat is not yet available. Stay tuned!",
-    "nicknameJoin": "Join conversation"
+    "nicknameJoin": "Join conversation",
+    "onlyImagesAllowed": "Only images are supported in ephemeral chat",
+    "imageTooLarge": "Image must be under 5 MB"
   },
   "loginStages": {
     "authenticating": "AUTHENTICATING...",

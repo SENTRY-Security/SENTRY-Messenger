@@ -43,6 +43,8 @@ const inputEl = document.getElementById('ephInput');
 const sendBtn = document.getElementById('ephSendBtn');
 const destroyedEl = document.getElementById('ephDestroyed');
 const particlesEl = document.getElementById('ephParticles');
+const attachBtn = document.getElementById('ephAttachBtn');
+const fileInput = document.getElementById('ephFileInput');
 const voiceCallBtn = document.getElementById('ephVoiceCallBtn');
 const videoCallBtn = document.getElementById('ephVideoCallBtn');
 const callOverlay = document.getElementById('ephCallOverlay');
@@ -178,6 +180,57 @@ function addMessage(text, direction, ts) {
   div.innerHTML = `${escapeHtml(text)}${timeStr ? `<div class="msg-time">${timeStr}</div>` : ''}`;
   messagesEl.appendChild(div);
   messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function addImageMessage(dataUrl, direction, ts, name) {
+  const div = document.createElement('div');
+  div.className = 'eph-msg ' + direction;
+  const timeStr = ts ? new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  const img = document.createElement('img');
+  img.src = dataUrl;
+  img.alt = name || 'Image';
+  img.className = 'eph-inline-img';
+  img.addEventListener('click', () => openImageFullscreen(dataUrl));
+  div.appendChild(img);
+  if (timeStr) {
+    const t = document.createElement('div');
+    t.className = 'msg-time';
+    t.textContent = timeStr;
+    div.appendChild(t);
+  }
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function openImageFullscreen(url) {
+  const overlay = document.createElement('div');
+  overlay.className = 'eph-image-fullscreen';
+  const img = document.createElement('img');
+  img.src = url;
+  overlay.appendChild(img);
+  overlay.addEventListener('click', () => overlay.remove());
+  document.body.appendChild(overlay);
+}
+
+async function compressImage(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const MAX = 1024;
+      let w = img.width, h = img.height;
+      if (w > MAX || h > MAX) {
+        const s = MAX / Math.max(w, h);
+        w = Math.round(w * s); h = Math.round(h * s);
+      }
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      c.getContext('2d').drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(img.src);
+      resolve(c.toDataURL('image/jpeg', 0.7));
+    };
+    img.onerror = () => { URL.revokeObjectURL(img.src); reject(new Error('image load failed')); };
+    img.src = URL.createObjectURL(file);
+  });
 }
 
 function addSystemMessage(text) {
@@ -413,7 +466,16 @@ function handleWsMessage(msg) {
             ciphertext_b64: msg.ciphertext_b64
           }).then(plaintext => {
             // Skip control messages (e.g. nickname)
-            try { if (plaintext[0] === '{' && JSON.parse(plaintext)._ctrl) return; } catch {}
+            try {
+              if (plaintext[0] === '{') {
+                const parsed = JSON.parse(plaintext);
+                if (parsed._ctrl) return;
+                if (parsed._type === 'image' && parsed.data) {
+                  addImageMessage(parsed.data, 'incoming', msg.ts, parsed.name);
+                  return;
+                }
+              }
+            } catch {}
             addMessage(plaintext, 'incoming', msg.ts);
           }).catch(err => {
             console.error('[EphE2EE] decrypt failed', err);
@@ -688,6 +750,46 @@ hangupBtn?.addEventListener('click', endCall);
 // Button click handlers
 if (voiceCallBtn) voiceCallBtn.addEventListener('click', () => handleCall('voice'));
 if (videoCallBtn) videoCallBtn.addEventListener('click', () => handleCall('video'));
+
+// Image attach
+if (attachBtn) attachBtn.addEventListener('click', () => fileInput?.click());
+if (fileInput) fileInput.addEventListener('change', async () => {
+  const file = fileInput.files?.[0];
+  fileInput.value = '';
+  if (!file) return;
+  if (!file.type.startsWith('image/')) {
+    addSystemMessage(_t('ephemeral.onlyImagesAllowed') || 'Only images are supported');
+    return;
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    addSystemMessage(_t('ephemeral.imageTooLarge') || 'Image must be under 5 MB');
+    return;
+  }
+  if (!ephDrState || !keyExchangeComplete) {
+    addSystemMessage(_t('ephemeral.encryptionNotReady') || 'Encryption not ready');
+    return;
+  }
+  try {
+    const dataUrl = await compressImage(file);
+    const payload = JSON.stringify({ _type: 'image', data: dataUrl, name: file.name || 'image.jpg' });
+    const packet = await drEncryptText(ephDrState, payload, {
+      deviceId: sessionState.guest_device_id,
+      version: 1
+    });
+    wsSendJSON({
+      type: 'ephemeral-message',
+      conversationId: sessionState.conversation_id,
+      header: packet.header,
+      iv_b64: packet.iv_b64,
+      ciphertext_b64: packet.ciphertext_b64,
+      ts: Date.now()
+    });
+    addImageMessage(dataUrl, 'outgoing', Date.now(), file.name);
+  } catch (err) {
+    console.error('[EphImage] send failed', err);
+    addSystemMessage(_t('messages.sendFailed') || 'Failed to send image');
+  }
+});
 
 // ── End conversation (guest-initiated) ──
 endBtn?.addEventListener('click', () => {
