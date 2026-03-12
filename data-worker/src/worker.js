@@ -2484,15 +2484,15 @@ async function handleEphemeralRoutes(req, env) {
     ).bind(newExpiresAt, sessionId).run();
 
     // Notify both parties via WS
-    try {
-      await notifyAccountDO(env, session.owner_digest, {
-        type: 'ephemeral-extended',
-        sessionId,
-        conversationId: session.conversation_id,
-        expiresAt: newExpiresAt,
-        ts: Date.now()
-      });
-    } catch { /* best-effort */ }
+    const extendPayload = {
+      type: 'ephemeral-extended',
+      sessionId,
+      conversationId: session.conversation_id,
+      expiresAt: newExpiresAt,
+      ts: Date.now()
+    };
+    try { await notifyAccountDO(env, session.owner_digest, extendPayload); } catch { /* best-effort */ }
+    try { await notifyAccountDO(env, session.guest_digest, extendPayload); } catch { /* best-effort */ }
 
     return json({ expires_at: newExpiresAt, extended_count: session.extended_count + 1 });
   }

@@ -701,9 +701,13 @@ export class EphemeralController extends BaseController {
       // Bind extend button
       document.getElementById('ephConvExtendBtn')?.addEventListener('click', async () => {
         const sid = document.getElementById('ephConvTimerClock')?.dataset?.sessionId;
+        console.log('[Ephemeral] extend clicked, sessionId:', sid);
         if (!sid) return;
+        const btn = document.getElementById('ephConvExtendBtn');
+        if (btn) { btn.disabled = true; btn.textContent = t('ephemeral.extending') || 'Extending…'; }
         try {
           const data = await ephemeralExtend({ sessionId: sid });
+          console.log('[Ephemeral] extend OK', data);
           const s = this.ephemeralSessions.get(sid);
           if (s) {
             // Reset progress bar baseline so fire icon moves back to start
@@ -711,7 +715,9 @@ export class EphemeralController extends BaseController {
             s.expires_at = data.expires_at;
           }
         } catch (err) {
-          console.warn('[Ephemeral] extend failed', err?.message);
+          console.warn('[Ephemeral] extend failed', err?.message, err?.status, err?.data);
+        } finally {
+          if (btn) { btn.textContent = t('ephemeral.extendTime') || 'Extend'; btn.disabled = false; }
         }
       });
 
@@ -1080,6 +1086,16 @@ export class EphemeralController extends BaseController {
           session.expires_at = msg.expiresAt;
           this._requestListRender();
           this._refreshModalIfOpen();
+          // Show system tombstone
+          const extMsgId = crypto.randomUUID();
+          appendUserMessage(msg.conversationId || session.conversation_id, {
+            id: extMsgId, messageId: extMsgId,
+            text: t('ephemeral.extendedTenMin'), ts: Date.now(),
+            direction: 'incoming', msgType: 'system',
+            status: 'received'
+          });
+          this.deps.updateMessagesUI?.({ preserveScroll: true });
+          this.deps.scrollMessagesToBottomSoon?.();
         }
         return true;
       }
