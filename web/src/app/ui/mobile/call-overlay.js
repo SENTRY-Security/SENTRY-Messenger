@@ -123,6 +123,7 @@ function ensureStyles() {
     .call-overlay.hidden .call-card {
       transform: translateY(40px);
       opacity: 0;
+      pointer-events: none;
     }
     .call-overlay .call-peer {
       display: flex;
