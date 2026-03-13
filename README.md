@@ -18,6 +18,7 @@
 - [架構概覽](#架構概覽)
 - [核心功能](#核心功能)
 - [視訊通話架構](#視訊通話架構)
+- [臨時對話 (Ephemeral Chat)](#臨時對話-ephemeral-chat)
 - [分片加密串流](#分片加密串流)
 - [專案結構](#專案結構)
 - [密碼學協定](#密碼學協定)
@@ -91,6 +92,7 @@
 - **AI 人臉/背景馬賽克** — MediaPipe Face Detection 三階段模糊（人臉馬賽克 / 背景馬賽克 / 關閉），三層偵測策略（Native FaceDetector → MediaPipe WASM → 膚色偵測）
 - **分片加密串流** — 影片上傳自動轉碼為 fMP4，Per-chunk AES-256-GCM 加密，MSE/ManagedMediaSource 即時串流播放（單檔上限 1GB），AIMD 自適應併發控制
 - **WebCodecs 智慧轉碼** — 所有影片自動轉碼至 720p/1.5Mbps H.264 fMP4（4K/1080p 自動縮放），HEVC/VP9 等非 H.264 格式自動轉碼，已是 H.264 且未超限時直接 remux 免轉碼，串流式轉碼→加密→上傳管線（低記憶體佔用）
+- **臨時對話 (Ephemeral Chat)** — 一次性加密連結，未註冊 Guest 透過瀏覽器加入限時 E2EE 對話（X3DH + Double Ratchet），支援文字/圖片/語音視訊通話，倒數結束自動銷毀，7 語言 i18n
 - **聯絡人邀請** — 加密 Invite Dropbox 機制（支援離線互加 + 確認回饋）
 - **群組對話** — 多人加密聊天室，角色權限管理（owner/admin/member）
 - **已讀回條** — Commit-driven 訊息狀態追蹤（✓ sent / ✓✓ delivered）
@@ -184,6 +186,352 @@ RTCRtpSender.replaceTrack() → 送出處理後的視訊
 - **瀏覽器支援**: Chrome 51+ / Firefox 43+ / Safari 15+ / iOS Safari 15+
 - **Safari 心跳**: 每 ~33ms 維持 captureStream 活性
 - **模式切換**: 通話介面左上角按鈕，藍色（人臉）→ 紫色（背景）→ 灰色（關閉）
+
+---
+
+## 臨時對話 (Ephemeral Chat)
+
+一次性加密臨時對話系統，允許已註冊使用者（Owner）產生一次性連結，讓未安裝 App 的外部人員（Guest）透過瀏覽器加入限時加密對話。所有訊息在倒數結束或任一方關閉頁面後永久銷毀。
+
+### 架構概覽
+
+```
+Owner (App 內)                  Cloudflare Worker                 Guest (瀏覽器)
+─────────────                   ─────────────────                 ──────────────
+     │                                │                                │
+     │── POST create-link ───────────▶│ 建立 ephemeral_invites         │
+     │◀── { token, session_id } ──────│                                │
+     │                                │                                │
+     │   分享連結 /e/{token}           │                                │
+     │─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ▶│
+     │                                │                                │
+     │                                │◀── POST consume { token } ─────│
+     │                                │ 驗證 → 建立 ephemeral_sessions  │
+     │                                │── { session, ownerBundle } ────▶│
+     │                                │                                │
+     │                                │    ┌── WebSocket 雙向連線 ──┐   │
+     │                                │    │                        │   │
+     │◀══════ ephemeral-key-exchange ══╪════╪════════════════════════╪═══│ Guest X3DH
+     │ X3DH respond                   │    │                        │   │
+     │══════ ephemeral-key-exchange-ack╪════╪════════════════════════╪══▶│
+     │                                │    │                        │   │
+     │◀═══ ephemeral-message (E2EE) ══╪════╪════════════════════════╪══▶│ DR 加密訊息
+     │◀═══ ephemeral-call-* (信令) ═══╪════╪════════════════════════╪══▶│ 通話信令
+     │                                │    │                        │   │
+     │                                │    └────────────────────────┘   │
+     │                                │                                │
+     │                                │── session expired ────────────▶│ 倒數結束
+     │                                │   清除 sessions + invites       │ 銷毀畫面
+```
+
+### 連結生命週期
+
+#### 1. Owner 建立連結
+
+Owner 在 App 內點擊「臨時對話」，前端產生 X3DH Prekey Bundle（`ik_pub`, `spk_pub`, `spk_sig`, `opks`），連同帳號驗證資訊一併送至後端：
+
+```
+POST /api/v1/ephemeral/create-link
+{ account_token, account_digest, prekey_bundle }
+→ { token, session_id, expires_at }
+```
+
+- 連結格式：`https://domain/e/{token}`
+- 每位 Owner 最多同時擁有 **2 個**活躍 session
+- 邀請連結有效期限預設 **24 小時**（未消費則自動過期）
+- Owner 可在消費前撤銷連結（`POST /api/v1/ephemeral/revoke-invite`）
+
+#### 2. Guest 消費連結
+
+Guest 開啟連結，`boot()` 從 URL 解析 token（支援 `/e/{token}`、`#{token}`、`?t={token}` 三種格式）：
+
+```
+POST /api/v1/ephemeral/consume
+{ token }
+→ { session_id, conversation_id, guest_digest, guest_device_id, ws_token, expires_at, prekey_bundle, owner_digest }
+```
+
+- Token 僅能消費一次（`consumed_at` 標記）
+- 消費後建立 `ephemeral_sessions` 記錄
+- Guest 獲得臨時身份（`guest_digest` + `guest_device_id`）
+- 返回 Owner 的 Prekey Bundle 供 X3DH 金鑰交換
+
+#### 3. 連結過期與清理
+
+- 未消費邀請：24 小時後過期（D1 `expires_at` 欄位）
+- 已建立 Session：預設 **10 分鐘**倒數，可延長
+- Owner 手動終止：`POST /api/v1/ephemeral/delete`
+- Guest 主動結束：透過 WebSocket 發送 `ephemeral-guest-leave`
+
+### 端對端加密 (E2EE)
+
+臨時對話採用與主聊天相同的 Signal Protocol 加密流程，確保伺服器無法解密任何訊息。
+
+#### X3DH 金鑰交換
+
+```
+Owner (建立連結時)                              Guest (消費連結時)
+────────────────                                ──────────────────
+生成 Prekey Bundle:                             收到 Owner Bundle:
+  ik_pub (身份金鑰)                               ik_pub, spk_pub, spk_sig, opks[0]
+  spk_pub (簽名預金鑰)
+  spk_sig (Ed25519 簽章)                         生成 Guest Bundle:
+  opks[] (一次性預金鑰)                             ik_pub, spk_pub, spk_sig, ek_pub
+
+                                                x3dhInitiate(guestPriv, ownerBundle)
+                                                → ephDrState (Double Ratchet 初始狀態)
+
+                                                透過 WS 發送 ephemeral-key-exchange
+                         ◀─────────────────────── { guestBundle, opk_id }
+
+x3dhRespond(ownerPriv, guestBundle)
+→ ephDrState (匹配的 DR 狀態)
+
+發送 ephemeral-key-exchange-ack ──────────────▶ keyExchangeComplete = true
+```
+
+- 金鑰交換具備**漸進式重試**機制（2s → 4s → 8s → 15s → 30s）
+- 第 3 次重試起同時啟用 **HTTP Fallback**（`POST /api/v1/ephemeral/key-exchange-submit`），將 Guest Bundle 持久化至 D1，確保 Owner 離線/重連後仍可完成交換
+- 收到 ACK 前，所有訊息發送被阻擋並提示「等待加密建立」
+
+#### Double Ratchet 訊息加密
+
+金鑰交換完成後，所有訊息（文字、圖片、控制訊息）皆經 Double Ratchet 加密：
+
+```
+明文 → drEncryptText(ephDrState, plaintext, { deviceId, version })
+     → { header: { counter, deviceId, version }, iv_b64, ciphertext_b64 }
+
+密文 → drDecryptText(ephDrState, { header, iv_b64, ciphertext_b64 })
+     → 明文
+```
+
+- 每則訊息獨立金鑰（前向保密）
+- Header 包含 counter（防重放）、deviceId、version
+- 加密演算法：XChaCha20-Poly1305 / AES-256-GCM（AEAD）
+
+### WebSocket 即時通訊
+
+#### 連線建立
+
+Guest 進入聊天後建立 WebSocket 連線：
+
+```
+WSS://{host}/api/ws?token={ws_token}&deviceId={guest_device_id}
+→ 發送 { type: 'auth', accountDigest, token }
+→ 收到 { type: 'auth', ok: true }
+```
+
+#### 訊息類型
+
+| 類型 | 方向 | 說明 |
+|------|------|------|
+| `ephemeral-message` | 雙向 | E2EE 加密訊息（文字、圖片、控制） |
+| `ephemeral-key-exchange` | Guest→Owner | Guest 的 X3DH 公開金鑰 |
+| `ephemeral-key-exchange-ack` | Owner→Guest | Owner 確認金鑰交換完成 |
+| `ephemeral-extended` | Server→雙方 | Session 延長通知（新 `expires_at`） |
+| `ephemeral-deleted` | Server→Guest | Owner 終止 Session |
+| `ephemeral-guest-leave` | Guest→Owner | Guest 主動結束對話 |
+| `ephemeral-peer-reconnected` | Server→對方 | 對方重新連線 |
+| `ephemeral-peer-disconnected` | Server→對方 | 對方斷線 |
+| `ephemeral-call-*` | 雙向 | 通話信令（invite/offer/answer/accept/reject/ice-candidate/end） |
+
+#### 斷線重連
+
+- 指數退避重連：基礎 2s，上限 30s，加 30% 隨機抖動
+- 重連前先刷新 WS Token（`POST /api/v1/ephemeral/ws-token`）
+- Token 刷新失敗（session 過期/被刪除）→ 直接顯示銷毀畫面
+- 重連成功後自動重新觸發未完成的金鑰交換
+
+#### 控制訊息
+
+透過 E2EE 加密通道傳送的特殊控制訊息（JSON `_ctrl` 欄位）：
+
+| 控制類型 | 說明 |
+|----------|------|
+| `set-nickname` | Guest 設定暱稱，通知 Owner |
+| `peer-away` | 頁面切到背景（`visibilitychange`） |
+| `peer-back` | 頁面回到前景 |
+| `no-webrtc` | 通知 Owner 此 Guest 瀏覽器不支援 WebRTC |
+
+### 計時器與 Session 管理
+
+#### 倒數計時器
+
+- Session 建立時設定 `expires_at`（Unix timestamp）
+- 前端每秒更新（`setInterval`），顯示 `MM:SS` 格式
+- 進度條採用四色漸層（綠→黃→紅），搭配火焰 emoji 指示器
+- 剩餘 ≤20% 時間：時鐘文字轉紅 + 呼吸動畫
+- 倒數歸零：自動觸發 `destroyChat()`
+
+#### Session 延長
+
+- 剩餘 ≤5 分鐘時啟用「延長」按鈕
+- 每次延長 **10 分鐘**
+- 延長次數由 `extended_count` 追蹤
+- Owner 或 Guest 均可觸發延長
+- 延長後伺服器透過 `ephemeral-extended` 通知雙方同步新的 `expires_at`
+
+#### Session 終止
+
+三種終止方式：
+
+1. **倒數結束** — 前端偵測 `remaining ≤ 0`，自動銷毀
+2. **Owner 終止** — `POST /api/v1/ephemeral/delete`，伺服器發送 `ephemeral-deleted` 通知 Guest
+3. **Guest 終止** — 點擊「結束」按鈕 → 確認 Modal → 發送 `ephemeral-guest-leave` → 銷毀畫面
+
+銷毀流程（`destroyChat()`）：
+1. 停止 Double Ratchet 金鑰交換重試
+2. 停用 Ephemeral Call 模式
+3. 清除計時器
+4. 通知對方（若 WS 仍連線）
+5. 關閉 WebSocket
+6. 隱藏聊天 UI，顯示銷毀畫面
+7. 清除所有狀態（`sessionState`, `ephDrState`, `sessionStorage`）
+
+### 語音 / 視訊通話
+
+臨時對話整合標準通話系統，透過 **Ephemeral Call Adapter** 橋接：
+
+```
+Guest UI                    Ephemeral Call Adapter              標準 Call Pipeline
+─────────                   ──────────────────────              ─────────────────
+voiceCallBtn.click()  ───▶  initiateEphemeralCall()
+                            ↓
+                            activateEphemeralCallMode({         initCallOverlay()
+                              conversationId,                   initCallMediaSession()
+                              sessionId,
+                              peerDigest,
+                              wsSend: (msg) => ws.send(msg),
+                              side: 'guest'
+                            })
+                            ↓
+                            ephemeral-call-* ◀══ 轉譯 ══▶ call-*
+                            (WebSocket 訊息)              (標準信令)
+```
+
+- **WebRTC 偵測**：頁面載入時立即偵測（`boot()` 之前），檢查 `RTCPeerConnection` + `getUserMedia`
+- 不支援時：Splash 畫面即顯示警告 → 暱稱畫面顯示警告 → 進入聊天後按鈕 disabled + 系統訊息通知 → 透過加密控制訊息通知 Owner
+- **媒體預請求**：進入聊天時靜默播放 click 音效解鎖 Web Audio API，並預請求 mic + camera 權限（快取 60 秒）
+- 通話信令透過 WebSocket `ephemeral-call-*` 訊息類型中繼
+
+### Guest 端 UX 流程
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   Splash 畫面    │     │   暱稱輸入畫面    │     │    聊天畫面      │     │   銷毀畫面       │
+│                 │     │                 │     │                 │     │                 │
+│ ① WebRTC 偵測   │     │ 火焰動畫頭像     │     │ Header (徽章)    │     │ 🔥              │
+│ ② Matrix 動畫   │────▶│ 暱稱輸入 (≤20字) │────▶│ 倒數計時器       │────▶│ 對話已銷毀       │
+│ ③ 進度條 0→100% │     │ WebRTC 警告      │     │ 訊息列表         │     │ 所有訊息已永久   │
+│ ④ 驗證→加密→連線 │     │ 「加入對話」按鈕  │     │ 通話按鈕         │     │ 清除             │
+│ ⑤ X3DH 金鑰交換 │     │                 │     │ 附件 + 輸入框    │     │                 │
+└─────────────────┘     └─────────────────┘     │ 結束按鈕         │     └─────────────────┘
+                                                └─────────────────┘
+```
+
+#### Splash 畫面（進度階段）
+
+| 進度 | 狀態文字 | 實際操作 |
+|------|----------|----------|
+| 0% | 頁面載入 | WebRTC 偵測（`boot()` 之前） |
+| 20% | 驗證連結有效性… | 解析 URL Token |
+| 40% | 產生臨時身份金鑰… | 載入 NaCl 加密庫 |
+| 60% | 交換加密協定… | 消費 Token + X3DH 金鑰交換 |
+| 80% | 建立端對端加密通道… | 等待確認 |
+| 100% | 連線完成 | 過渡至暱稱畫面 |
+
+#### 錯誤處理
+
+| HTTP 狀態 | 顯示訊息 |
+|-----------|----------|
+| 404 | 此連結已過期或已被使用 |
+| 410 | 此連結已過期 |
+| 其他 | 連線失敗：{error} |
+
+### 資料庫 Schema
+
+#### ephemeral_invites（一次性連結 Token）
+
+| 欄位 | 類型 | 說明 |
+|------|------|------|
+| `token` | TEXT PK | 一次性邀請 Token |
+| `owner_digest` | TEXT | Owner 帳號摘要（FK → accounts） |
+| `owner_device_id` | TEXT | Owner 裝置 ID |
+| `prekey_bundle_json` | TEXT | Owner X3DH Prekey Bundle（JSON） |
+| `consumed_at` | INTEGER | 消費時間戳（NULL = 未消費） |
+| `expires_at` | INTEGER | 過期時間戳 |
+| `created_at` | INTEGER | 建立時間 |
+
+#### ephemeral_sessions（活躍臨時對話）
+
+| 欄位 | 類型 | 說明 |
+|------|------|------|
+| `session_id` | TEXT PK | Session 唯一 ID |
+| `invite_token` | TEXT | 對應的邀請 Token |
+| `owner_digest` | TEXT | Owner 帳號摘要 |
+| `owner_device_id` | TEXT | Owner 裝置 ID |
+| `guest_digest` | TEXT | Guest 臨時摘要 |
+| `guest_device_id` | TEXT | Guest 臨時裝置 ID |
+| `conversation_id` | TEXT | 對話 ID（FK → conversations） |
+| `expires_at` | INTEGER | 過期時間戳（可延長） |
+| `extended_count` | INTEGER | 延長次數 |
+| `created_at` | INTEGER | 建立時間 |
+| `deleted_at` | INTEGER | 軟刪除時間（NULL = 活躍） |
+
+索引：`owner+deleted_at`、`guest_digest`、`conversation_id`、`expires_at`
+
+### API 端點 (`/api/v1/ephemeral/`)
+
+| 方法 | 路徑 | 驗證 | 說明 |
+|------|------|------|------|
+| POST | `create-link` | Owner | 建立一次性連結（含 Prekey Bundle） |
+| POST | `consume` | 無 | Guest 消費 Token，取得 Session 資訊 |
+| POST | `extend` | Owner/Guest | 延長 Session 10 分鐘 |
+| POST | `delete` | Owner | 終止 Session |
+| POST | `revoke-invite` | Owner | 撤銷未消費的邀請連結 |
+| POST | `list` | Owner | 列出所有活躍 Session |
+| POST | `session-info` | Guest | 取得 Session 資訊（重連用） |
+| POST | `ws-token` | Guest | 取得新 WebSocket Token（重連用） |
+| POST | `key-exchange-submit` | Guest | HTTP Fallback 金鑰交換（持久化至 D1） |
+| POST | `clear-pending-kex` | Owner | 清除已處理的待處理金鑰交換 |
+
+### 安全設計
+
+- **一次性 Token** — 每個連結僅能消費一次，防止重放
+- **臨時身份** — Guest 獲得伺服器生成的臨時 `digest` + `device_id`，不關聯任何永久帳號
+- **完整 E2EE** — 所有訊息（含控制訊息、圖片）皆經 Double Ratchet 加密，伺服器僅中繼密文
+- **Session 限制** — 每位 Owner 最多 2 個同時活躍 Session
+- **金鑰交換 Fallback** — WS 重試 + HTTP 持久化雙路徑，確保金鑰交換不會因網路問題永久失敗
+- **前向保密** — 每則訊息使用獨立 DR 金鑰，洩漏不影響其他訊息
+- **狀態銷毀** — Session 結束時清除所有客戶端狀態（`sessionState`、`ephDrState`、`sessionStorage`）
+- **Peer Presence** — 透過 `visibilitychange` 事件偵測對方是否在前景，警告訊息可能未送達
+
+### 國際化 (i18n)
+
+臨時對話完整支援 **7 種語言**：English、繁體中文、簡體中文、日本語、한국어、ภาษาไทย、Tiếng Việt
+
+- Splash 頁面採用**同步 XHR** 載入語言包（確保首次繪製即為正確語言）
+- `boot()` 後非同步載入完整 i18n 模組
+- 所有 UI 文字透過 `data-i18n`、`data-i18n-placeholder`、`data-i18n-html` 屬性標記
+- 共計約 **70+ 個** ephemeral 專用 i18n key（涵蓋 splash、暱稱、聊天、通話、錯誤、計時器、終止等場景）
+
+### 檔案結構
+
+```
+web/src/
+├── pages/ephemeral.html                              # Guest 端完整 HTML（Splash + 暱稱 + 聊天 + 銷毀）
+├── app/ui/ephemeral-ui.js                            # Guest 端控制器（Boot、WS、E2EE、Timer、Call）
+├── app/ui/mobile/controllers/ephemeral-controller.js # Owner 端控制器（建立連結、管理 Session）
+├── app/api/ephemeral.js                              # API 封裝（10 個端點）
+├── app/features/calls/ephemeral-call-adapter.js      # 通話信令轉譯（ephemeral-call-* ↔ call-*）
+├── shared/crypto/dr.js                               # Double Ratchet 加密/解密
+├── shared/crypto/prekeys.js                          # X3DH Prekey Bundle 生成
+└── locales/{en,zh-Hant,zh-Hans,ja,ko,th,vi}.json    # i18n 語言包
+
+data-worker/
+└── migrations/0010_add_ephemeral_sessions.sql         # DB Schema（invites + sessions）
+```
 
 ---
 
