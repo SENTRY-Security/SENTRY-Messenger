@@ -1059,7 +1059,10 @@
     "imageTooLarge": "Image must be under 5 MB",
     "peerAway": "⚠️ Peer left the screen — messages may not be delivered",
     "peerBack": "✅ Peer is back",
-    "peerAwayHint": "Peer is away — messages may not be delivered"
+    "peerAwayHint": "Peer is away — messages may not be delivered",
+    "webrtcUnsupported": "Your browser does not support voice/video calls. You can still join for text messaging.",
+    "webrtcCallsDisabled": "⚠️ Voice and video calls are unavailable — your browser does not support WebRTC",
+    "peerNoWebrtc": "⚠️ The guest's browser does not support voice/video calls. Only text messaging is available."
   },
   "loginStages": {
     "authenticating": "AUTHENTICATING...",

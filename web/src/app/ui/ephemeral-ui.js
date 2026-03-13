@@ -43,6 +43,9 @@ let keyExchangeComplete = false; // true after owner sends ack
 // ── Pre-cached media stream from gesture unlock ──
 let _cachedMediaStream = null;
 
+// ── WebRTC support detection ──
+let _webrtcSupported = true; // assume true until checked
+
 // ── DOM refs ──
 const splash = document.getElementById('ephSplash');
 const progressBar = document.getElementById('ephProgressBar');
@@ -74,6 +77,7 @@ const guestEndModal = document.getElementById('ephGuestEndModal');
 const guestEndBackdrop = document.getElementById('ephGuestEndBackdrop');
 const guestEndCancel = document.getElementById('ephGuestEndCancel');
 const guestEndConfirm = document.getElementById('ephGuestEndConfirm');
+const webrtcWarningEl = document.getElementById('ephWebrtcWarning');
 
 // ── Particles ──
 function initParticles() {
@@ -504,6 +508,8 @@ function handleWsMessage(msg) {
         console.log('[EphE2EE] key exchange complete, encryption ready');
         // Send nickname via encrypted control message
         if (guestNickname) _sendNicknameControl();
+        // Notify owner if WebRTC is not supported
+        if (!_webrtcSupported) _sendNoWebrtcControl();
       }
       break;
     case 'ephemeral-extended':
@@ -575,6 +581,36 @@ function handleWsMessage(msg) {
 function enableCallButtons() {
   if (voiceCallBtn) voiceCallBtn.disabled = false;
   if (videoCallBtn) videoCallBtn.disabled = false;
+}
+
+function _disableCallButtonsPermanently() {
+  if (voiceCallBtn) {
+    voiceCallBtn.disabled = true;
+    voiceCallBtn.title = _t('ephemeral.webrtcCallsDisabled');
+  }
+  if (videoCallBtn) {
+    videoCallBtn.disabled = true;
+    videoCallBtn.title = _t('ephemeral.webrtcCallsDisabled');
+  }
+}
+
+/** Send a control message to owner informing WebRTC is unavailable. */
+function _sendNoWebrtcControl() {
+  if (!ephDrState || _webrtcSupported) return;
+  const controlMsg = JSON.stringify({ _ctrl: 'no-webrtc' });
+  drEncryptText(ephDrState, controlMsg, { deviceId: sessionState?.guest_device_id || '', version: 1 })
+    .then(packet => {
+      wsSendJSON({
+        type: 'ephemeral-message',
+        conversationId: sessionState.conversation_id,
+        header: packet.header,
+        iv_b64: packet.iv_b64,
+        ciphertext_b64: packet.ciphertext_b64,
+        ts: Date.now()
+      });
+      console.log('[Eph] no-webrtc control message sent');
+    })
+    .catch(err => console.warn('[Eph] failed to send no-webrtc control', err?.message));
 }
 
 function wsSendJSON(obj) {
@@ -743,6 +779,12 @@ async function boot() {
     setProgress(100, _t('ephemeral.connectionComplete'));
     await sleep(400);
 
+    // Detect WebRTC support before showing nickname screen
+    _detectWebRTCSupport();
+    if (!_webrtcSupported && webrtcWarningEl) {
+      webrtcWarningEl.style.display = 'flex';
+    }
+
     // Show nickname input instead of going directly to chat
     hideSplash();
     if (nicknameScreen) {
@@ -769,12 +811,22 @@ function _enterChat() {
   initParticles();
   startTimer();
   connectWs();
-  enableCallButtons();
+
+  if (_webrtcSupported) {
+    enableCallButtons();
+  } else {
+    // Keep call buttons disabled and show notice in chat
+    _disableCallButtonsPermanently();
+    addSystemMessage(_t('ephemeral.webrtcCallsDisabled'));
+  }
+
   _bindVisibilityPresence();
 
-  // Gesture-unlock: play a silent-ish click to unlock Web Audio API,
-  // then pre-request microphone + camera permissions so call setup is instant.
-  _gestureUnlockMedia();
+  if (_webrtcSupported) {
+    // Gesture-unlock: play a silent-ish click to unlock Web Audio API,
+    // then pre-request microphone + camera permissions so call setup is instant.
+    _gestureUnlockMedia();
+  }
 
   // Initialize the standard call system for guest use
   _initCallSystem();
@@ -850,6 +902,16 @@ function _gestureUnlockMedia() {
         })
         .catch(() => {}); // both denied — calls will fail gracefully later
     });
+}
+
+// ── WebRTC support detection ──
+function _detectWebRTCSupport() {
+  _webrtcSupported = !!(
+    typeof RTCPeerConnection !== 'undefined' &&
+    navigator.mediaDevices &&
+    typeof navigator.mediaDevices.getUserMedia === 'function'
+  );
+  return _webrtcSupported;
 }
 
 // ── Visibility-based presence notifications ──

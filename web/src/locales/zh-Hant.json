@@ -1059,7 +1059,10 @@
     "imageTooLarge": "圖片大小不能超過 5 MB",
     "peerAway": "⚠️ 對方離開了畫面 — 訊息可能無法送達",
     "peerBack": "✅ 對方已回到畫面",
-    "peerAwayHint": "對方暫時離開 — 訊息可能無法送達"
+    "peerAwayHint": "對方暫時離開 — 訊息可能無法送達",
+    "webrtcUnsupported": "您的瀏覽器不支援語音／視訊通話。您仍可加入進行文字通訊。",
+    "webrtcCallsDisabled": "⚠️ 語音與視訊通話不可用 — 您的瀏覽器不支援 WebRTC",
+    "peerNoWebrtc": "⚠️ 對方的瀏覽器不支援語音／視訊通話，僅可使用文字通訊。"
   },
   "loginStages": {
     "authenticating": "驗證中...",

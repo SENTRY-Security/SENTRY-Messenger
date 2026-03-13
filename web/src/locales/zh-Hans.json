@@ -1059,7 +1059,10 @@
     "imageTooLarge": "图片大小不能超过 5 MB",
     "peerAway": "⚠️ 对方离开了画面 — 消息可能无法送达",
     "peerBack": "✅ 对方已回到画面",
-    "peerAwayHint": "对方暂时离开 — 消息可能无法送达"
+    "peerAwayHint": "对方暂时离开 — 消息可能无法送达",
+    "webrtcUnsupported": "您的浏览器不支持语音/视频通话。您仍可加入进行文字通讯。",
+    "webrtcCallsDisabled": "⚠️ 语音与视频通话不可用 — 您的浏览器不支持 WebRTC",
+    "peerNoWebrtc": "⚠️ 对方的浏览器不支持语音/视频通话，仅可使用文字通讯。"
   },
   "loginStages": {
     "authenticating": "验证中...",

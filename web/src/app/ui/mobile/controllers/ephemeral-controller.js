@@ -977,6 +977,12 @@ export class EphemeralController extends BaseController {
         return true;
       }
 
+      if (ctrl._ctrl === 'no-webrtc') {
+        const convId = rawMsg?.conversationId;
+        if (convId) this._handlePeerNoWebRTC(convId);
+        return true;
+      }
+
       return false;
     } catch {
       return false;
@@ -1046,6 +1052,51 @@ export class EphemeralController extends BaseController {
         delete composerInput.dataset.origPlaceholder;
       }
     }
+  }
+
+  /**
+   * Handle guest reporting no WebRTC support — disable call buttons and show tombstone.
+   */
+  _handlePeerNoWebRTC(conversationId) {
+    // Mark this session as no-webrtc
+    const session = this.getSessionByConversationId(conversationId);
+    if (session) session._peerNoWebRTC = true;
+
+    // Show system tombstone in timeline
+    const msgId = crypto.randomUUID();
+    appendUserMessage(conversationId, {
+      id: msgId, messageId: msgId,
+      text: t('ephemeral.peerNoWebrtc'), ts: Date.now(),
+      direction: 'incoming', msgType: 'system',
+      status: 'received'
+    });
+    this.deps.updateMessagesUI?.({ preserveScroll: true });
+    this.deps.scrollMessagesToBottomSoon?.();
+
+    // Disable call buttons if currently viewing this conversation
+    const state = this.deps.getMessageState?.() || {};
+    if (state.conversationId === conversationId) {
+      this._disableCallButtonsForNoWebRTC();
+    }
+  }
+
+  /**
+   * Disable owner-side call buttons when peer has no WebRTC.
+   */
+  _disableCallButtonsForNoWebRTC() {
+    const callBtn = this.deps.controllers?.composer?.elements?.callBtn;
+    if (callBtn) {
+      callBtn.disabled = true;
+      callBtn.setAttribute('aria-disabled', 'true');
+    }
+  }
+
+  /**
+   * Check whether the peer in a given conversation lacks WebRTC.
+   */
+  isPeerNoWebRTC(conversationId) {
+    const session = this.getSessionByConversationId(conversationId);
+    return !!(session && session._peerNoWebRTC);
   }
 
   /**

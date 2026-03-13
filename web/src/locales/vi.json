@@ -1059,7 +1059,10 @@
     "imageTooLarge": "Hình ảnh phải nhỏ hơn 5 MB",
     "peerAway": "⚠️ Đối phương rời khỏi màn hình — tin nhắn có thể không được gửi",
     "peerBack": "✅ Đối phương đã quay lại",
-    "peerAwayHint": "Đối phương đang vắng mặt — tin nhắn có thể không được gửi"
+    "peerAwayHint": "Đối phương đang vắng mặt — tin nhắn có thể không được gửi",
+    "webrtcUnsupported": "Trình duyệt của bạn không hỗ trợ cuộc gọi thoại/video. Bạn vẫn có thể tham gia để nhắn tin.",
+    "webrtcCallsDisabled": "⚠️ Cuộc gọi thoại và video không khả dụng — trình duyệt của bạn không hỗ trợ WebRTC",
+    "peerNoWebrtc": "⚠️ Trình duyệt của khách không hỗ trợ cuộc gọi thoại/video. Chỉ có thể nhắn tin."
   },
   "loginStages": {
     "authenticating": "ĐANG XÁC THỰC...",

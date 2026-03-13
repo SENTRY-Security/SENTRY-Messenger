@@ -236,6 +236,8 @@
     .eph-nickname-btn { width: 100%; padding: 12px; border-radius: 10px; border: none; background: var(--amber); color: #0f172a; font-size: 14px; font-weight: 700; cursor: pointer; transition: opacity .2s; margin-top: 8px; }
     .eph-nickname-btn:disabled { opacity: 0.4; cursor: not-allowed; }
     .eph-nickname-btn:hover:not(:disabled) { opacity: 0.9; }
+    .eph-webrtc-warning { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 10px; background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.3); color: #fca5a5; font-size: 12px; line-height: 1.4; width: 100%; box-sizing: border-box; }
+    .eph-webrtc-warning-icon { font-size: 16px; flex-shrink: 0; }
 
     /* End confirm modal (guest) */
     .eph-guest-end-modal { display: none; position: fixed; inset: 0; z-index: 10000; align-items: center; justify-content: center; }
@@ -297,6 +299,10 @@
       </div>
       <div class="eph-nickname-title" data-i18n="ephemeral.nicknameTitle">Enter your display name</div>
       <div class="eph-nickname-desc" data-i18n="ephemeral.nicknameDesc">Choose a temporary name for this conversation</div>
+      <div id="ephWebrtcWarning" class="eph-webrtc-warning" style="display:none">
+        <span class="eph-webrtc-warning-icon" aria-hidden="true">⚠️</span>
+        <span data-i18n="ephemeral.webrtcUnsupported">Your browser does not support voice/video calls. You can still join for text messaging.</span>
+      </div>
       <input type="text" id="ephNicknameInput" class="eph-nickname-input" maxlength="20" autocomplete="off" autocorrect="off" spellcheck="false" data-i18n-placeholder="ephemeral.nicknamePlaceholder" placeholder="Your name…" />
       <button id="ephNicknameBtn" class="eph-nickname-btn" data-i18n="ephemeral.nicknameJoin">Join conversation</button>
     </div>

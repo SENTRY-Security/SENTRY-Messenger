@@ -145,7 +145,9 @@ export class ComposerController extends BaseController {
         let enabled;
         if (state.conversationId && ephCtrl?.isEphemeralConversation?.(state.conversationId)) {
             const session = ephCtrl.getSessionByConversationId(state.conversationId);
-            enabled = !!(session && ephCtrl.hasEncryptionReady(session.session_id));
+            // Disable calls if peer reported no WebRTC support
+            const peerNoWebRTC = ephCtrl.isPeerNoWebRTC?.(state.conversationId);
+            enabled = !!(session && ephCtrl.hasEncryptionReady(session.session_id) && !peerNoWebRTC);
         } else {
             enabled = !!(state.activePeerDigest && state.conversationToken && this._isSubscriptionActive());
         }
