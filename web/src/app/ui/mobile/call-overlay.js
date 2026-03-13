@@ -17,7 +17,6 @@ import {
   setLocalVideoMuted,
   setRemoteVideoElement,
   setLocalVideoElement,
-  getLocalStream,
   getLocalDisplayStream,
   getRemoteStream,
   toggleLocalVideo,
@@ -1334,20 +1333,23 @@ export function initCallOverlay({ showToast }) {
             && typeof curSrc.getVideoTracks === 'function'
             && curSrc.getVideoTracks().some((t) => t.readyState === 'live');
           if (!hasLiveVideo) {
-            // Find any available stream with live video tracks
-            const ls = getLocalStream();
+            // Find any available stream with live video tracks.
+            // Prefer getLocalDisplayStream() over getLocalStream() so the
+            // media-session face-blur pipeline output is used when active.
+            // Prioritise state._waitingPreview (which may already be blurred
+            // by the waiting pipeline) over the media-session stream.
+            const lds = getLocalDisplayStream();
             const cached = sessionStore?.cachedMicrophoneStream;
-            const source = [ls, state._waitingPreview, cached].find(
-              (s) => s && typeof s.getVideoTracks === 'function' && s.getVideoTracks().some((t) => t.readyState === 'live')
-            ) || null;
+            const isLive = (s) => s && typeof s.getVideoTracks === 'function' && s.getVideoTracks().some((t) => t.readyState === 'live');
+            const source = [state._waitingPreview, lds, cached].find(isLive) || null;
             log({
               waitingPreview: 'searching',
               direction: outgoing ? 'outgoing' : 'incoming',
-              hasLocalStream: !!ls,
-              lsVideoLive: ls ? ls.getVideoTracks().some((t) => t.readyState === 'live') : false,
+              hasLocalDisplayStream: !!lds,
+              ldsVideoLive: lds ? isLive(lds) : false,
               hasPreview: !!state._waitingPreview,
               hasCached: !!cached,
-              cachedVideoLive: cached && typeof cached.getVideoTracks === 'function' ? cached.getVideoTracks().some((t) => t.readyState === 'live') : false,
+              cachedVideoLive: cached ? isLive(cached) : false,
               foundSource: !!source
             });
             if (source) {
@@ -1358,7 +1360,10 @@ export function initCallOverlay({ showToast }) {
               }).catch((e) => {
                 log({ waitingPreviewPlay: 'failed', error: e?.message || String(e) });
               });
-              if (!state._waitingPreview) {
+              // (Re)start face blur on the new source if the waiting preview
+              // was dead or not set.  Without this, a raw stream would stay
+              // on screen permanently after the original blurred track ends.
+              if (!isLive(state._waitingPreview)) {
                 state._waitingPreview = source;
                 startWaitingFaceBlur(source);
               }
