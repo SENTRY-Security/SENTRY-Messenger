@@ -78,6 +78,7 @@ const guestEndBackdrop = document.getElementById('ephGuestEndBackdrop');
 const guestEndCancel = document.getElementById('ephGuestEndCancel');
 const guestEndConfirm = document.getElementById('ephGuestEndConfirm');
 const webrtcWarningEl = document.getElementById('ephWebrtcWarning');
+const splashWebrtcWarnEl = document.getElementById('ephSplashWebrtcWarn');
 
 // ── Particles ──
 function initParticles() {
@@ -779,8 +780,7 @@ async function boot() {
     setProgress(100, _t('ephemeral.connectionComplete'));
     await sleep(400);
 
-    // Detect WebRTC support before showing nickname screen
-    _detectWebRTCSupport();
+    // Show WebRTC warning on nickname screen (detection already ran before boot)
     if (!_webrtcSupported && webrtcWarningEl) {
       webrtcWarningEl.style.display = 'flex';
     }
@@ -991,6 +991,12 @@ nicknameInput?.addEventListener('keydown', (e) => {
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
+}
+
+// Detect WebRTC support immediately — before splash loading begins
+_detectWebRTCSupport();
+if (!_webrtcSupported && splashWebrtcWarnEl) {
+  splashWebrtcWarnEl.style.display = 'flex';
 }
 
 boot();
