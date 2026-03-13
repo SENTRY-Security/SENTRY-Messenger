@@ -92,7 +92,12 @@ function _ephemeralSignalSender(payload) {
     senderDeviceId: _ephCtx.selfDeviceId
   };
 
-  // Strip fields the ephemeral relay doesn't use
+  // Strip fields the ephemeral relay doesn't use.
+  // CRITICAL: targetDeviceId must be removed — the dummy device IDs used by the
+  // ephemeral adapter (e.g. 'owner-device', 'ephemeral-guest') don't match any
+  // real WebSocket deviceId on the target's Durable Object. If targetDeviceId is
+  // present, _handleNotify filters out ALL sockets and the message is never delivered.
+  delete msg.targetDeviceId;
   delete msg.envelope;
   delete msg.capabilities;
   delete msg.traceId;
