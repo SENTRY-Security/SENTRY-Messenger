@@ -139,7 +139,16 @@ export class ComposerController extends BaseController {
      */
     updateConversationActionsAvailability() {
         const state = this.getMessageState();
-        const enabled = !!(state.activePeerDigest && state.conversationToken && this._isSubscriptionActive());
+        // Ephemeral conversations don't use conversationToken — gate on
+        // encryption readiness instead so the owner can place calls.
+        const ephCtrl = this.deps.controllers?.ephemeral;
+        let enabled;
+        if (state.conversationId && ephCtrl?.isEphemeralConversation?.(state.conversationId)) {
+            const session = ephCtrl.getSessionByConversationId(state.conversationId);
+            enabled = !!(session && ephCtrl.hasEncryptionReady(session.session_id));
+        } else {
+            enabled = !!(state.activePeerDigest && state.conversationToken && this._isSubscriptionActive());
+        }
         const buttons = [this.elements.callBtn];
         for (const btn of buttons) {
             if (!btn) continue;
