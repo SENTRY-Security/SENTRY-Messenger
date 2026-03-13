@@ -342,6 +342,17 @@ WSS://{host}/api/ws?token={ws_token}&deviceId={guest_device_id}
 - 重連前先刷新 WS Token（`POST /api/v1/ephemeral/ws-token`）
 - Token 刷新失敗（session 過期/被刪除）→ 直接顯示銷毀畫面
 - 重連成功後自動重新觸發未完成的金鑰交換
+- 重連時伺服器發送 `ephemeral-peer-reconnected` 通知對方
+
+#### 離線訊息緩衝
+
+當對方無活躍 WebSocket 連線時（如頁面切到背景、斷線中），伺服器會暫存訊息：
+
+- **緩衝上限**：每個對話最多 **50 則**訊息
+- **緩衝 TTL**：**5 分鐘**過期自動清除
+- **可緩衝類型**：`ephemeral-message`、`ephemeral-key-exchange`、`ephemeral-key-exchange-ack`
+- 對方重新連線時自動按序 flush 所有緩衝訊息（`_flushEphemeralBuffers()`）
+- 過期緩衝由 Durable Object alarm 定時清理
 
 #### 控制訊息
 
@@ -478,6 +489,7 @@ voiceCallBtn.click()  ───▶  initiateEphemeralCall()
 | `extended_count` | INTEGER | 延長次數 |
 | `created_at` | INTEGER | 建立時間 |
 | `deleted_at` | INTEGER | 軟刪除時間（NULL = 活躍） |
+| `pending_key_exchange_json` | TEXT | HTTP Fallback 暫存 Guest 公開金鑰 Bundle |
 
 索引：`owner+deleted_at`、`guest_digest`、`conversation_id`、`expires_at`
 
@@ -495,11 +507,27 @@ voiceCallBtn.click()  ───▶  initiateEphemeralCall()
 | POST | `ws-token` | Guest | 取得新 WebSocket Token（重連用） |
 | POST | `key-exchange-submit` | Guest | HTTP Fallback 金鑰交換（持久化至 D1） |
 | POST | `clear-pending-kex` | Owner | 清除已處理的待處理金鑰交換 |
+| POST | `cleanup` | 系統 | 垃圾回收：清除過期 Session + 未消費邀請 |
+
+#### 伺服器端路由與 Durable Objects
+
+- **訊息路由**：`_handleEphemeralRelay()` 根據 `conversationId` / `sessionId` 查詢 `ephemeral_sessions` 表，確定目標 peer digest，透過對應 Durable Object 轉發
+- **Owner 通知**：`notifyAccountDO()` — 路由至已註冊帳號的 AccountWebSocket DO
+- **Guest 通知**：`notifyEphemeralDO()` — 路由至 `EPHEMERAL_` 前綴識別的臨時 Guest DO
+- **WS Token**：HS256 JWT（`{ accountDigest, iat, exp }`），Guest token 有效期 = Session 剩餘時間
+
+#### 社交分享預覽（OG Meta Tags）
+
+臨時連結支援社交平台分享預覽（`/e/{token}` 路由 by Cloudflare Functions）：
+
+- 爬蟲（社交平台 bot）：返回含 OG meta tags 的最小 HTML（不含 redirect）
+- 真實瀏覽器：返回含 OG tags + JavaScript 即時 redirect 至 `/pages/ephemeral.html#{token}`
+- 根據 `Accept-Language` / `?lang=` 參數提供本地化 OG 文字
 
 ### 安全設計
 
-- **一次性 Token** — 每個連結僅能消費一次，防止重放
-- **臨時身份** — Guest 獲得伺服器生成的臨時 `digest` + `device_id`，不關聯任何永久帳號
+- **一次性 Token** — 32 字元 nano ID，使用 `UPDATE ... WHERE consumed_at IS NULL` 原子操作確保僅能消費一次
+- **臨時身份** — Guest 獲得伺服器生成的臨時身份（`EPHEMERAL_` + 32 字元隨機 digest、`eph-` + 16 字元隨機 device_id），不關聯任何永久帳號
 - **完整 E2EE** — 所有訊息（含控制訊息、圖片）皆經 Double Ratchet 加密，伺服器僅中繼密文
 - **Session 限制** — 每位 Owner 最多 2 個同時活躍 Session
 - **金鑰交換 Fallback** — WS 重試 + HTTP 持久化雙路徑，確保金鑰交換不會因網路問題永久失敗
