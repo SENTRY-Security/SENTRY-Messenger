@@ -92,6 +92,22 @@
 | L-5 | **Cloudflare 單點依賴** | 架構 | 服務中斷 = 系統不可用 |
 | L-6 | **Argon2id t=3 迭代次數偏低** | `kdf.js` | OWASP 建議 t≥4，目前 t=3 |
 
+## 3.4 CI/CD 與部署安全
+
+| 編號 | 發現 | 位置 | 風險 |
+|------|------|------|------|
+| D-1 | **Secrets 透過 echo 傳入 wrangler** | `.github/workflows/deploy.yml:94-105` | 11 個密鑰可能出現在 process listing 或 Actions 日誌 |
+| D-2 | **SSH 密碼認證** | `.github/workflows/deploy.yml:177-179` | 使用密碼而非 SSH key，密碼儲存在 Actions secrets |
+| D-3 | **Debug page 在生產環境可存取** | `web/functions/[[path]].ts:2,108-115` | 依 IP 白名單（硬編碼 `60.248.6.250`）控制 debug.html 存取 |
+| D-4 | **缺少 CSP/HSTS headers** | `web/src/_headers` | 僅設 Cache-Control，無 CSP、HSTS、X-Frame-Options |
+| D-5 | **CORS 設定不安全** | `web/functions/[[path]].ts:209-226` | `allow-origin: *` + `allow-credentials: true` 且 allow-headers 為 `*` |
+| D-6 | **Source maps 在生產環境啟用** | `web/build.mjs:53` | `sourcemap: true` 暴露原始碼 |
+| D-7 | **Debug flags 預設啟用** | `web/src/app/ui/mobile/debug-flags.js` | `replay: true`, `drVerbose: true`, `conversationReset: true` |
+| D-8 | **Build manifest 公開可存取** | `web/build.mjs:346` | `build-manifest.json` 含 git commit、branch、完整檔案列表 |
+| D-9 | **API proxy 無 rate limiting** | `web/functions/[[path]].ts:156-217` | 所有 `/api/*` 直接 proxy，無速率限制 |
+| D-10 | **Wipe script 無安全護欄** | `scripts/wipe-all.sh` | 使用 `--yes` 無確認，無備份，刪除所有 D1 和 R2 資料 |
+| D-11 | **UAT 與 Production 共用 S3 帳號** | `scripts/setup-environments.sh:210-214` | UAT 使用同一 Cloudflare 帳號和 API token |
+
 ## 4. 待確認事項
 
 以下事項在程式碼掃描中無法完全確認，需作者或進一步分析：
@@ -134,8 +150,20 @@
 4. 無帶外金鑰驗證（信任伺服器不進行 MITM）
 
 **建議優先行動**：
-1. 文件化 send-side ratchet 停用的設計理由
-2. 考慮實作 Safety Number / Key Fingerprint
-3. 安排核心密碼學模組的第三方審計
-4. 確認 debug 日誌在生產環境的控制方式
-5. 考慮為媒體 chunk 加入 AAD（chunk index binding）
+
+立即（1 週內）：
+1. 輪換 deploy.yml 中暴露的所有密鑰
+2. SSH 改用 key-based 認證
+3. 移除硬編碼 debug IP，實作角色控制
+4. 停用生產環境 debug logging（`debug-flags.js` 中 replay/drVerbose 設為 false）
+5. 停用生產環境 source maps
+6. 加入 CSP、HSTS 等安全 headers
+7. 修正 CORS 設定
+
+短期（1 個月內）：
+8. 文件化 send-side ratchet 停用的設計理由
+9. 考慮實作 Safety Number / Key Fingerprint
+10. 安排核心密碼學模組的第三方審計
+11. 考慮為媒體 chunk 加入 AAD（chunk index binding）
+12. 加入 API rate limiting
+13. 分離 UAT 和 Production 的 S3/R2 存取

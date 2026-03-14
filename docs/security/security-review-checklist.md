@@ -195,7 +195,22 @@
 - [ ] TLS 1.2+ 強制（Cloudflare 處理）
 - [ ] ⚠️ Debug 日誌是否在生產環境停用
 
-## 10. 資料殘留
+## 10. 部署與 CI/CD 安全
+
+- [ ] GitHub Actions secrets 不透過 `echo` 傳入指令（`deploy.yml:94-105`）
+- [ ] SSH 使用 key-based 認證而非密碼（`deploy.yml:177-179`）
+- [ ] Debug page 不在生產環境可存取（`[[path]].ts:108-115`）
+- [ ] Debug flags 在生產環境停用（`debug-flags.js`）
+- [ ] Source maps 在生產環境停用（`build.mjs:53`）
+- [ ] `build-manifest.json` 不公開可存取（`build.mjs:346`）
+- [ ] CSP header 設定限制 script-src（`_headers`）
+- [ ] HSTS header 啟用（`_headers`）
+- [ ] CORS 設定不使用 `allow-origin: *`（`[[path]].ts:209-226`）
+- [ ] API proxy 有 rate limiting（`[[path]].ts:156-217`）
+- [ ] UAT 與 Production 使用不同 API token（`setup-environments.sh`）
+- [ ] Wipe script 需要明確確認（`wipe-all.sh`）
+
+## 11. 資料殘留
 
 - [ ] D1 訊息 TTL/清理機制
 - [ ] R2 媒體 TTL/清理機制
