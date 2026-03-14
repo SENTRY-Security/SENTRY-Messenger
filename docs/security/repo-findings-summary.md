@@ -64,7 +64,7 @@
 | H-3 | **自訂 JWT 驗證** | `account-ws.js:141-180` | 自訂實作增加驗證邏輯出錯的風險 |
 | H-4 | **Vault 降低前向保密** | `message-key-vault.js` | Message key 持久化，MK 洩漏可解密歷史訊息 |
 | H-5 | **自訂 ed2curve 轉換** | `ed2curve.js` | 自訂 field arithmetic，需確認正確性 |
-| H-6 | **DR 狀態並發競態條件** | `dr.js`, `dr-session.js` | drEncryptText 和 drDecryptText 並發時無 mutex，NsTotal 可能重複或被覆蓋 |
+| H-6 | ~~**DR 狀態並發競態條件**~~ | `dr-session.js` | ✅ 已有 mutex：`enqueueDrSessionOp()` 序列化所有 encrypt/decrypt 操作（`dr-session.js:1546`），收發端均使用（`state-live.js:380`） |
 | H-7 | **NsTotal 非同步 seeding 競態** | `dr-session.js:357-453` | seedTransportCounterFromServer() 可能覆蓋 drEncryptText() 的遞增結果 |
 | H-8 | **Account token 明文儲存** | `worker.js` accounts 表 | `account_token` 未 hash，DB 洩漏即可存取所有帳號 |
 | H-9 | **Rate limiting 非分散式** | `worker.js:317` | 使用 in-memory Map，不同 Cloudflare isolate 各自獨立，跨區域無效 |
@@ -143,7 +143,7 @@
 | 方面 | Signal Protocol | SENTRY 實作 | 影響 |
 |------|-----------------|-------------|------|
 | 實作 | libsignal（C/Rust） | 自訂 JavaScript | 需獨立審計 |
-| Safety Number | ✓ 提供 | ✗ 未實作 | 無法防禦 MITM 伺服器 |
+| Safety Number | ✓ 提供 | ✓ 已實作（TOFU + 60 位數字指紋） | 帶外驗證可防禦 MITM |
 | SPK 輪替 | 1-7 天 | ✗ 不輪替 | 增加金鑰洩漏影響 |
 | Sealed Sender | ✓ 提供 | ✗ 未實作 | 伺服器可見發送者 |
 | Message padding | ✓ 固定大小 | ✗ 無 padding | 訊息大小可推知 |
@@ -160,7 +160,7 @@
 1. 自訂密碼學實作需要第三方審計
 2. Send-side ratchet 停用降低前向保密
 3. Vault 設計是有意的安全取捨（歷史回放 vs 前向保密）
-4. 無帶外金鑰驗證（信任伺服器不進行 MITM）
+4. ~~無帶外金鑰驗證~~ ✅ 已實作 TOFU + Safety Number（殘餘風險：首次連線仍信任伺服器）
 
 **建議優先行動**：
 
@@ -175,7 +175,7 @@
 
 短期（1 個月內）：
 8. 文件化 send-side ratchet 停用的設計理由
-9. 考慮實作 Safety Number / Key Fingerprint
+9. ~~考慮實作 Safety Number / Key Fingerprint~~ ✅ 已實作（`safety-number.js`, `contact-secrets.js:checkAndStorePeerIk`）
 10. 安排核心密碼學模組的第三方審計
 11. 考慮為媒體 chunk 加入 AAD（chunk index binding）
 12. 加入 API rate limiting
