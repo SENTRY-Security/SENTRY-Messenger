@@ -86,6 +86,8 @@
 | M-10 | **Call key sub-material 使用零 salt** | `key-manager.js:25,307` | `ZERO_SALT = new Uint8Array(32)` 用於 HKDF 衍生子金鑰 |
 | M-11 | **AAD 未綁定完整 header** | `dr.js:44-65` | AAD 僅含 version+deviceId+counter，未包含 ek_pub_b64 和 pn，header 可被篡改 |
 | M-12 | **AEAD 失敗時 state rollback** | `dr.js:1112-1145` | 解密失敗時回滾 DR state 至快照，可能違反 no-fallback 政策 |
+| M-13 | **Call nonce counter 重連時歸零** | `key-manager.js:249-254` | Frame counter 僅存記憶體，tab crash 後重連同一通話可能導致 AES-GCM nonce 重用 |
+| M-14 | **Delivery intent 存於 localStorage** | `invite-reconciler.js` | 邀請恢復用的 ephemeral key material 存於 localStorage，XSS 可洩漏 |
 
 ### 3.3 低優先
 
@@ -100,6 +102,8 @@
 | L-7 | **Presence 任何人可查詢** | `account-ws.js` | 任何帳號可透過 add-watcher 訂閱他人上線狀態 |
 | L-8 | **Debug API endpoints 未停用** | `worker.js` | `/auth/sdm/debug-kit` 和 `/auth/opaque/debug` 在生產環境可存取 |
 | L-9 | **無 CSRF token 驗證** | `worker.js` | 依賴 same-origin policy，無 Origin header 驗證 |
+| L-10 | **TURN credentials 長通話不刷新** | `media-session.js` | 預設 TTL 300s，長通話時 credentials 可能過期 |
+| L-11 | **群組無 per-device 成員控制** | `groups.js` | 群組僅追蹤 accountDigest，無法選擇性移除特定裝置 |
 
 ## 3.4 CI/CD 與部署安全
 

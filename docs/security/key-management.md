@@ -136,9 +136,34 @@
 
 | 屬性 | 值 |
 |------|-----|
-| **用途** | 加密聯絡人邀請資料 |
-| **產生** | ⚠️ 待確認 |
+| **用途** | 加密聯絡人邀請資料（invite dropbox envelope） |
+| **演算法** | X25519 ECDH → HKDF-SHA256 → AES-256-GCM |
+| **產生** | 每次邀請產生 ephemeral X25519 keypair，與 owner 公鑰 ECDH |
+| **HKDF info tag** | `'contact-init/dropbox/v1'` |
+| **IV** | 12 bytes random |
+| **金鑰驗證** | 要求 32 bytes（X25519 標準） |
 | **程式碼** | `app/crypto/invite-dropbox.js` |
+
+### 10. Contact Backup Key
+
+| 屬性 | 值 |
+|------|-----|
+| **用途** | 加密聯絡人備份（contact-secrets snapshot） |
+| **演算法** | HKDF-SHA256(MK, 'contact-storage-v1') → AES-256-GCM |
+| **產生** | 從 Master Key 衍生 |
+| **IV** | 12 bytes random per backup |
+| **儲存格式** | `iv_b64:ct_b64` |
+| **程式碼** | `features/contact-backup.js:762-778` |
+
+### 11. Group Shared Key
+
+| 屬性 | 值 |
+|------|-----|
+| **用途** | 群組訊息加密（所有成員共用同一金鑰） |
+| **產生** | `crypto.getRandomValues(32 bytes)` → `deriveConversationContextFromSecret()` |
+| **分發** | 建立群組時分發給所有成員 |
+| **特性** | 所有成員持有相同金鑰，無 per-device 區分 |
+| **程式碼** | `features/groups.js:67-100` |
 
 ## 金鑰傳遞方式
 
