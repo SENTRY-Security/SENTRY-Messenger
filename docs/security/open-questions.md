@@ -20,16 +20,16 @@
 
 ---
 
-### Q-2: message_key_b64 是否在傳輸中包含
+### Q-2: message_key_b64 在 DR packet 中的用途
 
 **位置**：`shared/crypto/dr.js` envelope 格式
 
-**觀察**：DR encrypted packet 格式中包含 `message_key_b64` 欄位（見 `protocol-overview.md` Section 8.1），但不確定此欄位是否在 WebSocket 傳輸的 envelope 中，或僅用於 vault 儲存。
+**觀察**：DR encrypted packet 格式中包含 `message_key_b64` 欄位。根據程式碼分析，此欄位用於 Message Key Vault 儲存（解密後的 message key 存入 vault 供歷史回放），但需確認在 WebSocket 傳輸時是否被包含在 envelope 中。
 
 **問題**：
-1. `message_key_b64` 是否在 wire format 中傳輸？
-2. 若是，這將完全破壞加密（接收方可直接解密而不需 DR state）
-3. 若僅用於 vault，此欄位應在傳輸前移除
+1. `message_key_b64` 在透過 WebSocket 傳輸前是否被移除？
+2. 若包含在 wire format 中，接收方可直接使用此 key 解密而不需 DR state，將嚴重破壞安全性
+3. 需確認 drEncryptText 的返回值在傳輸前是否有欄位過濾
 
 ---
 

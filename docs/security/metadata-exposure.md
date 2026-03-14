@@ -34,8 +34,10 @@
 | 檔案大小 | R2 object size | 伺服器知道媒體大致大小 |
 | Chunk 數量 | R2 objects per upload | 伺服器知道檔案被分成幾個 chunks |
 | 上傳/下載時間 | R2 access logs | 伺服器知道媒體存取時間 |
-| 媒體類型 | ⚠️ 待確認（可能在 manifest 中加密） | 可能不可見 |
-| 檔案名稱 | ⚠️ 待確認 | 應在加密 manifest 中 |
+| 媒體類型 (`content_type`) | `sign-put-chunked` API request | 伺服器在上傳簽名請求中可見 content_type |
+| 檔案大小（精確） | `sign-put-chunked` API request `total_size` | 伺服器在上傳簽名請求中可見精確大小 |
+| 檔案名稱 | 在加密 manifest 中（伺服器不可見） | ✓ 已保護 |
+| 上傳方向 | `sign-put-chunked` API request `direction` | 伺服器知道是發送還是接收 |
 
 ### 1.4 通話 Metadata
 
@@ -56,6 +58,22 @@
 | Session 時長 | `created_at`, `expires_at` | 伺服器知道對話持續時間 |
 | 延長次數 | `extended_count` | 伺服器知道是否延長 |
 | 連結是否被使用 | `consumed_at` | 伺服器知道連結何時被開啟 |
+
+### 1.6 Message Key Vault Metadata
+
+| Metadata | 可見位置 | 影響 |
+|----------|----------|------|
+| `conversationId` | `wrap_context` (明文) | 伺服器知道對話 ID |
+| `messageId` | `wrap_context` (明文) | 伺服器知道訊息 ID |
+| `senderDeviceId` | `wrap_context` (明文) | 伺服器知道發送裝置 |
+| `targetDeviceId` | `wrap_context` (明文) | 伺服器知道接收裝置 |
+| `direction` | `wrap_context` (明文) | 伺服器知道訊息方向 |
+| `msgType` | `wrap_context` (明文) | 伺服器知道訊息類型（text/media） |
+| `headerCounter` | `wrap_context` (明文) | 伺服器知道 DR counter |
+| `createdAt` | `wrap_context` (明文) | 伺服器知道時間戳 |
+
+- 來源：`features/message-key-vault.js:194`
+- 注意：`wrap_context` 以明文傳送至伺服器用於索引/查詢，`wrapped_mk` 本身為密文
 
 ## 2. 儲存層可推知的資訊
 

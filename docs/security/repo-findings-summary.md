@@ -72,6 +72,8 @@
 | M-4 | **Debug 日誌輸出金鑰雜湊** | `dr.js:213-235, 305-330` | 生產環境可能洩漏金鑰資訊 |
 | M-5 | **社交圖譜完全暴露** | `conversation_acl` D1 表 | 伺服器可建立完整社交圖譜 |
 | M-6 | **訊息大小洩漏** | 全系統 | 無 padding 機制，密文大小反映明文大小 |
+| M-7 | **媒體 content_type 在上傳請求中明文** | `sign-put-chunked` API | 伺服器在簽名請求中可見 content_type 和 total_size |
+| M-8 | **Vault wrap_context 明文傳送** | `message-key-vault.js:194` | 伺服器可見 msgType、direction 等 metadata |
 
 ### 3.3 低優先
 
