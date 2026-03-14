@@ -109,7 +109,7 @@
 
 | 編號 | 發現 | 位置 | 風險 |
 |------|------|------|------|
-| D-1 | **Secrets 透過 echo 傳入 wrangler** | `.github/workflows/deploy.yml:94-105` | 11 個密鑰可能出現在 process listing 或 Actions 日誌 |
+| D-1 | ~~**Secrets 透過 echo 傳入 wrangler**~~ | `.github/workflows/deploy.yml:94-105` | ✅ 已修復：改用 env vars + `printf` 傳入 stdin（commit `74ddeb4`） |
 | D-2 | **SSH 密碼認證** | `.github/workflows/deploy.yml:177-179` | 使用密碼而非 SSH key，密碼儲存在 Actions secrets |
 | D-3 | **Debug page 在生產環境可存取** | `web/functions/[[path]].ts:2,108-115` | 依 IP 白名單（硬編碼 `60.248.6.250`）控制 debug.html 存取 |
 | D-4 | **缺少 CSP/HSTS headers** | `web/src/_headers` | 僅設 Cache-Control，無 CSP、HSTS、X-Frame-Options |

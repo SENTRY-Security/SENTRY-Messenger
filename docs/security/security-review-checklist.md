@@ -203,7 +203,7 @@
 
 ## 10. 部署與 CI/CD 安全
 
-- [ ] GitHub Actions secrets 不透過 `echo` 傳入指令（`deploy.yml:94-105`）
+- [x] GitHub Actions secrets 不透過 `echo` 傳入指令（`deploy.yml:94-105`）— 已改用 env vars + printf
 - [ ] SSH 使用 key-based 認證而非密碼（`deploy.yml:177-179`）
 - [ ] Debug page 不在生產環境可存取（`[[path]].ts:108-115`）
 - [ ] Debug flags 在生產環境停用（`debug-flags.js`）
