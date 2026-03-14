@@ -114,7 +114,7 @@
 ### 8. 伺服器主動攻擊（Active Server Adversary）
 
 系統對伺服器的防護為「誠實但好奇」（honest-but-curious）模型。系統**不**完全防護伺服器主動攻擊：
-- ⚠️ 伺服器可替換 Prekey Bundle 進行 MITM（無帶外驗證機制）
+- ✅ 伺服器可替換 Prekey Bundle 進行 MITM — 已實作 TOFU + Safety Number 驗證（首次仍信任伺服器）
 - 伺服器可選擇性不轉發訊息（DoS）
 - 伺服器可觀察所有 metadata
 - 伺服器可偽造 `ephemeral-extended` 等控制訊息

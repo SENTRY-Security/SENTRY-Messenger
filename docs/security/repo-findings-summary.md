@@ -60,7 +60,7 @@
 | 編號 | 發現 | 位置 | 風險 |
 |------|------|------|------|
 | H-1 | **Send-side ratchet 停用** | `dr.js:357-364` | 發送方 ephemeral key 不在每次發送時輪替，降低前向保密粒度 |
-| H-2 | **無 Prekey Bundle 帶外驗證** | X3DH 流程 | 伺服器可替換 prekey bundle 進行 MITM |
+| H-2 | ~~**無 Prekey Bundle 帶外驗證**~~ | X3DH 流程 | ✅ 已實作：TOFU identity key tracking + Safety Number 帶外驗證機制（`contact-secrets.js:checkAndStorePeerIk`, `safety-number.js`） |
 | H-3 | **自訂 JWT 驗證** | `account-ws.js:141-180` | 自訂實作增加驗證邏輯出錯的風險 |
 | H-4 | **Vault 降低前向保密** | `message-key-vault.js` | Message key 持久化，MK 洩漏可解密歷史訊息 |
 | H-5 | **自訂 ed2curve 轉換** | `ed2curve.js` | 自訂 field arithmetic，需確認正確性 |

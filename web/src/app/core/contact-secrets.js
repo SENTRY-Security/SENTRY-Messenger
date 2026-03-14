@@ -2311,6 +2311,82 @@ export function updateContactProfile(peerAccountDigest, { nickname, avatar, peer
   return { peerKey: key, nickname: record.nickname, avatar: record.avatar };
 }
 
+// ─── TOFU (Trust-on-First-Use) Identity Key Tracking ───
+// Stores the peer's Identity Key (ik_pub) on first X3DH handshake.
+// On subsequent handshakes, detects if the key has changed (possible MITM).
+
+/**
+ * Check peer Identity Key against stored value and update.
+ *
+ * @param {string} peerAccountDigest - peer account digest
+ * @param {string} ikPubB64 - peer's current identity key (base64)
+ * @param {{ peerDeviceId?: string }} opts
+ * @returns {{ firstUse: boolean, changed: boolean, previousIkPub: string|null }}
+ */
+export function checkAndStorePeerIk(peerAccountDigest, ikPubB64, opts = {}) {
+  if (!ikPubB64 || typeof ikPubB64 !== 'string') {
+    return { firstUse: false, changed: false, previousIkPub: null };
+  }
+  const peerDeviceIdHint = normalizePeerDeviceId(opts.peerDeviceId || null);
+  const { key } = resolvePeerKey(peerAccountDigest, { peerDeviceIdHint });
+  if (!key) return { firstUse: true, changed: false, previousIkPub: null };
+
+  const map = ensureMap();
+  const record = map.get(key);
+  if (!record) return { firstUse: true, changed: false, previousIkPub: null };
+
+  // trustedIkPub is stored per-peer record (keyed by accountDigest::deviceId)
+  const stored = record.trustedIkPub || null;
+  const trimmedNew = ikPubB64.trim();
+
+  if (!stored) {
+    // First use — store and trust
+    record.trustedIkPub = trimmedNew;
+    record.trustedIkPubAt = Date.now();
+    persistContactSecrets();
+    log('[tofu] First-use identity key stored', { peerKey: key });
+    return { firstUse: true, changed: false, previousIkPub: null };
+  }
+
+  if (stored === trimmedNew) {
+    // Key unchanged — trust maintained
+    return { firstUse: false, changed: false, previousIkPub: stored };
+  }
+
+  // Key CHANGED — potential MITM or legitimate re-registration
+  const previousIkPub = stored;
+  record.trustedIkPub = trimmedNew;
+  record.trustedIkPubAt = Date.now();
+  record.previousIkPub = previousIkPub;
+  record.ikChangedAt = Date.now();
+  persistContactSecrets();
+  log('[tofu] ⚠ Identity key CHANGED', { peerKey: key });
+  return { firstUse: false, changed: true, previousIkPub };
+}
+
+/**
+ * Get the stored trusted identity key for a peer.
+ *
+ * @param {string} peerAccountDigest
+ * @param {{ peerDeviceId?: string }} opts
+ * @returns {{ trustedIkPub: string|null, trustedAt: number|null, changed: boolean, changedAt: number|null }}
+ */
+export function getPeerTrustedIk(peerAccountDigest, opts = {}) {
+  const peerDeviceIdHint = normalizePeerDeviceId(opts.peerDeviceId || null);
+  const { key } = resolvePeerKey(peerAccountDigest, { peerDeviceIdHint });
+  if (!key) return { trustedIkPub: null, trustedAt: null, changed: false, changedAt: null };
+  const map = ensureMap();
+  const record = map.get(key);
+  if (!record) return { trustedIkPub: null, trustedAt: null, changed: false, changedAt: null };
+  return {
+    trustedIkPub: record.trustedIkPub || null,
+    trustedAt: record.trustedIkPubAt || null,
+    changed: !!record.ikChangedAt,
+    changedAt: record.ikChangedAt || null
+  };
+}
+// ─── End TOFU Identity Key Tracking ───
+
 export function getContactSecret(peerAccountDigest, opts = {}) {
   const peerDeviceIdHint = normalizePeerDeviceId(opts.peerDeviceId || opts.peerDeviceIdHint || null);
   const { key } = resolvePeerKey(peerAccountDigest, { peerDeviceIdHint });

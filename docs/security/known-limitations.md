@@ -4,13 +4,14 @@
 
 ## 1. 密碼學限制
 
-### 1.1 無 Prekey Bundle 帶外驗證
+### 1.1 ~~無 Prekey Bundle 帶外驗證~~ ✅ 已實作
 
-- **現狀**：使用者無法驗證對方的 Identity Key 是否真正屬於對方
-- **風險**：伺服器可替換 Prekey Bundle 進行中間人攻擊（MITM）
-- **Signal 對照**：Signal 提供 Safety Number 機制供使用者帶外比對
-- **影響**：系統對「誠實但好奇」的伺服器有效，但對主動攻擊的伺服器無法防護
-- **位置**：整個 X3DH 流程
+- **現狀**：已實作 TOFU（Trust-on-First-Use）和 Safety Number 帶外驗證
+  - TOFU：首次 X3DH 時儲存 peer Identity Key，後續 handshake 偵測 key 變更（`contact-secrets.js:checkAndStorePeerIk`）
+  - Safety Number：60 位數字指紋供使用者帶外比對（`safety-number.js:computeSafetyNumber`）
+  - Key 變更時觸發 `dr:identity-key-changed` 事件通知 UI
+- **殘餘風險**：首次連線仍信任伺服器（TOFU 固有限制），使用者需主動比對 Safety Number 才能完全排除 MITM
+- **位置**：`dr-session.js`（ensureDrSession, bootstrapDrFromGuestBundle）、`contact-secrets.js`、`safety-number.js`
 
 ### 1.2 IK/SPK 無定期輪替
 

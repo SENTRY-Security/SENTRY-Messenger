@@ -20,7 +20,7 @@ import { prekeysBundle } from '../api/prekeys.js';
 import { x3dhInitiate, drEncryptText, x3dhRespond, buildDrAadFromHeader } from '../crypto/dr.js';
 import { b64, b64u8 } from '../crypto/nacl.js';
 import { getAccountDigest, drState, normalizePeerIdentity, getDeviceId, ensureDeviceId, normalizeAccountDigest, clearDrStatesByAccount, clearDrState, normalizePeerDeviceId, getMkRaw } from '../core/store.js';
-import { getContactSecret, setContactSecret, restoreContactSecrets, quarantineCorruptContact, normalizePeerKeyForQuarantine, recordPendingContact, clearPendingContact, buildPartialContactSecretsSnapshot, encryptContactSecretPayload, drEffectiveCounters, isDrRegression } from '../core/contact-secrets.js';
+import { getContactSecret, setContactSecret, restoreContactSecrets, quarantineCorruptContact, normalizePeerKeyForQuarantine, recordPendingContact, clearPendingContact, buildPartialContactSecretsSnapshot, encryptContactSecretPayload, drEffectiveCounters, isDrRegression, checkAndStorePeerIk } from '../core/contact-secrets.js';
 import {
   initContactSecretsBackup,
   triggerContactSecretsBackup,
@@ -1631,6 +1631,32 @@ export async function ensureDrSession(params = {}) {
       }
 
       const peerBundle = normalizePeerBundleFromPrekeys(bundle);
+
+      // [TOFU] Check peer Identity Key against stored trusted key
+      const peerBundleDeviceId = bundle?.device_id || peerDeviceId || null;
+      const tofuResult = checkAndStorePeerIk(peer, peerBundle.ik_pub, { peerDeviceId: peerBundleDeviceId });
+      if (tofuResult.changed) {
+        console.warn('[dr-session:tofu] ⚠ IDENTITY KEY CHANGED for peer', {
+          peerAccountDigest: peer,
+          peerDeviceId: peerBundleDeviceId
+        });
+        try {
+          if (typeof document !== 'undefined') {
+            document.dispatchEvent(new CustomEvent('dr:identity-key-changed', {
+              detail: {
+                peerAccountDigest: peer,
+                peerDeviceId: peerBundleDeviceId,
+                previousIkPub: tofuResult.previousIkPub,
+                newIkPub: peerBundle.ik_pub,
+                context: 'x3dh-initiate',
+                timestamp: Date.now()
+              }
+            }));
+          }
+        } catch (e) {
+          console.error('[dr-session:tofu] Failed to dispatch identity-key-changed event', e);
+        }
+      }
 
       // [DEBUG-NOTIFY] Implicit Reset Path
       try {
@@ -3791,6 +3817,34 @@ export async function bootstrapDrFromGuestBundle(params = {}) {
   const peerDeviceId = params?.peerDeviceId ?? null;
   const holder = drState({ peerAccountDigest: peer, peerDeviceId });
   if (holder?.rk && !force) return false;
+  // [TOFU] Check peer Identity Key against stored trusted key
+  const guestIkPub = guestBundle?.ik_pub || guestBundle?.ik || guestBundle?.ik_pub_b64 || null;
+  if (guestIkPub) {
+    const tofuResult = checkAndStorePeerIk(peer, guestIkPub, { peerDeviceId });
+    if (tofuResult.changed) {
+      console.warn('[dr-bootstrap:tofu] ⚠ IDENTITY KEY CHANGED for peer', {
+        peerAccountDigest: peer,
+        peerDeviceId
+      });
+      try {
+        if (typeof document !== 'undefined') {
+          document.dispatchEvent(new CustomEvent('dr:identity-key-changed', {
+            detail: {
+              peerAccountDigest: peer,
+              peerDeviceId,
+              previousIkPub: tofuResult.previousIkPub,
+              newIkPub: guestIkPub,
+              context: 'x3dh-respond',
+              timestamp: Date.now()
+            }
+          }));
+        }
+      } catch (e) {
+        console.error('[dr-bootstrap:tofu] Failed to dispatch identity-key-changed event', e);
+      }
+    }
+  }
+
   const priv = await ensureDevicePrivLoaded();
   const st = await x3dhRespond(priv, guestBundle);
   const logInvalid = (keyName, raw, reason) => {

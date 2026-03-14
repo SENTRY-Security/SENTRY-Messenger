@@ -62,7 +62,7 @@ SENTRY Messenger 是一個端對端加密即時通訊系統，目標為：
 - **已知限制**：
   - 伺服器可觀察通訊模式（誰與誰、何時、多少）
   - 伺服器可拒絕服務（不轉發訊息、不回應 API）
-  - 伺服器可替換 Prekey Bundle（中間人攻擊）— ⚠️ 目前無 Trust-on-First-Use 或帶外驗證機制確認
+  - 伺服器可替換 Prekey Bundle（中間人攻擊）— ✅ 已實作 TOFU（首次信任後偵測 key 變更）+ Safety Number 帶外驗證
   - 伺服器可重放或重新排序密文（但客戶端有 counter 驗證）
 
 ### 3.3 惡意聯絡人/對話方
@@ -115,7 +115,7 @@ SENTRY Messenger 是一個端對端加密即時通訊系統，目標為：
 | 使用者自願洩漏金鑰 | 非技術問題 |
 | 伺服器拒絕服務 | E2EE 系統無法防止伺服器不轉發訊息 |
 | Traffic Analysis | 訊息時間/大小模式可被觀察，系統未實作 padding 或 cover traffic |
-| 伺服器替換 Prekey Bundle (MITM) | ⚠️ 目前無帶外身份驗證機制（無 Safety Number / Key Fingerprint） |
+| 伺服器替換 Prekey Bundle (MITM) | ✅ 已實作 TOFU + Safety Number 驗證機制 |
 
 ## 6. 各元件信任假設
 
@@ -188,9 +188,9 @@ SENTRY Messenger 是一個端對端加密即時通訊系統，目標為：
 
 ### 高優先級
 
-1. **無 Prekey Bundle 帶外驗證**：伺服器可替換公鑰進行 MITM。目前無 Safety Number 或 Key Fingerprint 機制。
-   - 位置：整個 X3DH 流程
-   - 影響：伺服器理論上可進行主動 MITM 攻擊
+1. ~~**無 Prekey Bundle 帶外驗證**~~：✅ 已實作 TOFU identity key tracking（`contact-secrets.js:checkAndStorePeerIk`）和 Safety Number 帶外驗證（`safety-number.js:computeSafetyNumber`）。Identity key 變更時觸發 `dr:identity-key-changed` 事件。
+   - 位置：`dr-session.js`（ensureDrSession, bootstrapDrFromGuestBundle）
+   - 狀態：已緩解（使用者可透過 Safety Number 帶外比對確認無 MITM）
 
 2. **Message Key Vault 伺服器端儲存**：加密的訊息金鑰儲存在伺服器 D1 資料庫。若加密金鑰洩漏，歷史訊息可被解密。
    - 位置：`web/src/app/features/message-key-vault.js`
