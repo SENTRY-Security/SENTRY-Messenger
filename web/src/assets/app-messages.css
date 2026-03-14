@@ -1977,7 +1977,7 @@
   background: linear-gradient(180deg, rgba(5,10,20,0.9), transparent);
   border-bottom: 1px dashed rgba(245,158,11,0.3);
   position: relative;
-  z-index: 10;
+  z-index: 3;
 }
 
 .eph-conv-timer-control-row {
