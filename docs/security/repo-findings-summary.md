@@ -40,6 +40,9 @@
 | **方向性通話金鑰** | `key-manager.js` | Caller/Callee 使用不同金鑰，防止雙向重用 |
 | **CMK Proof** | `key-manager.js:276-287` | HMAC 驗證防止 callId/epoch 竄改 |
 | **Stale session 防護** | `account-ws.js:571-591` | 拒絕過期 session，關閉舊連線 |
+| **SQL injection 全面防護** | `worker.js` 全部 358 處 | 所有 DB 操作使用 parameterized queries（`?N` 佔位符） |
+| **嚴格輸入正規化** | `worker.js` | account_digest（64 hex）、conversation_id（8-128 alphanum）、device_id（max 120）等均有驗證 |
+| **訊息 counter 嚴格遞增** | `worker.js` atomic-send | 伺服器端 `counter <= MAX(previous)` 檢查，防止重放 |
 
 ### 2.3 資料保護
 
@@ -63,6 +66,9 @@
 | H-5 | **自訂 ed2curve 轉換** | `ed2curve.js` | 自訂 field arithmetic，需確認正確性 |
 | H-6 | **DR 狀態並發競態條件** | `dr.js`, `dr-session.js` | drEncryptText 和 drDecryptText 並發時無 mutex，NsTotal 可能重複或被覆蓋 |
 | H-7 | **NsTotal 非同步 seeding 競態** | `dr-session.js:357-453` | seedTransportCounterFromServer() 可能覆蓋 drEncryptText() 的遞增結果 |
+| H-8 | **Account token 明文儲存** | `worker.js` accounts 表 | `account_token` 未 hash，DB 洩漏即可存取所有帳號 |
+| H-9 | **Rate limiting 非分散式** | `worker.js:317` | 使用 in-memory Map，不同 Cloudflare isolate 各自獨立，跨區域無效 |
+| H-10 | **Error messages 洩漏內部狀態** | `worker.js` 多處 | 回傳 "CounterTooLow"（含 maxCounter）、"Replay"、"SessionExpired" 等可用於列舉 |
 
 ### 3.2 中優先
 
@@ -91,6 +97,9 @@
 | L-4 | **InsertableStreams 相容性** | `key-manager.js` | 不支援的瀏覽器無法使用通話 E2EE |
 | L-5 | **Cloudflare 單點依賴** | 架構 | 服務中斷 = 系統不可用 |
 | L-6 | **Argon2id t=3 迭代次數偏低** | `kdf.js` | OWASP 建議 t≥4，目前 t=3 |
+| L-7 | **Presence 任何人可查詢** | `account-ws.js` | 任何帳號可透過 add-watcher 訂閱他人上線狀態 |
+| L-8 | **Debug API endpoints 未停用** | `worker.js` | `/auth/sdm/debug-kit` 和 `/auth/opaque/debug` 在生產環境可存取 |
+| L-9 | **無 CSRF token 驗證** | `worker.js` | 依賴 same-origin policy，無 Origin header 驗證 |
 
 ## 3.4 CI/CD 與部署安全
 

@@ -245,3 +245,5 @@
 | 🟢 低 | Q-12 (群組模型) | 架構理解 |
 | 🟢 低 | Q-13 (頭像) | 低風險 metadata |
 | 🟢 低 | Q-14 (Receipt) | Metadata 暴露 |
+| 🔴 高 | Q-18 (DR mutex) | 並發安全 |
+| 🔴 高 | NEW: Account token 應否 hash | DB 洩漏風險 |

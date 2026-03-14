@@ -118,10 +118,16 @@
 
 ### 4.3 輸入驗證
 
-- [ ] WebSocket 訊息大小限制（Signal: 16KB, SDP: 64KB）
-- [ ] Ephemeral buffer 限制（50 messages, 5 min TTL）
-- [ ] API payload 驗證
-- [ ] SQL injection 防護（D1 parameterized queries）
+- [x] WebSocket 訊息大小限制（Signal: 16KB, SDP: 64KB）
+- [x] Ephemeral buffer 限制（50 messages, 5 min TTL）
+- [x] SQL injection 防護 — 全部 358 處使用 parameterized queries（`?N`）
+- [x] 輸入正規化：account_digest（64 hex）、conversation_id（8-128 alphanum）等
+- [x] 訊息 counter 嚴格遞增（server-side `counter <= MAX(previous)` 檢查）
+- [ ] ⚠️ Account token 明文儲存（應 hash 後儲存）
+- [ ] ⚠️ Rate limiting 非分散式（in-memory Map，跨 isolate 無效）
+- [ ] ⚠️ Error messages 洩漏狀態（"CounterTooLow" 含 maxCounter）
+- [ ] ⚠️ Debug endpoints 未停用（`/auth/sdm/debug-kit`, `/auth/opaque/debug`）
+- [ ] ⚠️ 無 CSRF token 驗證
 
 ### 4.4 OPAQUE
 
