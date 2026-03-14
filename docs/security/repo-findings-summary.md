@@ -61,6 +61,8 @@
 | H-3 | **自訂 JWT 驗證** | `account-ws.js:141-180` | 自訂實作增加驗證邏輯出錯的風險 |
 | H-4 | **Vault 降低前向保密** | `message-key-vault.js` | Message key 持久化，MK 洩漏可解密歷史訊息 |
 | H-5 | **自訂 ed2curve 轉換** | `ed2curve.js` | 自訂 field arithmetic，需確認正確性 |
+| H-6 | **DR 狀態並發競態條件** | `dr.js`, `dr-session.js` | drEncryptText 和 drDecryptText 並發時無 mutex，NsTotal 可能重複或被覆蓋 |
+| H-7 | **NsTotal 非同步 seeding 競態** | `dr-session.js:357-453` | seedTransportCounterFromServer() 可能覆蓋 drEncryptText() 的遞增結果 |
 
 ### 3.2 中優先
 
@@ -74,6 +76,10 @@
 | M-6 | **訊息大小洩漏** | 全系統 | 無 padding 機制，密文大小反映明文大小 |
 | M-7 | **媒體 content_type 在上傳請求中明文** | `sign-put-chunked` API | 伺服器在簽名請求中可見 content_type 和 total_size |
 | M-8 | **Vault wrap_context 明文傳送** | `message-key-vault.js:194` | 伺服器可見 msgType、direction 等 metadata |
+| M-9 | **Invite Dropbox 硬編碼 HKDF salt** | `invite-dropbox.js:6` | 使用固定字串 `'invite-dropbox-salt'` 而非 per-envelope 隨機 salt |
+| M-10 | **Call key sub-material 使用零 salt** | `key-manager.js:25,307` | `ZERO_SALT = new Uint8Array(32)` 用於 HKDF 衍生子金鑰 |
+| M-11 | **AAD 未綁定完整 header** | `dr.js:44-65` | AAD 僅含 version+deviceId+counter，未包含 ek_pub_b64 和 pn，header 可被篡改 |
+| M-12 | **AEAD 失敗時 state rollback** | `dr.js:1112-1145` | 解密失敗時回滾 DR state 至快照，可能違反 no-fallback 政策 |
 
 ### 3.3 低優先
 
@@ -84,6 +90,7 @@
 | L-3 | **WebRTC IP 洩漏** | `media-session.js` | P2P 連線可能暴露真實 IP |
 | L-4 | **InsertableStreams 相容性** | `key-manager.js` | 不支援的瀏覽器無法使用通話 E2EE |
 | L-5 | **Cloudflare 單點依賴** | 架構 | 服務中斷 = 系統不可用 |
+| L-6 | **Argon2id t=3 迭代次數偏低** | `kdf.js` | OWASP 建議 t≥4，目前 t=3 |
 
 ## 4. 待確認事項
 

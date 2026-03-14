@@ -188,7 +188,24 @@
 
 ---
 
-## 5. 測試與品質問題
+## 5. 並發安全問題
+
+### Q-18: DR 狀態並發 mutex
+
+**位置**：`shared/crypto/dr.js`（drEncryptText, drDecryptText）
+
+**觀察**：drEncryptText 和 drDecryptText 可能並發執行在同一 DR state 上。程式碼使用 `Math.max()` 防止 counter rollback（`dr.js:1002,1006`），但這不是完整的並發保護。
+
+**問題**：
+1. 是否有外部 mutex 或 queue 機制保護 DR state？
+2. 在 `await crypto.subtle.encrypt()` 的 suspension point 期間，另一個操作是否可能修改 state？
+3. `seedTransportCounterFromServer()`（`dr-session.js:357-453`）的非同步 seeding 是否可能覆蓋 drEncryptText 剛遞增的 NsTotal？
+
+**安全影響**：若兩個操作同時保留同一 counter 值，可能導致 counter 重複，進而觸發伺服器端 COUNTER_TOO_LOW 拒絕，或更嚴重的情況下導致 IV+key 重用。
+
+---
+
+## 6. 測試與品質問題
 
 ### Q-16: 密碼學模組測試覆蓋率
 

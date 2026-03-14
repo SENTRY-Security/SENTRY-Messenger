@@ -315,3 +315,6 @@ DR 解密完成
 4. ⚠️ **IV 重用風險**：12-byte random IV 依賴隨機不重複（HKDF salt 分散風險，但無明確追蹤）
 5. ⚠️ **Manifest 無獨立簽章**：manifest 加密但無額外的完整性驗證（依賴 GCM 的 authentication tag）
 6. ⚠️ **Debug 日誌輸出金鑰雜湊**：`dr.js` 在多處輸出金鑰的 hash 值（Lines 213-235, 305-330, 368-378）
+7. ⚠️ **DR 狀態並發無 mutex**：drEncryptText 和 drDecryptText 可能並發修改同一 state，使用 `Math.max()` 防回滾但非完整並發保護
+8. ⚠️ **Invite Dropbox 硬編碼 salt**：`invite-dropbox.js:6` 使用固定字串 `'invite-dropbox-salt'`，降低語義安全性
+9. ⚠️ **Call key 零 salt**：`key-manager.js:25` 的 `ZERO_SALT = new Uint8Array(32)` 用於 HKDF 子金鑰衍生
