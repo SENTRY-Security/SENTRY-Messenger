@@ -177,13 +177,32 @@ function handleIncomingInvite(msg) {
     log({ callIncomingInviteIgnored: true, reason: result?.error || 'state-conflict' });
     // Notify the caller that we are busy so they see "對方忙線" instead of endless ringing
     if (result?.error === 'CALL_ALREADY_IN_PROGRESS' && fromAccountDigest && fromDeviceId) {
-      emitSignal({
-        type: 'call-busy',
-        callId: msg.callId,
-        targetAccountDigest: fromAccountDigest,
-        senderDeviceId: ensureDeviceId(),
-        targetDeviceId: fromDeviceId
-      });
+      // Check if this is a duplicate invite for the SAME call (the server
+      // sends an HTTP notification AND the caller sends a WS signal — both
+      // arrive as call-invite).  Only send call-busy for genuinely different
+      // calls; for duplicates, apply any envelope / capabilities that the
+      // first (HTTP-originated) invite didn't carry.
+      const currentSession = getCallSessionSnapshot();
+      if (currentSession?.callId && currentSession.callId === msg.callId) {
+        log({ callIncomingInviteDuplicate: true, callId: msg.callId });
+        // Apply envelope from the duplicate invite (the HTTP notification
+        // doesn't carry it, but the WS relay does).
+        if (envelope) {
+          try {
+            applyCallEnvelope(envelope);
+          } catch (err) {
+            log({ callDuplicateEnvelopeError: err?.message || err, callId: msg.callId });
+          }
+        }
+      } else {
+        emitSignal({
+          type: 'call-busy',
+          callId: msg.callId,
+          targetAccountDigest: fromAccountDigest,
+          senderDeviceId: ensureDeviceId(),
+          targetDeviceId: fromDeviceId
+        });
+      }
     }
   }
 }
