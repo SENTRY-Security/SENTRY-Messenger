@@ -1950,9 +1950,9 @@ async function handleInviteDropboxRoutes(req, env) {
       return json({ error: 'Forbidden', message: 'accountToken invalid' }, { status: 403 });
     }
 
-    // Rate limit: 3 failed attempts per 30s window (distributed via Durable Object)
+    // Rate limit: 10 failed attempts per 30s window (distributed via Durable Object)
     const rlKey = `account:${account.account_digest}`;
-    const rl = await checkRateLimit(env, rlKey, 'pairing-lookup', 3, 30);
+    const rl = await checkRateLimit(env, rlKey, 'pairing-lookup', 10, 30);
     if (!rl.allowed) {
       return json({ error: 'RateLimited', message: 'too many attempts, try again later', retry_after: rl.retryAfter }, { status: 429 });
     }
@@ -2859,10 +2859,10 @@ async function handlePrekeysRoutes(req, env) {
 
   // Fetch per-device bundle (consume one OPK)
   if (req.method === 'GET' && url.pathname === '/d1/prekeys/bundle') {
-    // Rate limit prekey bundle fetch: 20 per 60s per IP (prevents OPK exhaustion)
+    // Rate limit prekey bundle fetch: 50 per 60s per IP (prevents OPK exhaustion)
     const pkIP = req.headers.get('CF-Connecting-IP') || 'unknown';
     if (pkIP !== 'unknown') {
-      const rl = await checkRateLimit(env, `ip:${pkIP}`, 'prekey-bundle', 20, 60);
+      const rl = await checkRateLimit(env, `ip:${pkIP}`, 'prekey-bundle', 50, 60);
       if (!rl.allowed) {
         return json({ error: 'RateLimited', message: 'too many requests', retry_after: rl.retryAfter }, { status: 429 });
       }
@@ -6781,10 +6781,10 @@ async function handlePublicRoutes(req, env) {
 
   // ── Auth (SDM exchange, OPAQUE, MK) ──────────────────────────
   if (path.startsWith('/api/v1/auth/') || path === '/api/v1/mk/store' || path === '/api/v1/mk/update') {
-    // Stricter rate limit for auth endpoints: 10 requests per 60s per IP
+    // Rate limit for auth endpoints: 50 requests per 60s per IP
     const authIP = req.headers.get('CF-Connecting-IP') || 'unknown';
     if (authIP !== 'unknown') {
-      const rl = await checkRateLimit(env, `ip:${authIP}`, 'auth', 10, 60);
+      const rl = await checkRateLimit(env, `ip:${authIP}`, 'auth', 50, 60);
       if (!rl.allowed) {
         return json({ error: 'RateLimited', message: 'too many auth attempts', retry_after: rl.retryAfter }, { status: 429 });
       }
