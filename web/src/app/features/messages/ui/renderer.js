@@ -669,9 +669,9 @@ export class MessageRenderer {
             wrapper.appendChild(expiredTag);
         }
 
-        // Save-to-drive button (only for non-uploading, non-expired media with valid source)
+        // Save-to-drive button (only for non-uploading, non-expired media with valid source; skip videos)
         const hasSource = !!(media.objectKey && media.envelope) || !!(media.chunked && media.baseKey && media.manifestEnvelope);
-        if (hasSource && !media.uploading && !media._expired) {
+        if (hasSource && !media.uploading && !media._expired && !isVideo) {
             const actions = document.createElement('div');
             actions.className = 'message-file-actions';
             const saveBtn = document.createElement('button');

@@ -6311,6 +6311,51 @@ async function s3SignedRequest(env, { method, key, query = '', body = null }) {
   });
 }
 
+async function copyS3Object(env, sourceKey, destKey) {
+  const endpoint = env.S3_ENDPOINT;
+  const accessKey = env.S3_ACCESS_KEY;
+  const secretKey = env.S3_SECRET_KEY;
+  const bucket = env.S3_BUCKET;
+  const region = env.S3_REGION || 'auto';
+  if (!endpoint || !accessKey || !secretKey || !bucket) {
+    throw new Error('S3 configuration missing');
+  }
+  const { protocol, host } = parseS3Endpoint(endpoint);
+  const now = new Date();
+  const dateStamp = now.toISOString().replace(/[-:]/g, '').slice(0, 8);
+  const amzDate = now.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+  const credential = `${accessKey}/${dateStamp}/${region}/s3/aws4_request`;
+  const encodedDestKey = destKey.split('/').map(s => encodeURIComponent(s)).join('/');
+  const canonicalUri = `/${bucket}/${encodedDestKey}`;
+  const copySource = `/${bucket}/${sourceKey.split('/').map(s => encodeURIComponent(s)).join('/')}`;
+  const payloadHash = await sha256Hex('');
+  const canonicalHeaders = `host:${host}\nx-amz-content-sha256:${payloadHash}\nx-amz-copy-source:${copySource}\nx-amz-date:${amzDate}\n`;
+  const signedHeaders = 'host;x-amz-content-sha256;x-amz-copy-source;x-amz-date';
+  const canonicalRequest = ['PUT', canonicalUri, '', canonicalHeaders, signedHeaders, payloadHash].join('\n');
+  const scope = `${dateStamp}/${region}/s3/aws4_request`;
+  const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, await sha256Hex(canonicalRequest)].join('\n');
+  const signingKey = await getS3SigningKey(secretKey, dateStamp, region, 's3');
+  const signatureBytes = await hmacSha256(signingKey, stringToSign);
+  const signature = [...signatureBytes].map(b => b.toString(16).padStart(2, '0')).join('');
+  const authHeader = `AWS4-HMAC-SHA256 Credential=${credential}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+  const url = `${protocol}//${host}${canonicalUri}`;
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: {
+      'Host': host,
+      'x-amz-content-sha256': payloadHash,
+      'x-amz-copy-source': copySource,
+      'x-amz-date': amzDate,
+      'Authorization': authHeader
+    }
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`S3 copy failed (${res.status}): ${errText.slice(0, 200)}`);
+  }
+  return res;
+}
+
 async function deleteS3Object(env, key) {
   const res = await s3SignedRequest(env, { method: 'DELETE', key });
   return res.ok || res.status === 404; // 404 = already gone
@@ -8062,13 +8107,59 @@ async function handlePublicRoutes(req, env) {
   }
 
   if (path === '/api/v1/media/copy' && method === 'POST') {
-    // Server-side S3 copy requires SDK — not available in pure Worker.
-    // Return error directing client to re-upload or use Node.js path.
-    return json({ error: 'NotImplemented', message: 'media/copy not yet available on edge; use origin server' }, { status: 501 });
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const sourceKey = (body?.source_key || body?.sourceKey || '').trim();
+    const destConvId = normalizeConversationId(body?.dest_conv_id || body?.destConvId);
+    if (!sourceKey) return json({ error: 'BadRequest', message: 'source_key required' }, { status: 400 });
+    if (!destConvId) return json({ error: 'BadRequest', message: 'dest_conv_id required' }, { status: 400 });
+    if (!isSystemOwnedConversation(destConvId, auth.accountDigest)) {
+      return json({ error: 'Forbidden', message: 'dest must be a system-owned conversation' }, { status: 403 });
+    }
+    const destDir = (body?.dest_dir || '').trim();
+    const uid = generateNanoId();
+    const destPrefix = destDir ? `${destConvId}/${destDir}` : destConvId;
+    const destKey = `${destPrefix}/${uid}`;
+    try {
+      await copyS3Object(env, sourceKey, destKey);
+      return json({ ok: true, dest_key: destKey });
+    } catch (err) {
+      return json({ error: 'CopyFailed', message: err?.message || 'S3 copy failed' }, { status: 500 });
+    }
   }
 
   if (path === '/api/v1/media/copy-chunked' && method === 'POST') {
-    return json({ error: 'NotImplemented', message: 'media/copy-chunked not yet available on edge; use origin server' }, { status: 501 });
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const sourceBaseKey = (body?.source_base_key || body?.sourceBaseKey || '').trim();
+    const chunkCount = Number(body?.chunk_count ?? body?.chunkCount ?? 0);
+    const destConvId = normalizeConversationId(body?.dest_conv_id || body?.destConvId);
+    if (!sourceBaseKey) return json({ error: 'BadRequest', message: 'source_base_key required' }, { status: 400 });
+    if (!destConvId) return json({ error: 'BadRequest', message: 'dest_conv_id required' }, { status: 400 });
+    if (!chunkCount || chunkCount < 1) return json({ error: 'BadRequest', message: 'chunk_count required' }, { status: 400 });
+    if (!isSystemOwnedConversation(destConvId, auth.accountDigest)) {
+      return json({ error: 'Forbidden', message: 'dest must be a system-owned conversation' }, { status: 403 });
+    }
+    const destDir = (body?.dest_dir || '').trim();
+    const uid = generateNanoId();
+    const destPrefix = destDir ? `${destConvId}/${destDir}` : destConvId;
+    const destBaseKey = `${destPrefix}/${uid}`;
+    try {
+      // Copy manifest
+      await copyS3Object(env, `${sourceBaseKey}.manifest`, `${destBaseKey}.manifest`);
+      // Copy all chunks in parallel (batched)
+      const BATCH = 6;
+      for (let i = 0; i < chunkCount; i += BATCH) {
+        const batch = [];
+        for (let j = i; j < Math.min(i + BATCH, chunkCount); j++) {
+          batch.push(copyS3Object(env, `${sourceBaseKey}.${j}`, `${destBaseKey}.${j}`));
+        }
+        await Promise.all(batch);
+      }
+      return json({ ok: true, dest_base_key: destBaseKey });
+    } catch (err) {
+      return json({ error: 'CopyFailed', message: err?.message || 'S3 chunked copy failed' }, { status: 500 });
+    }
   }
 
   // ── Contacts (migrated from Node.js) ──────────────────────────
