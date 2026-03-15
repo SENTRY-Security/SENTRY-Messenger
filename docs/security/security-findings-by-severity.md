@@ -28,12 +28,12 @@
 | # | 項目 | 來源 | 說明 |
 |---|------|------|------|
 | M-1 | Rate limiting 非分散式 | `security-review-checklist.md` §4.3 | In-memory Map 實作，跨 isolate 無效，無法有效防禦分散式暴力攻擊 |
-| M-2 | Media chunk 加密無 AAD | `security-review-checklist.md` §5.1, `media-and-attachment-security.md` §7.2 | Chunk index 未綁定於 AAD，理論上 chunk 可被替換或重排 |
-| M-3 | Manifest 無獨立簽章 | `security-review-checklist.md` §5.2, `security-architecture.md` §10 | 僅依賴 GCM auth tag，無額外數位簽章 |
+| ~~M-2~~ | ~~Media chunk 加密無 AAD~~ | `security-review-checklist.md` §5.1, `media-and-attachment-security.md` §7.2 | ⬇️ 降級為 Low：攻擊前提需同時擁有 MK + R2 存取權，chunk 重排僅影響單一媒體完整性，不洩漏新資料 |
+| ~~M-3~~ | ~~Manifest 無獨立簽章~~ | `security-review-checklist.md` §5.2, `security-architecture.md` §10 | ⬇️ 降級為 Low：GCM auth tag 已提供完整性與認證保證，額外簽章需三重前提（MK 洩漏 + R2 存取 + DR 突破）才有價值 |
 | M-4 | AEAD 操作普遍缺少 AAD | `security-architecture.md` §10 | 除 DR 訊息外，blob、media、vault 等 AEAD 操作均不使用 AAD |
 | M-5 | IV 重用風險 | `security-architecture.md` §10 | 12-byte random IV 依賴隨機不重複，無明確追蹤機制 |
-| M-6 | Invite Dropbox 硬編碼 salt | `security-architecture.md` §10 | `invite-dropbox.js:6` 使用固定字串 `'invite-dropbox-salt'`，降低語義安全性 |
-| M-7 | Call key 使用零 salt | `security-architecture.md` §10 | `key-manager.js:25` 的 `ZERO_SALT = new Uint8Array(32)` 用於 HKDF 子金鑰衍生 |
+| ~~M-6~~ | ~~Invite Dropbox 硬編碼 salt~~ | `security-architecture.md` §10 | ⬇️ 降級為 Low：邀請連結為短暫單次消耗用途，硬編碼 salt 僅影響語義安全性，攻擊者仍需知道密碼 |
+| ~~M-7~~ | ~~Call key 使用零 salt~~ | `security-architecture.md` §10 | ⬇️ 降級為 Low：通話金鑰為短暫存在（通話結束即丟棄），已有 callId+epoch 作為 HKDF info 區分子金鑰 |
 | M-8 | Epoch 輪換機制待確認 | `security-review-checklist.md` §6.2 | 通話中金鑰輪換機制是否正確運作需驗證 |
 | M-9 | InsertableStreams 不支援時的 fallback | `security-review-checklist.md` §6.2 | 瀏覽器不支援 InsertableStreams 時的行為未明確定義 |
 | M-10 | CSP headers 設定待確認 | `security-review-checklist.md` §9 | Content-Security-Policy 是否正確限制 script-src |
@@ -59,20 +59,22 @@
 | L-14 | 無 CSRF token 驗證（由 C-3 降級） | `security-review-checklist.md` §4.3 | 系統不使用 cookie 認證，傳統 CSRF 不成立；可選加 `Origin` header 驗證作為縱深防禦 |
 | L-15 | MK 洩漏影響所有媒體（由 H-5 降級） | `media-and-attachment-security.md` §7.2 | E2EE 架構固有限制：媒體需持久金鑰支援歷史下載，MK 洩漏前提需終端入侵或暴力破解 Argon2id |
 | L-13 | D1/R2 資料殘留無 TTL 清理 | `security-review-checklist.md` §11 | 訊息和媒體無自動清理機制 |
+| L-16 | Media chunk 加密無 AAD（由 M-2 降級） | `security-review-checklist.md` §5.1 | 攻擊前提需同時擁有 MK + R2 存取權，chunk 重排僅影響單一媒體完整性 |
+| L-17 | Manifest 無獨立簽章（由 M-3 降級） | `security-review-checklist.md` §5.2 | GCM auth tag 已提供完整性保證，額外簽章需三重前提才有實際價值 |
+| L-18 | Invite Dropbox 硬編碼 salt（由 M-6 降級） | `security-architecture.md` §10 | 邀請連結為短暫單次消耗，硬編碼 salt 僅影響語義安全性，不影響金鑰強度 |
+| L-19 | Call key 使用零 salt（由 M-7 降級） | `security-architecture.md` §10 | 通話金鑰短暫存在，已有 callId+epoch 作為 info 區分子金鑰 |
 
 ---
 
 ## 統計摘要
 
-| 嚴重程度 | 總數 | 已修復 | 待處理 |
-|----------|------|--------|--------|
 | 嚴重程度 | 總數 | 已修復 | 降級 | 待處理 |
 |----------|------|--------|------|--------|
 | 🔴 Critical | 4 | 2 | 1 (→Low) | 1 |
 | 🟠 High | 5 | 4 | 1 (→Low) | 0 |
-| 🟡 Medium | 12 | 0 | — | 12 |
-| 🟢 Low | 13+2 | 1 | — | 14 |
-| **總計** | **36** | **7** | **2** | **27** |
+| 🟡 Medium | 12 | 0 | 4 (→Low) | 8 |
+| 🟢 Low | 13+6 | 1 | — | 18 |
+| **總計** | **36** | **7** | **6** | **27** |
 
 ## 已通過項目（已修復/確認安全）
 
