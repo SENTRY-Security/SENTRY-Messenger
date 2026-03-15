@@ -268,8 +268,22 @@ async function decryptWithMessageKey({
   const params = aad
     ? { name: 'AES-GCM', iv: ivU8, additionalData: aad }
     : { name: 'AES-GCM', iv: ivU8 };
-  const ptBuf = await crypto.subtle.decrypt(params, key, ctU8);
-  return decoder.decode(ptBuf);
+  try {
+    const ptBuf = await crypto.subtle.decrypt(params, key, ctU8);
+    return decoder.decode(ptBuf);
+  } catch (firstErr) {
+    // Fallback: retry with opposite AAD for pre-M-4 messages (encrypted without AAD)
+    // or transition-window data (AAD mismatch)
+    const fallbackParams = aad
+      ? { name: 'AES-GCM', iv: ivU8 }
+      : { name: 'AES-GCM', iv: ivU8, additionalData: buildDrAadFromHeader(header) };
+    try {
+      const ptBuf = await crypto.subtle.decrypt(fallbackParams, key, ctU8);
+      return decoder.decode(ptBuf);
+    } catch {
+      throw firstErr;
+    }
+  }
 }
 
 export async function decryptReplayBatch({

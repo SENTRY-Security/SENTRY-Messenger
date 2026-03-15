@@ -6541,8 +6541,8 @@ async function notifyEphemeralDO(env, ephemeralDigest, payload) {
 /**
  * Create a synthetic internal Request to delegate to existing /d1/ handlers.
  */
-function internalRequest(url, method, body, baseUrl) {
-  const opts = { method, headers: { 'content-type': 'application/json' } };
+function internalRequest(url, method, body, baseUrl, extraHeaders) {
+  const opts = { method, headers: { 'content-type': 'application/json', ...extraHeaders } };
   if (body !== null && body !== undefined && method !== 'GET') {
     opts.body = typeof body === 'string' ? body : JSON.stringify(body);
   }
@@ -7555,7 +7555,10 @@ async function handlePublicRoutes(req, env) {
     // Build query string for internal handler
     const params = new URLSearchParams(url.searchParams);
     params.set('conversationId', convId);
-    return handleMessagesRoutes(internalRequest(`/d1/messages/secure?${params.toString()}`, 'GET', null, baseUrl), env);
+    const fwdHeaders = {};
+    const accountDigest = req.headers.get('x-account-digest');
+    if (accountDigest) fwdHeaders['x-account-digest'] = accountDigest;
+    return handleMessagesRoutes(internalRequest(`/d1/messages/secure?${params.toString()}`, 'GET', null, baseUrl, fwdHeaders), env);
   }
 
   if (path === '/api/v1/messages/secure/max-counter' && method === 'GET') {
@@ -7579,7 +7582,10 @@ async function handlePublicRoutes(req, env) {
     for (const [k, v] of url.searchParams) {
       if (!params.has(k)) params.set(k, v);
     }
-    return handleMessagesRoutes(internalRequest(`/d1/messages/by-counter?${params.toString()}`, 'GET', null, baseUrl), env);
+    const fwdHeaders2 = {};
+    const byCounterDigest = req.headers.get('x-account-digest');
+    if (byCounterDigest) fwdHeaders2['x-account-digest'] = byCounterDigest;
+    return handleMessagesRoutes(internalRequest(`/d1/messages/by-counter?${params.toString()}`, 'GET', null, baseUrl, fwdHeaders2), env);
   }
 
   {
@@ -7588,7 +7594,10 @@ async function handlePublicRoutes(req, env) {
       const convId = convMsgMatch[1];
       const params = new URLSearchParams(url.searchParams);
       params.set('conversationId', convId);
-      return handleMessagesRoutes(internalRequest(`/d1/messages?${params.toString()}`, 'GET', null, baseUrl), env);
+      const fwdHeaders3 = {};
+      const convMsgDigest = req.headers.get('x-account-digest');
+      if (convMsgDigest) fwdHeaders3['x-account-digest'] = convMsgDigest;
+      return handleMessagesRoutes(internalRequest(`/d1/messages?${params.toString()}`, 'GET', null, baseUrl, fwdHeaders3), env);
     }
   }
 
