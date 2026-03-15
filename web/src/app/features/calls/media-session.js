@@ -1559,11 +1559,25 @@ function createEncryptionTransform(keyName, mode) {
         await rekeyPromise;
       }
       try {
-        const counter = incrementFrameCounter(keyName);
-        const iv = buildNonce(baseNonce, counter);
-        const op = mode === 'encrypt' ? 'encrypt' : 'decrypt';
-        const result = await crypto.subtle[op]({ name: 'AES-GCM', iv }, cryptoKey, encodedFrame.data);
-        encodedFrame.data = result instanceof ArrayBuffer ? result : encodedFrame.data;
+        if (mode === 'encrypt') {
+          const counter = incrementFrameCounter(keyName);
+          const iv = buildNonce(baseNonce, counter);
+          const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, cryptoKey, encodedFrame.data);
+          const counterBytes = new Uint8Array(4);
+          new DataView(counterBytes.buffer).setUint32(0, counter, false);
+          const combined = new Uint8Array(4 + encrypted.byteLength);
+          combined.set(counterBytes, 0);
+          combined.set(new Uint8Array(encrypted), 4);
+          encodedFrame.data = combined.buffer;
+        } else {
+          const data = new Uint8Array(encodedFrame.data);
+          if (data.byteLength < 5) { controller.enqueue(encodedFrame); return; }
+          const counter = new DataView(data.buffer, data.byteOffset, 4).getUint32(0, false);
+          const iv = buildNonce(baseNonce, counter);
+          const ciphertext = data.slice(4);
+          const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, cryptoKey, ciphertext);
+          encodedFrame.data = decrypted;
+        }
         controller.enqueue(encodedFrame);
       } catch (err) {
         log({ callMediaTransformError: err?.message || err, mode, keyName });
@@ -1633,12 +1647,27 @@ self.onrtctransform = (event) => {
         if (!cryptoKey) { controller.enqueue(frame); return; }
       }
       try {
-        frameCounter++;
-        const iv = new Uint8Array(baseNonce);
-        new DataView(iv.buffer).setUint32(iv.length - 4, frameCounter, false);
-        const op = mode === 'encrypt' ? 'encrypt' : 'decrypt';
-        const result = await crypto.subtle[op]({ name: 'AES-GCM', iv }, cryptoKey, frame.data);
-        if (result instanceof ArrayBuffer) frame.data = result;
+        if (mode === 'encrypt') {
+          frameCounter++;
+          const iv = new Uint8Array(baseNonce);
+          new DataView(iv.buffer).setUint32(iv.length - 4, frameCounter, false);
+          const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, cryptoKey, frame.data);
+          const counterBytes = new Uint8Array(4);
+          new DataView(counterBytes.buffer).setUint32(0, frameCounter, false);
+          const combined = new Uint8Array(4 + encrypted.byteLength);
+          combined.set(counterBytes, 0);
+          combined.set(new Uint8Array(encrypted), 4);
+          frame.data = combined.buffer;
+        } else {
+          const data = new Uint8Array(frame.data);
+          if (data.byteLength < 5) { controller.enqueue(frame); return; }
+          const counter = new DataView(data.buffer, data.byteOffset, 4).getUint32(0, false);
+          const iv = new Uint8Array(baseNonce);
+          new DataView(iv.buffer).setUint32(iv.length - 4, counter, false);
+          const ciphertext = data.slice(4);
+          const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, cryptoKey, ciphertext);
+          frame.data = decrypted;
+        }
         controller.enqueue(frame);
       } catch {
         controller.enqueue(frame);
