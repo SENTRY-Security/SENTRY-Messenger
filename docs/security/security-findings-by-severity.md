@@ -36,7 +36,7 @@
 | ~~M-7~~ | ~~Call key 使用零 salt~~ | `security-architecture.md` §10 | ✅ 已修復：CMK 512-bit 輸出拆分為 key (256-bit) + subSalt (256-bit)，子金鑰衍生使用 subSalt 取代零 salt |
 | M-8 | Epoch 輪換機制待確認 | `security-review-checklist.md` §6.2 | 通話中金鑰輪換機制是否正確運作需驗證 |
 | ~~M-9~~ | ~~InsertableStreams 不支援時的 fallback~~ | `security-review-checklist.md` §6.2 | ✅ 已修復：本地或對端不支援 InsertableStreams 時拒絕建立通話（`failCall`），不允許靜默降級為未加密通話 |
-| ~~M-10~~ | ~~CSP headers 設定待確認~~ | `security-review-checklist.md` §9 | ✅ Phase 1 已修復：新增 CSP header，白名單限制 script-src (`'self'` + 3 CDN + `blob:`)、禁止 frame/object、加入 `X-Frame-Options: DENY` 等安全 headers；Phase 2 待移除 `'unsafe-inline'` |
+| ~~M-10~~ | ~~CSP headers 設定待確認~~ | `security-review-checklist.md` §9 | ✅ Phase 1 已修復：新增 CSP header，白名單限制 script-src (`'self'` + `'wasm-unsafe-eval'` + 3 CDN + `blob:`)、禁止 frame/object、加入 `X-Frame-Options: DENY` 等安全 headers；Phase 2 待移除 `'unsafe-inline'` |
 | M-11 | CORS 設定待確認 | `security-review-checklist.md` §9 | 是否使用過於寬鬆的 `allow-origin: *` |
 | ~~M-12~~ | ~~HTTP API rate limiting 待確認~~ | `security-review-checklist.md` §9 | ✅ 已修復：與 M-1 共同處理，全域 IP 限流覆蓋所有 API 端點 |
 
@@ -98,5 +98,5 @@
 - ✅ **M-7**：Call key 子金鑰衍生改用 CMK 拆分的 subSalt 取代零 salt
 - ✅ **M-9**：不支援 InsertableStreams 時拒絕通話，防止靜默降級為未加密通話
 - ✅ **M-1/M-12**：新增 `RateLimiter` Durable Object 分散式限流，覆蓋全域 IP、認證、prekey、訊息發送、pairing code
-- ✅ **M-10**：Phase 1 CSP — 白名單 script-src、禁止 frame/object、加入安全 headers（X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy）
+- ✅ **M-10**：Phase 1 CSP — 白名單 script-src（含 `'wasm-unsafe-eval'` 支援 Argon2 WASM）、禁止 frame/object、加入安全 headers（X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy）
 - ✅ **L-12**：Debug flags 在生產環境建置時強制關閉
