@@ -621,6 +621,9 @@ export class ConversationListController extends BaseController {
         if (this.elements.conversationRefreshEl) {
             this.elements.conversationRefreshEl.style.transition = enable ? 'transform 120ms ease-out, opacity 120ms ease-out' : 'none';
         }
+        if (this.elements.conversationQuickActions) {
+            this.elements.conversationQuickActions.style.transition = enable ? 'transform 120ms ease-out' : '';
+        }
         if (this.elements.conversationList) {
             this.elements.conversationList.style.transition = enable ? 'transform 120ms ease-out' : '';
         }
@@ -649,6 +652,9 @@ export class ConversationListController extends BaseController {
                     labelEl.textContent = clamped >= CONV_PULL_THRESHOLD ? t('messages.releaseToRefreshConversations') : t('messages.pullToRefreshConversations');
                 }
             }
+        }
+        if (this.elements.conversationQuickActions) {
+            this.elements.conversationQuickActions.style.transform = clamped > 0 ? `translateY(${clamped}px)` : '';
         }
         if (this.elements.conversationList) {
             this.elements.conversationList.style.transform = clamped > 0 ? `translateY(${clamped}px)` : '';

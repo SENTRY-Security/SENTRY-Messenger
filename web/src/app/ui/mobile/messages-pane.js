@@ -345,6 +345,7 @@ export function initMessagesPane({
     conversationList: dom.conversationListEl ?? document.querySelector('.conversation-list'),
     conversationRefreshEl: dom.conversationRefreshEl ?? document.querySelector('.conversation-refresh'),
     conversationRefreshLabelEl: dom.conversationRefreshLabelEl ?? document.querySelector('.conversation-refresh .label'),
+    conversationQuickActions: dom.conversationQuickActionsEl ?? document.querySelector('.conversation-quick-actions'),
     createGroupBtn: dom.createGroupBtn ?? document.getElementById('btnCreateGroup'),
     groupDraftsEl: dom.groupDraftsEl ?? document.getElementById('groupDrafts'),
     messagesWsIndicator: dom.messagesWsIndicatorEl ?? document.querySelector('.messages-ws-indicator'),
