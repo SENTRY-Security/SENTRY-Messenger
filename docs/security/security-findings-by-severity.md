@@ -31,7 +31,7 @@
 | ~~M-2~~ | ~~Media chunk 加密無 AAD~~ | `security-review-checklist.md` §5.1, `media-and-attachment-security.md` §7.2 | ⬇️ 降級為 Low：攻擊前提需同時擁有 MK + R2 存取權，chunk 重排僅影響單一媒體完整性，不洩漏新資料 |
 | ~~M-3~~ | ~~Manifest 無獨立簽章~~ | `security-review-checklist.md` §5.2, `security-architecture.md` §10 | ⬇️ 降級為 Low：GCM auth tag 已提供完整性與認證保證，額外簽章需三重前提（MK 洩漏 + R2 存取 + DR 突破）才有價值 |
 | ~~M-4~~ | ~~AEAD 操作普遍缺少 AAD~~ | `security-architecture.md` §10 | ✅ 已修復：所有 AES-GCM 操作加入 `additionalData`（info tag / 用途標識），新資料使用 `v:2` 格式標記，解密時依版本判斷是否驗證 AAD（向下相容 v1 legacy） |
-| M-5 | IV 重用風險 | `security-architecture.md` §10 | 12-byte random IV 依賴隨機不重複，無明確追蹤機制 |
+| ~~M-5~~ | ~~IV 重用風險~~ | `security-architecture.md` §10 | ⬇️ 降級為 Low：大部分操作使用 per-object HKDF salt 衍生獨立金鑰，IV 碰撞不影響安全性（不同 key）；少數固定 salt 操作（contact-share、contact-blob）碰撞機率 < 10⁻²⁰ |
 | ~~M-6~~ | ~~Invite Dropbox 硬編碼 salt~~ | `security-architecture.md` §10 | ✅ 已修復：改為每次 seal 產生 16-byte random salt，存入 envelope `salt_b64`；舊 envelope 向下相容（fallback 舊 salt） |
 | ~~M-7~~ | ~~Call key 使用零 salt~~ | `security-architecture.md` §10 | ✅ 已修復：CMK 512-bit 輸出拆分為 key (256-bit) + subSalt (256-bit)，子金鑰衍生使用 subSalt 取代零 salt |
 | ~~M-8~~ | ~~Epoch 輪換機制待確認~~ | `security-review-checklist.md` §6.2 | ✅ 已修復：caller 每 10 分鐘自動遞增 epoch 並重新衍生金鑰（`key-manager.js`），透過 `call-rekey` 信號傳送新 envelope 給 peer；`createEncryptionTransform` 動態偵測 epoch 變更並即時切換加密金鑰 |
@@ -61,6 +61,7 @@
 | L-13 | D1/R2 資料殘留無 TTL 清理 | `security-review-checklist.md` §11 | 訊息和媒體無自動清理機制 |
 | L-16 | Media chunk 加密無 AAD（由 M-2 降級） | `security-review-checklist.md` §5.1 | 攻擊前提需同時擁有 MK + R2 存取權，chunk 重排僅影響單一媒體完整性 |
 | L-17 | Manifest 無獨立簽章（由 M-3 降級） | `security-review-checklist.md` §5.2 | GCM auth tag 已提供完整性保證，額外簽章需三重前提才有實際價值 |
+| L-18 | IV 重用風險（由 M-5 降級） | `security-architecture.md` §10 | per-object HKDF salt 確保每次加密獨立金鑰，(key, IV) pair 不重複；固定 salt 操作碰撞機率 < 10⁻²⁰ |
 
 ---
 
@@ -70,9 +71,9 @@
 |----------|------|--------|------|--------|
 | 🔴 Critical | 4 | 2 | 1 (→Low) | 1 |
 | 🟠 High | 5 | 4 | 1 (→Low) | 0 |
-| 🟡 Medium | 12 | 9 | 2 (→Low) | 1 |
-| 🟢 Low | 13+4 | 1 | — | 16 |
-| **總計** | **36** | **16** | **4** | **18** |
+| 🟡 Medium | 12 | 9 | 3 (→Low) | 0 |
+| 🟢 Low | 13+5 | 1 | — | 17 |
+| **總計** | **36** | **16** | **5** | **17** |
 
 ## 已通過項目（已修復/確認安全）
 
