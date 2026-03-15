@@ -5,7 +5,8 @@ import { bytesToB64, b64ToBytes, b64UrlToBytes } from '../../../shared/utils/bas
 import { toU8Strict } from '/shared/utils/u8-strict.js';
 import {
   CALL_EVENT,
-  subscribeCallEvent
+  subscribeCallEvent,
+  emitCallEvent
 } from './events.js';
 import {
   CALL_SESSION_DIRECTION,
@@ -28,6 +29,7 @@ let deriveTask = null;
 let suppressAutoDerive = false;
 let keyContext = null;
 let isResettingContext = false;
+let rotationTimer = null;
 
 const ROLE_KEY_LABELS = {
   caller: {
@@ -341,9 +343,66 @@ async function finalizeContext(context) {
   setCallMediaStatus(CALL_MEDIA_STATE_STATUS.READY);
 }
 
+// ── Epoch rotation (M-8 fix) ──────────────────────────────────────
+// The caller (initiator) drives rotation. Every rotateIntervalMs
+// (default 10 min), it increments epoch, derives fresh keys, and
+// emits a CALL_EVENT.REKEY with the new envelope so the signaling
+// layer can send it to the peer.
+
+function startRotationTimer() {
+  stopRotationTimer();
+  const mediaState = getCallMediaState();
+  const interval = mediaState?.rotateIntervalMs;
+  if (!interval || interval <= 0) return;
+  rotationTimer = setInterval(() => {
+    rotateEpoch().catch((err) => {
+      log({ callEpochRotateError: err?.message || err });
+    });
+  }, interval);
+}
+
+function stopRotationTimer() {
+  if (rotationTimer) {
+    clearInterval(rotationTimer);
+    rotationTimer = null;
+  }
+}
+
+async function rotateEpoch() {
+  const session = getCallSessionSnapshot();
+  const mediaState = getCallMediaState();
+  if (!session || !mediaState) return;
+  // Only the initiator (caller / outgoing direction) drives rotation
+  if (session.direction !== CALL_SESSION_DIRECTION.OUTGOING) return;
+  if (session.status !== CALL_SESSION_STATUS.IN_CALL) return;
+  if (!mediaState.cmkMaterial) return;
+  const currentEpoch = mediaState.epoch || 1;
+  const nextEpoch = currentEpoch + 1;
+  log({ callEpochRotate: true, callId: session.callId, from: currentEpoch, to: nextEpoch });
+  const envelope = await prepareCallKeyEnvelope({
+    callId: session.callId,
+    peerAccountDigest: session.peerAccountDigest,
+    peerDeviceId: session.peerDeviceId,
+    epoch: nextEpoch,
+    direction: session.direction
+  });
+  const now = Date.now();
+  updateCallMedia({
+    lastRotateAt: now,
+    nextRotateAt: now + (mediaState.rotateIntervalMs || 600000)
+  });
+  // Emit rekey event so signaling layer can send envelope to peer
+  emitCallEvent(CALL_EVENT.REKEY, {
+    envelope,
+    callId: session.callId,
+    epoch: nextEpoch
+  });
+}
+
 function resetKeyContext(reason) {
   if (isResettingContext) return;
   isResettingContext = true;
+  stopRotationTimer();
   keyContext = null;
   const state = getCallMediaState();
   try {
@@ -387,10 +446,15 @@ function handleCallStateEvent(session) {
     || snapshot.status === CALL_SESSION_STATUS.FAILED
     || snapshot.status === CALL_SESSION_STATUS.IDLE
   ) {
+    stopRotationTimer();
     if (hasContext) {
       resetKeyContext('session-complete');
     }
     return;
+  }
+  // Start rotation timer when call becomes active with keys ready
+  if (snapshot.status === CALL_SESSION_STATUS.IN_CALL && hasContext && !rotationTimer) {
+    startRotationTimer();
   }
   // When the call is connected but no key envelope was exchanged (no
   // pending envelope and no derived context), mark E2E as skipped so

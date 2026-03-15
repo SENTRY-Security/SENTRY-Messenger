@@ -1,6 +1,6 @@
 import { log } from '../../core/log.js';
 import { normalizeAccountDigest, normalizePeerDeviceId, ensureDeviceId } from '../../core/store.js';
-import { emitCallEvent, CALL_EVENT } from './events.js';
+import { emitCallEvent, CALL_EVENT, subscribeCallEvent } from './events.js';
 import {
   CALL_SESSION_STATUS,
   CALL_REQUEST_KIND,
@@ -16,9 +16,24 @@ import {
 } from './state.js';
 
 let wsSend = null;
+let rekeyUnsub = null;
 
 export function setCallSignalSender(fn) {
   wsSend = typeof fn === 'function' ? fn : null;
+  // Subscribe to rekey events from key-manager epoch rotation (M-8)
+  if (wsSend && !rekeyUnsub) {
+    rekeyUnsub = subscribeCallEvent(CALL_EVENT.REKEY, handleRekeyEvent);
+  }
+  if (!wsSend && rekeyUnsub) {
+    rekeyUnsub();
+    rekeyUnsub = null;
+  }
+}
+
+function handleRekeyEvent({ envelope, callId } = {}) {
+  if (!envelope || !callId) return;
+  log({ callEpochRekey: true, callId, epoch: envelope.epoch });
+  sendCallSignal('call-rekey', { callId, envelope });
 }
 
 function applyPeerIdentityFromSignal(msg) {
@@ -201,7 +216,7 @@ function applySignalToState(msg) {
 }
 
 function maybeApplyEnvelopeFromSignal(msg) {
-  const envelope = msg?.payload?.envelope;
+  const envelope = msg?.payload?.envelope || msg?.envelope;
   if (!envelope || !msg?.callId) return;
   const session = getCallSessionSnapshot();
   if (!session?.callId || session.callId !== msg.callId) return;

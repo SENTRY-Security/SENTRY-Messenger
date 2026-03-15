@@ -1500,9 +1500,11 @@ function createEncryptionTransform(keyName, mode) {
   const context = getCallKeyContext();
   const keyEntry = context?.keys?.[keyName];
   if (!keyEntry?.key || !keyEntry?.nonce) return null;
-  const baseNonce = new Uint8Array(keyEntry.nonce);
-  let cryptoKey = null;
   const usages = mode === 'encrypt' ? ['encrypt'] : ['decrypt'];
+  // Track current epoch so we re-import when keys rotate
+  let currentEpoch = context?.epoch ?? 0;
+  let cryptoKey = null;
+  let baseNonce = new Uint8Array(keyEntry.nonce);
   const importPromise = crypto.subtle.importKey(
     'raw',
     toU8Strict(keyEntry.key, 'web/src/app/features/calls/media-session.js:519:createEncryptionTransform'),
@@ -1514,10 +1516,31 @@ function createEncryptionTransform(keyName, mode) {
       cryptoKey = key;
       return key;
     });
+  let rekeyPromise = null;
   const transform = new TransformStream({
     async transform(encodedFrame, controller) {
       if (!cryptoKey) {
         await importPromise;
+      }
+      // Check if epoch has changed (key rotation occurred)
+      const latestCtx = getCallKeyContext();
+      const latestEpoch = latestCtx?.epoch ?? 0;
+      if (latestEpoch !== currentEpoch && latestCtx?.keys?.[keyName]?.key) {
+        if (!rekeyPromise) {
+          rekeyPromise = crypto.subtle.importKey(
+            'raw',
+            toU8Strict(latestCtx.keys[keyName].key, 'media-session:rekey'),
+            { name: 'AES-GCM' },
+            false,
+            usages
+          ).then((key) => {
+            cryptoKey = key;
+            baseNonce = new Uint8Array(latestCtx.keys[keyName].nonce);
+            currentEpoch = latestEpoch;
+            rekeyPromise = null;
+          });
+        }
+        await rekeyPromise;
       }
       try {
         const counter = incrementFrameCounter(keyName);

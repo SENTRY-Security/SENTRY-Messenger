@@ -5,7 +5,8 @@ export const CALL_EVENT = Object.freeze({
   REQUEST: 'call:request',
   ERROR: 'call:error',
   NETWORK_CONFIG: 'call:network-config',
-  SIGNAL: 'call:signal'
+  SIGNAL: 'call:signal',
+  REKEY: 'call:rekey'
 });
 
 const listeners = new Map();

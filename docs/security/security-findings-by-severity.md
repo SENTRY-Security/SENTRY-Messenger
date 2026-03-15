@@ -34,7 +34,7 @@
 | M-5 | IV 重用風險 | `security-architecture.md` §10 | 12-byte random IV 依賴隨機不重複，無明確追蹤機制 |
 | ~~M-6~~ | ~~Invite Dropbox 硬編碼 salt~~ | `security-architecture.md` §10 | ✅ 已修復：改為每次 seal 產生 16-byte random salt，存入 envelope `salt_b64`；舊 envelope 向下相容（fallback 舊 salt） |
 | ~~M-7~~ | ~~Call key 使用零 salt~~ | `security-architecture.md` §10 | ✅ 已修復：CMK 512-bit 輸出拆分為 key (256-bit) + subSalt (256-bit)，子金鑰衍生使用 subSalt 取代零 salt |
-| M-8 | Epoch 輪換機制待確認 | `security-review-checklist.md` §6.2 | 通話中金鑰輪換機制是否正確運作需驗證 |
+| ~~M-8~~ | ~~Epoch 輪換機制待確認~~ | `security-review-checklist.md` §6.2 | ✅ 已修復：caller 每 10 分鐘自動遞增 epoch 並重新衍生金鑰（`key-manager.js`），透過 `call-rekey` 信號傳送新 envelope 給 peer；`createEncryptionTransform` 動態偵測 epoch 變更並即時切換加密金鑰 |
 | ~~M-9~~ | ~~InsertableStreams 不支援時的 fallback~~ | `security-review-checklist.md` §6.2 | ✅ 已修復：本地或對端不支援 InsertableStreams 時拒絕建立通話（`failCall`），不允許靜默降級為未加密通話 |
 | ~~M-10~~ | ~~CSP headers 設定待確認~~ | `security-review-checklist.md` §9 | ✅ Phase 1 已修復：新增 CSP header，白名單限制 script-src (`'self'` + `'wasm-unsafe-eval'` + 3 CDN + `blob:`)、禁止 frame/object、加入 `X-Frame-Options: DENY` 等安全 headers；Phase 2 待移除 `'unsafe-inline'` |
 | ~~M-11~~ | ~~CORS 設定待確認~~ | `security-review-checklist.md` §9 | ✅ 已修復：Pages Function 從 origin reflection 改為白名單比對（`CORS_ALLOWED_ORIGINS`）；Data Worker 設定 `CORS_ORIGINS` 環境變數限制允許的 origin；明確列舉 allow-headers 取代 `*` |
@@ -70,9 +70,9 @@
 |----------|------|--------|------|--------|
 | 🔴 Critical | 4 | 2 | 1 (→Low) | 1 |
 | 🟠 High | 5 | 4 | 1 (→Low) | 0 |
-| 🟡 Medium | 12 | 7 | 2 (→Low) | 3 |
+| 🟡 Medium | 12 | 8 | 2 (→Low) | 2 |
 | 🟢 Low | 13+4 | 1 | — | 16 |
-| **總計** | **36** | **14** | **4** | **20** |
+| **總計** | **36** | **15** | **4** | **19** |
 
 ## 已通過項目（已修復/確認安全）
 
@@ -99,5 +99,6 @@
 - ✅ **M-9**：不支援 InsertableStreams 時拒絕通話，防止靜默降級為未加密通話
 - ✅ **M-1/M-12**：新增 `RateLimiter` Durable Object 分散式限流，覆蓋全域 IP、認證、prekey、訊息發送、pairing code
 - ✅ **M-10**：Phase 1 CSP — 白名單 script-src（含 `'wasm-unsafe-eval'` 支援 Argon2 WASM）、禁止 frame/object、加入安全 headers（X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy）
+- ✅ **M-8**：Epoch 輪換實作 — caller 每 10 分鐘自動遞增 epoch 重新衍生金鑰，透過 `call-rekey` 信號同步 peer，`InsertableStreams` transform 動態切換加密金鑰
 - ✅ **M-11**：CORS 白名單限制 — Pages Function 改用 `CORS_ALLOWED_ORIGINS` 白名單取代 origin reflection；Data Worker 啟用 `CORS_ORIGINS` 環境變數；明確列舉 allow-headers
 - ✅ **L-12**：Debug flags 在生產環境建置時強制關閉
