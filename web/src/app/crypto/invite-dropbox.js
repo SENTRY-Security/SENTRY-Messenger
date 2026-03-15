@@ -27,7 +27,7 @@ export function assertInviteEnvelope(envelope) {
     if (!allowedKeys.has(key)) throw new Error('invalid envelope field');
   }
   const v = Number(envelope.v ?? 0);
-  if (!Number.isFinite(v) || v !== 1) throw new Error('invalid envelope version');
+  if (!Number.isFinite(v) || (v !== 1 && v !== 2)) throw new Error('invalid envelope version');
   const aead = requireNonEmptyString(envelope.aead, 'aead');
   if (aead !== 'aes-256-gcm') throw new Error('invalid envelope aead');
   const info = requireNonEmptyString(envelope.info, 'info');

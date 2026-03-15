@@ -516,14 +516,14 @@ function normalizeInviteDropboxEnvelope(envelope) {
   const info = String(envelope.info || '').trim();
   const createdAt = Number(envelope.createdAt || 0);
   const expiresAt = Number(envelope.expiresAt || 0);
-  if (!Number.isFinite(v) || v !== 1) return null;
+  if (!Number.isFinite(v) || (v !== 1 && v !== 2)) return null;
   if (aead !== 'aes-256-gcm') return null;
   if (info !== INVITE_INFO_TAG) return null;
   if (!Number.isFinite(createdAt) || createdAt <= 0) return null;
   if (!Number.isFinite(expiresAt) || expiresAt <= 0) return null;
   const sealed = envelope.sealed;
   if (!sealed || typeof sealed !== 'object') return null;
-  const sealedAllowed = new Set(['eph_pub_b64', 'iv_b64', 'ct_b64']);
+  const sealedAllowed = new Set(['eph_pub_b64', 'iv_b64', 'ct_b64', 'salt_b64']);
   for (const key of Object.keys(sealed)) {
     if (!sealedAllowed.has(key)) return null;
   }
@@ -531,15 +531,18 @@ function normalizeInviteDropboxEnvelope(envelope) {
   const iv = String(sealed.iv_b64 || '').trim();
   const ct = String(sealed.ct_b64 || '').trim();
   if (!ephPub || !iv || !ct) return null;
+  const saltB64 = sealed.salt_b64 ? String(sealed.salt_b64).trim() : null;
+  const normalizedSealed = {
+    eph_pub_b64: ephPub,
+    iv_b64: iv,
+    ct_b64: ct
+  };
+  if (saltB64) normalizedSealed.salt_b64 = saltB64;
   return {
     v,
     aead,
     info,
-    sealed: {
-      eph_pub_b64: ephPub,
-      iv_b64: iv,
-      ct_b64: ct
-    },
+    sealed: normalizedSealed,
     createdAt,
     expiresAt
   };
