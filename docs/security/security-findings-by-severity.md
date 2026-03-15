@@ -32,8 +32,8 @@
 | ~~M-3~~ | ~~Manifest 無獨立簽章~~ | `security-review-checklist.md` §5.2, `security-architecture.md` §10 | ⬇️ 降級為 Low：GCM auth tag 已提供完整性與認證保證，額外簽章需三重前提（MK 洩漏 + R2 存取 + DR 突破）才有價值 |
 | M-4 | AEAD 操作普遍缺少 AAD | `security-architecture.md` §10 | 除 DR 訊息外，blob、media、vault 等 AEAD 操作均不使用 AAD |
 | M-5 | IV 重用風險 | `security-architecture.md` §10 | 12-byte random IV 依賴隨機不重複，無明確追蹤機制 |
-| ~~M-6~~ | ~~Invite Dropbox 硬編碼 salt~~ | `security-architecture.md` §10 | ⬇️ 降級為 Low：邀請連結為短暫單次消耗用途，硬編碼 salt 僅影響語義安全性，攻擊者仍需知道密碼 |
-| ~~M-7~~ | ~~Call key 使用零 salt~~ | `security-architecture.md` §10 | ⬇️ 降級為 Low：通話金鑰為短暫存在（通話結束即丟棄），已有 callId+epoch 作為 HKDF info 區分子金鑰 |
+| ~~M-6~~ | ~~Invite Dropbox 硬編碼 salt~~ | `security-architecture.md` §10 | ✅ 已修復：改為每次 seal 產生 16-byte random salt，存入 envelope `salt_b64`；舊 envelope 向下相容（fallback 舊 salt） |
+| ~~M-7~~ | ~~Call key 使用零 salt~~ | `security-architecture.md` §10 | ✅ 已修復：CMK 512-bit 輸出拆分為 key (256-bit) + subSalt (256-bit)，子金鑰衍生使用 subSalt 取代零 salt |
 | M-8 | Epoch 輪換機制待確認 | `security-review-checklist.md` §6.2 | 通話中金鑰輪換機制是否正確運作需驗證 |
 | M-9 | InsertableStreams 不支援時的 fallback | `security-review-checklist.md` §6.2 | 瀏覽器不支援 InsertableStreams 時的行為未明確定義 |
 | M-10 | CSP headers 設定待確認 | `security-review-checklist.md` §9 | Content-Security-Policy 是否正確限制 script-src |
@@ -61,8 +61,6 @@
 | L-13 | D1/R2 資料殘留無 TTL 清理 | `security-review-checklist.md` §11 | 訊息和媒體無自動清理機制 |
 | L-16 | Media chunk 加密無 AAD（由 M-2 降級） | `security-review-checklist.md` §5.1 | 攻擊前提需同時擁有 MK + R2 存取權，chunk 重排僅影響單一媒體完整性 |
 | L-17 | Manifest 無獨立簽章（由 M-3 降級） | `security-review-checklist.md` §5.2 | GCM auth tag 已提供完整性保證，額外簽章需三重前提才有實際價值 |
-| L-18 | Invite Dropbox 硬編碼 salt（由 M-6 降級） | `security-architecture.md` §10 | 邀請連結為短暫單次消耗，硬編碼 salt 僅影響語義安全性，不影響金鑰強度 |
-| L-19 | Call key 使用零 salt（由 M-7 降級） | `security-architecture.md` §10 | 通話金鑰短暫存在，已有 callId+epoch 作為 info 區分子金鑰 |
 
 ---
 
@@ -72,9 +70,9 @@
 |----------|------|--------|------|--------|
 | 🔴 Critical | 4 | 2 | 1 (→Low) | 1 |
 | 🟠 High | 5 | 4 | 1 (→Low) | 0 |
-| 🟡 Medium | 12 | 0 | 4 (→Low) | 8 |
-| 🟢 Low | 13+6 | 1 | — | 18 |
-| **總計** | **36** | **7** | **6** | **27** |
+| 🟡 Medium | 12 | 2 | 2 (→Low) | 8 |
+| 🟢 Low | 13+4 | 1 | — | 16 |
+| **總計** | **36** | **9** | **4** | **25** |
 
 ## 已通過項目（已修復/確認安全）
 
@@ -96,4 +94,6 @@
 - ✅ **H-2**：移除 `dr.js` 中所有金鑰雜湊 debug 日誌輸出
 - ✅ **H-3**：Debug 頁面三層防護（env gate + IP 白名單 + `__PRODUCTION__` build flag）
 - ✅ **H-4**：移除錯誤回應中的內部狀態欄位（`lastCtr`、`maxCounter`）
+- ✅ **M-6**：Invite Dropbox 改用 per-envelope 16-byte random salt（向下相容舊 envelope）
+- ✅ **M-7**：Call key 子金鑰衍生改用 CMK 拆分的 subSalt 取代零 salt
 - ✅ **L-12**：Debug flags 在生產環境建置時強制關閉

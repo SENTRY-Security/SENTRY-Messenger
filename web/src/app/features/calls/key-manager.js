@@ -22,7 +22,6 @@ import { buildCallPeerIdentity } from './identity.js';
 import { t } from '/locales/index.js';
 
 const encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
-const ZERO_SALT = new Uint8Array(32);
 
 let subscriptions = [];
 let deriveTask = null;
@@ -223,17 +222,17 @@ async function buildKeyContext({ session, envelope, saltBytes = null }) {
   const epoch = Number.isFinite(envelope?.epoch) ? envelope.epoch : 0;
   if (!callId) throw new Error(t('callKeys.invalidCallId'));
   const role = toRole(session?.direction);
-  const masterKey = await deriveMasterKey(baseSecret, salt, callId, epoch);
+  const { key: masterKey, subSalt } = await deriveMasterKey(baseSecret, salt, callId, epoch);
   const proofB64 = await computeProof(masterKey, callId, epoch);
   if (envelope?.cmkProof && envelope.cmkProof !== proofB64) {
     throw new Error(t('callKeys.proofVerifyFailed'));
   }
   const labels = ROLE_KEY_LABELS[role] || ROLE_KEY_LABELS.caller;
   const keys = {
-    audioTx: await deriveDirectionalKey(masterKey, labels.audioTxKey, labels.audioTxNonce),
-    audioRx: await deriveDirectionalKey(masterKey, labels.audioRxKey, labels.audioRxNonce),
-    videoTx: await deriveDirectionalKey(masterKey, labels.videoTxKey, labels.videoTxNonce),
-    videoRx: await deriveDirectionalKey(masterKey, labels.videoRxKey, labels.videoRxNonce)
+    audioTx: await deriveDirectionalKey(masterKey, subSalt, labels.audioTxKey, labels.audioTxNonce),
+    audioRx: await deriveDirectionalKey(masterKey, subSalt, labels.audioRxKey, labels.audioRxNonce),
+    videoTx: await deriveDirectionalKey(masterKey, subSalt, labels.videoTxKey, labels.videoTxNonce),
+    videoRx: await deriveDirectionalKey(masterKey, subSalt, labels.videoRxKey, labels.videoRxNonce)
   };
   return {
     callId,
@@ -270,7 +269,11 @@ async function deriveMasterKey(baseSecret, salt, callId, epoch) {
     baseKey,
     512
   );
-  return new Uint8Array(bits);
+  const full = new Uint8Array(bits);
+  return {
+    key: full.slice(0, 32),     // first 256 bits: master key material
+    subSalt: full.slice(32, 64) // second 256 bits: sub-derivation salt
+  };
 }
 
 async function computeProof(masterKey, callId, epoch) {
@@ -286,16 +289,16 @@ async function computeProof(masterKey, callId, epoch) {
   return bytesToB64(new Uint8Array(mac));
 }
 
-async function deriveDirectionalKey(masterKey, keyLabel, nonceLabel) {
-  const keyBytes = await deriveSubMaterial(masterKey, keyLabel, 256);
-  const nonceBytes = await deriveSubMaterial(masterKey, nonceLabel, 96);
+async function deriveDirectionalKey(masterKey, subSalt, keyLabel, nonceLabel) {
+  const keyBytes = await deriveSubMaterial(masterKey, subSalt, keyLabel, 256);
+  const nonceBytes = await deriveSubMaterial(masterKey, subSalt, nonceLabel, 96);
   return {
     key: keyBytes,
     nonce: nonceBytes
   };
 }
 
-async function deriveSubMaterial(masterKey, label, lengthBits) {
+async function deriveSubMaterial(masterKey, subSalt, label, lengthBits) {
   const hkdfKey = await crypto.subtle.importKey(
     'raw',
     toU8Strict(masterKey, 'web/src/app/features/calls/key-manager.js:255:deriveSubMaterial'),
@@ -304,9 +307,8 @@ async function deriveSubMaterial(masterKey, label, lengthBits) {
     ['deriveBits']
   );
   const info = encoder.encode(label);
-  const salt = ZERO_SALT;
   const bits = await crypto.subtle.deriveBits(
-    { name: 'HKDF', hash: 'SHA-256', salt, info },
+    { name: 'HKDF', hash: 'SHA-256', salt: subSalt, info },
     hkdfKey,
     lengthBits
   );

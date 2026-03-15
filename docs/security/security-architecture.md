@@ -316,5 +316,5 @@ DR 解密完成
 5. ⚠️ **Manifest 無獨立簽章**：manifest 加密但無額外的完整性驗證（依賴 GCM 的 authentication tag）
 6. ✅ ~~Debug 日誌輸出金鑰雜湊~~ — 已修復：移除 `dr.js` 中所有 `hashPrefix()` 相關的 console 輸出（x3dh-initiate、x3dh-respond、drRatchet、encrypt、decrypt 路徑）
 7. ✅ ~~DR 狀態並發無 mutex~~ — 已有 `enqueueDrSessionOp()` 序列化機制（`dr-session.js:1546`），所有 encrypt/decrypt 操作均透過 queue 串行化
-8. ⚠️ **Invite Dropbox 硬編碼 salt**：`invite-dropbox.js:6` 使用固定字串 `'invite-dropbox-salt'`，降低語義安全性
-9. ⚠️ **Call key 零 salt**：`key-manager.js:25` 的 `ZERO_SALT = new Uint8Array(32)` 用於 HKDF 子金鑰衍生
+8. ✅ ~~Invite Dropbox 硬編碼 salt~~ — 已修復：改為每次 `sealInviteEnvelope` 產生 16-byte random salt，存入 `sealed.salt_b64`；解封時讀取，舊 envelope 向下相容 fallback
+9. ✅ ~~Call key 零 salt~~ — 已修復：`deriveMasterKey` 512-bit 輸出拆分為 key (前 256-bit) + subSalt (後 256-bit)，`deriveSubMaterial` 使用 subSalt 取代 `ZERO_SALT`
