@@ -122,7 +122,7 @@ Open-source end-to-end encrypted messenger with Signal Protocol, ephemeral chat,
 - **離線密鑰交換** — 透過 X3DH Prekey Bundle，對方離線時也能安全初始化
 - **強制登出** — 帳號清除時透過 WebSocket `force-logout` 即時踢出所有裝置
 
-> **已知限制：** 伺服器對訊息內容為零知識，但通訊 metadata（社交圖譜、時間戳、在線狀態等）對伺服器仍然可見。完整分析見 [Metadata Exposure](docs/security/metadata-exposure.md) 與 [Known Limitations](docs/security/known-limitations.md)。
+> **已知限制：** 訊息與媒體內容在客戶端加密，伺服器不持有解密金鑰。但通訊 metadata（社交圖譜、時間戳、在線狀態等）對伺服器仍然可見。完整分析見 [Metadata Exposure](docs/security/metadata-exposure.md) 與 [Known Limitations](docs/security/known-limitations.md)。
 
 ---
 
@@ -146,7 +146,7 @@ Open-source end-to-end encrypted messenger with Signal Protocol, ephemeral chat,
 
 - **架構**: 純 P2P 點對點通話（非 SFU），WebSocket 僅用於信令交換
 - **ICE**: 完整候選收集（host + srflx + relay），Cloudflare STUN + 動態 TURN 憑證
-- **DTLS**: ECDSA P-256 憑證，確保傳輸層加密
+- **DTLS**: ECDSA P-256 憑證，提供傳輸層加密
 - **媒體**: 音訊（echo cancellation + noise suppression + auto gain control）+ 視訊
 - **Safari 相容**: 完整 ICE 候選嵌入 SDP、獨立 `<audio>` 元素、usernameFragment 注入
 
@@ -196,7 +196,7 @@ RTCRtpSender.replaceTrack() → 送出處理後的視訊
 
 ## 臨時對話 (Ephemeral Chat)
 
-一次性加密臨時對話系統，允許已註冊使用者（Owner）產生一次性連結，讓未安裝 App 的外部人員（Guest）透過瀏覽器加入限時加密對話。所有訊息在倒數結束或任一方關閉頁面後永久銷毀。
+一次性加密臨時對話系統，允許已註冊使用者（Owner）產生一次性連結，讓未安裝 App 的外部人員（Guest）透過瀏覽器加入限時加密對話。倒數結束或任一方關閉頁面後，session 資料從伺服器端清除。
 
 ### 架構概覽
 
@@ -270,7 +270,7 @@ POST /api/v1/ephemeral/consume
 
 ### 端對端加密 (E2EE)
 
-臨時對話採用與主聊天相同的 Signal Protocol 加密流程，確保伺服器無法解密任何訊息。
+臨時對話採用與主聊天相同的 Signal Protocol 加密流程（X3DH + Double Ratchet），訊息內容在客戶端加密後才經由伺服器中繼。
 
 #### X3DH 金鑰交換
 
@@ -1635,13 +1635,13 @@ Client                          Worker                         Durable Object
 | 模糊錯誤處理 | 不允許 try-catch fallback |
 | 對話重置 | 必須顯式操作，不隱式重建 state |
 
-### 訊息內容零知識
+### 伺服器端資料處理
 
-伺服器對訊息內容不具備解密能力（不持有金鑰），但仍可見通訊 metadata（詳見 [Metadata Exposure](docs/security/metadata-exposure.md)）：
+伺服器不持有訊息內容的解密金鑰。通訊 metadata（社交圖譜、時間戳等）仍對伺服器可見（詳見 [Metadata Exposure](docs/security/metadata-exposure.md)）：
 
-- 訊息以 `ciphertext_b64` + `header_json` 儲存，伺服器不持有解密金鑰
-- 聯絡人資料以 `encrypted_blob` 儲存，伺服器不持有解密金鑰
-- Master Key 以 Argon2id + AES-GCM 包裝後儲存，伺服器不持有使用者密碼
+- 訊息以 `ciphertext_b64` + `header_json` 儲存，解密金鑰僅存在於客戶端
+- 聯絡人資料以 `encrypted_blob` 儲存，解密金鑰僅存在於客戶端
+- Master Key 以 Argon2id + AES-GCM 包裝後儲存，需使用者密碼才能解包
 
 ### Commit-driven Side Effects
 
