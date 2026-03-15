@@ -53,13 +53,13 @@
 | L-7 | P2P 連線可能暴露 IP | `security-review-checklist.md` §6.3 | ICE candidate 類型未限制為 relay only |
 | L-8 | Chunk 大小洩漏明文大小 | `media-and-attachment-security.md` §7.2 | GCM overhead 固定 16 bytes，密文大小可推知明文 |
 | L-9 | 上傳時序可推知通訊行為 | `media-and-attachment-security.md` §7.2 | R2 寫入時間與訊息時間可關聯 |
-| L-10 | 頭像加密待確認 | `media-and-attachment-security.md` §7.2 | 使用者頭像是否經過加密上傳需確認 |
+| ~~L-10~~ | ~~頭像加密待確認~~ | `media-and-attachment-security.md` §7.2 | ✅ 已確認：頭像使用 AES-256-GCM + HKDF(MK, random_salt) 加密後上傳 R2（`.enc`），下載後解密為 `blob:` URL 顯示，與一般媒體相同加密流程 |
 | L-11 | Cloudflare 日誌是否記錄 API request body | `security-review-checklist.md` §11 | 第三方基礎設施可能保留請求內容 |
 | ~~L-12~~ | ~~Debug 日誌生產環境是否停用~~ | `security-review-checklist.md` §9 | ✅ 已修復：`__PRODUCTION__` build flag 在生產環境關閉所有 debug switches |
 | L-14 | 無 CSRF token 驗證（由 C-3 降級） | `security-review-checklist.md` §4.3 | 系統不使用 cookie 認證，傳統 CSRF 不成立；可選加 `Origin` header 驗證作為縱深防禦 |
 | L-15 | MK 洩漏影響所有媒體（由 H-5 降級） | `media-and-attachment-security.md` §7.2 | E2EE 架構固有限制：媒體需持久金鑰支援歷史下載，MK 洩漏前提需終端入侵或暴力破解 Argon2id |
 | L-13 | D1/R2 資料殘留無 TTL 清理 | `security-review-checklist.md` §11 | 訊息和媒體無自動清理機制 |
-| L-16 | Media chunk 加密無 AAD（由 M-2 降級） | `security-review-checklist.md` §5.1 | 攻擊前提需同時擁有 MK + R2 存取權，chunk 重排僅影響單一媒體完整性 |
+| ~~L-16~~ | ~~Media chunk 加密無 AAD（由 M-2 降級）~~ | `security-review-checklist.md` §5.1 | ✅ 已由 M-4 修復：所有 AES-GCM 操作已加入 AAD（info tag 作為 `additionalData`），v2 格式向下相容 v1 legacy |
 | L-17 | Manifest 無獨立簽章（由 M-3 降級） | `security-review-checklist.md` §5.2 | GCM auth tag 已提供完整性保證，額外簽章需三重前提才有實際價值 |
 | L-18 | IV 重用風險（由 M-5 降級） | `security-architecture.md` §10 | per-object HKDF salt 確保每次加密獨立金鑰，(key, IV) pair 不重複；固定 salt 操作碰撞機率 < 10⁻²⁰ |
 
@@ -72,8 +72,8 @@
 | 🔴 Critical | 4 | 2 | 1 (→Low) | 1 |
 | 🟠 High | 5 | 4 | 1 (→Low) | 0 |
 | 🟡 Medium | 12 | 9 | 3 (→Low) | 0 |
-| 🟢 Low | 13+5 | 2 | — | 16 |
-| **總計** | **36** | **17** | **5** | **16** |
+| 🟢 Low | 13+5 | 4 | — | 14 |
+| **總計** | **36** | **19** | **5** | **14** |
 
 ## 已通過項目（已修復/確認安全）
 
@@ -104,4 +104,6 @@
 - ✅ **M-8**：Epoch 輪換實作 — caller 每 10 分鐘自動遞增 epoch 重新衍生金鑰，透過 `call-rekey` 信號同步 peer，`InsertableStreams` transform 動態切換加密金鑰
 - ✅ **M-11**：CORS 白名單限制 — Pages Function 改用 `CORS_ALLOWED_ORIGINS` 白名單取代 origin reflection；Data Worker 啟用 `CORS_ORIGINS` 環境變數；明確列舉 allow-headers
 - ✅ **L-2**：登出時清除所有 localStorage — `secureLogout()` 已有 `localStorage.clear()`，`app-ui.js` `onLogout()` 修正為清除所有非 SIM key
+- ✅ **L-10**：頭像已確認使用 AES-256-GCM + HKDF(MK, random_salt) 加密上傳，與一般媒體相同加密流程
 - ✅ **L-12**：Debug flags 在生產環境建置時強制關閉
+- ✅ **L-16**：Media chunk AAD 已由 M-4 統一修復（所有 AES-GCM 加入 info tag 作為 additionalData）
