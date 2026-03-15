@@ -128,7 +128,7 @@
 - [x] 訊息 counter 嚴格遞增（server-side `counter <= MAX(previous)` 檢查）
 - [ ] ⚠️ Account token 明文儲存（應 hash 後儲存）
 - [ ] ⚠️ Rate limiting 非分散式（in-memory Map，跨 isolate 無效）
-- [ ] ⚠️ Error messages 洩漏狀態（"CounterTooLow" 含 maxCounter）
+- [x] ~~Error messages 洩漏狀態（"CounterTooLow" 含 maxCounter）~~ — ✅ 已修復：移除 `lastCtr`、`maxCounter`、`details` 等內部狀態欄位（`worker.js`）
 - [ ] ⚠️ Debug endpoints 未停用（`/auth/sdm/debug-kit`, `/auth/opaque/debug`）
 - [ ] ⚠️ 無 CSRF token 驗證
 

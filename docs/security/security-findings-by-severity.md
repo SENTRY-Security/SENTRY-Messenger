@@ -15,13 +15,13 @@
 
 ## 🟠 High（高）
 
-| # | 項目 | 來源 | 說明 |
-|---|------|------|------|
-| H-1 | 自訂 JWT 驗證（未使用標準函式庫） | `security-architecture.md` §10 | `account-ws.js` 使用自行實作的 JWT 驗證，容易引入邏輯漏洞 |
-| H-2 | Debug 日誌輸出金鑰雜湊 | `security-architecture.md` §10 | `dr.js` Lines 213-235, 305-330, 368-378 輸出金鑰 hash 值，生產環境洩漏密碼學狀態 |
-| H-3 | Debug 頁面 / SDM 模擬器生產環境可存取 | `security-assumptions-and-out-of-scope.md` §6 | `debug-page.js`、`debug-flags.js`、`sdm-sim.js` 等需確認是否在生產環境禁用 |
-| H-4 | Error messages 洩漏內部狀態 | `security-review-checklist.md` §4.3 | "CounterTooLow" 回應包含 `maxCounter` 值，攻擊者可利用推斷訊息序號 |
-| H-5 | MK 洩漏影響所有媒體 | `media-and-attachment-security.md` §7.2 | 所有 chunks 使用同一 MK 衍生金鑰，MK 洩漏等同全部媒體洩漏 |
+| # | 項目 | 來源 | 狀態 | 說明 |
+|---|------|------|------|------|
+| ~~H-1~~ | ~~自訂 JWT 驗證（未使用標準函式庫）~~ | `security-architecture.md` §10 | ✅ 已修復 | 抽取共用 `jwt.js` 模組，`account-ws.js` 和 `worker.js` 統一使用同一 sign/verify 實作 |
+| ~~H-2~~ | ~~Debug 日誌輸出金鑰雜湊~~ | `security-architecture.md` §10 | ✅ 已修復 | 移除 `dr.js` 中所有 `hashPrefix()` 相關的 console 輸出（x3dh、ratchet、encrypt、decrypt 全路徑） |
+| H-3 | Debug 頁面 / SDM 模擬器生產環境可存取 | `security-assumptions-and-out-of-scope.md` §6 | ⚠️ 待處理 | `debug-page.js`、`debug-flags.js`、`sdm-sim.js` 等需確認是否在生產環境禁用 |
+| ~~H-4~~ | ~~Error messages 洩漏內部狀態~~ | `security-review-checklist.md` §4.3 | ✅ 已修復 | 移除 `Replay` 回應的 `lastCtr` 和 `CounterTooLow` 回應的 `maxCounter`/`details` 欄位 |
+| H-5 | MK 洩漏影響所有媒體 | `media-and-attachment-security.md` §7.2 | ⚠️ 待處理 | 所有 chunks 使用同一 MK 衍生金鑰，MK 洩漏等同全部媒體洩漏 |
 
 ## 🟡 Medium（中）
 
@@ -62,13 +62,13 @@
 
 ## 統計摘要
 
-| 嚴重程度 | 數量 |
-|----------|------|
-| 🔴 Critical | 4 |
-| 🟠 High | 5 |
-| 🟡 Medium | 12 |
-| 🟢 Low | 13 |
-| **總計** | **34** |
+| 嚴重程度 | 總數 | 已修復 | 待處理 |
+|----------|------|--------|--------|
+| 🔴 Critical | 4 | 0 | 4 |
+| 🟠 High | 5 | 3 | 2 |
+| 🟡 Medium | 12 | 0 | 12 |
+| 🟢 Low | 13 | 0 | 13 |
+| **總計** | **34** | **3** | **31** |
 
 ## 已通過項目（已修復/確認安全）
 
@@ -84,3 +84,6 @@
 - ✅ 訊息 counter 嚴格遞增（server-side 檢查）
 - ✅ GitHub Actions secrets 不透過 echo 傳入
 - ✅ DR 狀態並發已有 `enqueueDrSessionOp()` 序列化機制
+- ✅ **H-1**：JWT 驗證統一為共用 `jwt.js` 模組（`account-ws.js`、`worker.js`）
+- ✅ **H-2**：移除 `dr.js` 中所有金鑰雜湊 debug 日誌輸出
+- ✅ **H-4**：移除錯誤回應中的內部狀態欄位（`lastCtr`、`maxCounter`）

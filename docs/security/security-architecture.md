@@ -310,11 +310,11 @@ DR 解密完成
 ## 10. 架構弱點
 
 1. ⚠️ **Send-side ratchet 停用**：`dr.js:357-364` 中 send-side ratchet 更新被註解，`myRatchetPriv`/`myRatchetPub` 不在發送時輪替
-2. ⚠️ **自訂 JWT 驗證**：`account-ws.js` 使用自訂 JWT 驗證而非標準函式庫
+2. ✅ ~~自訂 JWT 驗證~~ — 已重構：抽取共用 `jwt.js` 模組統一 sign/verify 邏輯，`account-ws.js` 和 `worker.js` 均使用同一實作
 3. ⚠️ **AEAD 無 AAD**：除 DR 訊息外，其他 AEAD 操作（blob、media、vault）不使用 AAD
 4. ⚠️ **IV 重用風險**：12-byte random IV 依賴隨機不重複（HKDF salt 分散風險，但無明確追蹤）
 5. ⚠️ **Manifest 無獨立簽章**：manifest 加密但無額外的完整性驗證（依賴 GCM 的 authentication tag）
-6. ⚠️ **Debug 日誌輸出金鑰雜湊**：`dr.js` 在多處輸出金鑰的 hash 值（Lines 213-235, 305-330, 368-378）
+6. ✅ ~~Debug 日誌輸出金鑰雜湊~~ — 已修復：移除 `dr.js` 中所有 `hashPrefix()` 相關的 console 輸出（x3dh-initiate、x3dh-respond、drRatchet、encrypt、decrypt 路徑）
 7. ✅ ~~DR 狀態並發無 mutex~~ — 已有 `enqueueDrSessionOp()` 序列化機制（`dr-session.js:1546`），所有 encrypt/decrypt 操作均透過 queue 串行化
 8. ⚠️ **Invite Dropbox 硬編碼 salt**：`invite-dropbox.js:6` 使用固定字串 `'invite-dropbox-salt'`，降低語義安全性
 9. ⚠️ **Call key 零 salt**：`key-manager.js:25` 的 `ZERO_SALT = new Uint8Array(32)` 用於 HKDF 子金鑰衍生

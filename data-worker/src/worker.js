@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { toU8Strict } from './u8-strict.js';
+import { createJwt, verifyJwt } from './jwt.js';
 import { getOpaqueConfig, OpaqueID, OpaqueServer, KE1, KE3, RegistrationRequest, RegistrationRecord, ExpectedAuthResult } from '@cloudflare/opaque-ts';
 
 // Re-export Durable Object class so Cloudflare runtime can find it
@@ -1554,7 +1555,8 @@ async function handleTagsRoutes(req, env) {
     }
 
     if (!account.newlyCreated && !(ctrNum > account.last_ctr)) {
-      return json({ error: 'Replay', message: 'counter must be strictly increasing', lastCtr: account.last_ctr }, { status: 409 });
+      // [H-4 fix] Removed lastCtr from response — leaked internal counter state
+      return json({ error: 'Replay', message: 'counter must be strictly increasing' }, { status: 409 });
     }
 
     const now = Math.floor(Date.now() / 1000);
@@ -2986,7 +2988,8 @@ async function handleAtomicSendRoutes(req, env) {
     `).bind(conversationId, accountDigest, senderDeviceId).first();
     const maxCounter = Number(maxRow?.max_counter ?? -1);
     if (Number.isFinite(maxCounter) && maxCounter >= 0 && msgCounter <= maxCounter) {
-      return json({ error: 'CounterTooLow', message: 'counter must be greater than previous', maxCounter, details: { max_counter: maxCounter, maxCounter } }, { status: 409 });
+      // [H-4 fix] Removed maxCounter from response — leaked message sequence numbers
+      return json({ error: 'CounterTooLow', message: 'counter must be greater than previous' }, { status: 409 });
     }
 
     // 5. Construct Batch
@@ -3557,7 +3560,8 @@ async function handleMessagesRoutes(req, env) {
     `).bind(conversationId, senderAccountDigest, senderDeviceId).first();
     const maxCounter = Number(maxRow?.max_counter ?? -1);
     if (Number.isFinite(maxCounter) && maxCounter >= 0 && counter <= maxCounter) {
-      return json({ error: 'CounterTooLow', message: 'counter must be greater than previous', maxCounter, details: { max_counter: maxCounter, maxCounter } }, { status: 409 });
+      // [H-4 fix] Removed maxCounter from response — leaked message sequence numbers
+      return json({ error: 'CounterTooLow', message: 'counter must be greater than previous' }, { status: 409 });
     }
     await env.DB.prepare(`
       INSERT INTO conversations (id)
@@ -6287,22 +6291,9 @@ function base64url(str) {
   return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
+// JWT creation — delegates to shared jwt.js module (H-1 fix)
 async function createWsToken(env, { accountDigest, ttlSec = 300 }) {
-  const secret = env.WS_TOKEN_SECRET;
-  if (!secret) throw new Error('WS_TOKEN_SECRET not configured');
-  if (!accountDigest) throw new Error('accountDigest required');
-  const now = Math.floor(Date.now() / 1000);
-  const payload = {
-    accountDigest: String(accountDigest).toUpperCase(),
-    iat: now,
-    exp: now + ttlSec
-  };
-  const bodyB64 = base64url(JSON.stringify(payload));
-  const signature = await hmacSha256Sign(secret, `${WS_JWT_HEADER_B64}.${bodyB64}`);
-  return {
-    token: `${WS_JWT_HEADER_B64}.${bodyB64}.${signature}`,
-    payload
-  };
+  return createJwt(env.WS_TOKEN_SECRET, { accountDigest, ttlSec });
 }
 
 // ── WebSocket upgrade handler → Durable Object ──────────────────
@@ -6322,35 +6313,19 @@ async function handleWsUpgrade(req, env, url) {
     return json({ error: 'Unauthorized', message: 'token query param required' }, { status: 401 });
   }
 
-  // Verify JWT (same secret as createWsToken)
+  // Verify JWT via shared jwt.js module (H-1 fix)
   const secret = env.WS_TOKEN_SECRET;
   if (!secret) {
     return json({ error: 'ConfigError', message: 'WS_TOKEN_SECRET not configured' }, { status: 500 });
   }
 
-  const parts = token.split('.');
-  if (parts.length !== 3 || parts[0] !== WS_JWT_HEADER_B64) {
-    return json({ error: 'Unauthorized', message: 'invalid token format' }, { status: 401 });
+  const jwtResult = await verifyJwt(token, secret);
+  if (!jwtResult.ok) {
+    const msg = jwtResult.reason === 'expired' ? 'token expired' : 'invalid token';
+    return json({ error: 'Unauthorized', message: msg }, { status: 401 });
   }
-  const [headerB64, bodyB64, signature] = parts;
-  const expectedSig = await hmacSha256Sign(secret, `${headerB64}.${bodyB64}`);
-  if (signature !== expectedSig) {
-    return json({ error: 'Unauthorized', message: 'invalid token signature' }, { status: 401 });
-  }
-
-  let payload;
-  try {
-    const payloadStr = bodyB64.replace(/-/g, '+').replace(/_/g, '/');
-    const pad = payloadStr.length % 4 === 0 ? '' : '='.repeat(4 - (payloadStr.length % 4));
-    payload = JSON.parse(atob(payloadStr + pad));
-  } catch {
-    return json({ error: 'Unauthorized', message: 'invalid token payload' }, { status: 401 });
-  }
-
+  const payload = jwtResult.payload;
   const now = Math.floor(Date.now() / 1000);
-  if (typeof payload.exp !== 'number' || now >= payload.exp) {
-    return json({ error: 'Unauthorized', message: 'token expired' }, { status: 401 });
-  }
 
   const rawAccountDigest = String(payload.accountDigest || '');
   const isEphemeral = rawAccountDigest.startsWith('EPHEMERAL_');

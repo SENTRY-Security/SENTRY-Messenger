@@ -19,6 +19,8 @@
  *   Written on connect/disconnect. DO alarm sweeps stale entries.
  */
 
+import { verifyJwt } from './jwt.js';
+
 // ── Constants ────────────────────────────────────────────────────
 const CALL_LOCK_TTL_MS = 120_000;
 const MAX_SIGNAL_JSON_BYTES = 16 * 1024;
@@ -138,57 +140,8 @@ function extractPeerAccountDigest(msg = {}) {
   return null;
 }
 
-// ── JWT verification (Web Crypto, same as Worker's createWsToken) ──
-
-async function verifyWsJwt(token, secret) {
-  if (typeof token !== 'string' || !secret) return { ok: false, reason: 'config' };
-  const parts = token.split('.');
-  if (parts.length !== 3) return { ok: false, reason: 'format' };
-  const [headerB64, bodyB64, signature] = parts;
-
-  // Verify header
-  const expectedHeader = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))
-    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  if (headerB64 !== expectedHeader) return { ok: false, reason: 'header' };
-
-  // Compute expected signature
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']
-  );
-  // Decode base64url signature to ArrayBuffer
-  const sigStr = signature.replace(/-/g, '+').replace(/_/g, '/');
-  const pad = sigStr.length % 4 === 0 ? '' : '='.repeat(4 - (sigStr.length % 4));
-  const sigBytes = Uint8Array.from(atob(sigStr + pad), c => c.charCodeAt(0));
-
-  const valid = await crypto.subtle.verify(
-    'HMAC', key, sigBytes, enc.encode(`${headerB64}.${bodyB64}`)
-  );
-  if (!valid) return { ok: false, reason: 'signature' };
-
-  // Decode payload
-  let payload;
-  try {
-    const payloadStr = bodyB64.replace(/-/g, '+').replace(/_/g, '/');
-    const payloadPad = payloadStr.length % 4 === 0 ? '' : '='.repeat(4 - (payloadStr.length % 4));
-    payload = JSON.parse(atob(payloadStr + payloadPad));
-  } catch { return { ok: false, reason: 'payload' }; }
-
-  const now = Math.floor(Date.now() / 1000);
-  if (typeof payload.exp !== 'number' || now >= payload.exp) {
-    return { ok: false, reason: 'expired' };
-  }
-  if (!payload.accountDigest) return { ok: false, reason: 'claims' };
-
-  return {
-    ok: true,
-    payload: {
-      accountDigest: String(payload.accountDigest).toUpperCase(),
-      exp: payload.exp,
-      iat: payload.iat || null
-    }
-  };
-}
+// ── JWT verification — delegates to shared jwt.js module (H-1 fix) ──
+const verifyWsJwt = verifyJwt;
 
 // ── Durable Object class ─────────────────────────────────────────
 
