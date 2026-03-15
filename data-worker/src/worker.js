@@ -1252,28 +1252,44 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
     lookupDigest = await digestAccountToken(normalizedToken);
   }
 
+  // C-1 fix: SELECT includes account_token_hash for dual-mode verification
+  const ACCT_SELECT = `SELECT account_digest, account_token, account_token_hash, uid_digest, last_ctr, wrapped_mk_json, brand, brand_name, brand_logo FROM accounts`;
+
   let accountRow = null;
   if (lookupDigest) {
     const rows = await db.prepare(
-      `SELECT account_digest, account_token, uid_digest, last_ctr, wrapped_mk_json, brand, brand_name, brand_logo
-         FROM accounts
-        WHERE account_digest=?1`
+      `${ACCT_SELECT} WHERE account_digest=?1`
     ).bind(lookupDigest).all();
     accountRow = rows?.results?.[0] || null;
   }
 
   if (!accountRow && uidDigest) {
     const rows = await db.prepare(
-      `SELECT account_digest, account_token, uid_digest, last_ctr, wrapped_mk_json, brand, brand_name, brand_logo
-         FROM accounts
-        WHERE uid_digest=?1`
+      `${ACCT_SELECT} WHERE uid_digest=?1`
     ).bind(uidDigest).all();
     accountRow = rows?.results?.[0] || null;
   }
 
   if (accountRow) {
-    if (normalizedToken && accountRow.account_token !== normalizedToken) {
-      return null;
+    // C-1 fix: Dual-mode token verification
+    // 1. If hash exists → compare hash(input) vs stored hash (secure path)
+    // 2. If hash absent → fall back to plaintext comparison (legacy accounts)
+    // 3. If hash absent but match → backfill hash for future use
+    if (normalizedToken) {
+      const inputHash = await digestAccountToken(normalizedToken);
+      if (accountRow.account_token_hash) {
+        // Secure path: compare hashes
+        if (inputHash !== accountRow.account_token_hash) return null;
+      } else {
+        // Legacy fallback: plaintext comparison
+        if (accountRow.account_token !== normalizedToken) return null;
+        // Backfill hash for this legacy account (non-blocking)
+        try {
+          await db.prepare(
+            `UPDATE accounts SET account_token_hash=?1, updated_at=?2 WHERE account_digest=?3`
+          ).bind(inputHash, Math.floor(Date.now() / 1000), accountRow.account_digest).run();
+        } catch { /* non-critical: will backfill on next login */ }
+      }
     }
     return {
       account_digest: accountRow.account_digest,
@@ -1315,12 +1331,14 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
   }
 
   const now = Math.floor(Date.now() / 1000);
+  // C-1 fix: Store hash alongside token on new account creation
+  const acctTokenHash = await digestAccountToken(acctToken);
 
   try {
     await db.prepare(
-      `INSERT INTO accounts (account_digest, account_token, uid_digest, last_ctr, created_at, updated_at)
-       VALUES (?1, ?2, ?3, 0, ?4, ?4)`
-    ).bind(acctDigest, acctToken, acctUidDigest, now).run();
+      `INSERT INTO accounts (account_digest, account_token, account_token_hash, uid_digest, last_ctr, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5)`
+    ).bind(acctDigest, acctToken, acctTokenHash, acctUidDigest, now).run();
     return {
       account_digest: acctDigest,
       account_token: acctToken,
@@ -1336,9 +1354,7 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
     const msg = String(err?.message || '');
     if (msg.includes('UNIQUE constraint failed')) {
       const rows = await db.prepare(
-        `SELECT account_digest, account_token, uid_digest, last_ctr, wrapped_mk_json, brand, brand_name, brand_logo
-           FROM accounts
-          WHERE account_digest=?1 OR uid_digest=?2`
+        `${ACCT_SELECT} WHERE account_digest=?1 OR uid_digest=?2`
       ).bind(acctDigest, acctUidDigest).all();
       const row = rows?.results?.[0];
       if (row) {

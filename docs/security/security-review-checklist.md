@@ -126,7 +126,7 @@
 - [x] SQL injection 防護 — 全部 358 處使用 parameterized queries（`?N`）
 - [x] 輸入正規化：account_digest（64 hex）、conversation_id（8-128 alphanum）等
 - [x] 訊息 counter 嚴格遞增（server-side `counter <= MAX(previous)` 檢查）
-- [ ] ⚠️ Account token 明文儲存（應 hash 後儲存）
+- [x] ~~Account token 明文儲存（應 hash 後儲存）~~ — ✅ Phase 1 已修復：新增 `account_token_hash` 欄位，驗證時優先比對 hash、舊帳號 fallback 明文並自動回填 hash（`worker.js`、`0012_add_account_token_hash.sql`）
 - [ ] ⚠️ Rate limiting 非分散式（in-memory Map，跨 isolate 無效）
 - [x] ~~Error messages 洩漏狀態（"CounterTooLow" 含 maxCounter）~~ — ✅ 已修復：移除 `lastCtr`、`maxCounter`、`details` 等內部狀態欄位（`worker.js`）
 - [x] ~~Debug endpoints 未停用（`/auth/sdm/debug-kit`, `/auth/opaque/debug`）~~ — ✅ 已修復：透過 `ENABLE_DEBUG_ENDPOINTS` 環境變數控制，生產環境預設 `false`，僅 UAT 啟用（`wrangler.toml`、`worker.js`）

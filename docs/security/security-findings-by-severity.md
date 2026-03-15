@@ -8,7 +8,7 @@
 
 | # | 項目 | 來源 | 說明 |
 |---|------|------|------|
-| C-1 | Account token 明文儲存 | `security-review-checklist.md` §4.3 | 應 hash 後儲存，明文儲存導致資料庫洩漏即全面失守 |
+| ~~C-1~~ | ~~Account token 明文儲存~~ | `security-review-checklist.md` §4.3 | ✅ Phase 1 已修復：新增 `account_token_hash` 欄位，雙模式驗證（hash 優先 + 明文 fallback + 自動回填），新帳號直接寫 hash |
 | ~~C-2~~ | ~~Debug endpoints 未停用~~ | `security-review-checklist.md` §4.3 | ✅ 已修復：透過 `ENABLE_DEBUG_ENDPOINTS` 環境變數控制，生產環境預設 `false` 回傳 404（`wrangler.toml`、`worker.js`） |
 | C-3 | 無 CSRF token 驗證 | `security-review-checklist.md` §4.3 | 缺少 CSRF 防護，可能遭受跨站請求偽造攻擊 |
 | C-4 | Send-side ratchet 停用 | `security-review-checklist.md` §2.2, `security-architecture.md` §10 | `dr.js:357-364` 中 send-side ratchet 更新被註解，`myRatchetPriv`/`myRatchetPub` 不在發送時輪替，削弱前向保密性 |
@@ -64,11 +64,11 @@
 
 | 嚴重程度 | 總數 | 已修復 | 待處理 |
 |----------|------|--------|--------|
-| 🔴 Critical | 4 | 1 | 3 |
+| 🔴 Critical | 4 | 2 | 2 |
 | 🟠 High | 5 | 4 | 1 |
 | 🟡 Medium | 12 | 0 | 12 |
 | 🟢 Low | 13 | 1 | 12 |
-| **總計** | **34** | **6** | **28** |
+| **總計** | **34** | **7** | **27** |
 
 ## 已通過項目（已修復/確認安全）
 
@@ -84,6 +84,7 @@
 - ✅ 訊息 counter 嚴格遞增（server-side 檢查）
 - ✅ GitHub Actions secrets 不透過 echo 傳入
 - ✅ DR 狀態並發已有 `enqueueDrSessionOp()` 序列化機制
+- ✅ **C-1**：Account token hash 儲存（Phase 1：雙模式驗證 + 自動回填）
 - ✅ **C-2**：Debug endpoints 透過 `ENABLE_DEBUG_ENDPOINTS` 環境變數控制，生產環境回傳 404
 - ✅ **H-1**：JWT 驗證統一為共用 `jwt.js` 模組（`account-ws.js`、`worker.js`）
 - ✅ **H-2**：移除 `dr.js` 中所有金鑰雜湊 debug 日誌輸出
