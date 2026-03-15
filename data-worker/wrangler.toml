@@ -36,12 +36,17 @@ id = "2ace4d55398742928e4b2ca79a371d0d"
 # Durable Objects for WebSocket connections (one DO per account)
 [durable_objects]
 bindings = [
-  { name = "ACCOUNT_WS", class_name = "AccountWebSocket" }
+  { name = "ACCOUNT_WS", class_name = "AccountWebSocket" },
+  { name = "RATE_LIMITER", class_name = "RateLimiter" }
 ]
 
 [[migrations]]
 tag = "v1"
 new_classes = ["AccountWebSocket"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["RateLimiter"]
 
 # ── UAT Environment ─────────────────────────────────────────────
 [env.uat]
@@ -70,5 +75,6 @@ id = "3d14a30fff6344c7bb300d175e84b38c"
 
 [env.uat.durable_objects]
 bindings = [
-  { name = "ACCOUNT_WS", class_name = "AccountWebSocket" }
+  { name = "ACCOUNT_WS", class_name = "AccountWebSocket" },
+  { name = "RATE_LIMITER", class_name = "RateLimiter" }
 ]

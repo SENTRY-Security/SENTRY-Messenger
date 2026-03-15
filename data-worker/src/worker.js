@@ -3,8 +3,9 @@ import { toU8Strict } from './u8-strict.js';
 import { createJwt, verifyJwt } from './jwt.js';
 import { getOpaqueConfig, OpaqueID, OpaqueServer, KE1, KE3, RegistrationRequest, RegistrationRecord, ExpectedAuthResult } from '@cloudflare/opaque-ts';
 
-// Re-export Durable Object class so Cloudflare runtime can find it
+// Re-export Durable Object classes so Cloudflare runtime can find them
 export { AccountWebSocket } from './account-ws.js';
+export { RateLimiter } from './rate-limiter.js';
 
 // ---- 基本工具與正規化 ----
 const textEncoder = new TextEncoder();
@@ -313,9 +314,43 @@ async function verifyHMAC(req, env) {
   return timingSafeEqual(sig, sigPipe) || timingSafeEqual(sig, sigNewline);
 }
 
+// ---- Distributed rate limiting via Durable Object ----
+
+/**
+ * Check rate limit using the RateLimiter Durable Object.
+ * @param {object} env - Worker env bindings
+ * @param {string} key - Rate limit key (e.g. "ip:1.2.3.4" or "account:DIGEST")
+ * @param {string} action - Action name (e.g. "pairing-lookup", "api-call")
+ * @param {number} limit - Max requests per window
+ * @param {number} windowSec - Window duration in seconds
+ * @returns {{ allowed: boolean, remaining: number, retryAfter: number }}
+ */
+async function checkRateLimit(env, key, action, limit, windowSec) {
+  if (!env.RATE_LIMITER) {
+    // Binding not available (e.g. local dev) — allow all
+    return { allowed: true, remaining: limit, retryAfter: 0 };
+  }
+  const doId = env.RATE_LIMITER.idFromName(key);
+  const stub = env.RATE_LIMITER.get(doId);
+  const resp = await stub.fetch('https://do/check', {
+    method: 'POST',
+    body: JSON.stringify({ action, limit, windowSec })
+  });
+  return resp.json();
+}
+
+async function resetRateLimit(env, key, action) {
+  if (!env.RATE_LIMITER) return;
+  const doId = env.RATE_LIMITER.idFromName(key);
+  const stub = env.RATE_LIMITER.get(doId);
+  await stub.fetch('https://do/reset', {
+    method: 'POST',
+    body: JSON.stringify({ action })
+  });
+}
+
 // ---- 帳號與 MK / TAGS 相關共用 ----
 let dataTablesReady = false;
-const _pairingCodeRateLimit = new Map(); // { accountDigest → { attempts, lockedUntil } }
 
 function bytesToHex(u8) {
   let out = '';
@@ -1912,14 +1947,14 @@ async function handleInviteDropboxRoutes(req, env) {
       return json({ error: 'Forbidden', message: 'accountToken invalid' }, { status: 403 });
     }
 
-    // Rate limit: 3 failed attempts → 30s lockout (in-memory per worker instance)
-    const rlKey = account.account_digest;
-    const rlEntry = _pairingCodeRateLimit.get(rlKey);
-    const now = Math.floor(Date.now() / 1000);
-    if (rlEntry && rlEntry.lockedUntil > now) {
-      return json({ error: 'RateLimited', message: 'too many attempts, try again later', retry_after: rlEntry.lockedUntil - now }, { status: 429 });
+    // Rate limit: 3 failed attempts per 30s window (distributed via Durable Object)
+    const rlKey = `account:${account.account_digest}`;
+    const rl = await checkRateLimit(env, rlKey, 'pairing-lookup', 3, 30);
+    if (!rl.allowed) {
+      return json({ error: 'RateLimited', message: 'too many attempts, try again later', retry_after: rl.retryAfter }, { status: 429 });
     }
 
+    const now = Math.floor(Date.now() / 1000);
     const row = await env.DB.prepare(
       `SELECT invite_id, owner_account_digest, owner_device_id, owner_public_key_b64,
               expires_at, prekey_bundle_json
@@ -1929,13 +1964,6 @@ async function handleInviteDropboxRoutes(req, env) {
     ).bind(pairingCode, now).first();
 
     if (!row) {
-      // Increment failed attempts
-      const attempts = (rlEntry?.attempts || 0) + 1;
-      if (attempts >= 3) {
-        _pairingCodeRateLimit.set(rlKey, { attempts, lockedUntil: now + 30 });
-      } else {
-        _pairingCodeRateLimit.set(rlKey, { attempts, lockedUntil: 0 });
-      }
       return json({ error: 'NotFound', message: 'pairing code not found or expired' }, { status: 404 });
     }
 
@@ -1945,7 +1973,7 @@ async function handleInviteDropboxRoutes(req, env) {
     }
 
     // Success: reset rate limit
-    _pairingCodeRateLimit.delete(rlKey);
+    await resetRateLimit(env, rlKey, 'pairing-lookup');
 
     let prekeyBundle = null;
     if (row.prekey_bundle_json) {
@@ -2828,6 +2856,14 @@ async function handlePrekeysRoutes(req, env) {
 
   // Fetch per-device bundle (consume one OPK)
   if (req.method === 'GET' && url.pathname === '/d1/prekeys/bundle') {
+    // Rate limit prekey bundle fetch: 20 per 60s per IP (prevents OPK exhaustion)
+    const pkIP = req.headers.get('CF-Connecting-IP') || 'unknown';
+    if (pkIP !== 'unknown') {
+      const rl = await checkRateLimit(env, `ip:${pkIP}`, 'prekey-bundle', 20, 60);
+      if (!rl.allowed) {
+        return json({ error: 'RateLimited', message: 'too many requests', retry_after: rl.retryAfter }, { status: 429 });
+      }
+    }
     const peerAccountDigest = normalizeAccountDigest(url.searchParams.get('peerAccountDigest'));
     let peerDeviceId = normalizeDeviceId(url.searchParams.get('peerDeviceId'));
     if (!peerAccountDigest) {
@@ -2900,6 +2936,14 @@ async function handleAtomicSendRoutes(req, env) {
   const url = new URL(req.url);
 
   if (req.method === 'POST' && url.pathname === '/d1/messages/atomic-send') {
+    // Rate limit message sending: 60 per 60s per IP
+    const msgIP = req.headers.get('CF-Connecting-IP') || 'unknown';
+    if (msgIP !== 'unknown') {
+      const rl = await checkRateLimit(env, `ip:${msgIP}`, 'msg-send', 60, 60);
+      if (!rl.allowed) {
+        return json({ error: 'RateLimited', message: 'too many requests', retry_after: rl.retryAfter }, { status: 429 });
+      }
+    }
     let body;
     try {
       body = await req.json();
@@ -6734,6 +6778,14 @@ async function handlePublicRoutes(req, env) {
 
   // ── Auth (SDM exchange, OPAQUE, MK) ──────────────────────────
   if (path.startsWith('/api/v1/auth/') || path === '/api/v1/mk/store' || path === '/api/v1/mk/update') {
+    // Stricter rate limit for auth endpoints: 10 requests per 60s per IP
+    const authIP = req.headers.get('CF-Connecting-IP') || 'unknown';
+    if (authIP !== 'unknown') {
+      const rl = await checkRateLimit(env, `ip:${authIP}`, 'auth', 10, 60);
+      if (!rl.allowed) {
+        return json({ error: 'RateLimited', message: 'too many auth attempts', retry_after: rl.retryAfter }, { status: 429 });
+      }
+    }
     const authResult = await handleAuthRoutes(path, method, url, body, req, env, baseUrl);
     if (authResult) return authResult;
   }
@@ -8166,6 +8218,15 @@ export default {
       // ── CORS preflight for public API ──
       if (req.method === 'OPTIONS' && (url.pathname.startsWith('/api/') || url.pathname.startsWith('/api'))) {
         return new Response(null, { status: 204, headers: buildCORSHeaders(req, env) });
+      }
+
+      // ── Global IP-based rate limiting (distributed via Durable Object) ──
+      const clientIP = req.headers.get('CF-Connecting-IP') || req.headers.get('X-Forwarded-For') || 'unknown';
+      if (clientIP !== 'unknown') {
+        const rl = await checkRateLimit(env, `ip:${clientIP}`, 'global', 120, 60);
+        if (!rl.allowed) {
+          return json({ error: 'RateLimited', message: 'too many requests', retry_after: rl.retryAfter }, { status: 429 });
+        }
       }
 
       // ── WebSocket upgrade → Durable Object ──

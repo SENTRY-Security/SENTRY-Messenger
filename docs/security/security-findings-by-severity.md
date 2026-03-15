@@ -27,7 +27,7 @@
 
 | # | 項目 | 來源 | 說明 |
 |---|------|------|------|
-| M-1 | Rate limiting 非分散式 | `security-review-checklist.md` §4.3 | In-memory Map 實作，跨 isolate 無效，無法有效防禦分散式暴力攻擊 |
+| ~~M-1~~ | ~~Rate limiting 非分散式~~ | `security-review-checklist.md` §4.3 | ✅ 已修復：新增 `RateLimiter` Durable Object，提供跨 isolate 分散式限流；全域 IP 限流 (120/min) + 認證端點 (10/min) + prekey (20/min) + 訊息發送 (60/min) + pairing code (3/30s) |
 | ~~M-2~~ | ~~Media chunk 加密無 AAD~~ | `security-review-checklist.md` §5.1, `media-and-attachment-security.md` §7.2 | ⬇️ 降級為 Low：攻擊前提需同時擁有 MK + R2 存取權，chunk 重排僅影響單一媒體完整性，不洩漏新資料 |
 | ~~M-3~~ | ~~Manifest 無獨立簽章~~ | `security-review-checklist.md` §5.2, `security-architecture.md` §10 | ⬇️ 降級為 Low：GCM auth tag 已提供完整性與認證保證，額外簽章需三重前提（MK 洩漏 + R2 存取 + DR 突破）才有價值 |
 | M-4 | AEAD 操作普遍缺少 AAD | `security-architecture.md` §10 | 除 DR 訊息外，blob、media、vault 等 AEAD 操作均不使用 AAD |
@@ -38,7 +38,7 @@
 | ~~M-9~~ | ~~InsertableStreams 不支援時的 fallback~~ | `security-review-checklist.md` §6.2 | ✅ 已修復：本地或對端不支援 InsertableStreams 時拒絕建立通話（`failCall`），不允許靜默降級為未加密通話 |
 | M-10 | CSP headers 設定待確認 | `security-review-checklist.md` §9 | Content-Security-Policy 是否正確限制 script-src |
 | M-11 | CORS 設定待確認 | `security-review-checklist.md` §9 | 是否使用過於寬鬆的 `allow-origin: *` |
-| M-12 | HTTP API rate limiting 待確認 | `security-review-checklist.md` §9 | API 端點限流機制是否完備 |
+| ~~M-12~~ | ~~HTTP API rate limiting 待確認~~ | `security-review-checklist.md` §9 | ✅ 已修復：與 M-1 共同處理，全域 IP 限流覆蓋所有 API 端點 |
 
 ## 🟢 Low（低）
 
@@ -70,9 +70,9 @@
 |----------|------|--------|------|--------|
 | 🔴 Critical | 4 | 2 | 1 (→Low) | 1 |
 | 🟠 High | 5 | 4 | 1 (→Low) | 0 |
-| 🟡 Medium | 12 | 3 | 2 (→Low) | 7 |
+| 🟡 Medium | 12 | 5 | 2 (→Low) | 5 |
 | 🟢 Low | 13+4 | 1 | — | 16 |
-| **總計** | **36** | **10** | **4** | **24** |
+| **總計** | **36** | **12** | **4** | **22** |
 
 ## 已通過項目（已修復/確認安全）
 
@@ -97,4 +97,5 @@
 - ✅ **M-6**：Invite Dropbox 改用 per-envelope 16-byte random salt（向下相容舊 envelope）
 - ✅ **M-7**：Call key 子金鑰衍生改用 CMK 拆分的 subSalt 取代零 salt
 - ✅ **M-9**：不支援 InsertableStreams 時拒絕通話，防止靜默降級為未加密通話
+- ✅ **M-1/M-12**：新增 `RateLimiter` Durable Object 分散式限流，覆蓋全域 IP、認證、prekey、訊息發送、pairing code
 - ✅ **L-12**：Debug flags 在生產環境建置時強制關閉
