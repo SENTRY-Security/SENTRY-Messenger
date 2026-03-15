@@ -6,6 +6,7 @@
 
 import { fetchJSON } from '../core/http.js';
 import { getAccountToken, getAccountDigest, buildAccountPayload, ensureDeviceId, allocateDeviceCounter, setDeviceCounter } from '../core/store.js';
+import { fetchSecureMaxCounter } from './messages.js';
 
 /**
  * Request a presigned PUT for uploading an encrypted object to R2.
@@ -111,10 +112,20 @@ export async function createMessage(body) {
     } catch {}
     const detail = res?.data || res;
     const errCode = detail?.error || detail?.code || null;
-    const maxCounter = detail?.details?.max_counter ?? detail?.details?.maxCounter ?? detail?.maxCounter ?? detail?.max_counter;
-    if (res?.r?.status === 409 && errCode === 'CounterTooLow' && Number.isFinite(maxCounter)) {
-      // bump local counter and retry once
-      try { setDeviceCounter(Number(maxCounter)); } catch {}
+    if (res?.r?.status === 409 && errCode === 'CounterTooLow') {
+      // Try to recover: get maxCounter from response or fetch from server
+      let maxCounter = detail?.details?.max_counter ?? detail?.details?.maxCounter ?? detail?.maxCounter ?? detail?.max_counter;
+      if (!Number.isFinite(maxCounter)) {
+        try {
+          const probe = await fetchSecureMaxCounter({ conversationId: payload.conv_id, senderDeviceId: deviceId });
+          if (probe?.r?.ok && Number.isFinite(probe?.data?.maxCounter)) {
+            maxCounter = probe.data.maxCounter;
+          }
+        } catch {}
+      }
+      if (Number.isFinite(maxCounter)) {
+        try { setDeviceCounter(Number(maxCounter)); } catch {}
+      }
       attempt += 1;
       continue;
     }

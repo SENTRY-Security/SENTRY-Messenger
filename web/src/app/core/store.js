@@ -387,7 +387,13 @@ function writeDeviceCounter(deviceId, value) {
 }
 export function setDeviceCounter(value) {
   const deviceId = ensureDeviceId();
-  writeDeviceCounter(deviceId, Number(value));
+  const num = Number(value);
+  if (!Number.isFinite(num) || num < 0) return;
+  // Only advance — never regress the counter to prevent CounterTooLow errors
+  const current = readDeviceCounter(deviceId);
+  if (num > current) {
+    writeDeviceCounter(deviceId, num);
+  }
 }
 /**
  * Allocate next counter for current device, but only persist on commit().

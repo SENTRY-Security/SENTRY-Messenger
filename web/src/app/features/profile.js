@@ -1,7 +1,7 @@
 // /app/features/profile.js
 // Manage encrypted profile control-state (nickname, avatar) stored per-account using MK.
 
-import { listSecureMessages, createSecureMessage } from '../api/messages.js';
+import { listSecureMessages, createSecureMessage, fetchSecureMaxCounter } from '../api/messages.js';
 import { encryptAndPutWithProgress, downloadAndDecrypt } from './media.js';
 import {
   getMkRaw,
@@ -481,11 +481,19 @@ async function persistProfileControlState(profile, { accountDigest } = {}) {
   });
   if (!r.ok) {
     if (r.status === 409 && data?.error === 'CounterTooLow') {
-      const maxCounter = Number.isFinite(data?.max_counter)
+      let maxCounter = Number.isFinite(data?.max_counter)
         ? Number(data.max_counter)
         : Number.isFinite(data?.details?.max_counter)
           ? Number(data.details.max_counter)
           : null;
+      if (maxCounter === null) {
+        try {
+          const probe = await fetchSecureMaxCounter({ conversationId: convId, senderDeviceId: deviceId });
+          if (probe?.r?.ok && Number.isFinite(probe?.data?.maxCounter)) {
+            maxCounter = probe.data.maxCounter;
+          }
+        } catch {}
+      }
       const seed = maxCounter === null ? 1 : maxCounter + 1;
       setDeviceCounter(seed);
       logProfileCounter({

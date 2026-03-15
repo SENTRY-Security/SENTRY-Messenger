@@ -2,7 +2,7 @@
 // Manage E2EE contacts list stored in contacts-<account_digest> conversation (UID fallback).
 
 import { fetchJSON } from '../core/http.js';
-import { createSecureMessage } from '../api/messages.js';
+import { createSecureMessage, fetchSecureMaxCounter } from '../api/messages.js';
 import { createMessage } from '../api/media.js';
 import {
   getMkRaw,
@@ -723,11 +723,19 @@ export async function saveContact(contact) {
 
     if (!r.ok) {
       if (r.status === 409 && data?.error === 'CounterTooLow') {
-        const maxCounter = Number.isFinite(data?.max_counter)
+        let maxCounter = Number.isFinite(data?.max_counter)
           ? Number(data.max_counter)
           : Number.isFinite(data?.details?.max_counter)
             ? Number(data.details.max_counter)
             : null;
+        if (maxCounter === null) {
+          try {
+            const probe = await fetchSecureMaxCounter({ conversationId: convIds[0], senderDeviceId: deviceId });
+            if (probe?.r?.ok && Number.isFinite(probe?.data?.maxCounter)) {
+              maxCounter = probe.data.maxCounter;
+            }
+          } catch {}
+        }
         const seed = maxCounter === null ? 1 : maxCounter + 1;
         setDeviceCounter(seed);
         log({
@@ -737,7 +745,7 @@ export async function saveContact(contact) {
             seed
           }
         });
-        return false; // Caller should retry? saveContact doesn't retry automatically here, but simple return false is safer than throw loop.
+        return false;
       }
       const msg = typeof data === 'string' ? data : data?.error || data?.message || 'contact save failed';
       throw new Error(msg);
