@@ -207,8 +207,8 @@ export const onRequest: PagesFunction<{
 
   const headers = new Headers(response.headers);
   headers.set('Cache-Control', 'no-store');
-  headers.set('Access-Control-Allow-Origin', request.headers.get('Origin') || '*');
-  headers.set('Access-Control-Allow-Credentials', 'true');
+  const cors = corsHeaders(request);
+  for (const [k, v] of Object.entries(cors)) headers.set(k, v);
 
   return new Response(response.body, {
     status: response.status,
@@ -217,12 +217,20 @@ export const onRequest: PagesFunction<{
 };
 
 
+// Allowed origins for CORS (M-11 fix: whitelist instead of origin reflection)
+const CORS_ALLOWED_ORIGINS = [
+  'https://message.sentry.red',
+  'https://uat-message.sentry.red',
+];
+
 function corsHeaders(req?: Request): Record<string, string> {
+  const origin = req?.headers.get('Origin') || '';
+  const allowed = CORS_ALLOWED_ORIGINS.includes(origin);
   return {
-    'access-control-allow-origin': req?.headers.get('Origin') || '*',
+    'access-control-allow-origin': allowed ? origin : CORS_ALLOWED_ORIGINS[0],
     'access-control-allow-credentials': 'true',
-    'access-control-allow-methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS',
-    'access-control-allow-headers': req?.headers.get('Access-Control-Request-Headers') || '*',
+    'access-control-allow-methods': 'GET, POST, OPTIONS',
+    'access-control-allow-headers': 'Content-Type, X-Account-Token, X-Account-Digest, X-Device-Id, Authorization',
     'access-control-max-age': '86400',
   };
 }

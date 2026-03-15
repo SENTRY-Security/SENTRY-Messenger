@@ -19,8 +19,8 @@ S3_REGION = "auto"
 S3_BUCKET = "message-media"
 SIGNED_PUT_TTL = "900"
 SIGNED_GET_TTL = "900"
-# Comma-separated origins allowed for CORS (empty = allow all)
-# CORS_ORIGINS = "https://app.example.com,https://www.example.com"
+# Comma-separated origins allowed for CORS (M-11 fix)
+CORS_ORIGINS = "https://message.sentry.red"
 
 [[d1_databases]]
 binding = "DB"
@@ -55,6 +55,7 @@ name = "message-data-uat"
 [env.uat.vars]
 OPAQUE_SERVER_ID = "uat-api.message.sentry.red"
 ENABLE_DEBUG_ENDPOINTS = "true"
+CORS_ORIGINS = "https://uat-message.sentry.red"
 NTAG424_KDF = "HKDF"
 NTAG424_SALT = "sentry.red"
 NTAG424_INFO = "ntag424-slot-0"

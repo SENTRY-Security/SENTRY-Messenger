@@ -199,7 +199,7 @@
 
 - [ ] SRI 驗證所有 CDN 載入（OPAQUE、Argon2id）
 - [x] ~~CSP headers 設定待確認~~ — ✅ Phase 1 已修復：`_headers` 新增 CSP（白名單 CDN + `'unsafe-inline'`）、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`、`Referrer-Policy`、`Permissions-Policy`
-- [ ] ⚠️ CORS 設定待確認
+- [x] ~~CORS 設定待確認~~ — ✅ 已修復：Pages Function 改用 `CORS_ALLOWED_ORIGINS` 白名單（`[[path]].ts`）；Data Worker 啟用 `CORS_ORIGINS` 環境變數（`wrangler.toml`）；明確列舉 allow-headers 取代 `*`
 - [x] ~~HTTP API rate limiting 待確認~~ — ✅ 已修復：與 M-1 共同處理，`RateLimiter` DO 全域 IP 限流覆蓋所有端點
 - [ ] TLS 1.2+ 強制（Cloudflare 處理）
 - [x] ~~Debug 日誌是否在生產環境停用~~ — ✅ 已修復：`debug-flags.js` 透過 `__PRODUCTION__` build flag 在生產環境強制關閉所有 debug switches（`build.mjs`、`deploy.yml`）
@@ -214,7 +214,7 @@
 - [ ] `build-manifest.json` 不公開可存取（`build.mjs:346`）
 - [ ] CSP header 設定限制 script-src（`_headers`）
 - [ ] HSTS header 啟用（`_headers`）
-- [ ] CORS 設定不使用 `allow-origin: *`（`[[path]].ts:209-226`）
+- [x] ~~CORS 設定不使用 `allow-origin: *`~~ — ✅ 已修復：白名單比對取代 origin reflection（`[[path]].ts`、`wrangler.toml`）
 - [ ] API proxy 有 rate limiting（`[[path]].ts:156-217`）
 - [ ] UAT 與 Production 使用不同 API token（`setup-environments.sh`）
 - [ ] Wipe script 需要明確確認（`wipe-all.sh`）
