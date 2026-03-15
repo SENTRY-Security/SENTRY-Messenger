@@ -30,6 +30,19 @@ let suppressAutoDerive = false;
 let keyContext = null;
 let isResettingContext = false;
 let rotationTimer = null;
+let keyContextListeners = [];
+
+/** Register a callback invoked after keyContext is updated (e.g. for ScriptTransform rekey). */
+export function onKeyContextUpdate(fn) {
+  if (typeof fn === 'function') keyContextListeners.push(fn);
+  return () => { keyContextListeners = keyContextListeners.filter(f => f !== fn); };
+}
+
+function notifyKeyContextListeners() {
+  for (const fn of keyContextListeners) {
+    try { fn(keyContext); } catch {}
+  }
+}
 
 const ROLE_KEY_LABELS = {
   caller: {
@@ -106,9 +119,27 @@ export function getCallKeyContext() {
 export function supportsInsertableStreams() {
   const senderProto = typeof RTCRtpSender !== 'undefined' ? RTCRtpSender.prototype : null;
   if (!senderProto) return false;
-  return typeof senderProto.createEncodedStreams === 'function'
+  // Legacy API (Chrome < 118, older browsers)
+  if (typeof senderProto.createEncodedStreams === 'function'
     || typeof senderProto.createEncodedAudioStreams === 'function'
-    || typeof senderProto.createEncodedVideoStreams === 'function';
+    || typeof senderProto.createEncodedVideoStreams === 'function') return true;
+  // Modern API (Safari 15.4+, Chrome 118+): RTCRtpScriptTransform
+  if (typeof RTCRtpScriptTransform !== 'undefined') return true;
+  return false;
+}
+
+/**
+ * Returns true when the browser uses the modern RTCRtpScriptTransform API
+ * (Safari 15.4+, Chrome 118+) instead of the legacy createEncodedStreams().
+ */
+export function usesScriptTransform() {
+  const senderProto = typeof RTCRtpSender !== 'undefined' ? RTCRtpSender.prototype : null;
+  if (!senderProto) return false;
+  // If legacy API is available, prefer it (simpler, main-thread transforms)
+  if (typeof senderProto.createEncodedStreams === 'function'
+    || typeof senderProto.createEncodedAudioStreams === 'function'
+    || typeof senderProto.createEncodedVideoStreams === 'function') return false;
+  return typeof RTCRtpScriptTransform !== 'undefined';
 }
 
 export async function prepareCallKeyEnvelope({
@@ -158,6 +189,7 @@ export async function prepareCallKeyEnvelope({
   });
   await finalizeContext(context);
   keyContext = context;
+  notifyKeyContextListeners();
   return envelope;
 }
 
@@ -192,6 +224,7 @@ async function deriveKeysFromEnvelope({ session, envelope, trigger }) {
   const context = await buildKeyContext({ session, envelope });
   await finalizeContext(context);
   keyContext = context;
+  notifyKeyContextListeners();
   log({ callKeyReady: true, callId: context.callId, trigger });
   return context;
 }

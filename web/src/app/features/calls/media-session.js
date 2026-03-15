@@ -17,7 +17,9 @@ import {
 } from './state.js';
 import {
   getCallKeyContext,
-  supportsInsertableStreams
+  supportsInsertableStreams,
+  usesScriptTransform,
+  onKeyContextUpdate
 } from './key-manager.js';
 import { CALL_EVENT, subscribeCallEvent } from './events.js';
 import { createFaceBlurPipeline, isFaceBlurSupported, BLUR_MODE } from './face-blur.js';
@@ -51,6 +53,8 @@ let faceBlurPipeline = null;
 let faceBlurMode = BLUR_MODE.FACE;
 let e2eeReceiverConfirmed = false;
 let peerConnectionEncodedStreams = false;
+/** Map<RTCRtpSender|RTCRtpReceiver, Worker> for RTCRtpScriptTransform workers */
+let scriptTransformWorkers = new Map();
 let remoteCandidateStats = { host: 0, srflx: 0, relay: 0, prflx: 0, total: 0 };
 let iceFailureCollecting = false; // guards against connectionstatechange racing with getStats()
 
@@ -278,7 +282,9 @@ export function initCallMediaSession({ sendSignalFn, showToastFn }) {
   if (unsubscribers.length) return;
   unsubscribers = [
     subscribeCallEvent(CALL_EVENT.SIGNAL, ({ signal }) => handleSignal(signal)),
-    subscribeCallEvent(CALL_EVENT.STATE, ({ session }) => handleSessionState(session))
+    subscribeCallEvent(CALL_EVENT.STATE, ({ session }) => handleSessionState(session)),
+    // Rekey ScriptTransform workers when call key context changes (key rotation)
+    onKeyContextUpdate(() => { rekeyScriptTransformWorkers(); })
   ];
 }
 
@@ -1310,6 +1316,7 @@ function cleanupPeerConnection(reason) {
     }
     if (sessionStore) sessionStore.cachedMicrophoneStream = null;
   } catch { }
+  cleanupScriptTransformWorkers();
   peerConnection = null;
   localStream = null;
   remoteStream = null;
@@ -1458,6 +1465,10 @@ function setupInsertableStreamsForSender(sender, track) {
   const keyContext = getCallKeyContext();
   if (!keyContext) return;
   const keyName = track.kind === 'video' ? 'videoTx' : 'audioTx';
+  if (usesScriptTransform()) {
+    applyScriptTransform(sender, keyName, 'encrypt');
+    return;
+  }
   const transform = createEncryptionTransform(keyName, 'encrypt');
   if (!transform) return;
   applyTransformStream(sender, transform);
@@ -1467,7 +1478,8 @@ function setupInsertableStreamsForReceiver(receiver, track) {
   // Receiver encoded streams require the encodedInsertableStreams
   // constructor flag.  Without it, createEncodedStreams() throws
   // "Too late" and may leave the receiver in a broken state.
-  if (!peerConnectionEncodedStreams) return;
+  // (Not required for RTCRtpScriptTransform path.)
+  if (!usesScriptTransform() && !peerConnectionEncodedStreams) return;
   if (!supportsInsertableStreams() || !receiver || !track) return;
   if (!peerSupportsInsertableStreams()) {
     failCall('peer-e2ee-not-supported', new Error(t('callKeys.peerE2eeNotSupported')));
@@ -1476,14 +1488,18 @@ function setupInsertableStreamsForReceiver(receiver, track) {
   const keyContext = getCallKeyContext();
   if (!keyContext) return;
   const keyName = track.kind === 'video' ? 'videoRx' : 'audioRx';
-  const transform = createEncryptionTransform(keyName, 'decrypt');
-  if (!transform) return;
-  if (applyTransformStream(receiver, transform)) {
-    if (!e2eeReceiverConfirmed) {
-      e2eeReceiverConfirmed = true;
-      // Receiver confirmed — now apply sender transforms for existing tracks.
-      applySenderTransformsDeferred();
-    }
+  let applied = false;
+  if (usesScriptTransform()) {
+    applied = applyScriptTransform(receiver, keyName, 'decrypt');
+  } else {
+    const transform = createEncryptionTransform(keyName, 'decrypt');
+    if (!transform) return;
+    applied = applyTransformStream(receiver, transform);
+  }
+  if (applied && !e2eeReceiverConfirmed) {
+    e2eeReceiverConfirmed = true;
+    // Receiver confirmed — now apply sender transforms for existing tracks.
+    applySenderTransformsDeferred();
   }
 }
 
@@ -1583,6 +1599,125 @@ function applyTransformStream(target, transformStream) {
     log({ callMediaTransformUnsupported: err?.message || err });
   }
   return false;
+}
+
+// --- RTCRtpScriptTransform support (Safari 15.4+, Chrome 118+) ---
+
+const SCRIPT_TRANSFORM_WORKER_CODE = `
+let cryptoKey = null;
+let baseNonce = null;
+let frameCounter = 0;
+let mode = 'encrypt';
+let importPromise = null;
+
+self.onmessage = async (event) => {
+  const msg = event.data;
+  if (msg.type === 'key') {
+    mode = msg.mode || mode;
+    const usages = mode === 'encrypt' ? ['encrypt'] : ['decrypt'];
+    baseNonce = new Uint8Array(msg.nonce);
+    if (msg.resetCounter) frameCounter = 0;
+    importPromise = crypto.subtle.importKey(
+      'raw', new Uint8Array(msg.key), { name: 'AES-GCM' }, false, usages
+    ).then(k => { cryptoKey = k; });
+    await importPromise;
+  }
+};
+
+self.onrtctransform = (event) => {
+  const { readable, writable } = event.transformer;
+  const ts = new TransformStream({
+    async transform(frame, controller) {
+      if (!cryptoKey) {
+        if (importPromise) await importPromise;
+        if (!cryptoKey) { controller.enqueue(frame); return; }
+      }
+      try {
+        frameCounter++;
+        const iv = new Uint8Array(baseNonce);
+        new DataView(iv.buffer).setUint32(iv.length - 4, frameCounter, false);
+        const op = mode === 'encrypt' ? 'encrypt' : 'decrypt';
+        const result = await crypto.subtle[op]({ name: 'AES-GCM', iv }, cryptoKey, frame.data);
+        if (result instanceof ArrayBuffer) frame.data = result;
+        controller.enqueue(frame);
+      } catch {
+        controller.enqueue(frame);
+      }
+    }
+  });
+  readable.pipeThrough(ts).pipeTo(writable).catch(() => {});
+};
+`;
+
+let scriptTransformWorkerUrl = null;
+
+function getScriptTransformWorkerUrl() {
+  if (!scriptTransformWorkerUrl) {
+    const blob = new Blob([SCRIPT_TRANSFORM_WORKER_CODE], { type: 'text/javascript' });
+    scriptTransformWorkerUrl = URL.createObjectURL(blob);
+  }
+  return scriptTransformWorkerUrl;
+}
+
+function applyScriptTransform(target, keyName, mode) {
+  try {
+    const context = getCallKeyContext();
+    const keyEntry = context?.keys?.[keyName];
+    if (!keyEntry?.key || !keyEntry?.nonce) return false;
+    const worker = new Worker(getScriptTransformWorkerUrl());
+    // Send initial key material
+    const keyBuf = toU8Strict(keyEntry.key, 'media-session:scriptTransform:key');
+    const nonceBuf = new Uint8Array(keyEntry.nonce);
+    worker.postMessage({
+      type: 'key',
+      mode,
+      key: keyBuf.buffer,
+      nonce: nonceBuf.buffer,
+      resetCounter: true
+    }, [keyBuf.buffer.slice(0), nonceBuf.buffer.slice(0)]);
+    target.transform = new RTCRtpScriptTransform(worker, { operation: mode, keyName });
+    scriptTransformWorkers.set(target, worker);
+    return true;
+  } catch (err) {
+    log({ callScriptTransformError: err?.message || err, keyName, mode });
+    return false;
+  }
+}
+
+/** Send updated keys to all active ScriptTransform workers (key rotation). */
+function rekeyScriptTransformWorkers() {
+  const context = getCallKeyContext();
+  if (!context) return;
+  for (const [target, worker] of scriptTransformWorkers) {
+    // Determine keyName from the transform options set during creation
+    const isReceiver = target instanceof RTCRtpReceiver;
+    const track = target.track;
+    const kind = track?.kind || 'audio';
+    const keyName = isReceiver
+      ? (kind === 'video' ? 'videoRx' : 'audioRx')
+      : (kind === 'video' ? 'videoTx' : 'audioTx');
+    const entry = context.keys?.[keyName];
+    if (!entry?.key || !entry?.nonce) continue;
+    try {
+      const keyBuf = toU8Strict(entry.key, 'media-session:scriptTransform:rekey');
+      const nonceBuf = new Uint8Array(entry.nonce);
+      worker.postMessage({
+        type: 'key',
+        key: keyBuf.buffer,
+        nonce: nonceBuf.buffer,
+        resetCounter: false
+      }, [keyBuf.buffer.slice(0), nonceBuf.buffer.slice(0)]);
+    } catch (err) {
+      log({ callScriptTransformRekeyError: err?.message || err, keyName });
+    }
+  }
+}
+
+function cleanupScriptTransformWorkers() {
+  for (const [, worker] of scriptTransformWorkers) {
+    try { worker.terminate(); } catch {}
+  }
+  scriptTransformWorkers = new Map();
 }
 
 function incrementFrameCounter(keyName) {
