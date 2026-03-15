@@ -588,13 +588,15 @@ async function ensurePeerConnection() {
     // Continue without explicit certificate — browser picks its default
   }
 
-  // NOTE: We intentionally do NOT set encodedInsertableStreams: true
-  // here because the peer might not support E2EE (e.g. iOS Safari)
-  // and we cannot reliably determine the peer's capability before
-  // creating the connection (the callee never sends its capabilities
-  // back to the caller).  Without the constructor flag, receiver
-  // createEncodedStreams() would throw "Too late"; the guard in
-  // setupInsertableStreamsForReceiver prevents the call entirely.
+  // Enable encoded insertable streams so the legacy createEncodedStreams()
+  // API works on Chrome.  Safari uses RTCRtpScriptTransform which does not
+  // need this flag.  If the peer does not support E2EE the transforms are
+  // simply not applied (peerSupportsInsertableStreams check) and frames pass
+  // through unchanged — setting the flag has no negative side-effect.
+  if (supportsInsertableStreams()) {
+    rtcConfig.encodedInsertableStreams = true;
+    peerConnectionEncodedStreams = true;
+  }
   peerConnection = new RTCPeerConnection(rtcConfig);
   // Track gathered ICE candidate types for diagnostics
   const candidateStats = { host: 0, srflx: 0, relay: 0, prflx: 0, total: 0 };
@@ -1501,6 +1503,14 @@ function setupInsertableStreamsForReceiver(receiver, track) {
     // Receiver confirmed — now apply sender transforms for existing tracks.
     applySenderTransformsDeferred();
   }
+  // After setting up a video receiver transform, request a keyframe from the
+  // peer.  The initial keyframe may have arrived before the transform was
+  // ready, leaving the video decoder unable to start rendering.  A brief
+  // delay gives the transform pipeline time to initialise before the
+  // keyframe request triggers a new I-frame from the sender.
+  if (applied && track.kind === 'video') {
+    requestKeyFrameFromPeer();
+  }
 }
 
 function applySenderTransformsDeferred() {
@@ -1510,6 +1520,52 @@ function applySenderTransformsDeferred() {
       setupInsertableStreamsForSender(sender, sender.track);
     }
   }
+}
+
+/**
+ * Request a keyframe from the peer after the video receiver transform is
+ * set up.  Uses RTCRtpSender.generateKeyFrame() on the local VIDEO sender
+ * to trigger an I-frame that will reach the peer's receiver correctly.
+ * Also tries to trigger the remote peer to send a keyframe by briefly
+ * toggling the receiver's jitter buffer target, which causes the browser
+ * to emit a PLI (Picture Loss Indication) RTCP message.
+ */
+function requestKeyFrameFromPeer() {
+  if (!peerConnection) return;
+  // Approach 1: Generate a local keyframe so the remote peer's receiver
+  // (which may also be initialising transforms) gets a clean I-frame.
+  try {
+    for (const sender of peerConnection.getSenders()) {
+      if (sender.track?.kind === 'video' && typeof sender.generateKeyFrame === 'function') {
+        sender.generateKeyFrame().catch(() => {});
+      }
+    }
+  } catch { }
+  // Approach 2: After a short delay, reassign the remote video element's
+  // srcObject to force the browser to request a keyframe (PLI).
+  setTimeout(() => {
+    if (!peerConnection || !remoteVideoEl || !remoteStream) return;
+    try {
+      const videoTracks = remoteStream.getVideoTracks();
+      if (videoTracks.length && videoTracks[0].readyState === 'live') {
+        remoteVideoEl.srcObject = null;
+        remoteVideoEl.srcObject = remoteStream;
+        remoteVideoEl.play().catch(() => {});
+      }
+    } catch { }
+  }, 300);
+  // Approach 3: After a longer delay, request keyframe again in case the
+  // first attempt was too early (transform not fully initialised).
+  setTimeout(() => {
+    if (!peerConnection) return;
+    try {
+      for (const sender of peerConnection.getSenders()) {
+        if (sender.track?.kind === 'video' && typeof sender.generateKeyFrame === 'function') {
+          sender.generateKeyFrame().catch(() => {});
+        }
+      }
+    } catch { }
+  }, 1000);
 }
 
 function createEncryptionTransform(keyName, mode) {
