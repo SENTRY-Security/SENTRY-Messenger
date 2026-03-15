@@ -98,7 +98,7 @@
 - [ ] 登出時清除記憶體中金鑰
 - [ ] ⚠️ JavaScript GC 不保證立即清除
 - [ ] sessionStorage 在 tab 關閉時清除
-- [ ] localStorage `contactSecrets-v2` 登出時是否清除
+- [x] ~~localStorage `contactSecrets-v2` 登出時是否清除~~ — ✅ 已確認/修復：`secureLogout()` 呼叫 `localStorage.clear()`；`app-ui.js` `onLogout()` 修正為清除所有非 SIM localStorage key
 
 ## 4. 伺服器端安全
 

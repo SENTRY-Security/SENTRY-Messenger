@@ -210,12 +210,12 @@ async function onLogout() {
     sessionStorage.setItem('app:lastLogoutReason', '已登出');
   } catch { }
   try {
-    // clear local envelope cache (env_v1:*), 保留模擬資料
+    // clear all localStorage (env_v1:*, contactSecrets-v2, etc.), 保留模擬資料
     const del = [];
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
       if (!k || isSimStorageKey(k)) continue;
-      if (k.startsWith('env_v1:')) del.push(k);
+      del.push(k);
     }
     for (const k of del) {
       try { localStorage.removeItem(k); } catch { }

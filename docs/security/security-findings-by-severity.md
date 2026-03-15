@@ -45,7 +45,7 @@
 | # | 項目 | 來源 | 說明 |
 |---|------|------|------|
 | L-1 | JavaScript GC 不保證立即清除金鑰 | `security-review-checklist.md` §3.3 | 記憶體中金鑰可能在 GC 週期內殘留 |
-| L-2 | `localStorage` contactSecrets-v2 登出時是否清除 | `security-review-checklist.md` §3.3 | 持久化儲存中的密鑰資料可能在登出後殘留 |
+| ~~L-2~~ | ~~`localStorage` contactSecrets-v2 登出時是否清除~~ | `security-review-checklist.md` §3.3 | ✅ 已確認/修復：`secureLogout()` 已有 `localStorage.clear()`；`app-ui.js` 的 `onLogout()` 修正為清除所有非 SIM localStorage key（原僅清除 `env_v1:*`） |
 | L-3 | 社交圖譜可見 | `security-review-checklist.md` §7 | `conversation_acl` 明文儲存，伺服器可見社交關係 |
 | L-4 | 通訊時間可見 | `security-review-checklist.md` §7 | Timestamp 明文，伺服器可見通訊時間 |
 | L-5 | 訊息大小可推知 | `security-review-checklist.md` §7 | 無 padding 機制，訊息密文大小可推知明文長度 |
@@ -72,8 +72,8 @@
 | 🔴 Critical | 4 | 2 | 1 (→Low) | 1 |
 | 🟠 High | 5 | 4 | 1 (→Low) | 0 |
 | 🟡 Medium | 12 | 9 | 3 (→Low) | 0 |
-| 🟢 Low | 13+5 | 1 | — | 17 |
-| **總計** | **36** | **16** | **5** | **17** |
+| 🟢 Low | 13+5 | 2 | — | 16 |
+| **總計** | **36** | **17** | **5** | **16** |
 
 ## 已通過項目（已修復/確認安全）
 
@@ -103,4 +103,5 @@
 - ✅ **M-4**：所有 AES-GCM 操作加入 AAD — `aead.js`（info tag）、`invite-dropbox.js`、`context.js`、`contact-share.js`、`kdf.js`（`sentry/mk-wrap`）、`contacts.js`（`contact-storage-v1`）；v2 格式向下相容 v1 legacy
 - ✅ **M-8**：Epoch 輪換實作 — caller 每 10 分鐘自動遞增 epoch 重新衍生金鑰，透過 `call-rekey` 信號同步 peer，`InsertableStreams` transform 動態切換加密金鑰
 - ✅ **M-11**：CORS 白名單限制 — Pages Function 改用 `CORS_ALLOWED_ORIGINS` 白名單取代 origin reflection；Data Worker 啟用 `CORS_ORIGINS` 環境變數；明確列舉 allow-headers
+- ✅ **L-2**：登出時清除所有 localStorage — `secureLogout()` 已有 `localStorage.clear()`，`app-ui.js` `onLogout()` 修正為清除所有非 SIM key
 - ✅ **L-12**：Debug flags 在生產環境建置時強制關閉
