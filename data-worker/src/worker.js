@@ -317,6 +317,22 @@ async function verifyHMAC(req, env) {
 // ---- Distributed rate limiting via Durable Object ----
 
 /**
+ * Resolve rate-limit key: prefer account-based, fallback to IP-based.
+ * @param {Request} req
+ * @param {{ body?: object }} [opts]
+ * @returns {string|null} e.g. "account:ABC123..." or "ip:1.2.3.4"
+ */
+function resolveRateLimitKey(req, { body } = {}) {
+  const hdr = req.headers.get('x-account-digest');
+  const digest = normalizeAccountDigest(hdr)
+    || normalizeAccountDigest(body?.account_digest)
+    || normalizeAccountDigest(body?.accountDigest);
+  if (digest) return `account:${digest}`;
+  const ip = req.headers.get('CF-Connecting-IP') || req.headers.get('X-Forwarded-For') || null;
+  return ip ? `ip:${ip}` : null;
+}
+
+/**
  * Check rate limit using the RateLimiter Durable Object.
  * @param {object} env - Worker env bindings
  * @param {string} key - Rate limit key (e.g. "ip:1.2.3.4" or "account:DIGEST")
@@ -2859,10 +2875,10 @@ async function handlePrekeysRoutes(req, env) {
 
   // Fetch per-device bundle (consume one OPK)
   if (req.method === 'GET' && url.pathname === '/d1/prekeys/bundle') {
-    // Rate limit prekey bundle fetch: 50 per 60s per IP (prevents OPK exhaustion)
-    const pkIP = req.headers.get('CF-Connecting-IP') || 'unknown';
-    if (pkIP !== 'unknown') {
-      const rl = await checkRateLimit(env, `ip:${pkIP}`, 'prekey-bundle', 50, 60);
+    // Rate limit prekey bundle fetch: 50 per 60s per account (fallback to IP)
+    const pkRlKey = resolveRateLimitKey(req);
+    if (pkRlKey) {
+      const rl = await checkRateLimit(env, pkRlKey, 'prekey-bundle', 50, 60);
       if (!rl.allowed) {
         return json({ error: 'RateLimited', message: 'too many requests', retry_after: rl.retryAfter }, { status: 429 });
       }
@@ -2939,19 +2955,19 @@ async function handleAtomicSendRoutes(req, env) {
   const url = new URL(req.url);
 
   if (req.method === 'POST' && url.pathname === '/d1/messages/atomic-send') {
-    // Rate limit message sending: 60 per 60s per IP
-    const msgIP = req.headers.get('CF-Connecting-IP') || 'unknown';
-    if (msgIP !== 'unknown') {
-      const rl = await checkRateLimit(env, `ip:${msgIP}`, 'msg-send', 60, 60);
-      if (!rl.allowed) {
-        return json({ error: 'RateLimited', message: 'too many requests', retry_after: rl.retryAfter }, { status: 429 });
-      }
-    }
     let body;
     try {
       body = await req.json();
     } catch {
       return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    // Rate limit message sending: 60 per 60s per account (fallback to IP)
+    const msgRlKey = resolveRateLimitKey(req, { body });
+    if (msgRlKey) {
+      const rl = await checkRateLimit(env, msgRlKey, 'msg-send', 60, 60);
+      if (!rl.allowed) {
+        return json({ error: 'RateLimited', message: 'too many requests', retry_after: rl.retryAfter }, { status: 429 });
+      }
     }
 
     // 1. Common Validation
@@ -6781,10 +6797,10 @@ async function handlePublicRoutes(req, env) {
 
   // ── Auth (SDM exchange, OPAQUE, MK) ──────────────────────────
   if (path.startsWith('/api/v1/auth/') || path === '/api/v1/mk/store' || path === '/api/v1/mk/update') {
-    // Rate limit for auth endpoints: 50 requests per 60s per IP
-    const authIP = req.headers.get('CF-Connecting-IP') || 'unknown';
-    if (authIP !== 'unknown') {
-      const rl = await checkRateLimit(env, `ip:${authIP}`, 'auth', 50, 60);
+    // Rate limit for auth endpoints: 50 requests per 60s per account (fallback to IP)
+    const authRlKey = resolveRateLimitKey(req, { body });
+    if (authRlKey) {
+      const rl = await checkRateLimit(env, authRlKey, 'auth', 50, 60);
       if (!rl.allowed) {
         return json({ error: 'RateLimited', message: 'too many auth attempts', retry_after: rl.retryAfter }, { status: 429 });
       }
@@ -8223,10 +8239,10 @@ export default {
         return new Response(null, { status: 204, headers: buildCORSHeaders(req, env) });
       }
 
-      // ── Global IP-based rate limiting (distributed via Durable Object) ──
-      const clientIP = req.headers.get('CF-Connecting-IP') || req.headers.get('X-Forwarded-For') || 'unknown';
-      if (clientIP !== 'unknown') {
-        const rl = await checkRateLimit(env, `ip:${clientIP}`, 'global', 120, 60);
+      // ── Global rate limiting per account (fallback to IP) ──
+      const globalRlKey = resolveRateLimitKey(req);
+      if (globalRlKey) {
+        const rl = await checkRateLimit(env, globalRlKey, 'global', 120, 60);
         if (!rl.allowed) {
           return json({ error: 'RateLimited', message: 'too many requests', retry_after: rl.retryAfter }, { status: 429 });
         }
