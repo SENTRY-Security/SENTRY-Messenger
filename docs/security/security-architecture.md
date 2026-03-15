@@ -311,7 +311,7 @@ DR 解密完成
 
 1. ⚠️ **Send-side ratchet 停用**：`dr.js:357-364` 中 send-side ratchet 更新被註解，`myRatchetPriv`/`myRatchetPub` 不在發送時輪替
 2. ✅ ~~自訂 JWT 驗證~~ — 已重構：抽取共用 `jwt.js` 模組統一 sign/verify 邏輯，`account-ws.js` 和 `worker.js` 均使用同一實作
-3. ⚠️ **AEAD 無 AAD**：除 DR 訊息外，其他 AEAD 操作（blob、media、vault）不使用 AAD
+3. ✅ ~~AEAD 無 AAD~~ — 已修復：所有 AES-GCM 操作加入 info tag / 用途標識作為 `additionalData`，新資料使用 v2 格式，解密時依版本向下相容 v1 legacy
 4. ⚠️ **IV 重用風險**：12-byte random IV 依賴隨機不重複（HKDF salt 分散風險，但無明確追蹤）
 5. ⚠️ **Manifest 無獨立簽章**：manifest 加密但無額外的完整性驗證（依賴 GCM 的 authentication tag）
 6. ✅ ~~Debug 日誌輸出金鑰雜湊~~ — 已修復：移除 `dr.js` 中所有 `hashPrefix()` 相關的 console 輸出（x3dh-initiate、x3dh-respond、drRatchet、encrypt、decrypt 路徑）

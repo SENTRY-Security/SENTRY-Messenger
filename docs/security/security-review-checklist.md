@@ -145,7 +145,7 @@
 
 - [ ] Per-chunk 獨立 HKDF salt + random IV
 - [ ] Key = HKDF(MK, salt, 'media/chunk-v1')
-- [ ] ⚠️ 無 AAD（chunk index 未綁定）
+- [x] ~~無 AAD（chunk index 未綁定）~~ — ✅ 已修復：所有 AES-GCM 操作加入 info tag 作為 `additionalData`，v2 格式向下相容 v1 legacy
 - [ ] Presigned URL 存取控制
 
 ### 5.2 Manifest

@@ -90,7 +90,8 @@ export async function sealInviteEnvelope({ ownerPublicKeyB64, payload, expiresAt
   const key = await deriveAesKey(shared, INFO_TAG, salt);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const plaintext = encoder.encode(JSON.stringify(payload));
-  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext));
+  const aad = encoder.encode(INFO_TAG);
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad }, key, plaintext));
   return {
     v: 1,
     aead: 'aes-256-gcm',
@@ -123,6 +124,9 @@ export async function openInviteEnvelope({ ownerPrivateKeyB64, envelope }) {
   const key = await deriveAesKey(shared, normalized.info, salt);
   const iv = b64ToBytes(normalized.sealed.iv_b64);
   const ct = b64ToBytes(normalized.sealed.ct_b64);
-  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+  // New envelopes (with salt_b64) use AAD; legacy envelopes do not
+  const params = { name: 'AES-GCM', iv };
+  if (normalized.sealed.salt_b64) params.additionalData = encoder.encode(normalized.info);
+  const plain = await crypto.subtle.decrypt(params, key, ct);
   return JSON.parse(decoder.decode(new Uint8Array(plain)));
 }

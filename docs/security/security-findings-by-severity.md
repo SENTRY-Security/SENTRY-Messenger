@@ -30,7 +30,7 @@
 | ~~M-1~~ | ~~Rate limiting 非分散式~~ | `security-review-checklist.md` §4.3 | ✅ 已修復：新增 `RateLimiter` Durable Object，提供跨 isolate 分散式限流；全域 IP 限流 (120/min) + 認證端點 (10/min) + prekey (20/min) + 訊息發送 (60/min) + pairing code (3/30s) |
 | ~~M-2~~ | ~~Media chunk 加密無 AAD~~ | `security-review-checklist.md` §5.1, `media-and-attachment-security.md` §7.2 | ⬇️ 降級為 Low：攻擊前提需同時擁有 MK + R2 存取權，chunk 重排僅影響單一媒體完整性，不洩漏新資料 |
 | ~~M-3~~ | ~~Manifest 無獨立簽章~~ | `security-review-checklist.md` §5.2, `security-architecture.md` §10 | ⬇️ 降級為 Low：GCM auth tag 已提供完整性與認證保證，額外簽章需三重前提（MK 洩漏 + R2 存取 + DR 突破）才有價值 |
-| M-4 | AEAD 操作普遍缺少 AAD | `security-architecture.md` §10 | 除 DR 訊息外，blob、media、vault 等 AEAD 操作均不使用 AAD |
+| ~~M-4~~ | ~~AEAD 操作普遍缺少 AAD~~ | `security-architecture.md` §10 | ✅ 已修復：所有 AES-GCM 操作加入 `additionalData`（info tag / 用途標識），新資料使用 `v:2` 格式標記，解密時依版本判斷是否驗證 AAD（向下相容 v1 legacy） |
 | M-5 | IV 重用風險 | `security-architecture.md` §10 | 12-byte random IV 依賴隨機不重複，無明確追蹤機制 |
 | ~~M-6~~ | ~~Invite Dropbox 硬編碼 salt~~ | `security-architecture.md` §10 | ✅ 已修復：改為每次 seal 產生 16-byte random salt，存入 envelope `salt_b64`；舊 envelope 向下相容（fallback 舊 salt） |
 | ~~M-7~~ | ~~Call key 使用零 salt~~ | `security-architecture.md` §10 | ✅ 已修復：CMK 512-bit 輸出拆分為 key (256-bit) + subSalt (256-bit)，子金鑰衍生使用 subSalt 取代零 salt |
@@ -70,9 +70,9 @@
 |----------|------|--------|------|--------|
 | 🔴 Critical | 4 | 2 | 1 (→Low) | 1 |
 | 🟠 High | 5 | 4 | 1 (→Low) | 0 |
-| 🟡 Medium | 12 | 8 | 2 (→Low) | 2 |
+| 🟡 Medium | 12 | 9 | 2 (→Low) | 1 |
 | 🟢 Low | 13+4 | 1 | — | 16 |
-| **總計** | **36** | **15** | **4** | **19** |
+| **總計** | **36** | **16** | **4** | **18** |
 
 ## 已通過項目（已修復/確認安全）
 
@@ -99,6 +99,7 @@
 - ✅ **M-9**：不支援 InsertableStreams 時拒絕通話，防止靜默降級為未加密通話
 - ✅ **M-1/M-12**：新增 `RateLimiter` Durable Object 分散式限流，覆蓋全域 IP、認證、prekey、訊息發送、pairing code
 - ✅ **M-10**：Phase 1 CSP — 白名單 script-src（含 `'wasm-unsafe-eval'` 支援 Argon2 WASM）、禁止 frame/object、加入安全 headers（X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy）
+- ✅ **M-4**：所有 AES-GCM 操作加入 AAD — `aead.js`（info tag）、`invite-dropbox.js`、`context.js`、`contact-share.js`、`kdf.js`（`sentry/mk-wrap`）、`contacts.js`（`contact-storage-v1`）；v2 格式向下相容 v1 legacy
 - ✅ **M-8**：Epoch 輪換實作 — caller 每 10 分鐘自動遞增 epoch 重新衍生金鑰，透過 `call-rekey` 信號同步 peer，`InsertableStreams` transform 動態切換加密金鑰
 - ✅ **M-11**：CORS 白名單限制 — Pages Function 改用 `CORS_ALLOWED_ORIGINS` 白名單取代 origin reflection；Data Worker 啟用 `CORS_ORIGINS` 環境變數；明確列舉 allow-headers
 - ✅ **L-12**：Debug flags 在生產環境建置時強制關閉
