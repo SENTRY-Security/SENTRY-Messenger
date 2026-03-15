@@ -130,7 +130,7 @@
 - [ ] ⚠️ Rate limiting 非分散式（in-memory Map，跨 isolate 無效）
 - [x] ~~Error messages 洩漏狀態（"CounterTooLow" 含 maxCounter）~~ — ✅ 已修復：移除 `lastCtr`、`maxCounter`、`details` 等內部狀態欄位（`worker.js`）
 - [x] ~~Debug endpoints 未停用（`/auth/sdm/debug-kit`, `/auth/opaque/debug`）~~ — ✅ 已修復：透過 `ENABLE_DEBUG_ENDPOINTS` 環境變數控制，生產環境預設 `false`，僅 UAT 啟用（`wrangler.toml`、`worker.js`）
-- [ ] ⚠️ 無 CSRF token 驗證
+- [ ] 無 CSRF token 驗證 — ⬇️ 降級為 Low：系統不使用 cookie 認證（token 透過 `x-account-token` header 傳送），傳統 CSRF 攻擊不成立，可選加 `Origin` header 驗證作為縱深防禦
 
 ### 4.4 OPAQUE
 

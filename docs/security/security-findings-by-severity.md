@@ -10,7 +10,7 @@
 |---|------|------|------|
 | ~~C-1~~ | ~~Account token 明文儲存~~ | `security-review-checklist.md` §4.3 | ✅ Phase 1 已修復：新增 `account_token_hash` 欄位，雙模式驗證（hash 優先 + 明文 fallback + 自動回填），新帳號直接寫 hash |
 | ~~C-2~~ | ~~Debug endpoints 未停用~~ | `security-review-checklist.md` §4.3 | ✅ 已修復：透過 `ENABLE_DEBUG_ENDPOINTS` 環境變數控制，生產環境預設 `false` 回傳 404（`wrangler.toml`、`worker.js`） |
-| C-3 | 無 CSRF token 驗證 | `security-review-checklist.md` §4.3 | 缺少 CSRF 防護，可能遭受跨站請求偽造攻擊 |
+| ~~C-3~~ | ~~無 CSRF token 驗證~~ | `security-review-checklist.md` §4.3 | ⬇️ 降級為 Low：系統不使用 cookie 認證（token 透過 header 傳送），傳統 CSRF 不成立 |
 | C-4 | Send-side ratchet 停用 | `security-review-checklist.md` §2.2, `security-architecture.md` §10 | `dr.js:357-364` 中 send-side ratchet 更新被註解，`myRatchetPriv`/`myRatchetPub` 不在發送時輪替，削弱前向保密性 |
 
 ## 🟠 High（高）
@@ -56,6 +56,7 @@
 | L-10 | 頭像加密待確認 | `media-and-attachment-security.md` §7.2 | 使用者頭像是否經過加密上傳需確認 |
 | L-11 | Cloudflare 日誌是否記錄 API request body | `security-review-checklist.md` §11 | 第三方基礎設施可能保留請求內容 |
 | ~~L-12~~ | ~~Debug 日誌生產環境是否停用~~ | `security-review-checklist.md` §9 | ✅ 已修復：`__PRODUCTION__` build flag 在生產環境關閉所有 debug switches |
+| L-14 | 無 CSRF token 驗證（由 C-3 降級） | `security-review-checklist.md` §4.3 | 系統不使用 cookie 認證，傳統 CSRF 不成立；可選加 `Origin` header 驗證作為縱深防禦 |
 | L-13 | D1/R2 資料殘留無 TTL 清理 | `security-review-checklist.md` §11 | 訊息和媒體無自動清理機制 |
 
 ---
@@ -64,11 +65,13 @@
 
 | 嚴重程度 | 總數 | 已修復 | 待處理 |
 |----------|------|--------|--------|
-| 🔴 Critical | 4 | 2 | 2 |
-| 🟠 High | 5 | 4 | 1 |
-| 🟡 Medium | 12 | 0 | 12 |
-| 🟢 Low | 13 | 1 | 12 |
-| **總計** | **34** | **7** | **27** |
+| 嚴重程度 | 總數 | 已修復 | 降級 | 待處理 |
+|----------|------|--------|------|--------|
+| 🔴 Critical | 4 | 2 | 1 (→Low) | 1 |
+| 🟠 High | 5 | 4 | — | 1 |
+| 🟡 Medium | 12 | 0 | — | 12 |
+| 🟢 Low | 13+1 | 1 | — | 13 |
+| **總計** | **35** | **7** | **1** | **27** |
 
 ## 已通過項目（已修復/確認安全）
 
