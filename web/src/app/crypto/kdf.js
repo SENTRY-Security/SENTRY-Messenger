@@ -84,10 +84,19 @@ export async function unwrapMKWithPasswordArgon2id(pwd, blob) {
       m: blob.m ?? 64, t: blob.t ?? 3, p: blob.p ?? 1
     });
     // v2+ blobs use AAD; v1 legacy blobs do not
+    const useAad = (blob.v ?? 1) >= 2;
     const params = { name: 'AES-GCM', iv };
-    if ((blob.v ?? 1) >= 2) params.additionalData = KDF_AAD;
-    const mkBuf = await crypto.subtle.decrypt(params, kek, ct);
-    return new Uint8Array(mkBuf);
+    if (useAad) params.additionalData = KDF_AAD;
+    try {
+      const mkBuf = await crypto.subtle.decrypt(params, kek, ct);
+      return new Uint8Array(mkBuf);
+    } catch {
+      // Fallback: retry with opposite AAD for transition-window data
+      const fallbackParams = { name: 'AES-GCM', iv };
+      if (!useAad) fallbackParams.additionalData = KDF_AAD;
+      const mkBuf = await crypto.subtle.decrypt(fallbackParams, kek, ct);
+      return new Uint8Array(mkBuf);
+    }
   } catch {
     return null;
   }

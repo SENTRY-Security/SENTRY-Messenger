@@ -1751,7 +1751,7 @@ export async function encryptContactSecretPayload(payload, mkRaw) {
   const plain = encoder.encode(payload);
   const { cipherBuf, iv, hkdfSalt } = await encryptWithMK(plain, mkRaw, SNAPSHOT_INFO_TAG);
   return {
-    v: 1,
+    v: 2,
     aead: 'aes-256-gcm',
     info: SNAPSHOT_INFO_TAG,
     salt_b64: b64(hkdfSalt),
@@ -1769,7 +1769,18 @@ export async function decryptContactSecretPayload(envelope, mkRaw) {
     const salt = b64u8(normalized.salt_b64);
     const iv = b64u8(normalized.iv_b64);
     const ct = b64u8(normalized.ct_b64);
-    const plain = await decryptWithMK(ct, mkRaw, salt, iv, normalized.info);
+    const useAad = (normalized.v ?? 1) >= 2;
+    let plain;
+    try {
+      plain = await decryptWithMK(ct, mkRaw, salt, iv, normalized.info, { useAad });
+    } catch (firstErr) {
+      // Fallback: retry with opposite AAD for transition-window data
+      try {
+        plain = await decryptWithMK(ct, mkRaw, salt, iv, normalized.info, { useAad: !useAad });
+      } catch {
+        throw firstErr;
+      }
+    }
     return { ok: true, snapshot: decoder.decode(plain) };
   } catch (err) {
     return { ok: false, corrupt: true, reason: err?.message || 'decrypt failed' };

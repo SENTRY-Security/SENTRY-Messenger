@@ -70,9 +70,21 @@ export async function decryptConversationEnvelope(tokenB64, envelope) {
   const iv = b64UrlToBytes(envelope.iv_b64 || envelope.ivB64 || envelope.iv);
   const payloadBytes = b64UrlToBytes(envelope.payload_b64 || envelope.payloadB64 || envelope.payload);
   // v2+ envelopes use AAD; v1 legacy envelopes do not
+  const useAad = (envelope.v ?? 1) >= 2;
   const params = { name: 'AES-GCM', iv };
-  if ((envelope.v ?? 1) >= 2) params.additionalData = encoder.encode('sentry/conv-envelope');
-  const plain = await crypto.subtle.decrypt(params, key, payloadBytes);
+  if (useAad) params.additionalData = encoder.encode('sentry/conv-envelope');
+  let plain;
+  try {
+    plain = await crypto.subtle.decrypt(params, key, payloadBytes);
+  } catch (firstErr) {
+    const fallbackParams = { name: 'AES-GCM', iv };
+    if (!useAad) fallbackParams.additionalData = encoder.encode('sentry/conv-envelope');
+    try {
+      plain = await crypto.subtle.decrypt(fallbackParams, key, payloadBytes);
+    } catch {
+      throw firstErr;
+    }
+  }
   return JSON.parse(decoder.decode(plain));
 }
 

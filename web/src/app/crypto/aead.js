@@ -129,8 +129,14 @@ export async function unwrapWithMK_JSON(envelope, mkRawU8) {
   let plain;
   try {
     plain = await decryptWithMK(ct, mkRawU8, salt, iv, normalizedEnvelope.info, { useAad });
-  } catch (err) {
-    throw new Error(`unwrapWithMK_JSON: decrypt failed - ${err.message}`);
+  } catch (firstErr) {
+    // Fallback: retry with opposite AAD for transition-window data
+    // (encrypted post-M-4 with AAD but envelope labeled v1, or vice versa)
+    try {
+      plain = await decryptWithMK(ct, mkRawU8, salt, iv, normalizedEnvelope.info, { useAad: !useAad });
+    } catch {
+      throw new Error(`unwrapWithMK_JSON: decrypt failed - ${firstErr.message}`);
+    }
   }
   try {
     return JSON.parse(new TextDecoder().decode(plain));

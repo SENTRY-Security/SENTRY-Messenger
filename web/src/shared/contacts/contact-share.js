@@ -28,9 +28,21 @@ export async function decryptContactPayload({ sessionKey, secret, envelope }) {
   const iv = b64ToBytes(envelope.iv);
   const ct = b64ToBytes(envelope.ct);
   // v2+ envelopes use AAD; v1/legacy envelopes do not
+  const useAad = (envelope.v ?? 1) >= 2;
   const params = { name: 'AES-GCM', iv };
-  if ((envelope.v ?? 1) >= 2) params.additionalData = encoder.encode(INFO);
-  const plain = await crypto.subtle.decrypt(params, key, ct);
+  if (useAad) params.additionalData = encoder.encode(INFO);
+  let plain;
+  try {
+    plain = await crypto.subtle.decrypt(params, key, ct);
+  } catch (firstErr) {
+    const fallbackParams = { name: 'AES-GCM', iv };
+    if (!useAad) fallbackParams.additionalData = encoder.encode(INFO);
+    try {
+      plain = await crypto.subtle.decrypt(fallbackParams, key, ct);
+    } catch {
+      throw firstErr;
+    }
+  }
   return JSON.parse(decoder.decode(new Uint8Array(plain)));
 }
 

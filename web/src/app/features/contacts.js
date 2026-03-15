@@ -809,7 +809,15 @@ async function decryptContactBlob(storageKey, blobStr) {
   try {
     const params = { name: 'AES-GCM', iv };
     if (useAad) params.additionalData = CONTACT_BLOB_AAD;
-    const dec = await crypto.subtle.decrypt(params, storageKey, ct);
+    let dec;
+    try {
+      dec = await crypto.subtle.decrypt(params, storageKey, ct);
+    } catch {
+      // Fallback: retry with opposite AAD for transition-window data
+      const fallbackParams = { name: 'AES-GCM', iv };
+      if (!useAad) fallbackParams.additionalData = CONTACT_BLOB_AAD;
+      dec = await crypto.subtle.decrypt(fallbackParams, storageKey, ct);
+    }
     return JSON.parse(new TextDecoder().decode(dec));
   } catch {
     return null;

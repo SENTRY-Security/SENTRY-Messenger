@@ -453,7 +453,7 @@ async function persistProfileControlState(profile, { accountDigest } = {}) {
   const { counter, commit } = allocateDeviceCounter();
   const header = {
     profile: 1,
-    v: 1,
+    v: normalizedEnvelope.v || 2,
     ts: obj.updatedAt,
     // Optimized: envelope removed to reduce header size; reconstructed on load
     iv_b64: normalizedEnvelope.iv_b64,

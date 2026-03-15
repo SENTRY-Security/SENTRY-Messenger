@@ -151,7 +151,7 @@ function requireMediaInfoTag(infoTag) {
 function buildEnvelope({ ct, keyType, keyU8, infoTag, contentType, name }) {
   const normalizedInfoTag = requireMediaInfoTag(infoTag);
   const envelope = {
-    v: keyType === 'shared' ? 2 : 1,
+    v: 2,
     aead: 'aes-256-gcm',
     iv_b64: b64(ct.iv),
     hkdf_salt_b64: b64(ct.hkdfSalt),
@@ -285,6 +285,8 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
         dir: dirSegments,
         iv_b64: envelope.iv_b64,
         env: {
+          v: envelope.v,
+          aead: envelope.aead,
           iv_b64: envelope.iv_b64,
           hkdf_salt_b64: envelope.hkdf_salt_b64,
           info_tag: envelope.info_tag,
@@ -423,6 +425,8 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
         dir: dirSegments,
         iv_b64: envelope.iv_b64,
         env: {
+          v: envelope.v,
+          aead: envelope.aead,
           iv_b64: envelope.iv_b64,
           hkdf_salt_b64: envelope.hkdf_salt_b64,
           info_tag: envelope.info_tag,
@@ -618,13 +622,23 @@ export async function downloadAndDecrypt({ key, envelope, onStatus, onProgress, 
   }
 
   progress?.({ stage: 'decrypt', message: t('mediaHandling.decryptingFile') });
-  const plain = await aeadDecryptWithMK(
-    cipherU8,
-    baseKey,
-    b64u8(meta.hkdf_salt_b64),
-    b64u8(meta.iv_b64),
-    infoTag
-  );
+  const useAad = (meta.v ?? 1) >= 2;
+  let plain;
+  try {
+    plain = await aeadDecryptWithMK(
+      cipherU8, baseKey, b64u8(meta.hkdf_salt_b64), b64u8(meta.iv_b64), infoTag, { useAad }
+    );
+  } catch (firstErr) {
+    // Fallback: retry with opposite AAD setting for transition-window data
+    // (encrypted post-M-4 with AAD but envelope labeled v1, or vice versa)
+    try {
+      plain = await aeadDecryptWithMK(
+        cipherU8, baseKey, b64u8(meta.hkdf_salt_b64), b64u8(meta.iv_b64), infoTag, { useAad: !useAad }
+      );
+    } catch {
+      throw firstErr; // throw original error if fallback also fails
+    }
+  }
   progress?.({ stage: 'done', bytes: plain.length });
   const blob = new Blob([plain], { type: meta.contentType || 'application/octet-stream' });
   return { blob, contentType: meta.contentType || 'application/octet-stream', name: meta.name || 'decrypted.bin', bytes: plain.length };
@@ -728,7 +742,8 @@ export async function saveChatMediaToDrive({ media, driveDir } = {}) {
       dir: dirSegments,
       iv_b64: envelope.iv_b64,
       env: {
-        v: envelope.v || 1,
+        v: envelope.v ?? 2,
+        aead: envelope.aead || 'aes-256-gcm',
         iv_b64: envelope.iv_b64,
         hkdf_salt_b64: envelope.hkdf_salt_b64,
         info_tag: envelope.info_tag,

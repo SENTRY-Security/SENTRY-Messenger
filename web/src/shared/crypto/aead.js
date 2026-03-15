@@ -164,6 +164,17 @@ export async function unwrapWithMK_JSON(envelope, mkRawU8) {
   const key = await deriveAesKey(mkRawU8, salt, normalizedEnvelope.info, ['decrypt']);
   // v2+ envelopes use info tag as AAD; v1 legacy envelopes do not
   const aad = (normalizedEnvelope.v ?? 1) >= 2 ? normalizedEnvelope.info : null;
-  const plain = await decryptAesGcm({ key, iv, ciphertext: ct, aad });
+  let plain;
+  try {
+    plain = await decryptAesGcm({ key, iv, ciphertext: ct, aad });
+  } catch (firstErr) {
+    // Fallback: retry with opposite AAD for transition-window data
+    try {
+      const fallbackAad = aad ? null : normalizedEnvelope.info;
+      plain = await decryptAesGcm({ key, iv, ciphertext: ct, aad: fallbackAad });
+    } catch {
+      throw firstErr;
+    }
+  }
   return JSON.parse(decoder.decode(plain));
 }

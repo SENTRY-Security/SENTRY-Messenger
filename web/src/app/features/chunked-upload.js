@@ -357,7 +357,7 @@ async function _streamingUploadFragmented({
   onProgress?.({ percent: PHASE.manifestEnd });
 
   const manifestEnvelope = {
-    v: useSharedKey ? 2 : 1, aead: 'aes-256-gcm',
+    v: 2, aead: 'aes-256-gcm',
     iv_b64: b64(manifestCt.iv), hkdf_salt_b64: b64(manifestCt.hkdfSalt),
     info_tag: MANIFEST_INFO_TAG, key_type: useSharedKey ? 'shared' : 'mk'
   };
@@ -573,7 +573,7 @@ async function _streamingTranscodeUpload({
   onProgress?.({ percent: PHASE.manifestEnd, statusText: null });
 
   const manifestEnvelope = {
-    v: useSharedKey ? 2 : 1, aead: 'aes-256-gcm',
+    v: 2, aead: 'aes-256-gcm',
     iv_b64: b64(manifestCt.iv), hkdf_salt_b64: b64(manifestCt.hkdfSalt),
     info_tag: MANIFEST_INFO_TAG, key_type: useSharedKey ? 'shared' : 'mk'
   };
@@ -1076,7 +1076,7 @@ export async function encryptAndPutChunked({
   }
 
   const manifestEnvelope = {
-    v: useSharedKey ? 2 : 1,
+    v: 2,
     aead: 'aes-256-gcm',
     iv_b64: b64(manifestCt.iv),
     hkdf_salt_b64: b64(manifestCt.hkdfSalt),

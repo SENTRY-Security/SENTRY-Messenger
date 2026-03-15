@@ -93,7 +93,7 @@ export async function sealInviteEnvelope({ ownerPublicKeyB64, payload, expiresAt
   const aad = encoder.encode(INFO_TAG);
   const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad }, key, plaintext));
   return {
-    v: 1,
+    v: 2,
     aead: 'aes-256-gcm',
     info: INFO_TAG,
     sealed: {
@@ -124,9 +124,22 @@ export async function openInviteEnvelope({ ownerPrivateKeyB64, envelope }) {
   const key = await deriveAesKey(shared, normalized.info, salt);
   const iv = b64ToBytes(normalized.sealed.iv_b64);
   const ct = b64ToBytes(normalized.sealed.ct_b64);
-  // New envelopes (with salt_b64) use AAD; legacy envelopes do not
+  // v2+ / envelopes with salt_b64 use AAD; legacy envelopes do not
+  const useAad = (normalized.v ?? 1) >= 2 || !!normalized.sealed.salt_b64;
   const params = { name: 'AES-GCM', iv };
-  if (normalized.sealed.salt_b64) params.additionalData = encoder.encode(normalized.info);
-  const plain = await crypto.subtle.decrypt(params, key, ct);
+  if (useAad) params.additionalData = encoder.encode(normalized.info);
+  let plain;
+  try {
+    plain = await crypto.subtle.decrypt(params, key, ct);
+  } catch (firstErr) {
+    // Fallback: retry with opposite AAD for transition-window data
+    const fallbackParams = { name: 'AES-GCM', iv };
+    if (!useAad) fallbackParams.additionalData = encoder.encode(normalized.info);
+    try {
+      plain = await crypto.subtle.decrypt(fallbackParams, key, ct);
+    } catch {
+      throw firstErr;
+    }
+  }
   return JSON.parse(decoder.decode(new Uint8Array(plain)));
 }
