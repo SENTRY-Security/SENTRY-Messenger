@@ -198,7 +198,7 @@
 ## 9. 環境安全
 
 - [ ] SRI 驗證所有 CDN 載入（OPAQUE、Argon2id）
-- [ ] ⚠️ CSP headers 設定待確認
+- [x] ~~CSP headers 設定待確認~~ — ✅ Phase 1 已修復：`_headers` 新增 CSP（白名單 CDN + `'unsafe-inline'`）、`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`、`Referrer-Policy`、`Permissions-Policy`
 - [ ] ⚠️ CORS 設定待確認
 - [x] ~~HTTP API rate limiting 待確認~~ — ✅ 已修復：與 M-1 共同處理，`RateLimiter` DO 全域 IP 限流覆蓋所有端點
 - [ ] TLS 1.2+ 強制（Cloudflare 處理）
