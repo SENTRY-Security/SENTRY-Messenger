@@ -41,6 +41,12 @@ const entryPoints = [
   'src/app/ui/ephemeral-ui.js'     // ephemeral chat guest page
 ];
 
+// H-3 fix: Inject __PRODUCTION__ flag — CI sets SENTRY_ENV=production on main branch deploys.
+// When true, debug-flags.js disables all debug switches at build time.
+const isProduction = (process.env.SENTRY_ENV || process.env.NODE_ENV || '').toLowerCase() === 'production'
+  || process.env.CF_PAGES_BRANCH === 'main';
+console.log(`[build] Production mode: ${isProduction}`);
+
 console.time('esbuild');
 const result = await build({
   entryPoints,
@@ -52,6 +58,9 @@ const result = await build({
   minify: true,
   sourcemap: true,
   target: ['es2022'],
+  define: {
+    '__PRODUCTION__': JSON.stringify(isProduction)
+  },
   plugins: [absolutePathPlugin],
   external: [
     'https://esm.sh/*',

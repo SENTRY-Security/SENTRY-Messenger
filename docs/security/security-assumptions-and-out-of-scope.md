@@ -91,12 +91,12 @@
 
 ### 6. 開發/Debug 模式風險
 
-- `web/src/app/ui/debug-page.js` — Debug 頁面（⚠️ 需確認生產環境是否可存取）
-- `web/src/app/ui/mobile/debug-flags.js` — Debug 開關
-- `web/src/app/features/sdm-sim.js` — NFC 標籤模擬器（開發用）
-- `web/src/pages/debug.html` — Debug HTML 頁面
-- 大量 `console.log` 輸出 — 可能在生產環境洩漏 E2EE 狀態資訊
-- ⚠️ 需確認：debug 頁面和 SDM 模擬在生產環境是否被禁用
+- ✅ `web/src/app/ui/debug-page.js` — Debug 頁面：生產環境透過 `ENABLE_DEBUG_PAGES` 環境變數回傳 404，已修復
+- ✅ `web/src/app/ui/mobile/debug-flags.js` — Debug 開關：生產環境建置時透過 `__PRODUCTION__` flag 強制關閉所有 switches
+- ✅ `web/src/app/features/sdm-sim.js` — NFC 標籤模擬器：依賴 debug-page 入口，隨 debug 頁面一同封鎖
+- ✅ `web/src/pages/debug.html` — Debug HTML 頁面：雙層防護（環境變數 + IP 白名單）
+- ✅ 後端 debug endpoints（`/auth/sdm/debug-kit`、`/auth/opaque/debug`）：透過 `ENABLE_DEBUG_ENDPOINTS` 環境變數控制，生產環境回傳 404
+- ⚠️ 部署提醒：UAT Cloudflare Pages 環境需設定 `ENABLE_DEBUG_PAGES=true`（Dashboard → Settings → Environment variables）
 
 ### 7. Traffic Analysis（流量分析）
 

@@ -129,7 +129,7 @@
 - [ ] ⚠️ Account token 明文儲存（應 hash 後儲存）
 - [ ] ⚠️ Rate limiting 非分散式（in-memory Map，跨 isolate 無效）
 - [x] ~~Error messages 洩漏狀態（"CounterTooLow" 含 maxCounter）~~ — ✅ 已修復：移除 `lastCtr`、`maxCounter`、`details` 等內部狀態欄位（`worker.js`）
-- [ ] ⚠️ Debug endpoints 未停用（`/auth/sdm/debug-kit`, `/auth/opaque/debug`）
+- [x] ~~Debug endpoints 未停用（`/auth/sdm/debug-kit`, `/auth/opaque/debug`）~~ — ✅ 已修復：透過 `ENABLE_DEBUG_ENDPOINTS` 環境變數控制，生產環境預設 `false`，僅 UAT 啟用（`wrangler.toml`、`worker.js`）
 - [ ] ⚠️ 無 CSRF token 驗證
 
 ### 4.4 OPAQUE
@@ -202,7 +202,7 @@
 - [ ] ⚠️ CORS 設定待確認
 - [ ] ⚠️ HTTP API rate limiting 待確認
 - [ ] TLS 1.2+ 強制（Cloudflare 處理）
-- [ ] ⚠️ Debug 日誌是否在生產環境停用
+- [x] ~~Debug 日誌是否在生產環境停用~~ — ✅ 已修復：`debug-flags.js` 透過 `__PRODUCTION__` build flag 在生產環境強制關閉所有 debug switches（`build.mjs`、`deploy.yml`）
 
 ## 10. 部署與 CI/CD 安全
 

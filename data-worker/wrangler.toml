@@ -6,6 +6,9 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 OPAQUE_SERVER_ID = "api.message.sentry.red"
+# Debug endpoints disabled in production (C-2 fix)
+# Only explicitly enabled in [env.uat.vars]
+ENABLE_DEBUG_ENDPOINTS = "false"
 NTAG424_KDF = "HKDF"
 NTAG424_SALT = "sentry.red"
 NTAG424_INFO = "ntag424-slot-0"
@@ -46,6 +49,7 @@ name = "message-data-uat"
 
 [env.uat.vars]
 OPAQUE_SERVER_ID = "uat-api.message.sentry.red"
+ENABLE_DEBUG_ENDPOINTS = "true"
 NTAG424_KDF = "HKDF"
 NTAG424_SALT = "sentry.red"
 NTAG424_INFO = "ntag424-slot-0"

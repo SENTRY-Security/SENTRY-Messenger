@@ -105,9 +105,14 @@ export const onRequest: PagesFunction<{
 }> = async ({ request, env, next }) => {
   const url = new URL(request.url);
 
-  // --- IP restriction for debug page ---
+  // --- Debug page access control (H-3 fix: env gate + IP restriction) ---
+  // Production: ENABLE_DEBUG_PAGES is unset/false → always 404
+  // UAT: ENABLE_DEBUG_PAGES=true → still requires IP whitelist
   const normalised = url.pathname.replace(/\/$/, '') || '/';
   if (RESTRICTED_PATHS.some(p => normalised === p || normalised.startsWith(p + '?'))) {
+    if ((env as any).ENABLE_DEBUG_PAGES !== 'true') {
+      return new Response('404 Not Found', { status: 404, headers: { 'Content-Type': 'text/plain' } });
+    }
     const clientIp = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For')?.split(',')[0]?.trim() || '';
     if (!DEBUG_ALLOWED_IPS.includes(clientIp)) {
       return new Response('403 Forbidden', { status: 403, headers: { 'Content-Type': 'text/plain' } });

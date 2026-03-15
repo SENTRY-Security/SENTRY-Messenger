@@ -6479,8 +6479,11 @@ async function handleAuthRoutes(path, method, url, body, req, env, baseUrl) {
     });
   }
 
-  // POST /api/v1/auth/sdm/debug-kit
+  // POST /api/v1/auth/sdm/debug-kit (C-2 fix: gated by ENABLE_DEBUG_ENDPOINTS)
   if (path === '/api/v1/auth/sdm/debug-kit' && method === 'POST') {
+    if (env.ENABLE_DEBUG_ENDPOINTS !== 'true') {
+      return json({ error: 'NotFound' }, { status: 404 });
+    }
     let uidHex = String(body?.uid_hex || '').replace(/[^0-9a-f]/gi, '').toUpperCase();
     if (!uidHex || uidHex.length < 14) uidHex = crypto.randomBytes(7).toString('hex').toUpperCase();
     else uidHex = uidHex.slice(0, 14);
@@ -6660,8 +6663,11 @@ async function handleAuthRoutes(path, method, url, body, req, env, baseUrl) {
     return json({ ok: true, session_key_b64 });
   }
 
-  // GET /api/v1/auth/opaque/debug
+  // GET /api/v1/auth/opaque/debug (C-2 fix: gated by ENABLE_DEBUG_ENDPOINTS)
   if (path === '/api/v1/auth/opaque/debug' && method === 'GET') {
+    if (env.ENABLE_DEBUG_ENDPOINTS !== 'true') {
+      return json({ error: 'NotFound' }, { status: 404 });
+    }
     const seedHex = String(env.OPAQUE_OPRF_SEED || '');
     const privB64 = String(env.OPAQUE_AKE_PRIV_B64 || '');
     const pubB64 = String(env.OPAQUE_AKE_PUB_B64 || '');

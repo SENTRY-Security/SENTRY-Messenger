@@ -9,7 +9,7 @@
 | # | 項目 | 來源 | 說明 |
 |---|------|------|------|
 | C-1 | Account token 明文儲存 | `security-review-checklist.md` §4.3 | 應 hash 後儲存，明文儲存導致資料庫洩漏即全面失守 |
-| C-2 | Debug endpoints 未停用 | `security-review-checklist.md` §4.3 | `/auth/sdm/debug-kit`、`/auth/opaque/debug` 在生產環境可存取，可能暴露認證機制內部狀態 |
+| ~~C-2~~ | ~~Debug endpoints 未停用~~ | `security-review-checklist.md` §4.3 | ✅ 已修復：透過 `ENABLE_DEBUG_ENDPOINTS` 環境變數控制，生產環境預設 `false` 回傳 404（`wrangler.toml`、`worker.js`） |
 | C-3 | 無 CSRF token 驗證 | `security-review-checklist.md` §4.3 | 缺少 CSRF 防護，可能遭受跨站請求偽造攻擊 |
 | C-4 | Send-side ratchet 停用 | `security-review-checklist.md` §2.2, `security-architecture.md` §10 | `dr.js:357-364` 中 send-side ratchet 更新被註解，`myRatchetPriv`/`myRatchetPub` 不在發送時輪替，削弱前向保密性 |
 
@@ -19,7 +19,7 @@
 |---|------|------|------|------|
 | ~~H-1~~ | ~~自訂 JWT 驗證（未使用標準函式庫）~~ | `security-architecture.md` §10 | ✅ 已修復 | 抽取共用 `jwt.js` 模組，`account-ws.js` 和 `worker.js` 統一使用同一 sign/verify 實作 |
 | ~~H-2~~ | ~~Debug 日誌輸出金鑰雜湊~~ | `security-architecture.md` §10 | ✅ 已修復 | 移除 `dr.js` 中所有 `hashPrefix()` 相關的 console 輸出（x3dh、ratchet、encrypt、decrypt 全路徑） |
-| H-3 | Debug 頁面 / SDM 模擬器生產環境可存取 | `security-assumptions-and-out-of-scope.md` §6 | ⚠️ 待處理 | `debug-page.js`、`debug-flags.js`、`sdm-sim.js` 等需確認是否在生產環境禁用 |
+| ~~H-3~~ | ~~Debug 頁面 / SDM 模擬器生產環境可存取~~ | `security-assumptions-and-out-of-scope.md` §6 | ✅ 已修復 | 三層防護：(1) `ENABLE_DEBUG_PAGES` 環境變數 → 生產回傳 404 (2) IP 白名單 (3) `__PRODUCTION__` build flag 關閉 debug switches |
 | ~~H-4~~ | ~~Error messages 洩漏內部狀態~~ | `security-review-checklist.md` §4.3 | ✅ 已修復 | 移除 `Replay` 回應的 `lastCtr` 和 `CounterTooLow` 回應的 `maxCounter`/`details` 欄位 |
 | H-5 | MK 洩漏影響所有媒體 | `media-and-attachment-security.md` §7.2 | ⚠️ 待處理 | 所有 chunks 使用同一 MK 衍生金鑰，MK 洩漏等同全部媒體洩漏 |
 
@@ -55,7 +55,7 @@
 | L-9 | 上傳時序可推知通訊行為 | `media-and-attachment-security.md` §7.2 | R2 寫入時間與訊息時間可關聯 |
 | L-10 | 頭像加密待確認 | `media-and-attachment-security.md` §7.2 | 使用者頭像是否經過加密上傳需確認 |
 | L-11 | Cloudflare 日誌是否記錄 API request body | `security-review-checklist.md` §11 | 第三方基礎設施可能保留請求內容 |
-| L-12 | Debug 日誌生產環境是否停用 | `security-review-checklist.md` §9 | 大量 `console.log` 可能在生產環境洩漏 E2EE 狀態 |
+| ~~L-12~~ | ~~Debug 日誌生產環境是否停用~~ | `security-review-checklist.md` §9 | ✅ 已修復：`__PRODUCTION__` build flag 在生產環境關閉所有 debug switches |
 | L-13 | D1/R2 資料殘留無 TTL 清理 | `security-review-checklist.md` §11 | 訊息和媒體無自動清理機制 |
 
 ---
@@ -64,11 +64,11 @@
 
 | 嚴重程度 | 總數 | 已修復 | 待處理 |
 |----------|------|--------|--------|
-| 🔴 Critical | 4 | 0 | 4 |
-| 🟠 High | 5 | 3 | 2 |
+| 🔴 Critical | 4 | 1 | 3 |
+| 🟠 High | 5 | 4 | 1 |
 | 🟡 Medium | 12 | 0 | 12 |
-| 🟢 Low | 13 | 0 | 13 |
-| **總計** | **34** | **3** | **31** |
+| 🟢 Low | 13 | 1 | 12 |
+| **總計** | **34** | **6** | **28** |
 
 ## 已通過項目（已修復/確認安全）
 
@@ -84,6 +84,9 @@
 - ✅ 訊息 counter 嚴格遞增（server-side 檢查）
 - ✅ GitHub Actions secrets 不透過 echo 傳入
 - ✅ DR 狀態並發已有 `enqueueDrSessionOp()` 序列化機制
+- ✅ **C-2**：Debug endpoints 透過 `ENABLE_DEBUG_ENDPOINTS` 環境變數控制，生產環境回傳 404
 - ✅ **H-1**：JWT 驗證統一為共用 `jwt.js` 模組（`account-ws.js`、`worker.js`）
 - ✅ **H-2**：移除 `dr.js` 中所有金鑰雜湊 debug 日誌輸出
+- ✅ **H-3**：Debug 頁面三層防護（env gate + IP 白名單 + `__PRODUCTION__` build flag）
 - ✅ **H-4**：移除錯誤回應中的內部狀態欄位（`lastCtr`、`maxCounter`）
+- ✅ **L-12**：Debug flags 在生產環境建置時強制關閉
