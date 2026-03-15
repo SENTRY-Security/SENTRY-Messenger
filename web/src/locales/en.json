@@ -342,6 +342,8 @@
   },
   "callKeys": {
     "webCryptoNotSupported": "This browser does not support WebCrypto",
+    "e2eeNotSupported": "This browser does not support encrypted calls. Please update your browser.",
+    "peerE2eeNotSupported": "The other party's browser does not support encrypted calls.",
     "missingFriendDigest": "Missing friend account digest",
     "missingFriendKey": "Missing friend key, please re-sync contacts",
     "cannotParseFriendKey": "Cannot parse friend key",

@@ -35,7 +35,7 @@
 | ~~M-6~~ | ~~Invite Dropbox 硬編碼 salt~~ | `security-architecture.md` §10 | ✅ 已修復：改為每次 seal 產生 16-byte random salt，存入 envelope `salt_b64`；舊 envelope 向下相容（fallback 舊 salt） |
 | ~~M-7~~ | ~~Call key 使用零 salt~~ | `security-architecture.md` §10 | ✅ 已修復：CMK 512-bit 輸出拆分為 key (256-bit) + subSalt (256-bit)，子金鑰衍生使用 subSalt 取代零 salt |
 | M-8 | Epoch 輪換機制待確認 | `security-review-checklist.md` §6.2 | 通話中金鑰輪換機制是否正確運作需驗證 |
-| M-9 | InsertableStreams 不支援時的 fallback | `security-review-checklist.md` §6.2 | 瀏覽器不支援 InsertableStreams 時的行為未明確定義 |
+| ~~M-9~~ | ~~InsertableStreams 不支援時的 fallback~~ | `security-review-checklist.md` §6.2 | ✅ 已修復：本地或對端不支援 InsertableStreams 時拒絕建立通話（`failCall`），不允許靜默降級為未加密通話 |
 | M-10 | CSP headers 設定待確認 | `security-review-checklist.md` §9 | Content-Security-Policy 是否正確限制 script-src |
 | M-11 | CORS 設定待確認 | `security-review-checklist.md` §9 | 是否使用過於寬鬆的 `allow-origin: *` |
 | M-12 | HTTP API rate limiting 待確認 | `security-review-checklist.md` §9 | API 端點限流機制是否完備 |
@@ -70,9 +70,9 @@
 |----------|------|--------|------|--------|
 | 🔴 Critical | 4 | 2 | 1 (→Low) | 1 |
 | 🟠 High | 5 | 4 | 1 (→Low) | 0 |
-| 🟡 Medium | 12 | 2 | 2 (→Low) | 8 |
+| 🟡 Medium | 12 | 3 | 2 (→Low) | 7 |
 | 🟢 Low | 13+4 | 1 | — | 16 |
-| **總計** | **36** | **9** | **4** | **25** |
+| **總計** | **36** | **10** | **4** | **24** |
 
 ## 已通過項目（已修復/確認安全）
 
@@ -96,4 +96,5 @@
 - ✅ **H-4**：移除錯誤回應中的內部狀態欄位（`lastCtr`、`maxCounter`）
 - ✅ **M-6**：Invite Dropbox 改用 per-envelope 16-byte random salt（向下相容舊 envelope）
 - ✅ **M-7**：Call key 子金鑰衍生改用 CMK 拆分的 subSalt 取代零 salt
+- ✅ **M-9**：不支援 InsertableStreams 時拒絕通話，防止靜默降級為未加密通話
 - ✅ **L-12**：Debug flags 在生產環境建置時強制關閉

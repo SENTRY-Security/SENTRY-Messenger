@@ -342,6 +342,8 @@
   },
   "callKeys": {
     "webCryptoNotSupported": "이 브라우저는 WebCrypto를 지원하지 않습니다",
+    "e2eeNotSupported": "이 브라우저는 암호화 통화를 지원하지 않습니다. 브라우저를 업데이트해 주세요.",
+    "peerE2eeNotSupported": "상대방의 브라우저가 암호화 통화를 지원하지 않습니다.",
     "missingFriendDigest": "친구 계정 다이제스트 누락",
     "missingFriendKey": "친구 키가 없습니다. 연락처를 재동기화해 주세요",
     "cannotParseFriendKey": "친구 키를 파싱할 수 없음",

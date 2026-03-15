@@ -342,6 +342,8 @@
   },
   "callKeys": {
     "webCryptoNotSupported": "此浏览器不支持 WebCrypto",
+    "e2eeNotSupported": "此浏览器不支持加密通话，请更新浏览器。",
+    "peerE2eeNotSupported": "对方的浏览器不支持加密通话。",
     "missingFriendDigest": "缺少好友 account digest",
     "missingFriendKey": "缺少好友密钥，请重新同步联系人",
     "cannotParseFriendKey": "无法解析好友密钥",

@@ -342,6 +342,8 @@
   },
   "callKeys": {
     "webCryptoNotSupported": "Trình duyệt này không hỗ trợ WebCrypto",
+    "e2eeNotSupported": "Trình duyệt này không hỗ trợ cuộc gọi mã hóa. Vui lòng cập nhật trình duyệt.",
+    "peerE2eeNotSupported": "Trình duyệt của đối phương không hỗ trợ cuộc gọi mã hóa.",
     "missingFriendDigest": "Thiếu mã xác thực tài khoản bạn bè",
     "missingFriendKey": "Thiếu khóa bạn bè, vui lòng đồng bộ lại danh bạ",
     "cannotParseFriendKey": "Không thể phân tích khóa bạn bè",

@@ -290,6 +290,10 @@ export function disposeCallMediaSession() {
 }
 
 export async function startOutgoingCallMedia({ callId } = {}) {
+  if (!supportsInsertableStreams()) {
+    failCall('e2ee-not-supported', new Error(t('callKeys.e2eeNotSupported')));
+    return;
+  }
   activeCallId = callId;
   const identity = requirePeerIdentitySnapshot();
   activePeerKey = identity.peerKey;
@@ -306,6 +310,10 @@ export async function startOutgoingCallMedia({ callId } = {}) {
 }
 
 export async function acceptIncomingCallMedia({ callId } = {}) {
+  if (!supportsInsertableStreams()) {
+    failCall('e2ee-not-supported', new Error(t('callKeys.e2eeNotSupported')));
+    return;
+  }
   activeCallId = callId;
   const identity = requirePeerIdentitySnapshot();
   activePeerKey = identity.peerKey;
@@ -1436,7 +1444,10 @@ function peerSupportsInsertableStreams() {
 
 function setupInsertableStreamsForSender(sender, track) {
   if (!supportsInsertableStreams() || !sender || !track) return;
-  if (!peerSupportsInsertableStreams()) return;
+  if (!peerSupportsInsertableStreams()) {
+    failCall('peer-e2ee-not-supported', new Error(t('callKeys.peerE2eeNotSupported')));
+    return;
+  }
   // Never encrypt until we've confirmed receiver transforms work.
   // Without this gate the caller encrypts outgoing data in
   // attachLocalMedia (key context is already set by
@@ -1458,7 +1469,10 @@ function setupInsertableStreamsForReceiver(receiver, track) {
   // "Too late" and may leave the receiver in a broken state.
   if (!peerConnectionEncodedStreams) return;
   if (!supportsInsertableStreams() || !receiver || !track) return;
-  if (!peerSupportsInsertableStreams()) return;
+  if (!peerSupportsInsertableStreams()) {
+    failCall('peer-e2ee-not-supported', new Error(t('callKeys.peerE2eeNotSupported')));
+    return;
+  }
   const keyContext = getCallKeyContext();
   if (!keyContext) return;
   const keyName = track.kind === 'video' ? 'videoRx' : 'audioRx';

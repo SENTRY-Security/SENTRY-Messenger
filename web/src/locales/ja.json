@@ -342,6 +342,8 @@
   },
   "callKeys": {
     "webCryptoNotSupported": "このブラウザは WebCrypto に対応していません",
+    "e2eeNotSupported": "このブラウザは暗号化通話に対応していません。ブラウザを更新してください。",
+    "peerE2eeNotSupported": "相手のブラウザが暗号化通話に対応していません。",
     "missingFriendDigest": "フレンドのアカウントダイジェストがありません",
     "missingFriendKey": "フレンドの鍵がありません。連絡先を再同期してください",
     "cannotParseFriendKey": "フレンドの鍵を解析できません",

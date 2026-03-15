@@ -342,6 +342,8 @@
   },
   "callKeys": {
     "webCryptoNotSupported": "เบราว์เซอร์นี้ไม่รองรับ WebCrypto",
+    "e2eeNotSupported": "เบราว์เซอร์นี้ไม่รองรับการโทรแบบเข้ารหัส กรุณาอัปเดตเบราว์เซอร์",
+    "peerE2eeNotSupported": "เบราว์เซอร์ของอีกฝ่ายไม่รองรับการโทรแบบเข้ารหัส",
     "missingFriendDigest": "ไม่พบไดเจสต์บัญชีเพื่อน",
     "missingFriendKey": "ไม่พบคีย์เพื่อน กรุณาซิงค์รายชื่อใหม่",
     "cannotParseFriendKey": "ไม่สามารถแยกวิเคราะห์คีย์เพื่อนได้",

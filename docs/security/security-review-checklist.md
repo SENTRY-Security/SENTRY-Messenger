@@ -169,7 +169,7 @@
 - [ ] Counter-based nonce（防重放）
 - [ ] InsertableStreams 正確設定
 - [ ] ⚠️ Epoch 輪換機制待確認
-- [ ] ⚠️ InsertableStreams 不支援時的 fallback 行為
+- [x] ~~InsertableStreams 不支援時的 fallback 行為~~ — ✅ 已修復：本地或對端不支援時 `failCall` 拒絕通話，不允許靜默降級為未加密（`media-session.js`）
 
 ### 6.3 WebRTC
 
