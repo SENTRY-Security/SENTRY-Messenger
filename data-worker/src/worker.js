@@ -1966,9 +1966,9 @@ async function handleInviteDropboxRoutes(req, env) {
       return json({ error: 'Forbidden', message: 'accountToken invalid' }, { status: 403 });
     }
 
-    // Rate limit: 10 failed attempts per 30s window (distributed via Durable Object)
+    // Rate limit: 200 attempts per 60s window (distributed via Durable Object)
     const rlKey = `account:${account.account_digest}`;
-    const rl = await checkRateLimit(env, rlKey, 'pairing-lookup', 10, 30);
+    const rl = await checkRateLimit(env, rlKey, 'pairing-lookup', 200, 60);
     if (!rl.allowed) {
       return json({ error: 'RateLimited', message: 'too many attempts, try again later', retry_after: rl.retryAfter }, { status: 429 });
     }
@@ -2878,7 +2878,7 @@ async function handlePrekeysRoutes(req, env) {
     // Rate limit prekey bundle fetch: 50 per 60s per account (fallback to IP)
     const pkRlKey = resolveRateLimitKey(req);
     if (pkRlKey) {
-      const rl = await checkRateLimit(env, pkRlKey, 'prekey-bundle', 50, 60);
+      const rl = await checkRateLimit(env, pkRlKey, 'prekey-bundle', 200, 60);
       if (!rl.allowed) {
         return json({ error: 'RateLimited', message: 'too many requests', retry_after: rl.retryAfter }, { status: 429 });
       }
@@ -2964,7 +2964,7 @@ async function handleAtomicSendRoutes(req, env) {
     // Rate limit message sending: 60 per 60s per account (fallback to IP)
     const msgRlKey = resolveRateLimitKey(req, { body });
     if (msgRlKey) {
-      const rl = await checkRateLimit(env, msgRlKey, 'msg-send', 60, 60);
+      const rl = await checkRateLimit(env, msgRlKey, 'msg-send', 200, 60);
       if (!rl.allowed) {
         return json({ error: 'RateLimited', message: 'too many requests', retry_after: rl.retryAfter }, { status: 429 });
       }
@@ -6800,7 +6800,7 @@ async function handlePublicRoutes(req, env) {
     // Rate limit for auth endpoints: 50 requests per 60s per account (fallback to IP)
     const authRlKey = resolveRateLimitKey(req, { body });
     if (authRlKey) {
-      const rl = await checkRateLimit(env, authRlKey, 'auth', 50, 60);
+      const rl = await checkRateLimit(env, authRlKey, 'auth', 200, 60);
       if (!rl.allowed) {
         return json({ error: 'RateLimited', message: 'too many auth attempts', retry_after: rl.retryAfter }, { status: 429 });
       }
@@ -8242,7 +8242,7 @@ export default {
       // ── Global rate limiting per account (fallback to IP) ──
       const globalRlKey = resolveRateLimitKey(req);
       if (globalRlKey) {
-        const rl = await checkRateLimit(env, globalRlKey, 'global', 120, 60);
+        const rl = await checkRateLimit(env, globalRlKey, 'global', 200, 60);
         if (!rl.allowed) {
           return json({ error: 'RateLimited', message: 'too many requests', retry_after: rl.retryAfter }, { status: 429 });
         }
