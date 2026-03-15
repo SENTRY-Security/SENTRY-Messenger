@@ -1,6 +1,8 @@
 # SENTRY Messenger
 
-**端對端加密即時通訊系統** — 採用 Signal Protocol (X3DH + Double Ratchet) 實現高安全性的訊息傳遞。
+Open-source end-to-end encrypted messenger with Signal Protocol, ephemeral chat, secure calls, and encrypted media streaming.
+
+**端對端加密即時通訊系統** — 基於 Signal Protocol (X3DH + Double Ratchet)，部署於 Cloudflare Workers 全 Serverless 架構。
 
 > 官網：https://sentry.red ・ 版本：0.1.9 ・ 授權：AGPL-3.0-only
 
@@ -8,8 +10,8 @@
 
 本專案以 AGPL-3.0 開源，基於兩個核心理念：
 
-1. **分享設計與實作** — 將完整的工程實踐分享給開發者社群，不僅限於 Signal Protocol (X3DH + Double Ratchet) 的實際應用，也包含純前端的影片分片加密串流管線 — 從 WebCodecs 即時轉碼、per-chunk AES-256-GCM 加密上傳，到瀏覽時經 MSE/ManagedMediaSource 串流解密緩衝播放的端到端實作；以及 Cloudflare Workers + Durable Objects 的全 Serverless 部署模式與從 VPS 遷移至邊緣運算的經驗。
-2. **公開驗證安全性** — 提供透明的管道讓任何人都能審閱我們的加密流程與安全設計。端對端加密系統的信任不應建立在「相信我們」之上，而是建立在可驗證的程式碼之上。從 X3DH 金鑰交換、Double Ratchet 訊息加密、媒體分片加密串流到零知識架構，所有密碼學實作皆可公開檢視。
+1. **分享設計與實作** — 將完整的工程實踐分享給開發者社群，包括 Signal Protocol 的實際應用、純前端影片分片加密串流管線（WebCodecs 轉碼 → per-chunk AES-256-GCM 加密 → MSE 串流解密播放），以及 Cloudflare Workers + Durable Objects 的全 Serverless 部署經驗。
+2. **公開驗證安全性** — 端對端加密系統的信任應建立在可檢視的程式碼之上。本專案的密碼學實作（X3DH 金鑰交換、Double Ratchet、媒體分片加密、金鑰管理）皆開放審閱。完整的[安全審計文件](#安全審計與威脅模型)記錄了已知限制與修復狀態。
 
 ---
 
@@ -79,16 +81,16 @@
 | 金鑰交換 | X3DH (Extended Triple Diffie-Hellman) | 非同步建立共享密鑰，支援離線初始化 |
 | 訊息加密 | Double Ratchet | 每則訊息獨立金鑰，前向保密 + 後向保密 |
 | 對稱加密 | XChaCha20-Poly1305 / AES-256-GCM | 訊息內容 AEAD 加密 |
-| 身份驗證 | Ed25519 簽章 + OPAQUE PAKE | 無密碼洩漏風險的密碼認證 |
+| 身份驗證 | Ed25519 簽章 + OPAQUE PAKE | 密碼不經網路傳輸的認證協定 |
 | NFC 認證 | NTAG 424 DNA SDM (CMAC/HKDF/EV2) | 實體 NFC 標籤身份綁定 |
-| 金鑰派生 | HKDF-SHA256 / Argon2id | 密碼學安全的金鑰衍生 |
+| 金鑰派生 | HKDF-SHA256 / Argon2id | 金鑰衍生與密碼強化 |
 | 主金鑰保護 | Argon2id + AES-256-GCM wrapping | 使用者密碼保護主金鑰 |
 | 媒體分片加密 | HKDF-SHA256 → AES-256-GCM per-chunk | 每 chunk 獨立鑰匙與 IV，info tag 域分離 |
 | 通話 E2EE | InsertableStreams + AES-GCM | WebRTC 逐幀加密，counter-based nonce，10 分鐘金鑰輪換 |
 
 ### 通訊功能
 
-- **端對端加密訊息** — 文字、媒體、檔案，伺服器無法解密
+- **端對端加密訊息** — 文字、媒體、檔案均在客戶端加密，伺服器僅中繼密文
 - **語音/視訊通話** — WebRTC P2P + Cloudflare TURN relay，InsertableStreams E2EE 媒體加密
 - **AI 人臉/背景馬賽克** — MediaPipe Face Detection 三階段模糊（人臉馬賽克 / 背景馬賽克 / 關閉），三層偵測策略（Native FaceDetector → MediaPipe WASM → 膚色偵測）
 - **分片加密串流** — 影片上傳自動轉碼為 fMP4，Per-chunk AES-256-GCM 加密，MSE/ManagedMediaSource 即時串流播放（單檔上限 1GB），AIMD 自適應併發控制
@@ -112,13 +114,15 @@
 
 ### 安全特性
 
-- **零知識架構** — 伺服器僅儲存密文，無法解密任何訊息內容
-- **前向保密 (Forward Secrecy)** — 每則訊息使用獨立金鑰，密鑰洩漏不影響歷史訊息
-- **後向保密 (Break-in Recovery)** — Double Ratchet 自動修復，即使當前密鑰洩漏也會在新交換後恢復安全
+- **客戶端加密** — 訊息與媒體在客戶端加密後才離開裝置，伺服器僅儲存密文
+- **前向保密 (Forward Secrecy)** — Double Ratchet 為每則訊息衍生獨立金鑰，設計上限制單一金鑰洩漏的影響範圍
+- **後向保密 (Break-in Recovery)** — 新的 DH 交換後產生新的 Root Key，設計上使攻擊者無法持續解密後續訊息
 - **抗重放攻擊** — Per-conversation Counter 單調遞增，伺服器端強制驗證
 - **無 Fallback 政策** — 嚴格密碼協定，拒絕任何降級/重試/回滾
 - **離線密鑰交換** — 透過 X3DH Prekey Bundle，對方離線時也能安全初始化
 - **強制登出** — 帳號清除時透過 WebSocket `force-logout` 即時踢出所有裝置
+
+> **已知限制：** 伺服器對訊息內容為零知識，但通訊 metadata（社交圖譜、時間戳、在線狀態等）對伺服器仍然可見。完整分析見 [Metadata Exposure](docs/security/metadata-exposure.md) 與 [Known Limitations](docs/security/known-limitations.md)。
 
 ---
 
@@ -1631,11 +1635,13 @@ Client                          Worker                         Durable Object
 | 模糊錯誤處理 | 不允許 try-catch fallback |
 | 對話重置 | 必須顯式操作，不隱式重建 state |
 
-### 零知識設計
+### 訊息內容零知識
 
-- 伺服器只儲存 `ciphertext_b64` + `header_json`，無法解密訊息內容
-- 聯絡人資料以 `encrypted_blob` 儲存，伺服器無法讀取
-- Master Key 以 Argon2id + AES-GCM 包裝後儲存，伺服器無法取得明文
+伺服器對訊息內容不具備解密能力（不持有金鑰），但仍可見通訊 metadata（詳見 [Metadata Exposure](docs/security/metadata-exposure.md)）：
+
+- 訊息以 `ciphertext_b64` + `header_json` 儲存，伺服器不持有解密金鑰
+- 聯絡人資料以 `encrypted_blob` 儲存，伺服器不持有解密金鑰
+- Master Key 以 Argon2id + AES-GCM 包裝後儲存，伺服器不持有使用者密碼
 
 ### Commit-driven Side Effects
 
