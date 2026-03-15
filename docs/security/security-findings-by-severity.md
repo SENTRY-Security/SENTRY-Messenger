@@ -21,7 +21,7 @@
 | ~~H-2~~ | ~~Debug 日誌輸出金鑰雜湊~~ | `security-architecture.md` §10 | ✅ 已修復 | 移除 `dr.js` 中所有 `hashPrefix()` 相關的 console 輸出（x3dh、ratchet、encrypt、decrypt 全路徑） |
 | ~~H-3~~ | ~~Debug 頁面 / SDM 模擬器生產環境可存取~~ | `security-assumptions-and-out-of-scope.md` §6 | ✅ 已修復 | 三層防護：(1) `ENABLE_DEBUG_PAGES` 環境變數 → 生產回傳 404 (2) IP 白名單 (3) `__PRODUCTION__` build flag 關閉 debug switches |
 | ~~H-4~~ | ~~Error messages 洩漏內部狀態~~ | `security-review-checklist.md` §4.3 | ✅ 已修復 | 移除 `Replay` 回應的 `lastCtr` 和 `CounterTooLow` 回應的 `maxCounter`/`details` 欄位 |
-| H-5 | MK 洩漏影響所有媒體 | `media-and-attachment-security.md` §7.2 | ⚠️ 待處理 | 所有 chunks 使用同一 MK 衍生金鑰，MK 洩漏等同全部媒體洩漏 |
+| ~~H-5~~ | ~~MK 洩漏影響所有媒體~~ | `media-and-attachment-security.md` §7.2 | ⬇️ 降級為 Low | E2EE 零知識架構固有限制：媒體需支援跨裝置歷史下載，需持久金鑰；MK 洩漏前提需終端入侵或暴力破解 Argon2id |
 
 ## 🟡 Medium（中）
 
@@ -57,6 +57,7 @@
 | L-11 | Cloudflare 日誌是否記錄 API request body | `security-review-checklist.md` §11 | 第三方基礎設施可能保留請求內容 |
 | ~~L-12~~ | ~~Debug 日誌生產環境是否停用~~ | `security-review-checklist.md` §9 | ✅ 已修復：`__PRODUCTION__` build flag 在生產環境關閉所有 debug switches |
 | L-14 | 無 CSRF token 驗證（由 C-3 降級） | `security-review-checklist.md` §4.3 | 系統不使用 cookie 認證，傳統 CSRF 不成立；可選加 `Origin` header 驗證作為縱深防禦 |
+| L-15 | MK 洩漏影響所有媒體（由 H-5 降級） | `media-and-attachment-security.md` §7.2 | E2EE 架構固有限制：媒體需持久金鑰支援歷史下載，MK 洩漏前提需終端入侵或暴力破解 Argon2id |
 | L-13 | D1/R2 資料殘留無 TTL 清理 | `security-review-checklist.md` §11 | 訊息和媒體無自動清理機制 |
 
 ---
@@ -68,10 +69,10 @@
 | 嚴重程度 | 總數 | 已修復 | 降級 | 待處理 |
 |----------|------|--------|------|--------|
 | 🔴 Critical | 4 | 2 | 1 (→Low) | 1 |
-| 🟠 High | 5 | 4 | — | 1 |
+| 🟠 High | 5 | 4 | 1 (→Low) | 0 |
 | 🟡 Medium | 12 | 0 | — | 12 |
-| 🟢 Low | 13+1 | 1 | — | 13 |
-| **總計** | **35** | **7** | **1** | **27** |
+| 🟢 Low | 13+2 | 1 | — | 14 |
+| **總計** | **36** | **7** | **2** | **27** |
 
 ## 已通過項目（已修復/確認安全）
 
