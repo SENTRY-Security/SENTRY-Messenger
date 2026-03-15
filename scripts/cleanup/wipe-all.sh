@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# UAT-only wipe script — production is never touched.
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." && pwd)"
 SQL_FILE="$ROOT/scripts/cleanup/d1-wipe-all.sql"
-DB_NAME="${DB_NAME:-message_db}"
+DB_NAME="message_db_uat"
 WRANGLER_CONFIG="${WRANGLER_CONFIG:-$ROOT/data-worker/wrangler.toml}"
+WRANGLER_ENV="uat"
 REMOTE_FLAG="${REMOTE_FLAG:---remote}"
 SKIP_R2_WIPE="${SKIP_R2_WIPE:-false}"
+
+# Safety: force UAT bucket
+export S3_BUCKET="message-media-uat"
 
 # Disable Wrangler telemetry and interactive prompts
 export WRANGLER_SEND_METRICS=false
@@ -20,8 +26,8 @@ fi
 
 cd "$ROOT"
 
-echo "Executing wipe for DB=$DB_NAME using npx wrangler@4 with config $WRANGLER_CONFIG"
-npx "wrangler@4" d1 execute "$DB_NAME" $REMOTE_FLAG --yes --config "$WRANGLER_CONFIG" --file "$SQL_FILE"
+echo "Executing UAT wipe for DB=$DB_NAME (env=$WRANGLER_ENV) with config $WRANGLER_CONFIG"
+npx "wrangler@4" d1 execute "$DB_NAME" $REMOTE_FLAG --yes --config "$WRANGLER_CONFIG" --env "$WRANGLER_ENV" --file "$SQL_FILE"
 
 if [ "$SKIP_R2_WIPE" = "true" ]; then
   echo "Skipping R2 wipe (SKIP_R2_WIPE=true)"
