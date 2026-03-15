@@ -27,6 +27,7 @@
 - [API 端點](#api-端點)
 - [WebSocket 即時通訊](#websocket-即時通訊)
 - [安全設計原則](#安全設計原則)
+- [安全審計與威脅模型](#安全審計與威脅模型)
 - [橫向部署與擴展優勢](#橫向部署與擴展優勢)
 - [快速開始](#快速開始)
 - [部署](#部署)
@@ -1647,6 +1648,43 @@ Client                          Worker                         Durable Object
 - 每個 conversation 維護**單調遞增 counter**
 - 伺服器端強制驗證 `counter > max_counter`
 - 客戶端 per-conversation 序列化處理，防止並行推進
+
+---
+
+## 安全審計與威脅模型
+
+本專案維護完整的安全文件，所有分析均基於實際程式碼掃描，可回溯至具體程式碼位置。
+
+### 架構與協定
+
+| 文件 | 說明 |
+|------|------|
+| [Protocol Overview](docs/security/protocol-overview.md) | 系統各協議的實際實作狀態，涵蓋註冊、X3DH、Double Ratchet、訊息傳輸等完整流程 |
+| [Security Architecture](docs/security/security-architecture.md) | 整體安全架構分析，包括加密層、信任邊界、資料流與各元件安全性質 |
+| [Key Management](docs/security/key-management.md) | 所有金鑰類型的完整盤點 — 用途、產生方式、儲存位置、生命週期與輪換機制 |
+| [Message Lifecycle](docs/security/message-lifecycle.md) | 一則訊息從發送到接收的完整安全生命週期追蹤 |
+| [Media & Attachment Security](docs/security/media-and-attachment-security.md) | 媒體檔案從選擇、加密、分片上傳到串流解密播放的完整安全分析 |
+
+### 威脅模型與風險評估
+
+| 文件 | 說明 |
+|------|------|
+| [Threat Model](docs/security/threat-model.md) | 威脅模型定義 — 攻擊者能力假設、安全目標、防護範圍 |
+| [Trust Boundaries](docs/security/trust-boundaries.md) | 系統中各信任邊界與元件間的信任關係分析 |
+| [Metadata Exposure](docs/security/metadata-exposure.md) | 伺服器、儲存層、網路觀察者各自可見的中繼資料盤點 |
+| [Data Classification](docs/security/data-classification.md) | 系統中各類資料的機密等級分類（C1–C5） |
+| [Security Assumptions & Out of Scope](docs/security/security-assumptions-and-out-of-scope.md) | 明確區分系統承諾防護與不承諾防護的項目 |
+
+### 審計與發現
+
+| 文件 | 說明 |
+|------|------|
+| [Security Review Checklist](docs/security/security-review-checklist.md) | 供內部或第三方審計使用的逐項檢查清單，每項對應具體程式碼位置 |
+| [Security Findings by Severity](docs/security/security-findings-by-severity.md) | 所有安全發現依嚴重程度排序（Critical → Low），含修復狀態追蹤 |
+| [Repo Findings Summary](docs/security/repo-findings-summary.md) | 完整倉庫掃描的安全發現摘要 |
+| [Audit Readiness](docs/security/audit-readiness.md) | 各模組對第三方安全審計的準備度評估 |
+| [Known Limitations](docs/security/known-limitations.md) | 已知限制與尚未完整實作的安全性質（誠實揭露） |
+| [Open Questions](docs/security/open-questions.md) | 掃描過程中發現的未解決問題，待進一步確認 |
 
 ---
 
