@@ -176,10 +176,10 @@ export async function handleIncomingSecureMessage(event, deps) {
     // KDMs arrive via pairwise DR session. Detect and route to BizConvStore.
     // For epoch rotations, also confirm the new epoch with the server.
     if (rawMsgType === 'biz-conv-kdm' || event?.msg_type === 'biz-conv-kdm') {
+        let kdmPayload = null;
         try {
             const { handleEpochKdm } = await import('../biz-conv-key-rotation.js');
             // KDM data is in the decrypted text body (JSON-stringified by sender)
-            let kdmPayload = null;
             const rawText = event?.text || event?.content?.text || event?.plaintext || '';
             if (rawText) {
                 try { kdmPayload = JSON.parse(rawText); } catch { /* not JSON */ }
@@ -196,6 +196,34 @@ export async function handleIncomingSecureMessage(event, deps) {
         } catch (err) {
             console.warn('[entry-incoming] KDM processing failed', err?.message || err);
         }
+
+        // Insert tombstone in the 1:1 conversation: "XXX added you to OOO group"
+        try {
+            const oneOnOneConvId = convId;
+            if (oneOnOneConvId) {
+                const groupName = kdmPayload?.meta?.name || kdmPayload?.name || null;
+                // Get sender nickname from conversation thread
+                const threads = getConversationThreads();
+                const thread = threads.get(oneOnOneConvId);
+                const senderName = thread?.nickname || kdmPayload?.meta?.owner_nickname || null;
+                const tombstoneText = t('messages.bizConvGroupInviteTombstone', {
+                    sender: senderName || t('messages.bizConvGroupInviteSenderUnknown'),
+                    group: groupName || t('messages.bizConvGroupInviteGroupUnknown')
+                });
+                const tombstoneId = `kdm-invite-${kdmPayload?.conversation_id || ''}-${Date.now()}`;
+                appendUserMessage(oneOnOneConvId, {
+                    messageId: tombstoneId,
+                    msgType: 'system',
+                    subtype: 'system',
+                    text: tombstoneText,
+                    ts: Math.floor(Date.now() / 1000),
+                    direction: 'incoming'
+                });
+            }
+        } catch (err) {
+            console.warn('[entry-incoming] KDM tombstone insert failed', err?.message || err);
+        }
+
         return { processed: true, reason: 'biz-conv-kdm' };
     }
 

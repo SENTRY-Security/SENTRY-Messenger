@@ -3742,7 +3742,7 @@ export async function sendDrMediaCore(params = {}) {
 }
 
 export async function sendDrCallLog(params = {}) {
-  const { callId, outcome, direction, reason } = params;
+  const { callId, outcome, direction, reason, kind } = params;
   const peerAccountDigest = resolvePeerDigest(params);
   const peerDeviceId = normalizePeerDeviceId(
     params.peerDeviceId
@@ -3769,6 +3769,7 @@ export async function sendDrCallLog(params = {}) {
     : (startedAtSec != null && endedAtSec != null ? Math.max(0, endedAtSec - startedAtSec) : 0);
   const conversationContext = conversationContextForPeer({ peerAccountDigest, peerDeviceId }) || {};
   const conversationId = conversationContext?.conversation_id || conversationContext?.conversationId || null;
+  const safeKind = kind === 'video' ? 'video' : 'voice';
   const payload = {
     type: 'call-log',
     callId: callId || null,
@@ -3778,6 +3779,7 @@ export async function sendDrCallLog(params = {}) {
     direction,
     reason,
     endReason: reason || null,
+    kind: safeKind,
     peerAccountDigest,
     peerDeviceId,
     startedAt: startedAtSec,
@@ -3790,6 +3792,7 @@ export async function sendDrCallLog(params = {}) {
     call_duration: safeDuration,
     call_direction: direction,
     call_reason: reason || null,
+    call_kind: safeKind,
     peer_account_digest: peerAccountDigest,
     peer_device_id: peerDeviceId,
     call_started_at: startedAtSec,
