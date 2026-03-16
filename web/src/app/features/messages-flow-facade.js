@@ -468,9 +468,9 @@ function createMessagesFlowFacade() {
           ? payloadOrEvent?.handleIncomingSecureMessage
           : null;
         if (typeof handlerFn === 'function') {
-          try { await handlerFn(event); } catch (e) {
+          Promise.resolve(handlerFn(event)).catch(e => {
             console.warn('[facade] KDM direct handler failed', e?.message);
-          }
+          });
         } else {
           // Dispatch event so controllers can pick it up
           try {
