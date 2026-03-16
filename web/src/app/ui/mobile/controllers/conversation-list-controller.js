@@ -17,6 +17,22 @@ import { t } from '/locales/index.js';
 const CONV_PULL_THRESHOLD = 60;
 const CONV_PULL_MAX = 100;
 
+/**
+ * Resolve parsed header from a server message item.
+ * Server returns header_json (string) not header (object).
+ */
+function resolveHeader(msg) {
+    if (!msg) return null;
+    let header = msg.header || null;
+    if (!header && typeof msg.header_json === 'string') {
+        try { header = JSON.parse(msg.header_json); } catch { return null; }
+    }
+    if (typeof header === 'string') {
+        try { header = JSON.parse(header); } catch { return null; }
+    }
+    return header && typeof header === 'object' ? header : null;
+}
+
 export class ConversationListController extends BaseController {
     constructor(deps) {
         super(deps);
@@ -352,11 +368,8 @@ export class ConversationListController extends BaseController {
                     for (let i = 0; i < messages.length; i++) {
                         const payload = messages[i].payload || {};
                         let type = normalizeMsgTypeValue(payload.type);
-                        if (!type && messages[i].header) {
-                            let header = messages[i].header;
-                            if (typeof header === 'string') {
-                                try { header = JSON.parse(header); } catch { }
-                            }
+                        if (!type) {
+                            const header = resolveHeader(messages[i]);
                             type = normalizeMsgTypeValue(header?.meta?.msgType || header?.meta?.msg_type);
                         }
                         if (type === 'conversation-deleted') {
@@ -378,11 +391,8 @@ export class ConversationListController extends BaseController {
                     for (const msg of candidates) {
                         const payload = msg.payload || {};
                         let type = normalizeMsgTypeValue(payload.type);
-                        if (!type && msg.header) {
-                            let header = msg.header;
-                            if (typeof header === 'string') {
-                                try { header = JSON.parse(header); } catch { }
-                            }
+                        if (!type) {
+                            const header = resolveHeader(msg);
                             type = normalizeMsgTypeValue(header?.meta?.msgType || header?.meta?.msg_type);
                         }
 
@@ -427,10 +437,8 @@ export class ConversationListController extends BaseController {
                         if (ct) { ct.unreadCount = 0; ct.offlineUnreadCount = 0; }
                     } else if (previewMsg) {
                         const payload = previewMsg.payload || {};
-                        const meta = previewMsg.meta || {}; // Note: Valid even if encrypted if we parse header... wait meta is from PayloadWrapper usually.
-                        // If encrypted, we construct meta from header
-                        let header = previewMsg.header;
-                        if (typeof header === 'string') { try { header = JSON.parse(header); } catch { } }
+                        const meta = previewMsg.meta || {};
+                        const header = resolveHeader(previewMsg);
 
                         const effectiveMeta = meta.sender ? meta : (header?.meta || {});
 
@@ -460,7 +468,7 @@ export class ConversationListController extends BaseController {
                                 text = t('messages.filePreview', { name: payload.filename || payload.name || t('common.attachment') });
                             }
                         } else if (type === 'call_log' || type === 'call-log') {
-                            const clKind = payload?.kind || previewMsg?.callLog?.kind || '';
+                            const clKind = payload?.kind || previewMsg?.callLog?.kind || effectiveMeta?.call_kind || '';
                             text = clKind === 'video' ? t('calls.videoCallPreview') : t('calls.voiceCallPreview');
                         } else if (type === 'contact-share' || type === 'contact_share') {
                             const csReason = payload?.reason;
