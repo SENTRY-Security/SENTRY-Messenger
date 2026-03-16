@@ -97,3 +97,42 @@ export function upsertConversationThread({ peerAccountDigest, peerDeviceId = nul
     threads.set(convId, entry);
     return entry;
 }
+
+/**
+ * Upsert a business conversation thread entry.
+ * Biz-conv threads don't have a single peer — they use the conversation name instead.
+ */
+export function upsertBizConvThread(conversationId, updates = {}) {
+    const convId = String(conversationId || '').trim();
+    if (!convId) return null;
+
+    const threads = getConversationThreads();
+    const prev = threads.get(convId) || {};
+
+    const entry = {
+        ...prev,
+        conversationId: convId,
+        type: 'biz-conv',
+        // Biz-conv specific fields
+        bizConvName: updates.name || prev.bizConvName || null,
+        bizConvMemberCount: updates.memberCount ?? prev.bizConvMemberCount ?? 0,
+        bizConvIsOwner: updates.isOwner ?? prev.bizConvIsOwner ?? false,
+        bizConvStatus: updates.status || prev.bizConvStatus || 'active',
+        // Common thread fields
+        lastMessageText: updates.lastMessageText ?? prev.lastMessageText ?? '',
+        lastMessageTs: updates.lastMessageTs ?? prev.lastMessageTs ?? null,
+        lastMessageId: updates.lastMessageId ?? prev.lastMessageId ?? null,
+        lastReadTs: typeof prev.lastReadTs === 'number' ? prev.lastReadTs : null,
+        unreadCount: typeof updates.unreadCount === 'number' ? updates.unreadCount : (typeof prev.unreadCount === 'number' ? prev.unreadCount + 1 : 1),
+        previewLoaded: true,
+        // Null out 1-to-1 specific fields
+        peerAccountDigest: null,
+        peerDeviceId: null,
+        conversationToken: null,
+        nickname: null,
+        avatar: null
+    };
+
+    threads.set(convId, entry);
+    return entry;
+}

@@ -172,6 +172,24 @@ export async function handleIncomingSecureMessage(event, deps) {
     const rawMsgType = event?.meta?.msgType || event?.meta?.msg_type || event?.msgType || event?.msg_type || null;
     const normalizedControlType = normalizeControlMessageType(rawMsgType);
 
+    // ── Business Conversation KDM interception ──
+    // KDMs arrive via pairwise DR session. Detect and route to BizConvStore.
+    if (rawMsgType === 'biz-conv-kdm' || event?.msg_type === 'biz-conv-kdm') {
+        try {
+            const { BizConvStore } = await import('../biz-conv.js');
+            const { markBizConvBackupDirty } = await import('../biz-conv-backup.js');
+            const kdmPayload = event?.meta || event;
+            const state = await BizConvStore.initFromKDM(kdmPayload);
+            if (state) {
+                markBizConvBackupDirty();
+                console.log('[entry-incoming] KDM processed', { convId: state.conversation_id?.slice(0, 16), epoch: state.currentEpoch });
+            }
+        } catch (err) {
+            console.warn('[entry-incoming] KDM processing failed', err?.message || err);
+        }
+        return { processed: true, reason: 'biz-conv-kdm' };
+    }
+
     // Logging omitted for brevity, logic remains
 
     if (!convId) return { skipped: true };

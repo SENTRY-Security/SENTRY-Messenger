@@ -4517,6 +4517,60 @@ async function handleGroupsRoutes(req, env) {
 
 // _handleGroupsRoutes_REMOVED — legacy group code deleted in Business Conversation redesign
 
+// ───── Business Conversation Helpers ────────────────────────────────────────
+
+/**
+ * Broadcast a WS event to all active members of a business conversation.
+ * Uses the ACCOUNT_WS Durable Object's /notify endpoint.
+ * @param {object} env - Worker env bindings
+ * @param {string} conversationId
+ * @param {object} event - The event payload to broadcast
+ * @param {string} [excludeDigest] - Optional account_digest to exclude (e.g. the actor)
+ */
+async function broadcastBizConvWS(env, conversationId, event, excludeDigest = null) {
+  if (!env.ACCOUNT_WS) return;
+  try {
+    const rows = await env.DB.prepare(
+      `SELECT account_digest FROM business_conversation_members WHERE conversation_id = ?1 AND status = 'active'`
+    ).bind(conversationId).all();
+    const members = rows?.results || [];
+    for (const member of members) {
+      if (excludeDigest && member.account_digest === excludeDigest) continue;
+      try {
+        const doId = env.ACCOUNT_WS.idFromName(member.account_digest);
+        const stub = env.ACCOUNT_WS.get(doId);
+        await stub.fetch('https://do/notify', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(event)
+        });
+      } catch (err) {
+        console.warn('[biz-conv-ws] relay failed', { target: member.account_digest?.slice(0, 12), error: err?.message });
+      }
+    }
+  } catch (err) {
+    console.warn('[biz-conv-ws] broadcast failed', err?.message || err);
+  }
+}
+
+/**
+ * Send a WS notification to a single account.
+ */
+async function notifyBizConvWS(env, accountDigest, event) {
+  if (!env.ACCOUNT_WS || !accountDigest) return;
+  try {
+    const doId = env.ACCOUNT_WS.idFromName(accountDigest);
+    const stub = env.ACCOUNT_WS.get(doId);
+    await stub.fetch('https://do/notify', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(event)
+    });
+  } catch (err) {
+    console.warn('[biz-conv-ws] notify failed', { target: accountDigest?.slice(0, 12), error: err?.message });
+  }
+}
+
 // ───── Business Conversation Routes ─────────────────────────────────────────
 
 async function requireBizConvMember(env, conversationId, accountDigest) {
@@ -4718,6 +4772,14 @@ async function handleBizConvRoutes(req, env) {
       VALUES (?1, ?2, 'policy_changed', '{}', ?3, ?4, ?5)
     `).bind(tombId, conversationId, accountDigest, conv?.key_epoch || 0, now).run();
 
+    // Broadcast policy updated
+    broadcastBizConvWS(env, conversationId, {
+      type: 'biz-conv-policy-updated',
+      conversation_id: conversationId,
+      actor_account_digest: accountDigest,
+      ts: now
+    }, accountDigest);
+
     return json({ ok: true });
   }
 
@@ -4738,6 +4800,14 @@ async function handleBizConvRoutes(req, env) {
     } catch (e) {
       return json({ error: e.error }, { status: e.status || 403 });
     }
+
+    // Broadcast dissolved event BEFORE deleting (so members can still receive it)
+    await broadcastBizConvWS(env, conversationId, {
+      type: 'biz-conv-dissolved',
+      conversation_id: conversationId,
+      actor_account_digest: accountDigest,
+      ts: Math.floor(Date.now() / 1000)
+    }, accountDigest);
 
     // Hard delete all related data (respecting FK order)
     const del = async (sql, params = []) => {
@@ -4811,6 +4881,16 @@ async function handleBizConvRoutes(req, env) {
       VALUES (?1, ?2, 'member_joined', '{}', ?3, ?4, ?5)
     `).bind(tombId, conversationId, inviteeDigest, conv?.key_epoch || 0, now).run();
 
+    // Broadcast member-changed event
+    broadcastBizConvWS(env, conversationId, {
+      type: 'biz-conv-member-changed',
+      conversation_id: conversationId,
+      change: 'joined',
+      account_digest: inviteeDigest,
+      tombstone_id: tombId,
+      ts: now
+    });
+
     return json({ ok: true, tombstone_id: tombId });
   }
 
@@ -4865,6 +4945,21 @@ async function handleBizConvRoutes(req, env) {
       VALUES (?1, ?2, 'member_removed', '{}', ?3, ?4, ?5)
     `).bind(tombId, conversationId, accountDigest, conv?.key_epoch || 0, now).run();
 
+    // Broadcast member-changed + notify removed member
+    broadcastBizConvWS(env, conversationId, {
+      type: 'biz-conv-member-changed',
+      conversation_id: conversationId,
+      change: 'removed',
+      account_digest: targetDigest,
+      tombstone_id: tombId,
+      ts: now
+    });
+    notifyBizConvWS(env, targetDigest, {
+      type: 'biz-conv-removed-notification',
+      conversation_id: conversationId,
+      ts: now
+    });
+
     return json({ ok: true, tombstone_id: tombId, requires_key_rotation: true });
   }
 
@@ -4909,6 +5004,16 @@ async function handleBizConvRoutes(req, env) {
       VALUES (?1, ?2, 'member_left', '{}', ?3, ?4, ?5)
     `).bind(tombId, conversationId, accountDigest, conv?.key_epoch || 0, now).run();
 
+    // Broadcast member-changed (actor already left, so they won't receive it)
+    broadcastBizConvWS(env, conversationId, {
+      type: 'biz-conv-member-changed',
+      conversation_id: conversationId,
+      change: 'left',
+      account_digest: accountDigest,
+      tombstone_id: tombId,
+      ts: now
+    });
+
     return json({ ok: true, tombstone_id: tombId, requires_key_rotation: true });
   }
 
@@ -4952,6 +5057,16 @@ async function handleBizConvRoutes(req, env) {
       INSERT INTO business_conversation_tombstones (id, conversation_id, tombstone_type, encrypted_payload_blob, actor_account_digest, key_epoch, created_at)
       VALUES (?1, ?2, 'ownership_transferred', '{}', ?3, ?4, ?5)
     `).bind(tombId, conversationId, accountDigest, conv?.key_epoch || 0, now).run();
+
+    // Broadcast ownership transferred
+    broadcastBizConvWS(env, conversationId, {
+      type: 'biz-conv-ownership-transferred',
+      conversation_id: conversationId,
+      old_owner: accountDigest,
+      new_owner: newOwnerDigest,
+      tombstone_id: tombId,
+      ts: now
+    });
 
     return json({ ok: true, tombstone_id: tombId });
   }
@@ -5018,7 +5133,17 @@ async function handleBizConvRoutes(req, env) {
       `SELECT key_epoch FROM business_conversations WHERE conversation_id = ?1`
     ).bind(conversationId).first();
 
-    return json({ ok: true, new_epoch: updated?.key_epoch || 0 });
+    const newEpoch = updated?.key_epoch || 0;
+
+    // Broadcast key-rotated event
+    broadcastBizConvWS(env, conversationId, {
+      type: 'biz-conv-key-rotated',
+      conversation_id: conversationId,
+      new_epoch: newEpoch,
+      ts: Math.floor(Date.now() / 1000)
+    }, accountDigest);
+
+    return json({ ok: true, new_epoch: newEpoch });
   }
 
   // ── POST /d1/biz-conv/epoch/confirm ───────────────────────────

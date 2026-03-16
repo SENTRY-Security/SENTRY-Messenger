@@ -339,6 +339,11 @@ export class AccountWebSocket {
     if (msg.type === 'contacts-reload') {
       return this._handleContactsReloadRelay(ws, msg, att);
     }
+    // Business Conversation message relay: fan-out to all active members
+    if (msg.type === 'biz-conv-message') {
+      return this._handleBizConvMessageRelay(ws, msg, att);
+    }
+
     // Ephemeral chat message relay: forward to the target peer's DO
     if (msg.type === 'ephemeral-message') {
       return this._handleEphemeralRelay(ws, msg, att);
@@ -354,6 +359,87 @@ export class AccountWebSocket {
     // Ephemeral call signaling relay: forward call signals between owner and guest
     if (typeof msg.type === 'string' && msg.type.startsWith('ephemeral-call-')) {
       return this._handleEphemeralRelay(ws, msg, att);
+    }
+  }
+
+  // ── Business Conversation message relay ─────────────────────────
+
+  async _handleBizConvMessageRelay(ws, msg, att) {
+    // Fan-out encrypted group message to all active members (except sender).
+    // Server never reads the ciphertext — it's an opaque relay.
+    const conversationId = String(msg.conversation_id || msg.conversationId || '').trim();
+    if (!conversationId) return;
+
+    const senderDigest = att.accountDigest || '';
+    const messageId = msg.message_id || msg.messageId || crypto.randomUUID();
+    const ts = Number(msg.ts) || Date.now();
+
+    try {
+      // Verify sender is an active member
+      const senderRow = await this.env.DB.prepare(
+        `SELECT status FROM business_conversation_members WHERE conversation_id = ?1 AND account_digest = ?2`
+      ).bind(conversationId, senderDigest).first();
+      if (!senderRow || senderRow.status !== 'active') {
+        console.warn('[ws-do] biz-conv relay: sender not active member', { conversationId: conversationId.slice(0, 16), sender: senderDigest.slice(0, 12) });
+        return;
+      }
+
+      // Query all active members
+      const membersResult = await this.env.DB.prepare(
+        `SELECT account_digest FROM business_conversation_members WHERE conversation_id = ?1 AND status = 'active'`
+      ).bind(conversationId).all();
+      const members = membersResult?.results || [];
+
+      // Build relay payload (opaque — server doesn't touch ciphertext)
+      const relayPayload = {
+        type: 'biz-conv-message',
+        conversation_id: conversationId,
+        message_id: messageId,
+        epoch: msg.epoch,
+        sender_device_id: msg.sender_device_id || msg.senderDeviceId,
+        counter: msg.counter,
+        iv_b64: msg.iv_b64,
+        ciphertext_b64: msg.ciphertext_b64,
+        sender_account_digest: senderDigest,
+        ts
+      };
+
+      // Fan-out to all members except sender
+      let sent = 0;
+      for (const member of members) {
+        if (member.account_digest === senderDigest) continue;
+        await this._relayToTarget(member.account_digest, relayPayload);
+        sent++;
+      }
+
+      // Store in messages_secure for offline retrieval
+      try {
+        await this.env.DB.prepare(`
+          INSERT INTO messages_secure (id, conversation_id, sender_account_digest, header_json, body_enc, created_at_sec)
+          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        `).bind(
+          messageId,
+          conversationId,
+          senderDigest,
+          JSON.stringify({
+            type: 'biz-conv-message',
+            epoch: msg.epoch,
+            sender_device_id: msg.sender_device_id || msg.senderDeviceId,
+            counter: msg.counter
+          }),
+          JSON.stringify({
+            iv_b64: msg.iv_b64,
+            ciphertext_b64: msg.ciphertext_b64
+          }),
+          Math.floor(ts / 1000)
+        ).run();
+      } catch (storeErr) {
+        console.warn('[ws-do] biz-conv message store failed:', storeErr?.message || storeErr);
+      }
+
+      console.log('[ws-do] biz-conv relay OK', { conversationId: conversationId.slice(0, 16), sent, messageId: messageId.slice(0, 12) });
+    } catch (err) {
+      console.warn('[ws-do] biz-conv relay error:', err?.message || err);
     }
   }
 

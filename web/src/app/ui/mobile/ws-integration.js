@@ -698,6 +698,92 @@ export function createWsIntegration({ deps }) {
       }
       return;
     }
+    // ── Business Conversation events ───────────────────────────────
+    if (type === 'biz-conv-message') {
+      const convId = String(msg?.conversation_id || '').trim();
+      if (!convId) return;
+      log({ bizConvMessage: convId.slice(0, 16), sender: msg?.sender_account_digest?.slice(0, 12) });
+      // Dispatch to BizConvStore for decryption and timeline insertion
+      try {
+        const { BizConvStore } = await import('../../features/biz-conv.js');
+        const { appendUserMessage } = await import('../../features/timeline-store.js');
+        const { upsertBizConvThread } = await import('../../features/conversation-updates.js');
+        const state = BizConvStore.get(convId);
+        if (!state) {
+          console.warn('[ws] biz-conv-message: no session for', convId.slice(0, 16));
+          return;
+        }
+        const plaintext = await BizConvStore.decryptMessage(convId, msg);
+        const messageId = msg.message_id || crypto.randomUUID();
+        appendUserMessage(convId, {
+          messageId,
+          msgType: 'biz-conv-text',
+          text: typeof plaintext === 'string' ? plaintext : plaintext?.text || JSON.stringify(plaintext),
+          senderAccountDigest: msg.sender_account_digest,
+          ts: msg.ts || Date.now(),
+          decrypted: true
+        });
+        upsertBizConvThread(convId, {
+          lastMessageText: typeof plaintext === 'string' ? plaintext : plaintext?.text || '',
+          lastMessageTs: msg.ts || Date.now(),
+          lastMessageId: messageId
+        });
+        // 標記備份為 dirty
+        const { markBizConvBackupDirty } = await import('../../features/biz-conv-backup.js');
+        markBizConvBackupDirty();
+      } catch (err) {
+        console.warn('[ws] biz-conv-message decrypt failed', err?.message);
+      }
+      return;
+    }
+    if (type === 'biz-conv-member-changed') {
+      log({ bizConvMemberChanged: msg?.conversation_id?.slice(0, 16), change: msg?.change });
+      try {
+        const { BizConvStore } = await import('../../features/biz-conv.js');
+        const state = BizConvStore.get(msg?.conversation_id);
+        if (state) {
+          state.lastSyncTs = Date.now();
+          // Members list will be refreshed on next conversation open
+        }
+      } catch {}
+      return;
+    }
+    if (type === 'biz-conv-dissolved') {
+      log({ bizConvDissolved: msg?.conversation_id?.slice(0, 16) });
+      try {
+        const { BizConvStore } = await import('../../features/biz-conv.js');
+        BizConvStore.remove(msg?.conversation_id);
+      } catch {}
+      return;
+    }
+    if (type === 'biz-conv-removed-notification') {
+      log({ bizConvRemoved: msg?.conversation_id?.slice(0, 16) });
+      try {
+        const { BizConvStore } = await import('../../features/biz-conv.js');
+        BizConvStore.remove(msg?.conversation_id);
+      } catch {}
+      return;
+    }
+    if (type === 'biz-conv-ownership-transferred') {
+      log({ bizConvOwnershipTransferred: msg?.conversation_id?.slice(0, 16), newOwner: msg?.new_owner?.slice(0, 12) });
+      try {
+        const { BizConvStore } = await import('../../features/biz-conv.js');
+        const state = BizConvStore.get(msg?.conversation_id);
+        if (state) state.owner_account_digest = msg?.new_owner;
+      } catch {}
+      return;
+    }
+    if (type === 'biz-conv-policy-updated') {
+      log({ bizConvPolicyUpdated: msg?.conversation_id?.slice(0, 16) });
+      // Policy will be re-fetched on next conversation open
+      return;
+    }
+    if (type === 'biz-conv-key-rotated') {
+      log({ bizConvKeyRotated: msg?.conversation_id?.slice(0, 16), newEpoch: msg?.new_epoch });
+      // Client will receive new KDM via DR session with the updated group_seed
+      return;
+    }
+
     if (type === 'secure-message' || type === 'message-new') {
       if (!isTargetingThisDevice(msg)) return;
       if (!msg?.senderDeviceId || !msg?.targetDeviceId) {
