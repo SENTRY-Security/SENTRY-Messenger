@@ -119,7 +119,7 @@ import {
   getLastBackupHydrateResult,
   getLatestBackupMeta
 } from '../features/contact-backup.js';
-import { hydrateBizConvFromBackup, triggerBizConvBackupIfDirty, clearBizConvOnLogout, syncBizConvListFromServer } from '../features/biz-conv-backup.js';
+import { hydrateBizConvFromBackup, triggerBizConvBackupIfDirty, clearBizConvOnLogout, syncBizConvListFromServer, flushBizConvBackupBeacon } from '../features/biz-conv-backup.js';
 import { createBizConvCreateModal } from './mobile/modals/biz-conv-create-modal.js';
 import { createBizConvInfoModal } from './mobile/modals/biz-conv-info-modal.js';
 import { subscriptionStatus, redeemSubscription, uploadSubscriptionQr } from '../api/subscription.js';
@@ -2637,6 +2637,7 @@ if (typeof window !== 'undefined') {
     if (event && event.persisted) return;
     flushDrSnapshotsBeforeLogout('pagehide');
     flushContactSecretsLocal('pagehide');
+    flushBizConvBackupBeacon();
     if (isReloadNavigation()) {
       forceReloadLogout();
       return;
@@ -2672,6 +2673,7 @@ if (typeof window !== 'undefined') {
     }, BACKGROUND_LOGOUT_DELAY_MS);
   });
   window.addEventListener('beforeunload', () => {
+    flushBizConvBackupBeacon();
     disposeCallMediaSession();
   });
 }
