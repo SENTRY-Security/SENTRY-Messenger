@@ -1546,6 +1546,22 @@ document.addEventListener('contacts:entry-updated', (event) => {
 document.addEventListener('contacts:removed', () => {
   updateProfileStats();
 });
+// Business conversation: add friend from group member list
+document.addEventListener('biz-conv:add-friend', async (event) => {
+  const { peerAccountDigest, peerDeviceId } = event?.detail || {};
+  if (!peerAccountDigest) return;
+  try {
+    await addContactEntry({
+      peerAccountDigest,
+      peerDeviceId: peerDeviceId || null,
+      source: 'biz-conv-group'
+    });
+    log({ bizConvAddFriend: { peer: peerAccountDigest?.slice(-8) } });
+  } catch (err) {
+    log({ bizConvAddFriendError: err?.message });
+    showToast?.(err?.message || 'Failed to add friend');
+  }
+});
 document.addEventListener('subscription:state', () => {
   if (typeof messagesPane.updateComposerAvailability === 'function') {
     messagesPane.updateComposerAvailability();

@@ -258,7 +258,9 @@
     "bizConvTransferOwnership": "转让群主",
     "bizConvMembers": "成员",
     "bizConvOwner": "群主",
-    "bizConvSettings": "群组设置"
+    "bizConvSettings": "群组设置",
+    "bizConvAddFriend": "加好友",
+    "bizConvFriendRequestSent": "已发送好友请求"
   },
   "encryption": {
     "decryptFailed": "无法解密",

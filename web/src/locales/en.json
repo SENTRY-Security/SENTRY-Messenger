@@ -258,7 +258,9 @@
     "bizConvTransferOwnership": "Transfer Ownership",
     "bizConvMembers": "Members",
     "bizConvOwner": "Owner",
-    "bizConvSettings": "Group Settings"
+    "bizConvSettings": "Group Settings",
+    "bizConvAddFriend": "Add Friend",
+    "bizConvFriendRequestSent": "Friend request sent"
   },
   "encryption": {
     "decryptFailed": "Cannot decrypt",

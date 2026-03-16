@@ -174,16 +174,16 @@ export async function handleIncomingSecureMessage(event, deps) {
 
     // ── Business Conversation KDM interception ──
     // KDMs arrive via pairwise DR session. Detect and route to BizConvStore.
+    // For epoch rotations, also confirm the new epoch with the server.
     if (rawMsgType === 'biz-conv-kdm' || event?.msg_type === 'biz-conv-kdm') {
         try {
-            const { BizConvStore } = await import('../biz-conv.js');
-            const { markBizConvBackupDirty } = await import('../biz-conv-backup.js');
+            const { handleEpochKdm } = await import('../biz-conv-key-rotation.js');
             const kdmPayload = event?.meta || event;
-            const state = await BizConvStore.initFromKDM(kdmPayload);
-            if (state) {
-                markBizConvBackupDirty();
-                console.log('[entry-incoming] KDM processed', { convId: state.conversation_id?.slice(0, 16), epoch: state.currentEpoch });
-            }
+            await handleEpochKdm(kdmPayload);
+            console.log('[entry-incoming] KDM processed + epoch confirmed', {
+                convId: kdmPayload?.conversation_id?.slice(0, 16),
+                epoch: kdmPayload?.epoch
+            });
         } catch (err) {
             console.warn('[entry-incoming] KDM processing failed', err?.message || err);
         }

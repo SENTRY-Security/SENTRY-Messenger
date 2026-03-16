@@ -9,12 +9,11 @@ import { t } from '/locales/index.js';
 import { escapeHtml } from '../ui-utils.js';
 import { BizConvStore } from '../../../features/biz-conv.js';
 import {
-  leaveBizConv, dissolveBizConv, removeBizConvMember,
-  transferBizConvOwnership, getBizConvMembers
+  bizConvLeave, bizConvDissolve, bizConvRemove,
+  bizConvTransfer, bizConvMembers
 } from '../../../api/biz-conv.js';
 import { markBizConvBackupDirty } from '../../../features/biz-conv-backup.js';
-import { upsertBizConvThread } from '../../../features/conversation-updates.js';
-import { getConversationThreads } from '../../../features/conversation-updates.js';
+import { rotateGroupKey } from '../../../features/biz-conv-key-rotation.js';
 import { getAccountDigest } from '../../../core/store.js';
 import { log } from '../../../core/log.js';
 
@@ -40,7 +39,7 @@ export function createBizConvInfoModal({ deps }) {
     // Fetch members from server
     let members = convState?.members || [];
     try {
-      const result = await getBizConvMembers({ conversation_id: conversationId });
+      const result = await bizConvMembers(conversationId);
       if (result?.members) {
         members = result.members;
       }
@@ -65,6 +64,7 @@ export function createBizConvInfoModal({ deps }) {
             return `<div class="biz-conv-member-item" data-digest="${escapeHtml(digest)}">
               <span class="biz-conv-member-name">${escapeHtml(isSelf ? t('misc.you') || 'You' : shortId)}</span>
               ${isOwnerMember ? `<span class="biz-conv-member-badge">${t('messages.bizConvOwner')}</span>` : ''}
+              ${!isSelf ? `<button class="biz-conv-add-friend-btn" data-digest="${escapeHtml(digest)}" data-device-id="${escapeHtml(m.device_id || m.deviceId || '')}">${t('messages.bizConvAddFriend')}</button>` : ''}
               ${isOwner && !isSelf ? `<button class="biz-conv-kick-btn" data-digest="${escapeHtml(digest)}">${t('messages.bizConvKick')}</button>` : ''}
             </div>`;
           }).join('')}
@@ -78,15 +78,45 @@ export function createBizConvInfoModal({ deps }) {
       </div>
     `;
 
+    // Add friend from group
+    body.querySelectorAll('.biz-conv-add-friend-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const digest = btn.dataset.digest;
+        const deviceId = btn.dataset.deviceId || null;
+        if (!digest) return;
+        // Emit a custom event for the contact system to handle
+        document.dispatchEvent(new CustomEvent('biz-conv:add-friend', {
+          detail: {
+            peerAccountDigest: digest,
+            peerDeviceId: deviceId,
+            conversationId,
+            source: 'biz-conv-info'
+          }
+        }));
+        btn.disabled = true;
+        btn.textContent = '...';
+        showToast?.(t('messages.bizConvFriendRequestSent'));
+      });
+    });
+
     // Kick member
     body.querySelectorAll('.biz-conv-kick-btn').forEach(btn => {
       btn.addEventListener('click', async () => {
         const digest = btn.dataset.digest;
         if (!digest) return;
         try {
-          await removeBizConvMember({ conversation_id: conversationId, account_digest: digest });
+          await bizConvRemove(conversationId, digest);
+          // Trigger key rotation so the removed member can't decrypt future messages
+          try {
+            await rotateGroupKey(conversationId, {
+              reason: 'member-removed',
+              removedDigest: digest,
+              sendKdmFn: deps.sendBizConvKDM || null
+            });
+          } catch (rotErr) {
+            log({ bizConvRotateAfterKickError: rotErr?.message });
+          }
           showToast?.('Member removed');
-          markBizConvBackupDirty();
           open(conversationId); // Refresh
         } catch (err) {
           showToast?.(err?.message || 'Failed');
@@ -101,7 +131,7 @@ export function createBizConvInfoModal({ deps }) {
         message: t('messages.bizConvLeaveConfirm').replace('{name}', groupName),
         onConfirm: async () => {
           try {
-            await leaveBizConv({ conversation_id: conversationId });
+            await bizConvLeave(conversationId);
             BizConvStore.conversations.delete(conversationId);
             markBizConvBackupDirty();
             closeModal();
@@ -121,7 +151,7 @@ export function createBizConvInfoModal({ deps }) {
         message: t('messages.bizConvDissolveConfirm').replace('{name}', groupName),
         onConfirm: async () => {
           try {
-            await dissolveBizConv({ conversation_id: conversationId });
+            await bizConvDissolve(conversationId);
             BizConvStore.conversations.delete(conversationId);
             markBizConvBackupDirty();
             closeModal();

@@ -743,7 +743,21 @@ export function createWsIntegration({ deps }) {
         const state = BizConvStore.get(msg?.conversation_id);
         if (state) {
           state.lastSyncTs = Date.now();
-          // Members list will be refreshed on next conversation open
+          // If we are the owner and a member left, trigger key rotation
+          const change = msg?.change || msg?.action;
+          const removedDigest = msg?.account_digest || msg?.target_account_digest;
+          const selfDigest = getAccountDigest();
+          if ((change === 'left' || change === 'removed') && state.owner_account_digest === selfDigest) {
+            try {
+              const { rotateGroupKey } = await import('../../features/biz-conv-key-rotation.js');
+              await rotateGroupKey(msg.conversation_id, {
+                reason: change === 'left' ? 'member-left' : 'member-removed',
+                removedDigest
+              });
+            } catch (rotErr) {
+              log({ bizConvAutoRotateError: rotErr?.message });
+            }
+          }
         }
       } catch {}
       return;

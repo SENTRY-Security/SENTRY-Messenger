@@ -8,9 +8,9 @@
 import { t } from '/locales/index.js';
 import { escapeHtml } from '../ui-utils.js';
 import { listReadyContacts } from '../contact-core-store.js';
-import { createBizConv, inviteBizConvMember } from '../../../api/biz-conv.js';
+import { bizConvCreate, bizConvInvite } from '../../../api/biz-conv.js';
 import { BizConvStore } from '../../../features/biz-conv.js';
-import { deriveBizConvId, deriveGroupMetaKey, encryptMeta, encryptRole, buildKDM } from '../../../../shared/crypto/biz-conv.js';
+import { deriveBizConvId, deriveGroupMetaKey, encryptMetaBlob, encryptRoleBlob, buildKDM } from '../../../../shared/crypto/biz-conv.js';
 import { markBizConvBackupDirty } from '../../../features/biz-conv-backup.js';
 import { getAccountDigest, ensureDeviceId } from '../../../core/store.js';
 import { upsertBizConvThread } from '../../../features/conversation-updates.js';
@@ -110,49 +110,42 @@ export function createBizConvCreateModal({ deps }) {
 
     // Generate group seed (32 bytes random)
     const groupSeed = crypto.getRandomValues(new Uint8Array(32));
-    const groupSeedB64 = btoa(String.fromCharCode(...groupSeed));
 
-    // Derive conversation ID
-    const conversationId = await deriveBizConvId(groupSeed);
+    // Derive conversation ID (returns { conversationId, tokenB64 })
+    const { conversationId } = await deriveBizConvId(groupSeed);
 
     // Derive meta key and encrypt meta blob
     const metaKey = await deriveGroupMetaKey(groupSeed);
-    const encryptedMeta = await encryptMeta(metaKey, {
+    const encryptedMeta = await encryptMetaBlob(metaKey, {
       name: groupName,
       created_at: Date.now(),
       owner: selfDigest
     });
 
     // Encrypt owner role
-    const ownerRole = await encryptRole(metaKey, {
+    const ownerRole = await encryptRoleBlob(metaKey, {
       account_digest: selfDigest,
       role: 'owner',
       joined_at: Date.now()
     });
 
     // Create on server
-    const result = await createBizConv({
-      conversation_id: conversationId,
-      encrypted_meta: encryptedMeta,
-      encrypted_owner_role: ownerRole,
-      epoch: 0
-    });
-
-    if (!result?.ok) {
-      throw new Error(result?.error || 'Server create failed');
-    }
-
-    // Initialize local store
-    BizConvStore.conversations.set(conversationId, {
+    await bizConvCreate({
       conversationId,
-      groupSeed: groupSeedB64,
-      epoch: 0,
-      name: groupName,
-      isOwner: true,
-      members: [{ accountDigest: selfDigest, deviceId: selfDeviceId, role: 'owner' }],
-      senderChains: new Map(),
-      lastSyncTs: Date.now()
+      encryptedMetaBlob: JSON.stringify(encryptedMeta),
+      encryptedPolicyBlob: null,
+      members: []
     });
+
+    // Initialize local store state
+    const state = BizConvStore.getOrCreate(conversationId);
+    state.seeds[0] = groupSeed;
+    state.currentEpoch = 0;
+    state._groupMetaKey = metaKey;
+    state.owner_account_digest = selfDigest;
+    state.status = 'active';
+    state.meta = { name: groupName };
+    state.members = [{ accountDigest: selfDigest, deviceId: selfDeviceId, role: 'owner' }];
 
     // Upsert thread for conversation list
     upsertBizConvThread(conversationId, {
@@ -163,27 +156,20 @@ export function createBizConvCreateModal({ deps }) {
     });
 
     // Invite members and send KDMs
-    const drSessMap = getDrSessMap?.();
     for (const member of members) {
       try {
         // Invite on server
-        await inviteBizConvMember({
-          conversation_id: conversationId,
-          account_digest: member.accountDigest
-        });
+        await bizConvInvite(conversationId, member.accountDigest);
 
         // Build KDM for this member (to be sent via existing DR channel)
-        // The KDM contains the group seed so the member can derive all keys
         const kdm = buildKDM({
           conversationId,
-          groupSeed: groupSeedB64,
           epoch: 0,
-          groupName,
-          senderAccountDigest: selfDigest
+          groupSeed,
+          meta: { name: groupName }
         });
 
         // Send KDM through the existing pairwise DR message channel
-        // The ws-integration or message-sending pipeline will handle encryption
         if (typeof deps.sendBizConvKDM === 'function') {
           await deps.sendBizConvKDM(member.accountDigest, member.deviceId, kdm);
         }
