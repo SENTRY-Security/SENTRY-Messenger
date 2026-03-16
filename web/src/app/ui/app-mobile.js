@@ -1458,7 +1458,7 @@ async function sendBizConvKDM(peerAccountDigest, peerDeviceId, kdmPayload) {
         receiver: peerName || t('messages.bizConvGroupInviteSenderUnknown'),
         group: groupName
       });
-      const tombstoneId = `kdm-sent-${kdmPayload?.conversation_id || ''}-${peerAccountDigest?.slice(-8)}-${Date.now()}`;
+      const tombstoneId = `kdm-invite-${kdmPayload?.conversation_id || ''}`;
       appendUserMessage(oneOnOneConvId, {
         messageId: tombstoneId,
         msgType: 'system',

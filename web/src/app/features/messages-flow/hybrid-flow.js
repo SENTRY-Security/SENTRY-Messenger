@@ -484,6 +484,54 @@ export async function smartFetchMessages({
                     }
                 }
 
+                // [FIX] Re-process KDM during vault replay so that:
+                // 1. Group state (name, avatar, seed) is restored even if backup was stale
+                // 2. The 1:1 tombstone ("XXX added you to group YYY") is re-created
+                if (subtype === 'biz-conv-kdm' && item.text) {
+                    try {
+                        const kdmText = typeof item.text === 'string' ? item.text : '';
+                        let kdmPayload = null;
+                        if (kdmText.trim().startsWith('{')) {
+                            try { kdmPayload = JSON.parse(kdmText); } catch { /* not JSON */ }
+                        }
+                        if (kdmPayload?.conversation_id || kdmPayload?.conversationId) {
+                            // Re-run handleEpochKdm to ensure group state is set up
+                            const { handleEpochKdm } = await import('../biz-conv-key-rotation.js');
+                            await handleEpochKdm(kdmPayload);
+
+                            // Re-create the 1:1 tombstone with a deterministic messageId
+                            const groupConvId = kdmPayload.conversation_id || kdmPayload.conversationId;
+                            const { t } = await import('/locales/index.js');
+                            const { getConversationThreads } = await import('../conversation-updates.js');
+                            const threads = getConversationThreads();
+                            const thread = threads.get(conversationId);
+                            const groupName = kdmPayload?.meta?.name || kdmPayload?.name || null;
+                            const senderName = thread?.nickname || kdmPayload?.meta?.owner_nickname || null;
+                            const tombstoneText = item.direction === 'outgoing'
+                                ? t('messages.bizConvGroupInviteTombstoneSender', {
+                                    receiver: senderName || t('messages.bizConvGroupInviteSenderUnknown'),
+                                    group: groupName || t('messages.bizConvGroupInviteGroupUnknown')
+                                  })
+                                : t('messages.bizConvGroupInviteTombstone', {
+                                    sender: senderName || t('messages.bizConvGroupInviteSenderUnknown'),
+                                    group: groupName || t('messages.bizConvGroupInviteGroupUnknown')
+                                  });
+                            // Deterministic ID: same KDM always produces the same tombstone
+                            const tombstoneId = `kdm-invite-${groupConvId}`;
+                            appendUserMessage(conversationId, {
+                                messageId: tombstoneId,
+                                msgType: 'system',
+                                subtype: 'system',
+                                text: tombstoneText,
+                                ts: Number(item.ts || Math.floor(Date.now() / 1000)),
+                                direction: item.direction || 'incoming'
+                            });
+                        }
+                    } catch (err) {
+                        console.warn('[hybrid-flow] KDM replay processing failed', err?.message || err);
+                    }
+                }
+
                 // [FIX] Apply contact-share profile updates (Route A was missing this)
                 // Only apply for INCOMING — outgoing contact-shares have sender=self,
                 // processing them overwrites the real contact with self's profile.

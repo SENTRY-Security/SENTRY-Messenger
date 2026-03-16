@@ -210,7 +210,7 @@ export async function handleIncomingSecureMessage(event, deps) {
                     sender: senderName || t('messages.bizConvGroupInviteSenderUnknown'),
                     group: groupName || t('messages.bizConvGroupInviteGroupUnknown')
                 });
-                const tombstoneId = `kdm-invite-${kdmPayload?.conversation_id || ''}-${Date.now()}`;
+                const tombstoneId = `kdm-invite-${kdmPayload?.conversation_id || ''}`;
                 appendUserMessage(oneOnOneConvId, {
                     messageId: tombstoneId,
                     msgType: 'system',
