@@ -1297,3 +1297,172 @@
   justify-content: flex-end;
   gap: 10px;
 }
+
+/* ── Business Conversation Create Modal ── */
+.modal.biz-conv-create-modal .modal-panel {
+  width: min(400px, 92vw);
+}
+.modal.biz-conv-create-modal .modal-body {
+  background: var(--bg-surface);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.biz-conv-create-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.biz-conv-create-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: #94a3b8;
+}
+.biz-conv-create-form input[type="text"] {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 15px;
+  background: var(--bg-elevated);
+  color: var(--fg);
+}
+.biz-conv-members-label {
+  font-size: 13px;
+  color: #94a3b8;
+  margin-bottom: 4px;
+}
+.biz-conv-contact-list {
+  max-height: 240px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px;
+  background: var(--bg-elevated);
+}
+.biz-conv-contact-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 6px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--fg);
+}
+.biz-conv-contact-item:hover {
+  background: rgba(99,102,241,0.08);
+}
+.biz-conv-contact-item input[type="checkbox"] {
+  accent-color: #6366f1;
+  width: 18px;
+  height: 18px;
+}
+.biz-conv-no-contacts {
+  text-align: center;
+  padding: 16px;
+  color: #64748b;
+  font-size: 13px;
+}
+.biz-conv-create-status {
+  font-size: 12px;
+  color: #b91c1c;
+  min-height: 16px;
+  line-height: 1.4;
+}
+
+/* ── Business Conversation Info Modal ── */
+.modal.biz-conv-info-modal .modal-panel {
+  width: min(400px, 92vw);
+}
+.modal.biz-conv-info-modal .modal-body {
+  background: var(--bg-surface);
+  padding: 24px;
+}
+.biz-conv-info-header {
+  text-align: center;
+  margin-bottom: 20px;
+}
+.biz-conv-info-avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  color: #fff;
+  font-size: 20px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.biz-conv-info-name {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--fg);
+}
+.biz-conv-info-count {
+  font-size: 13px;
+  color: #64748b;
+  margin-top: 2px;
+}
+.biz-conv-info-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+.biz-conv-info-members {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+  margin-bottom: 20px;
+}
+.biz-conv-member-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-elevated);
+}
+.biz-conv-member-name {
+  flex: 1;
+  font-size: 14px;
+  color: var(--fg);
+}
+.biz-conv-member-badge {
+  font-size: 11px;
+  color: #6366f1;
+  background: rgba(99,102,241,0.12);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+.biz-conv-kick-btn {
+  font-size: 12px;
+  color: #ef4444;
+  background: rgba(239,68,68,0.08);
+  border: none;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.biz-conv-kick-btn:hover {
+  background: rgba(239,68,68,0.16);
+}
+.biz-conv-info-actions {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+}

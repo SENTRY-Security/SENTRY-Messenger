@@ -418,6 +418,7 @@ export function initMessagesPane({
     get pendingSecureReadyPeer() { return controllers.secureStatus.pendingSecureReadyPeer; },
     // [FIX] Pass conversationId and token args
     setActiveConversation: (...args) => controllers.activeConversation.setActiveConversation(...args), // Route via controller if poss, or keep local
+    setActiveBizConv: (...args) => controllers.activeConversation.setActiveBizConv(...args),
     // MessageFlow facade deps:
     loadActiveConversationMessages: (args) => controllers.messageFlow.loadActiveConversationMessages(args),
     handleTimelineAppend: (args) => controllers.messageFlow.handleTimelineAppend(args),
@@ -1721,6 +1722,12 @@ export function initMessagesPane({
     applyMessagesLayout: (args) => controllers.layout.applyMessagesLayout(args),
     triggerAutoLoadOlder: () => controllers.messageFlow.triggerAutoLoadOlder(),
     setLoadMoreState: (state) => controllers.messageFlow.setLoadMoreState(state),
-    showDeleteForPeer: (d) => controllers.activeConversation.showDeleteForPeer(d)
+    showDeleteForPeer: (d) => controllers.activeConversation.showDeleteForPeer(d),
+    setBizConvCreateModal(openFn) {
+      deps.openBizConvCreateModal = typeof openFn === 'function' ? openFn : null;
+    },
+    setBizConvInfoModal(openFn) {
+      deps.openBizConvInfoModal = typeof openFn === 'function' ? openFn : null;
+    }
   };
 }

@@ -823,7 +823,7 @@ export class ConversationListController extends BaseController {
 
         const threads = this.deps.getConversationThreads?.() || new Map();
         const threadEntries = Array.from(threads.values())
-            .filter((thread) => thread?.conversationId && this._threadPeer(thread))
+            .filter((thread) => thread?.conversationId && (thread.type === 'biz-conv' || this._threadPeer(thread)))
             .sort((a, b) => (b.lastMessageTs || 0) - (a.lastMessageTs || 0));
 
         const totalUnread = threadEntries.reduce((sum, thread) => sum + Number(thread.unreadCount || 0) + Number(thread.offlineUnreadCount || 0), 0);
@@ -844,6 +844,58 @@ export class ConversationListController extends BaseController {
         }
 
         for (const thread of threadEntries) {
+            // ── Biz-conv (business conversation / group) thread ──
+            if (thread.type === 'biz-conv') {
+                const li = document.createElement('li');
+                li.className = 'conversation-item biz-conv-item';
+                li.style.touchAction = 'pan-y';
+                li.dataset.conversationId = thread.conversationId;
+                li.dataset.bizConv = '1';
+
+                const isActive = state.conversationId === thread.conversationId && state.activeBizConv;
+                if (isActive) li.classList.add('active');
+
+                const groupName = thread.bizConvName || t('messages.bizConvDefault');
+                const memberCount = thread.bizConvMemberCount || 0;
+                const initials = groupName.slice(0, 2).toUpperCase();
+                const timeLabel = this._formatConversationPreviewTime(thread.lastMessageTs);
+                const snippet = thread.lastMessageText || '';
+                const unread = Number.isFinite(thread.unreadCount) ? thread.unreadCount : 0;
+
+                li.innerHTML = `
+        <div class="item-content conversation-item-content">
+          <div class="conversation-avatar biz-conv-avatar"><span>${escapeHtml(initials)}</span></div>
+          <div class="conversation-content">
+            <div class="conversation-row conversation-row-top">
+              <span class="conversation-name"><i class='bx bx-group' style="margin-right:4px;vertical-align:middle"></i>${escapeHtml(groupName)}</span>
+              <span class="conversation-time">${escapeHtml(timeLabel)}</span>
+            </div>
+            <div class="conversation-row conversation-row-bottom">
+              <span class="conversation-snippet">${escapeHtml(snippet || t('messages.noMessages'))}</span>
+              ${unread > 0 ? `<span class="conversation-badge conversation-badge-small">${escapeHtml(unread > 99 ? '99+' : String(unread))}</span>` : ''}
+            </div>
+          </div>
+        </div>
+      `;
+                // No swipe-to-delete for biz-conv — members can only "leave"
+
+                li.addEventListener('click', (e) => {
+                    if (this._scrolledDuringTouch) return;
+                    if (this.elements.conversationList && Math.abs(this.elements.conversationList.scrollTop - this._touchStartScroll) > 2) return;
+                    this.deps.setActiveBizConv?.(thread.conversationId);
+                });
+                li.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        this.deps.setActiveBizConv?.(thread.conversationId);
+                    }
+                });
+
+                this.elements.conversationList.appendChild(li);
+                continue;
+            }
+
+            // ── Standard 1-to-1 thread ──
             const peerDigest = this._threadPeer(thread);
             if (!peerDigest) continue;
 

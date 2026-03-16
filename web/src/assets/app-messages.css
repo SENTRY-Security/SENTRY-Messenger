@@ -137,6 +137,15 @@
   display: block;
 }
 
+/* Business conversation (group) avatar */
+.biz-conv-avatar {
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%) !important;
+}
+.biz-conv-item .conversation-name i {
+  font-size: 14px;
+  opacity: 0.8;
+}
+
 .conversation-content {
   flex: 1;
   min-width: 0;

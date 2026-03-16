@@ -246,9 +246,13 @@ export class EphemeralController extends BaseController {
     if (!btn) return;
     btn.addEventListener('click', () => this._showCreateModal());
 
-    // Business chat button (coming soon)
+    // Business chat (group) creation
     const bizBtn = document.getElementById('btnCreateBusinessChat');
-    if (bizBtn) bizBtn.addEventListener('click', () => this._showComingSoonModal());
+    if (bizBtn) bizBtn.addEventListener('click', () => {
+      if (typeof this.deps.openBizConvCreateModal === 'function') {
+        this.deps.openBizConvCreateModal();
+      }
+    });
   }
 
   _showComingSoonModal() {

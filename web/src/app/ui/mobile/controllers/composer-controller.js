@@ -25,6 +25,8 @@ import { getAccountDigest, normalizePeerIdentity } from '../../../core/store.js'
 import { t } from '/locales/index.js';
 
 import { sendDrText } from '../../../features/dr-session.js';
+import { BizConvStore } from '../../../features/biz-conv.js';
+import { markBizConvBackupDirty } from '../../../features/biz-conv-backup.js';
 import { getReplacementInfo } from '../../../features/messages/ui/outbox-hooks.js';
 import { normalizeCounterValue, normalizeTimelineMessageId } from '../../../features/messages/parser.js';
 import { getTimeline as timelineGetTimeline, upsertTimelineEntry } from '../../../features/timeline-store.js';
@@ -181,6 +183,20 @@ export class ComposerController extends BaseController {
             this.elements.input.placeholder = encReady
                 ? t('composer.inputPlaceholder')
                 : t('ephemeral.encryptionNotReady');
+            this.updateConversationActionsAvailability();
+            return;
+        }
+
+        // ── Business conversation: enable if group state exists ──
+        if (state.activeBizConv && state.conversationId) {
+            const bizReady = BizConvStore.conversations.has(state.conversationId);
+            this.elements.input.disabled = !bizReady;
+            this.elements.sendBtn.disabled = !bizReady;
+            this.elements.sendBtn.classList.toggle('disabled', !bizReady);
+            this.elements.sendBtn.setAttribute('aria-disabled', bizReady ? 'false' : 'true');
+            this.elements.input.placeholder = bizReady
+                ? t('composer.inputPlaceholder')
+                : t('messages.bizConvDefault');
             this.updateConversationActionsAvailability();
             return;
         }
@@ -435,6 +451,11 @@ export class ComposerController extends BaseController {
             return this._handleEphemeralSend(text, state, ephCtrl);
         }
 
+        // ── Business conversation (group): use Sender Key encryption + WS relay ──
+        if (state.activeBizConv && state.conversationId) {
+            return this._handleBizConvSend(text, state);
+        }
+
         const contactEntryLog = state.activePeerDigest ? this.sessionStore.contactIndex?.get?.(state.activePeerDigest) : null;
 
         // UI Noise Logging
@@ -580,6 +601,68 @@ export class ComposerController extends BaseController {
     /**
      * Send a message via ephemeral E2EE (Double Ratchet over WS).
      */
+    /**
+     * Send a message via business conversation (Sender Key encryption + WS relay).
+     */
+    async _handleBizConvSend(text, state) {
+        const convId = state.conversationId;
+        const convState = BizConvStore.conversations.get(convId);
+        if (!convState) {
+            this.setMessagesStatus('Group not found', true);
+            return;
+        }
+
+        if (this.elements.sendBtn) this.elements.sendBtn.disabled = true;
+        const ts = Date.now();
+        const msgId = crypto.randomUUID();
+
+        // Append outgoing bubble immediately
+        const localMsg = this.deps.appendLocalOutgoingMessage?.({ text, ts, id: msgId });
+
+        if (this.elements.input) {
+            this.elements.input.value = '';
+            this.elements.input.focus();
+        }
+        this.clearDraft(convId);
+
+        try {
+            const deviceId = this.deps.ensureDeviceId?.() || 'unknown';
+            const envelope = await BizConvStore.encryptMessage(convId, deviceId, text);
+
+            // Send via WS relay
+            const sent = this.deps.wsSend?.({
+                type: 'biz-conv-message',
+                conversation_id: convId,
+                envelope,
+                message_id: msgId,
+                ts
+            });
+
+            if (localMsg) {
+                localMsg.status = sent ? 'sent' : 'failed';
+                localMsg.pending = false;
+            }
+            upsertTimelineEntry(convId, {
+                messageId: msgId,
+                status: sent ? 'sent' : 'failed',
+                pending: false,
+                error: sent ? null : 'WS send failed'
+            });
+
+            markBizConvBackupDirty();
+            this.deps.updateMessagesUI?.({ preserveScroll: true });
+        } catch (err) {
+            this.setMessagesStatus(t('messages.sendFailed') + '：' + (err?.message || err), true);
+            if (localMsg) {
+                localMsg.status = 'failed';
+                localMsg.pending = false;
+            }
+            this.deps.updateMessagesUI?.({ preserveScroll: true });
+        } finally {
+            if (this.elements.sendBtn) this.elements.sendBtn.disabled = false;
+        }
+    }
+
     async _handleEphemeralSend(text, state, ephCtrl) {
         const session = ephCtrl.getSessionByConversationId(state.conversationId);
         if (!session) {

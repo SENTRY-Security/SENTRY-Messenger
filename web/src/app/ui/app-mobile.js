@@ -119,6 +119,9 @@ import {
   getLastBackupHydrateResult,
   getLatestBackupMeta
 } from '../features/contact-backup.js';
+import { hydrateBizConvFromBackup, triggerBizConvBackupIfDirty, clearBizConvOnLogout } from '../features/biz-conv-backup.js';
+import { createBizConvCreateModal } from './mobile/modals/biz-conv-create-modal.js';
+import { createBizConvInfoModal } from './mobile/modals/biz-conv-info-modal.js';
 import { subscriptionStatus, redeemSubscription, uploadSubscriptionQr } from '../api/subscription.js';
 import { showVersionModal } from './version-info.js';
 import QrScanner from '../lib/vendor/qr-scanner.min.js';
@@ -208,7 +211,9 @@ const MODAL_VARIANTS = [
   'avatar-preview-modal',
   'settings-modal',
   'subscription-modal-shell',
-  'change-password-modal'
+  'change-password-modal',
+  'biz-conv-create-modal',
+  'biz-conv-info-modal'
 ];
 
 let settingsInitPromise = null;
@@ -536,6 +541,9 @@ async function secureLogout(message = t('auth.loggedOut'), { auto = false } = {}
       log({ contactSecretsLockError: err?.message || err });
     }
   }
+
+  // Clear biz-conv (business conversation) in-memory state
+  clearBizConvOnLogout();
 
   wsIntegration.close();
   presenceManager?.clearPresenceState?.();
@@ -1398,6 +1406,21 @@ const showSubscriptionGateModal = () => subscriptionMod.showGateModal();
 
 document.addEventListener('subscription:gate', showSubscriptionGateModal);
 
+// --- Business Conversation Create Modal ---
+const bizConvCreateModal = createBizConvCreateModal({
+  deps: {
+    openModal, closeModal, resetModalVariants, showToast,
+    renderConversationList: () => messagesPane.renderConversationList(),
+    getDrSessMap
+  }
+});
+const bizConvInfoModal = createBizConvInfoModal({
+  deps: {
+    openModal, closeModal, resetModalVariants, showToast, showConfirmModal,
+    renderConversationList: () => messagesPane.renderConversationList()
+  }
+});
+
 disableZoom();
 
 settingsInitPromise = bootLoadSettings()
@@ -1466,6 +1489,8 @@ initCallMediaSession({
 });
 initMediaPermissionPrompt();
 
+messagesPane.setBizConvCreateModal(() => bizConvCreateModal.open());
+messagesPane.setBizConvInfoModal((convId) => bizConvInfoModal.open(convId));
 messagesPane.attachDomEvents();
 messagesPane.ensureConversationIndex();
 messagesPane.renderConversationList();
@@ -1816,6 +1841,12 @@ async function runPostLoginContactHydrate() {
     await hydrateDrSnapshotsAfterBackup();
   } catch (err) {
     log({ drSnapshotHydrateError: err?.message || err, source: 'post-login-hydrate' });
+  }
+  // Hydrate biz-conv (business conversation) state from encrypted server backup
+  try {
+    await hydrateBizConvFromBackup();
+  } catch (err) {
+    log({ bizConvHydrateError: err?.message || err, source: 'post-login-hydrate' });
   }
   let loadError = null;
   try {
@@ -2537,6 +2568,7 @@ if (typeof document !== 'undefined') {
       wsIntegration.pause();
       flushDrSnapshotsBeforeLogout('visibilitychange');
       flushContactSecretsLocal('visibilitychange');
+      triggerBizConvBackupIfDirty().catch(err => log({ bizConvBackupFlushError: err?.message }));
       backgroundLogoutTimer = setTimeout(() => {
         backgroundLogoutTimer = null;
         handleBackgroundAutoLogout();
