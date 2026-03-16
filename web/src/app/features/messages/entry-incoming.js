@@ -178,7 +178,16 @@ export async function handleIncomingSecureMessage(event, deps) {
     if (rawMsgType === 'biz-conv-kdm' || event?.msg_type === 'biz-conv-kdm') {
         try {
             const { handleEpochKdm } = await import('../biz-conv-key-rotation.js');
-            const kdmPayload = event?.meta || event;
+            // KDM data is in the decrypted text body (JSON-stringified by sender)
+            let kdmPayload = null;
+            const rawText = event?.text || event?.content?.text || event?.plaintext || '';
+            if (rawText) {
+                try { kdmPayload = JSON.parse(rawText); } catch { /* not JSON */ }
+            }
+            // Fallback: check if event itself or event.meta contains KDM fields
+            if (!kdmPayload?.conversation_id) {
+                kdmPayload = event?.meta?.conversation_id ? event.meta : event;
+            }
             await handleEpochKdm(kdmPayload);
             console.log('[entry-incoming] KDM processed + epoch confirmed', {
                 convId: kdmPayload?.conversation_id?.slice(0, 16),

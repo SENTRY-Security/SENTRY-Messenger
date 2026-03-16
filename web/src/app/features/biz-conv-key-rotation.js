@@ -11,7 +11,7 @@
  *   6. Owner creates a tombstone recording the rotation event
  */
 
-import { BizConvStore, deriveGroupMetaKey, buildKDM, encryptTombstonePayload } from './biz-conv.js';
+import { BizConvStore, deriveGroupMetaKey, buildKDM, parseKDM, encryptTombstonePayload } from './biz-conv.js';
 import {
   bizConvIncrementEpoch,
   bizConvConfirmEpoch,
@@ -19,8 +19,28 @@ import {
   bizConvCreateTombstone
 } from '../api/biz-conv.js';
 import { markBizConvBackupDirty } from './biz-conv-backup.js';
+import { upsertBizConvThread } from './conversation-updates.js';
 import { getAccountDigest, ensureDeviceId } from '../core/store.js';
+import { sendDrPlaintext } from './dr-session.js';
 import { log } from '../core/log.js';
+
+/**
+ * Default KDM sender via pairwise DR session.
+ * Used when no explicit sendKdmFn is provided.
+ */
+async function defaultSendKdm(peerAccountDigest, peerDeviceId, kdmPayload) {
+  if (!peerAccountDigest || !peerDeviceId) {
+    log({ bizConvKdmSkip: 'missing peer info', peer: peerAccountDigest?.slice(-8) });
+    return;
+  }
+  await sendDrPlaintext({
+    text: JSON.stringify(kdmPayload),
+    peerAccountDigest,
+    peerDeviceId,
+    messageId: `kdm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    metaOverrides: { msgType: 'biz-conv-kdm' }
+  });
+}
 
 /**
  * Perform a full key rotation for a business conversation.
@@ -34,7 +54,7 @@ import { log } from '../core/log.js';
  * @returns {Promise<{ newEpoch: number, distributedCount: number }>}
  */
 export async function rotateGroupKey(conversationId, opts = {}) {
-  const { reason = 'manual', removedDigest = null, sendKdmFn = null } = opts;
+  const { reason = 'manual', removedDigest = null, sendKdmFn = defaultSendKdm } = opts;
 
   const selfDigest = getAccountDigest();
   const selfDeviceId = ensureDeviceId();
@@ -89,10 +109,8 @@ export async function rotateGroupKey(conversationId, opts = {}) {
     const digest = member.account_digest || member.accountDigest;
     const deviceId = member.device_id || member.deviceId || null;
     try {
-      if (typeof sendKdmFn === 'function') {
-        await sendKdmFn(digest, deviceId, kdmPayload);
-        distributedCount++;
-      }
+      await sendKdmFn(digest, deviceId, kdmPayload);
+      distributedCount++;
     } catch (err) {
       log({ bizConvKdmDistributeError: { peer: digest?.slice(-8), error: err?.message } });
     }
@@ -140,22 +158,48 @@ export async function rotateGroupKey(conversationId, opts = {}) {
 
 /**
  * Handle receiving a new epoch KDM (called when a member gets a rotated key).
- * Stores the new seed and confirms epoch with server.
+ * Stores the new seed, creates/updates conversation thread, and confirms epoch with server.
  *
- * @param {Object} kdm - Parsed KDM payload from initFromKDM
+ * @param {Object} kdm - Raw or parsed KDM payload
  */
 export async function handleEpochKdm(kdm) {
-  if (!kdm || !kdm.conversationId) return;
+  if (!kdm) return;
 
-  const state = await BizConvStore.initFromKDM(kdm);
+  // Normalize: raw KDM uses snake_case (conversation_id), parsed uses camelCase (conversationId)
+  let parsed = kdm;
+  if (kdm.msg_type === 'biz-conv-kdm' && !kdm.conversationId) {
+    parsed = parseKDM(kdm);
+  }
+  if (!parsed || !parsed.conversationId) {
+    log({ bizConvKdmIgnored: 'no conversationId', keys: Object.keys(kdm || {}) });
+    return;
+  }
+
+  const state = await BizConvStore.initFromKDM(parsed);
   if (!state) return;
+
+  // Store group metadata from KDM if available
+  const meta = parsed.meta || kdm.meta || null;
+  if (meta) {
+    state.meta = meta;
+    if (meta.owner) state.owner_account_digest = meta.owner;
+  }
+  state.status = 'active';
+
+  // Create/update conversation thread so the group appears in the conversation list
+  const groupName = meta?.name || null;
+  upsertBizConvThread(parsed.conversationId, {
+    name: groupName,
+    isOwner: false,
+    status: 'active'
+  });
 
   // Confirm epoch with server
   try {
-    await bizConvConfirmEpoch(kdm.conversationId, kdm.epoch);
-    log({ bizConvEpochConfirmed: { conversationId: kdm.conversationId?.slice(-8), epoch: kdm.epoch } });
+    await bizConvConfirmEpoch(parsed.conversationId, parsed.epoch);
+    log({ bizConvEpochConfirmed: { conversationId: parsed.conversationId?.slice(-8), epoch: parsed.epoch } });
   } catch (err) {
-    log({ bizConvEpochConfirmError: { conversationId: kdm.conversationId?.slice(-8), error: err?.message } });
+    log({ bizConvEpochConfirmError: { conversationId: parsed.conversationId?.slice(-8), error: err?.message } });
   }
 
   markBizConvBackupDirty();

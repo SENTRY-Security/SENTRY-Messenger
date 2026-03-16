@@ -94,7 +94,7 @@ import { createToastController } from './mobile/controllers/toast-controller.js'
 import { createNotificationAudioManager } from './mobile/notification-audio.js';
 import { initMessagesPane } from './mobile/messages-pane.js';
 import { initDrivePane } from './mobile/drive-pane.js';
-import { hydrateDrStatesFromContactSecrets, persistDrSnapshot } from '../features/dr-session.js';
+import { hydrateDrStatesFromContactSecrets, persistDrSnapshot, sendDrPlaintext } from '../features/dr-session.js';
 import { resetAllProcessedMessages } from '../features/messages-support/processed-messages-store.js';
 import { resetReceiptStore } from '../features/messages-support/receipt-store.js';
 import { messagesFlowFacade, setMessagesFlowFacadeWsSend } from '../features/messages-flow-facade.js';
@@ -1407,17 +1407,32 @@ const showSubscriptionGateModal = () => subscriptionMod.showGateModal();
 document.addEventListener('subscription:gate', showSubscriptionGateModal);
 
 // --- Business Conversation Create Modal ---
+async function sendBizConvKDM(peerAccountDigest, peerDeviceId, kdmPayload) {
+  if (!peerAccountDigest || !peerDeviceId) {
+    log({ bizConvKdmSkip: 'missing peer info', peerAccountDigest: peerAccountDigest?.slice(-8) });
+    return;
+  }
+  await sendDrPlaintext({
+    text: JSON.stringify(kdmPayload),
+    peerAccountDigest,
+    peerDeviceId,
+    messageId: `kdm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    metaOverrides: { msgType: 'biz-conv-kdm' }
+  });
+}
 const bizConvCreateModal = createBizConvCreateModal({
   deps: {
     openModal, closeModal, resetModalVariants, showToast,
     renderConversationList: () => messagesPane.renderConversationList(),
-    getDrSessMap
+    getDrSessMap,
+    sendBizConvKDM
   }
 });
 const bizConvInfoModal = createBizConvInfoModal({
   deps: {
     openModal, closeModal, resetModalVariants, showToast, showConfirmModal,
     renderConversationList: () => messagesPane.renderConversationList(),
+    sendBizConvKDM,
     navigateToList: () => {
       const state = messagesPane.getMessageState();
       state.activeBizConv = false;

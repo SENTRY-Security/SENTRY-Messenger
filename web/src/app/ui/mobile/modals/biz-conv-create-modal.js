@@ -317,7 +317,7 @@ export function createBizConvCreateModal({ deps }) {
           conversationId,
           epoch: 0,
           groupSeed,
-          meta: { name: groupName }
+          meta: { name: groupName, owner: selfDigest }
         });
         if (typeof deps.sendBizConvKDM === 'function') {
           await deps.sendBizConvKDM(member.accountDigest, member.deviceId, kdm);

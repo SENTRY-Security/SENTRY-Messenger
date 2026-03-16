@@ -23,6 +23,8 @@ import {
   buildKDM,
   parseKDM
 } from '../../shared/crypto/biz-conv.js';
+import { upsertBizConvThread } from './conversation-updates.js';
+import { getAccountDigest } from '../core/store.js';
 
 // Re-export crypto utilities for convenience
 export {
@@ -128,7 +130,10 @@ export const BizConvStore = {
       conversations[convId] = {
         seeds,
         current_epoch: state.currentEpoch,
-        sender_chains: senderChains
+        sender_chains: senderChains,
+        meta: state.meta || null,
+        owner_account_digest: state.owner_account_digest || null,
+        status: state.status || 'active'
       };
     }
     return {
@@ -167,6 +172,25 @@ export const BizConvStore = {
           skippedKeys: new Map()
         };
       }
+
+      // Restore metadata
+      if (convData.meta) state.meta = convData.meta;
+      if (convData.owner_account_digest) state.owner_account_digest = convData.owner_account_digest;
+      state.status = convData.status || 'active';
+
+      // Rebuild conversation thread so it appears in the UI
+      if (state.status === 'active') {
+        const selfDigest = getAccountDigest();
+        const isOwner = selfDigest && state.owner_account_digest
+          ? selfDigest.toUpperCase() === state.owner_account_digest.toUpperCase()
+          : false;
+        upsertBizConvThread(convId, {
+          name: state.meta?.name || null,
+          isOwner,
+          status: 'active',
+          avatar: state.meta?.avatar || null
+        });
+      }
     }
   },
 
@@ -174,8 +198,18 @@ export const BizConvStore = {
    * Initialize a new conversation from a received KDM.
    */
   async initFromKDM(kdm) {
-    const parsed = typeof kdm === 'object' && kdm.msg_type === 'biz-conv-kdm' ? kdm : parseKDM(kdm);
-    if (!parsed) return null;
+    // Accept both raw KDM (snake_case) and already-parsed KDM (camelCase)
+    let parsed;
+    if (kdm?.conversationId && kdm?.groupSeed) {
+      // Already parsed format
+      parsed = kdm;
+    } else if (kdm?.msg_type === 'biz-conv-kdm') {
+      // Raw format — parse it
+      parsed = parseKDM(kdm);
+    } else {
+      parsed = parseKDM(kdm);
+    }
+    if (!parsed || !parsed.conversationId || !parsed.groupSeed) return null;
 
     const state = this.getOrCreate(parsed.conversationId);
     state.seeds[parsed.epoch] = parsed.groupSeed;
