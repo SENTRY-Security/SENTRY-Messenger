@@ -260,7 +260,16 @@
     "bizConvOwner": "เจ้าของ",
     "bizConvSettings": "ตั้งค่ากลุ่ม",
     "bizConvAddFriend": "เพิ่มเพื่อน",
-    "bizConvFriendRequestSent": "ส่งคำขอเป็นเพื่อนแล้ว"
+    "bizConvFriendRequestSent": "ส่งคำขอเป็นเพื่อนแล้ว",
+    "bizConvNext": "ถัดไป",
+    "bizConvBack": "ย้อนกลับ",
+    "bizConvChooseAvatar": "เลือกรูปภาพ",
+    "bizConvPolicyAllowInvite": "อนุญาตให้สมาชิกเชิญ",
+    "bizConvPolicyAllowInviteDesc": "ให้สมาชิกเชิญคนอื่นเข้ากลุ่มได้",
+    "bizConvPolicyAllowFriendship": "อนุญาตให้เพิ่มเพื่อน",
+    "bizConvPolicyAllowFriendshipDesc": "ให้สมาชิกส่งคำขอเป็นเพื่อนในกลุ่มได้",
+    "bizConvPolicyMaxMembers": "จำนวนสมาชิกสูงสุด",
+    "bizConvPolicyMaxMembersDesc": "จำนวนสมาชิกสูงสุดในกลุ่มนี้"
   },
   "encryption": {
     "decryptFailed": "ไม่สามารถถอดรหัสได้",

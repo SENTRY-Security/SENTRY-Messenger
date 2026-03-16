@@ -260,7 +260,16 @@
     "bizConvOwner": "소유자",
     "bizConvSettings": "그룹 설정",
     "bizConvAddFriend": "친구 추가",
-    "bizConvFriendRequestSent": "친구 요청을 보냈습니다"
+    "bizConvFriendRequestSent": "친구 요청을 보냈습니다",
+    "bizConvNext": "다음",
+    "bizConvBack": "이전",
+    "bizConvChooseAvatar": "사진 선택",
+    "bizConvPolicyAllowInvite": "멤버 초대 허용",
+    "bizConvPolicyAllowInviteDesc": "멤버가 다른 사람을 그룹에 초대할 수 있도록 합니다",
+    "bizConvPolicyAllowFriendship": "친구 요청 허용",
+    "bizConvPolicyAllowFriendshipDesc": "멤버가 그룹 내에서 친구 요청을 보낼 수 있도록 합니다",
+    "bizConvPolicyMaxMembers": "최대 인원",
+    "bizConvPolicyMaxMembersDesc": "이 그룹의 최대 멤버 수"
   },
   "encryption": {
     "decryptFailed": "복호화할 수 없음",

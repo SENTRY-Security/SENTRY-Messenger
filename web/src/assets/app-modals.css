@@ -1310,19 +1310,72 @@
   gap: 14px;
   overflow: hidden;
 }
-.biz-conv-create-form {
+/* Wizard layout */
+.biz-conv-wizard {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
 }
-.biz-conv-create-form > label {
+.biz-conv-step-indicator {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+.biz-conv-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #334155;
+  transition: background .2s, transform .2s;
+}
+.biz-conv-dot--active {
+  background: #6366f1;
+  transform: scale(1.3);
+}
+.biz-conv-step-content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+/* Step 1: Avatar section */
+.biz-conv-avatar-section {
+  display: flex;
+  justify-content: center;
+}
+.biz-conv-avatar-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.biz-conv-avatar-preview {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid var(--line);
+}
+.biz-conv-avatar-preview--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #1e293b;
+  color: #475569;
+}
+.biz-conv-avatar-hint {
+  font-size: 12px;
+  color: #6366f1;
+}
+/* Field label */
+.biz-conv-field-label {
   display: flex;
   flex-direction: column;
   gap: 6px;
   font-size: 13px;
   color: #94a3b8;
 }
-.biz-conv-create-form input[type="text"] {
+.biz-conv-field-label input[type="text"] {
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 10px 12px;
@@ -1330,6 +1383,102 @@
   background: var(--bg-elevated);
   color: var(--fg);
 }
+/* Step 2: Policy */
+.biz-conv-policy-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.biz-conv-policy-item {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 8px;
+  border-radius: 8px;
+}
+.biz-conv-policy-item:hover {
+  background: rgba(99,102,241,0.06);
+}
+.biz-conv-policy-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.biz-conv-policy-title {
+  font-size: 14px;
+  color: var(--fg);
+}
+.biz-conv-policy-desc {
+  font-size: 12px;
+  color: #64748b;
+}
+.biz-conv-policy-item input[type="checkbox"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 40px;
+  height: 22px;
+  border-radius: 11px;
+  background: #334155;
+  position: relative;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background .2s;
+}
+.biz-conv-policy-item input[type="checkbox"]::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #94a3b8;
+  transition: transform .2s, background .2s;
+}
+.biz-conv-policy-item input[type="checkbox"]:checked {
+  background: #6366f1;
+}
+.biz-conv-policy-item input[type="checkbox"]:checked::after {
+  transform: translateX(18px);
+  background: #fff;
+}
+.biz-conv-policy-select {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 14px;
+  background: var(--bg-elevated);
+  color: var(--fg);
+  flex-shrink: 0;
+}
+/* Wizard action buttons */
+.biz-conv-wizard-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.biz-conv-wizard-actions--dual {
+  justify-content: space-between;
+}
+.biz-conv-wizard-actions .btn-ghost {
+  background: transparent;
+  color: #94a3b8;
+  border: 1px solid var(--line);
+  padding: 8px 18px;
+  border-radius: 10px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.biz-conv-wizard-actions .btn-ghost:hover {
+  background: rgba(148,163,184,0.08);
+}
+.biz-conv-wizard-actions .btn-primary {
+  padding: 8px 24px;
+}
+/* Step 3 */
 .biz-conv-members-label {
   font-size: 13px;
   color: #94a3b8;

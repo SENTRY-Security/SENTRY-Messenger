@@ -260,7 +260,16 @@
     "bizConvOwner": "群主",
     "bizConvSettings": "群組設定",
     "bizConvAddFriend": "加好友",
-    "bizConvFriendRequestSent": "已發送好友請求"
+    "bizConvFriendRequestSent": "已發送好友請求",
+    "bizConvNext": "下一步",
+    "bizConvBack": "上一步",
+    "bizConvChooseAvatar": "選擇照片",
+    "bizConvPolicyAllowInvite": "允許成員邀請",
+    "bizConvPolicyAllowInviteDesc": "讓成員可以邀請其他人加入群組",
+    "bizConvPolicyAllowFriendship": "允許加好友",
+    "bizConvPolicyAllowFriendshipDesc": "讓成員可以在群組內發送好友請求",
+    "bizConvPolicyMaxMembers": "人數上限",
+    "bizConvPolicyMaxMembersDesc": "此群組的最大成員數量"
   },
   "encryption": {
     "decryptFailed": "無法解密",

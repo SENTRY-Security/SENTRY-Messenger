@@ -260,7 +260,16 @@
     "bizConvOwner": "Owner",
     "bizConvSettings": "Group Settings",
     "bizConvAddFriend": "Add Friend",
-    "bizConvFriendRequestSent": "Friend request sent"
+    "bizConvFriendRequestSent": "Friend request sent",
+    "bizConvNext": "Next",
+    "bizConvBack": "Back",
+    "bizConvChooseAvatar": "Choose photo",
+    "bizConvPolicyAllowInvite": "Allow member invite",
+    "bizConvPolicyAllowInviteDesc": "Let members invite others to the group",
+    "bizConvPolicyAllowFriendship": "Allow friend requests",
+    "bizConvPolicyAllowFriendshipDesc": "Let members send friend requests within the group",
+    "bizConvPolicyMaxMembers": "Max members",
+    "bizConvPolicyMaxMembersDesc": "Maximum number of members in this group"
   },
   "encryption": {
     "decryptFailed": "Cannot decrypt",

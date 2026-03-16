@@ -260,7 +260,16 @@
     "bizConvOwner": "Chủ sở hữu",
     "bizConvSettings": "Cài đặt nhóm",
     "bizConvAddFriend": "Thêm bạn",
-    "bizConvFriendRequestSent": "Đã gửi yêu cầu kết bạn"
+    "bizConvFriendRequestSent": "Đã gửi yêu cầu kết bạn",
+    "bizConvNext": "Tiếp theo",
+    "bizConvBack": "Quay lại",
+    "bizConvChooseAvatar": "Chọn ảnh",
+    "bizConvPolicyAllowInvite": "Cho phép thành viên mời",
+    "bizConvPolicyAllowInviteDesc": "Cho phép thành viên mời người khác vào nhóm",
+    "bizConvPolicyAllowFriendship": "Cho phép kết bạn",
+    "bizConvPolicyAllowFriendshipDesc": "Cho phép thành viên gửi yêu cầu kết bạn trong nhóm",
+    "bizConvPolicyMaxMembers": "Số thành viên tối đa",
+    "bizConvPolicyMaxMembersDesc": "Số thành viên tối đa trong nhóm này"
   },
   "encryption": {
     "decryptFailed": "Không thể giải mã",
