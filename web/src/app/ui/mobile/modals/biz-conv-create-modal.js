@@ -17,6 +17,7 @@ import { getAccountDigest, ensureDeviceId } from '../../../core/store.js';
 import { upsertBizConvThread } from '../../../features/conversation-updates.js';
 import { appendUserMessage } from '../../../features/timeline-store.js';
 import { log } from '../../../core/log.js';
+import { sessionStore } from '../session-store.js';
 
 export function createBizConvCreateModal({ deps }) {
   const { openModal, closeModal, resetModalVariants, showToast, renderConversationList } = deps;
@@ -232,10 +233,22 @@ export function createBizConvCreateModal({ deps }) {
         const list = document.getElementById('bizConvContactList');
         if (!list) return;
         const checked = list.querySelectorAll('input[name="member"]:checked');
-        state.selectedMembers = Array.from(checked).map(cb => ({
-          accountDigest: cb.value,
-          deviceId: cb.dataset.deviceId || null
-        }));
+        const contacts = listReadyContacts();
+        const contactMap = new Map();
+        for (const c of contacts) {
+          const d = (c.peerAccountDigest || c.peerKey || '').toUpperCase();
+          if (d) contactMap.set(d, c);
+        }
+        state.selectedMembers = Array.from(checked).map(cb => {
+          const digest = cb.value;
+          const contact = contactMap.get((digest || '').toUpperCase());
+          return {
+            accountDigest: digest,
+            deviceId: cb.dataset.deviceId || null,
+            nickname: contact?.nickname || null,
+            avatar: resolveContactAvatarUrl(contact) || null
+          };
+        });
       }
     }
 
@@ -310,6 +323,33 @@ export function createBizConvCreateModal({ deps }) {
       direction: 'system'
     });
 
+    // Build member profiles list for KDM (so recipients can display names/avatars
+    // even if they don't have each other as contacts)
+    const selfNickname = sessionStore.nickname || sessionStore.currentNickname || null;
+    const selfAvatar = sessionStore.currentAvatarUrl || null;
+    const memberProfiles = [
+      { accountDigest: selfDigest, nickname: selfNickname, avatar: selfAvatar },
+      ...members.map(m => ({
+        accountDigest: m.accountDigest,
+        nickname: m.nickname || null,
+        avatar: m.avatar || null
+      }))
+    ];
+
+    // Also store member profiles locally for the owner
+    const st2 = BizConvStore.get(conversationId);
+    if (st2) {
+      st2.memberProfiles = {};
+      for (const p of memberProfiles) {
+        if (p.accountDigest) {
+          st2.memberProfiles[p.accountDigest.toUpperCase()] = {
+            nickname: p.nickname || null,
+            avatar: p.avatar || null
+          };
+        }
+      }
+    }
+
     for (const member of members) {
       try {
         await bizConvInvite(conversationId, member.accountDigest);
@@ -317,7 +357,12 @@ export function createBizConvCreateModal({ deps }) {
           conversationId,
           epoch: 0,
           groupSeed,
-          meta: { name: groupName, owner: selfDigest }
+          meta: {
+            name: groupName,
+            owner: selfDigest,
+            avatar: avatarDataUrl || null,
+            members: memberProfiles
+          }
         });
         if (typeof deps.sendBizConvKDM === 'function') {
           await deps.sendBizConvKDM(member.accountDigest, member.deviceId, kdm);

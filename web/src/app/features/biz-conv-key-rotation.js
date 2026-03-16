@@ -98,11 +98,20 @@ export async function rotateGroupKey(conversationId, opts = {}) {
 
   // 5. Distribute KDM to each remaining member
   let distributedCount = 0;
+  // Include member profiles in KDM meta so recipients can display names/avatars
+  const kdmMeta = { ...(state.meta || {}) };
+  if (state.memberProfiles && Object.keys(state.memberProfiles).length > 0) {
+    kdmMeta.members = Object.entries(state.memberProfiles).map(([digest, profile]) => ({
+      accountDigest: digest,
+      nickname: profile.nickname || null,
+      avatar: profile.avatar || null
+    }));
+  }
   const kdmPayload = buildKDM({
     conversationId,
     epoch: newEpoch,
     groupSeed: newSeed,
-    meta: state.meta || null
+    meta: kdmMeta
   });
 
   for (const member of activeMembers) {
@@ -186,12 +195,27 @@ export async function handleEpochKdm(kdm) {
   }
   state.status = 'active';
 
+  // Store member profiles from KDM if available (for displaying non-contact members)
+  if (meta?.members && Array.isArray(meta.members)) {
+    if (!state.memberProfiles) state.memberProfiles = {};
+    for (const m of meta.members) {
+      if (m?.accountDigest) {
+        state.memberProfiles[m.accountDigest.toUpperCase()] = {
+          nickname: m.nickname || null,
+          avatar: m.avatar || null
+        };
+      }
+    }
+  }
+
   // Create/update conversation thread so the group appears in the conversation list
   const groupName = meta?.name || null;
   upsertBizConvThread(parsed.conversationId, {
     name: groupName,
     isOwner: false,
-    status: 'active'
+    status: 'active',
+    avatar: meta?.avatar || null,
+    unreadCount: 0  // KDM is not a user message — don't show unread badge
   });
 
   // Confirm epoch with server

@@ -219,11 +219,14 @@ export async function syncBizConvListFromServer() {
         } catch { /* can't decrypt yet */ }
       }
 
-      // Ensure thread exists for UI
+      // Ensure thread exists for UI (preserve existing unreadCount during sync)
+      const threads = (await import('./conversation-updates.js')).getConversationThreads();
+      const existingThread = threads.get(convId);
       upsertBizConvThread(convId, {
         name: groupName,
         isOwner,
-        status: 'active'
+        status: 'active',
+        unreadCount: existingThread?.unreadCount ?? 0
       });
     }
 

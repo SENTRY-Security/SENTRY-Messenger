@@ -64,6 +64,10 @@ function createConversationState(conversationId) {
     // Sender chain states: `${epoch}:${deviceId}` → ChainState
     senderChains: {},
 
+    // Member profiles: accountDigest(upper) → { nickname, avatar }
+    // Populated from KDM meta so non-contact members can display names/avatars
+    memberProfiles: {},
+
     // UI state
     unreadCount: 0,
     lastMessagePreview: null,
@@ -133,7 +137,8 @@ export const BizConvStore = {
         sender_chains: senderChains,
         meta: state.meta || null,
         owner_account_digest: state.owner_account_digest || null,
-        status: state.status || 'active'
+        status: state.status || 'active',
+        member_profiles: state.memberProfiles || null
       };
     }
     return {
@@ -176,6 +181,7 @@ export const BizConvStore = {
       // Restore metadata
       if (convData.meta) state.meta = convData.meta;
       if (convData.owner_account_digest) state.owner_account_digest = convData.owner_account_digest;
+      if (convData.member_profiles) state.memberProfiles = convData.member_profiles;
       state.status = convData.status || 'active';
 
       // Rebuild conversation thread so it appears in the UI
@@ -188,7 +194,8 @@ export const BizConvStore = {
           name: state.meta?.name || null,
           isOwner,
           status: 'active',
-          avatar: state.meta?.avatar || null
+          avatar: state.meta?.avatar || null,
+          unreadCount: 0  // Restoring from backup — don't show phantom unread badges
         });
       }
     }
@@ -217,6 +224,16 @@ export const BizConvStore = {
     state._groupMetaKey = await deriveGroupMetaKey(parsed.groupSeed);
 
     return state;
+  },
+
+  /**
+   * Resolve a member's profile (nickname/avatar) from KDM-provided data.
+   * Falls back to null if not found.
+   */
+  getMemberProfile(conversationId, accountDigest) {
+    const state = this.get(conversationId);
+    if (!state?.memberProfiles || !accountDigest) return null;
+    return state.memberProfiles[accountDigest.toUpperCase()] || null;
   },
 
   /**

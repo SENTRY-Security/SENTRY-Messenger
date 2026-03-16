@@ -24,7 +24,7 @@ import { log } from '../../../core/log.js';
 export function createBizConvInfoModal({ deps }) {
   const { openModal, closeModal, resetModalVariants, showToast, showConfirmModal, renderConversationList, navigateToList } = deps;
 
-  function resolveMemberInfo(digest) {
+  function resolveMemberInfo(digest, conversationId) {
     const matches = findContactCoreByAccountDigest(digest);
     const ready = matches.find(m => m.entry?.isReady);
     if (ready) {
@@ -32,6 +32,15 @@ export function createBizConvInfoModal({ deps }) {
         nickname: ready.entry.nickname || digest.slice(-8),
         avatarUrl: resolveContactAvatarUrl(ready.entry),
         isFriend: true
+      };
+    }
+    // Fallback: use member profile from KDM data (for non-contact members)
+    const profile = conversationId ? BizConvStore.getMemberProfile(conversationId, digest) : null;
+    if (profile) {
+      return {
+        nickname: profile.nickname || digest.slice(-8),
+        avatarUrl: profile.avatar || null,
+        isFriend: false
       };
     }
     return { nickname: digest.slice(-8), avatarUrl: null, isFriend: false };
@@ -102,7 +111,7 @@ export function createBizConvInfoModal({ deps }) {
               avatarHtml = memberAvatarHtml(selfInfo);
               isFriend = true;
             } else {
-              const info = resolveMemberInfo(digest);
+              const info = resolveMemberInfo(digest, conversationId);
               nickname = info.nickname;
               avatarHtml = memberAvatarHtml(info);
               isFriend = info.isFriend;
@@ -223,7 +232,7 @@ export function createBizConvInfoModal({ deps }) {
         btn.addEventListener('click', async () => {
           try {
             const targetDigest = btn.dataset.digest;
-            const targetInfo = resolveMemberInfo(targetDigest);
+            const targetInfo = resolveMemberInfo(targetDigest, conversationId);
             await bizConvTransfer(conversationId, targetDigest);
             // Update local ownership state
             const cs = BizConvStore.conversations.get(conversationId);
