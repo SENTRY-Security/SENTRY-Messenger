@@ -211,6 +211,11 @@ export class ActiveConversationController extends BaseController {
             this.elements.peerName.style.cursor = '';
             this.elements.peerName.onclick = null;
         }
+        // Hide biz-conv settings button for 1-to-1
+        if (this.elements.bizConvSettingsBtn) {
+            this.elements.bizConvSettingsBtn.classList.add('hidden');
+            this.elements.bizConvSettingsBtn.onclick = null;
+        }
 
         // Load messages if conversation exists (Token is optional for local load)
         if (state.conversationId) {
@@ -311,6 +316,13 @@ export class ActiveConversationController extends BaseController {
         if (this.elements.peerName) {
             this.elements.peerName.style.cursor = 'pointer';
             this.elements.peerName.onclick = () => {
+                this.deps.openBizConvInfoModal?.(conversationId);
+            };
+        }
+        // Show gear icon for group settings
+        if (this.elements.bizConvSettingsBtn) {
+            this.elements.bizConvSettingsBtn.classList.remove('hidden');
+            this.elements.bizConvSettingsBtn.onclick = () => {
                 this.deps.openBizConvInfoModal?.(conversationId);
             };
         }

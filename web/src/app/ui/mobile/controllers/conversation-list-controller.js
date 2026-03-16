@@ -862,10 +862,13 @@ export class ConversationListController extends BaseController {
                 const timeLabel = this._formatConversationPreviewTime(thread.lastMessageTs);
                 const snippet = thread.lastMessageText || '';
                 const unread = Number.isFinite(thread.unreadCount) ? thread.unreadCount : 0;
+                const avatarHtml = thread.bizConvAvatar
+                    ? `<img class="conversation-avatar biz-conv-avatar-img" src="${escapeHtml(thread.bizConvAvatar)}" alt="" />`
+                    : `<div class="conversation-avatar biz-conv-avatar"><span>${escapeHtml(initials)}</span></div>`;
 
                 li.innerHTML = `
         <div class="item-content conversation-item-content">
-          <div class="conversation-avatar biz-conv-avatar"><span>${escapeHtml(initials)}</span></div>
+          ${avatarHtml}
           <div class="conversation-content">
             <div class="conversation-row conversation-row-top">
               <span class="conversation-name"><i class='bx bx-group' style="margin-right:4px;vertical-align:middle"></i>${escapeHtml(groupName)}</span>

@@ -273,7 +273,8 @@
     "bizConvMemberCount": "人のメンバー",
     "bizConvMemberRemoved": "メンバーを削除しました",
     "bizConvNoMembersToTransfer": "移譲できるメンバーがいません",
-    "bizConvOwnershipTransferred": "オーナー権限を移譲しました"
+    "bizConvOwnershipTransferred": "オーナー権限を移譲しました",
+    "bizConvTransferHint": "オーナー権限を移譲するメンバーを選択"
   },
   "encryption": {
     "decryptFailed": "復号できません",

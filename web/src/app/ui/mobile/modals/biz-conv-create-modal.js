@@ -15,6 +15,7 @@ import { deriveBizConvId, deriveGroupMetaKey, encryptMetaBlob, encryptRoleBlob, 
 import { markBizConvBackupDirty } from '../../../features/biz-conv-backup.js';
 import { getAccountDigest, ensureDeviceId } from '../../../core/store.js';
 import { upsertBizConvThread } from '../../../features/conversation-updates.js';
+import { appendUserMessage } from '../../../features/timeline-store.js';
 import { log } from '../../../core/log.js';
 
 export function createBizConvCreateModal({ deps }) {
@@ -296,7 +297,17 @@ export function createBizConvCreateModal({ deps }) {
       name: groupName,
       memberCount: 1 + members.length,
       isOwner: true,
-      status: 'active'
+      status: 'active',
+      avatar: avatarDataUrl || null
+    });
+
+    // Insert a tombstone so the chat shows "Group created"
+    appendUserMessage(conversationId, {
+      messageId: `tombstone-created-${conversationId}`,
+      msgType: 'biz-conv-tombstone',
+      text: t('messages.bizConvCreated'),
+      ts: Date.now(),
+      direction: 'system'
     });
 
     for (const member of members) {

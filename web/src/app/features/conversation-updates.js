@@ -125,6 +125,8 @@ export function upsertBizConvThread(conversationId, updates = {}) {
         lastReadTs: typeof prev.lastReadTs === 'number' ? prev.lastReadTs : null,
         unreadCount: typeof updates.unreadCount === 'number' ? updates.unreadCount : (typeof prev.unreadCount === 'number' ? prev.unreadCount + 1 : 1),
         previewLoaded: true,
+        // Biz-conv avatar (dataURL or null)
+        bizConvAvatar: updates.avatar ?? prev.bizConvAvatar ?? null,
         // Null out 1-to-1 specific fields
         peerAccountDigest: null,
         peerDeviceId: null,

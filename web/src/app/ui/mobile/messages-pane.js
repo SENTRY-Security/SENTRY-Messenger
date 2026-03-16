@@ -355,7 +355,8 @@ export function initMessagesPane({
     loadMoreLabel: dom.messagesLoadMoreLabel ?? document.querySelector('.messages-load-more .label'),
     loadMoreSpinner: dom.messagesLoadMoreSpinner ?? document.querySelector('.messages-load-more .spinner'),
     callBtn: dom.messagesCallBtn ?? document.getElementById('messagesCallBtn'),
-    callSubmenu: document.getElementById('callSubmenu')
+    callSubmenu: document.getElementById('callSubmenu'),
+    bizConvSettingsBtn: document.getElementById('bizConvSettingsBtn')
   };
 
   console.log('[messages-pane] init elements check:', {

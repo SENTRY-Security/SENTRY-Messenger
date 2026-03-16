@@ -931,6 +931,13 @@ export class MessageRenderer {
                 continue;
             }
 
+            if (messageType === 'biz-conv-tombstone') {
+                li.className = 'message-separator biz-conv-tombstone-msg';
+                li.textContent = msg.text || msg.content?.text || '';
+                this.listEl.appendChild(li);
+                continue;
+            }
+
             // Standard Message Row
             const row = document.createElement('div');
             row.className = 'message-row';

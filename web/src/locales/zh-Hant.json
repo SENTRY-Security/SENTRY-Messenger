@@ -273,7 +273,8 @@
     "bizConvMemberCount": "位成員",
     "bizConvMemberRemoved": "已移除成員",
     "bizConvNoMembersToTransfer": "沒有可移交的成員",
-    "bizConvOwnershipTransferred": "已移交群主權限"
+    "bizConvOwnershipTransferred": "已移交群主權限",
+    "bizConvTransferHint": "選擇要移交群主的成員"
   },
   "encryption": {
     "decryptFailed": "無法解密",

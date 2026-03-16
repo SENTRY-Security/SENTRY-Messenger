@@ -1753,3 +1753,14 @@
 .biz-conv-transfer-pick:hover {
   background: rgba(99,102,241,0.08);
 }
+.biz-conv-transfer-hint {
+  font-size: 13px;
+  color: #94a3b8;
+  margin-bottom: 8px;
+}
+.biz-conv-transfer-pick {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}

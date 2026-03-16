@@ -273,7 +273,8 @@
     "bizConvMemberCount": "thành viên",
     "bizConvMemberRemoved": "Đã xóa thành viên",
     "bizConvNoMembersToTransfer": "Không có thành viên để chuyển quyền",
-    "bizConvOwnershipTransferred": "Đã chuyển quyền sở hữu"
+    "bizConvOwnershipTransferred": "Đã chuyển quyền sở hữu",
+    "bizConvTransferHint": "Chọn thành viên để chuyển quyền sở hữu"
   },
   "encryption": {
     "decryptFailed": "Không thể giải mã",

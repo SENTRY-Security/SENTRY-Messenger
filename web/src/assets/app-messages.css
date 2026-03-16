@@ -141,6 +141,13 @@
 .biz-conv-avatar {
   background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%) !important;
 }
+.biz-conv-avatar-img {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
 .biz-conv-item .conversation-name i {
   font-size: 14px;
   opacity: 0.8;

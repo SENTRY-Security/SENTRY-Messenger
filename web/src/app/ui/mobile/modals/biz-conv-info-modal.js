@@ -16,6 +16,7 @@ import { markBizConvBackupDirty } from '../../../features/biz-conv-backup.js';
 import { rotateGroupKey } from '../../../features/biz-conv-key-rotation.js';
 import { getAccountDigest } from '../../../core/store.js';
 import { findContactCoreByAccountDigest, resolveContactAvatarUrl } from '../contact-core-store.js';
+import { getConversationThreads } from '../../../features/conversation-updates.js';
 import { log } from '../../../core/log.js';
 
 export function createBizConvInfoModal({ deps }) {
@@ -171,32 +172,38 @@ export function createBizConvInfoModal({ deps }) {
         showToast?.(t('messages.bizConvNoMembersToTransfer'));
         return;
       }
-      // Show a simple selection — pick the first non-self or show list
-      const listHtml = nonSelfMembers.map(m => {
-        const d = m.account_digest || m.accountDigest || '';
-        const info = resolveMemberInfo(d);
-        return `<button class="biz-conv-transfer-pick" data-digest="${escapeHtml(d)}">${escapeHtml(info.nickname)}</button>`;
-      }).join('');
-
-      showConfirmModal?.({
-        title: t('messages.bizConvTransferOwnership'),
-        message: `<div class="biz-conv-transfer-list">${listHtml}</div>`,
-        hideConfirm: true,
-        onRendered: (el) => {
-          el?.querySelectorAll('.biz-conv-transfer-pick').forEach(btn => {
-            btn.addEventListener('click', async () => {
-              try {
-                await bizConvTransfer(conversationId, btn.dataset.digest);
-                markBizConvBackupDirty();
-                showToast?.(t('messages.bizConvOwnershipTransferred'));
-                closeModal();
-                renderConversationList?.();
-              } catch (err) {
-                showToast?.(err?.message || 'Failed');
-              }
-            });
-          });
-        }
+      // Render transfer picker directly in the modal body
+      if (title) title.textContent = t('messages.bizConvTransferOwnership');
+      body.innerHTML = `
+        <div class="biz-conv-info">
+          <div class="biz-conv-transfer-hint">${escapeHtml(t('messages.bizConvTransferHint'))}</div>
+          <div class="biz-conv-transfer-list">
+            ${nonSelfMembers.map(m => {
+              const d = m.account_digest || m.accountDigest || '';
+              const info = resolveMemberInfo(d);
+              return `<button class="biz-conv-transfer-pick" data-digest="${escapeHtml(d)}">
+                ${memberAvatarHtml(info)}
+                <span>${escapeHtml(info.nickname)}</span>
+              </button>`;
+            }).join('')}
+          </div>
+          <div class="biz-conv-wizard-actions">
+            <button type="button" id="bizConvTransferBack" class="btn btn-ghost">${t('messages.bizConvBack')}</button>
+          </div>
+        </div>`;
+      document.getElementById('bizConvTransferBack')?.addEventListener('click', () => open(conversationId));
+      body.querySelectorAll('.biz-conv-transfer-pick').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          try {
+            await bizConvTransfer(conversationId, btn.dataset.digest);
+            markBizConvBackupDirty();
+            showToast?.(t('messages.bizConvOwnershipTransferred'));
+            closeModal();
+            renderConversationList?.();
+          } catch (err) {
+            showToast?.(err?.message || 'Failed');
+          }
+        });
       });
     });
 
@@ -209,6 +216,7 @@ export function createBizConvInfoModal({ deps }) {
           try {
             await bizConvLeave(conversationId);
             BizConvStore.conversations.delete(conversationId);
+            getConversationThreads().delete(conversationId);
             markBizConvBackupDirty();
             closeModal();
             renderConversationList?.();
@@ -228,6 +236,7 @@ export function createBizConvInfoModal({ deps }) {
           try {
             await bizConvDissolve(conversationId);
             BizConvStore.conversations.delete(conversationId);
+            getConversationThreads().delete(conversationId);
             markBizConvBackupDirty();
             closeModal();
             renderConversationList?.();

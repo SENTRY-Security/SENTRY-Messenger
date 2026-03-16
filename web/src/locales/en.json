@@ -273,7 +273,8 @@
     "bizConvMemberCount": "members",
     "bizConvMemberRemoved": "Member removed",
     "bizConvNoMembersToTransfer": "No members to transfer ownership to",
-    "bizConvOwnershipTransferred": "Ownership transferred"
+    "bizConvOwnershipTransferred": "Ownership transferred",
+    "bizConvTransferHint": "Select a member to transfer ownership to"
   },
   "encryption": {
     "decryptFailed": "Cannot decrypt",
