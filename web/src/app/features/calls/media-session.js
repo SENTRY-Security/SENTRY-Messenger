@@ -1491,6 +1491,15 @@ function setupInsertableStreamsForSender(sender, track) {
     log({ e2eeSenderSkip: 'no-support', kind: track?.kind, callId: activeCallId });
     return;
   }
+  // Safari's RTCRtpScriptTransform silently blocks video receiver frames
+  // (zero frames reach the worker even though onrtctransform fires).
+  // Skip video E2EE on ALL browsers to avoid a mismatch where one side
+  // encrypts video that the other side cannot decrypt.  Audio E2EE is
+  // unaffected and continues to work normally.
+  if (track.kind === 'video') {
+    log({ e2eeSenderSkip: 'video-e2ee-disabled', callId: activeCallId });
+    return;
+  }
   if (!peerSupportsInsertableStreams()) {
     failCall('peer-e2ee-not-supported', new Error(t('callKeys.peerE2eeNotSupported')));
     return;
@@ -1527,6 +1536,20 @@ function setupInsertableStreamsForReceiver(receiver, track) {
   }
   if (!supportsInsertableStreams() || !receiver || !track) {
     log({ e2eeReceiverSkip: 'no-support', kind: track?.kind, callId: activeCallId });
+    return;
+  }
+  // Safari's RTCRtpScriptTransform silently blocks video receiver frames
+  // (zero frames reach the worker).  Skip video E2EE on ALL browsers so
+  // neither side encrypts/decrypts video — avoids mismatches.  Audio E2EE
+  // continues to function correctly.
+  if (track.kind === 'video') {
+    log({ e2eeReceiverSkip: 'video-e2ee-disabled', kind: 'video', callId: activeCallId });
+    // Still confirm receiver so audio sender transforms can proceed.
+    if (!e2eeReceiverConfirmed) {
+      e2eeReceiverConfirmed = true;
+      log({ e2eeReceiverConfirmed: true, triggeredBy: 'video-skip', callId: activeCallId });
+      applySenderTransformsDeferred();
+    }
     return;
   }
   if (!peerSupportsInsertableStreams()) {
@@ -1718,39 +1741,32 @@ let baseNonce = null;
 let frameCounter = 0;
 let mode = 'encrypt';
 let importPromise = null;
-let debugFrameCount = 0;
-let debugErrorCount = 0;
-let debugPassthroughCount = 0;
-let debugKeyName = '';
 
 self.onmessage = async (event) => {
   const msg = event.data;
   if (msg.type === 'key') {
     mode = msg.mode || mode;
-    debugKeyName = msg.keyName || mode;
     const usages = mode === 'encrypt' ? ['encrypt'] : ['decrypt'];
     baseNonce = new Uint8Array(msg.nonce);
     if (msg.resetCounter) frameCounter = 0;
-    console.log('[e2ee-worker] key received', { mode, keyLen: msg.key?.byteLength, nonceLen: msg.nonce?.byteLength, keyName: debugKeyName });
     try {
       importPromise = crypto.subtle.importKey(
         'raw', new Uint8Array(msg.key), { name: 'AES-GCM' }, false, usages
-      ).then(k => { cryptoKey = k; console.log('[e2ee-worker] key imported OK', { mode, keyName: debugKeyName }); });
+      ).then(k => { cryptoKey = k; });
       await importPromise;
     } catch (err) {
-      console.error('[e2ee-worker] key import FAILED', err?.message || err);
+      console.error('[e2ee-worker] key import failed', err?.message || err);
     }
   }
 };
 
 self.onrtctransform = (event) => {
-  console.log('[e2ee-worker] onrtctransform fired', { mode, hasKey: !!cryptoKey, keyName: debugKeyName });
   const { readable, writable } = event.transformer;
   const ts = new TransformStream({
     async transform(frame, controller) {
       if (!cryptoKey) {
         if (importPromise) await importPromise;
-        if (!cryptoKey) { debugPassthroughCount++; controller.enqueue(frame); return; }
+        if (!cryptoKey) { controller.enqueue(frame); return; }
       }
       try {
         if (mode === 'encrypt') {
@@ -1766,7 +1782,7 @@ self.onrtctransform = (event) => {
           frame.data = combined.buffer;
         } else {
           const data = new Uint8Array(frame.data);
-          if (data.byteLength < 5) { debugPassthroughCount++; controller.enqueue(frame); return; }
+          if (data.byteLength < 5) { controller.enqueue(frame); return; }
           const counter = new DataView(data.buffer, data.byteOffset, 4).getUint32(0, false);
           const iv = new Uint8Array(baseNonce);
           new DataView(iv.buffer).setUint32(iv.length - 4, counter, false);
@@ -1774,23 +1790,13 @@ self.onrtctransform = (event) => {
           const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, cryptoKey, ciphertext);
           frame.data = decrypted;
         }
-        debugFrameCount++;
-        if (debugFrameCount <= 3 || debugFrameCount % 100 === 0) {
-          console.log('[e2ee-worker] frame ' + mode + 'd #' + debugFrameCount, { keyName: debugKeyName, size: frame.data?.byteLength, errors: debugErrorCount, passthrough: debugPassthroughCount });
-        }
         controller.enqueue(frame);
       } catch (err) {
-        debugErrorCount++;
-        if (debugErrorCount <= 5 || debugErrorCount % 50 === 0) {
-          console.warn('[e2ee-worker] ' + mode + ' error #' + debugErrorCount, { keyName: debugKeyName, frameSize: frame.data?.byteLength, err: err?.message || String(err) });
-        }
         controller.enqueue(frame);
       }
     }
   });
-  readable.pipeThrough(ts).pipeTo(writable).catch((err) => {
-    console.error('[e2ee-worker] pipe error', { mode, keyName: debugKeyName, err: err?.message || String(err) });
-  });
+  readable.pipeThrough(ts).pipeTo(writable).catch(() => {});
 };
 `;
 
