@@ -335,6 +335,8 @@
     "callerCancelled": "ผู้โทรยกเลิก",
     "peerCancelledCall": "อีกฝ่ายยกเลิก",
     "callFailed": "โทรไม่สำเร็จ",
+    "peerUnavailable": "ไม่สามารถเชื่อมต่อกับอีกฝ่าย",
+    "networkError": "ข้อผิดพลาดเครือข่าย",
     "callDurationLabel": "โทร",
     "callTypeVideo": "วิดีโอคอล",
     "callTypeVoice": "โทรด้วยเสียง",

@@ -18,6 +18,10 @@ function formatReason(reason, viewerRole) {
   if (r.includes('peer_cancelled')) return isOutgoing ? t('calls.peerCancelled') : t('calls.youCancelled');
   if (r.includes('busy')) return isOutgoing ? t('calls.peerBusy') : t('calls.youBusy');
   if (r.includes('timeout')) return t('calls.noAnswer');
+  if (r.includes('target_invalid') || r.includes('not_found')) return t('calls.peerUnavailable');
+  if (r.includes('network') || r.includes('connection')) return t('calls.networkError');
+  // Don't show raw error codes to users — use a generic fallback
+  if (/^[A-Z_]+$/.test(reason.trim())) return null;
   return reason;
 }
 

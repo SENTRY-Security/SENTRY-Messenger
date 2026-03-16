@@ -335,6 +335,8 @@
     "callerCancelled": "발신자가 취소함",
     "peerCancelledCall": "상대방이 취소함",
     "callFailed": "통화 실패",
+    "peerUnavailable": "상대방에게 연결할 수 없습니다",
+    "networkError": "네트워크 오류",
     "callDurationLabel": "통화",
     "callTypeVideo": "영상 통화",
     "callTypeVoice": "음성 통화",

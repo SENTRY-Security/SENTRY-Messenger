@@ -337,6 +337,8 @@
     "callerCancelled": "我方取消",
     "peerCancelledCall": "對方取消",
     "callFailed": "通話失敗",
+    "peerUnavailable": "對方無法接聽",
+    "networkError": "網路錯誤",
     "callDurationLabel": "通話",
     "callTypeVideo": "視訊通話",
     "callTypeVoice": "語音通話",

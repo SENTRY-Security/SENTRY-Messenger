@@ -335,6 +335,8 @@
     "callerCancelled": "発信者がキャンセルしました",
     "peerCancelledCall": "相手がキャンセルしました",
     "callFailed": "通話に失敗しました",
+    "peerUnavailable": "相手に接続できません",
+    "networkError": "ネットワークエラー",
     "callDurationLabel": "通話",
     "callTypeVideo": "ビデオ通話",
     "callTypeVoice": "音声通話",

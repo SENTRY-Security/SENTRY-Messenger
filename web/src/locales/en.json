@@ -337,6 +337,8 @@
     "callerCancelled": "Caller cancelled",
     "peerCancelledCall": "Peer cancelled",
     "callFailed": "Call failed",
+    "peerUnavailable": "Peer unavailable",
+    "networkError": "Network error",
     "callDurationLabel": "Call",
     "callTypeVideo": "Video call",
     "callTypeVoice": "Voice call",

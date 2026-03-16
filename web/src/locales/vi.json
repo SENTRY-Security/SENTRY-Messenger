@@ -335,6 +335,8 @@
     "callerCancelled": "Người gọi đã hủy",
     "peerCancelledCall": "Đối phương đã hủy",
     "callFailed": "Cuộc gọi thất bại",
+    "peerUnavailable": "Không thể kết nối với đối phương",
+    "networkError": "Lỗi mạng",
     "callDurationLabel": "Cuộc gọi",
     "callTypeVideo": "Cuộc gọi video",
     "callTypeVoice": "Cuộc gọi thoại",
