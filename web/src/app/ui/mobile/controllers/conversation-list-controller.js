@@ -29,6 +29,8 @@ export class ConversationListController extends BaseController {
         this.conversationsRefreshing = false;
         // Scroll-vs-tap detection: suppress click when user is scrolling
         this._touchStartY = 0;
+        this._touchStartX = 0;
+        this._touchStartScroll = 0;
         this._scrolledDuringTouch = false;
     }
 
@@ -936,16 +938,21 @@ export class ConversationListController extends BaseController {
             this.elements.conversationList.addEventListener('touchend', () => this.handleConversationPullEnd());
             this.elements.conversationList.addEventListener('touchcancel', () => this.handleConversationPullEnd());
 
-            // Scroll-vs-tap: track vertical finger movement to suppress click during scroll
+            // Scroll-vs-tap: track finger + scroll movement to suppress click during scroll
             this.elements.conversationList.addEventListener('touchstart', (e) => {
                 if (e.touches.length === 1) {
                     this._touchStartY = e.touches[0].clientY;
+                    this._touchStartX = e.touches[0].clientX;
+                    this._touchStartScroll = this.elements.conversationList.scrollTop;
                     this._scrolledDuringTouch = false;
                 }
             }, { passive: true });
             this.elements.conversationList.addEventListener('touchmove', (e) => {
                 if (!this._scrolledDuringTouch && e.touches.length === 1) {
-                    if (Math.abs(e.touches[0].clientY - this._touchStartY) > 10) {
+                    const dy = Math.abs(e.touches[0].clientY - this._touchStartY);
+                    const dx = Math.abs(e.touches[0].clientX - this._touchStartX);
+                    const dScroll = Math.abs(this.elements.conversationList.scrollTop - this._touchStartScroll);
+                    if (dy > 6 || dx > 6 || dScroll > 4) {
                         this._scrolledDuringTouch = true;
                     }
                 }
