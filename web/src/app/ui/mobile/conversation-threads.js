@@ -20,6 +20,7 @@ import { listSecureMessages } from '../../api/messages.js';
 import { buildDrAadFromHeader } from '../../crypto/dr.js';
 import { b64u8 } from '../../crypto/nacl.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
+import { MessageKeyVault } from '../../features/message-key-vault.js';
 import { t } from '/locales/index.js';
 
 /**
@@ -324,9 +325,29 @@ export function createConversationThreadsManager(deps) {
 
                     // Try to find vault key for this message
                     const vaultEntry = messageId && serverKeys ? serverKeys[messageId] : null;
-                    const messageKeyB64 = vaultEntry?.message_key_b64 || vaultEntry?.messageKeyB64 || null;
                     const ciphertextB64 = latest.ciphertext_b64 || latest.ciphertextB64 || null;
                     const ivB64 = header?.iv_b64 || null;
+                    const senderDeviceId = latest.sender_device_id || latest.senderDeviceId || header?.meta?.sender_device_id || null;
+
+                    // Unwrap the server-provided wrapped key via MessageKeyVault
+                    let messageKeyB64 = null;
+                    if (vaultEntry?.wrapped_mk_json && messageId && senderDeviceId) {
+                        try {
+                            const vaultResult = await MessageKeyVault.getMessageKey({
+                                conversationId: thread.conversationId,
+                                messageId,
+                                senderDeviceId,
+                                serverWrappedMk: vaultEntry.wrapped_mk_json,
+                                serverWrapContext: vaultEntry.wrap_context_json,
+                                serverDrStateSnapshot: vaultEntry.dr_state_snapshot
+                            });
+                            if (vaultResult?.ok && vaultResult.messageKeyB64) {
+                                messageKeyB64 = vaultResult.messageKeyB64;
+                            }
+                        } catch (err) {
+                            log({ previewVaultUnwrapFailed: err?.message, conversationId: thread.conversationId });
+                        }
+                    }
 
                     let rawText = null;
                     if (messageKeyB64 && ciphertextB64 && ivB64) {

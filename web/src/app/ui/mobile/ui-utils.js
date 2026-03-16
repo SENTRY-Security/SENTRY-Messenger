@@ -180,7 +180,12 @@ export function resolveMessagePreview(item) {
 
   // 3. Call log
   if (msgType === 'call-log' || msgType === 'call_log') {
-    const kind = item.callLog?.kind || item.kind || '';
+    let kind = item.callLog?.kind || item.kind || '';
+    // When called from preview context, callLog/kind may be absent.
+    // Parse the JSON text payload to extract the kind field.
+    if (!kind && typeof item.text === 'string' && item.text.trim().startsWith('{')) {
+      try { kind = JSON.parse(item.text)?.kind || ''; } catch { /* ignore */ }
+    }
     return kind === 'video' ? `[${t('calls.videoCall')}]` : `[${t('calls.voiceCall')}]`;
   }
 
