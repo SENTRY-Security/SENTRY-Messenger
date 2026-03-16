@@ -992,7 +992,8 @@
     "ok": "확인",
     "backToConversationList": "대화 목록으로 돌아가기",
     "urlOnlyHttps": "HTTPS URL만 허용됩니다",
-    "invalidUrl": "유효한 http/https URL을 입력하거나 기본 로그아웃 페이지를 선택해 주세요."
+    "invalidUrl": "유효한 http/https URL을 입력하거나 기본 로그아웃 페이지를 선택해 주세요.",
+    "me": "나"
   },
   "ephemeral": {
     "splashSublabel": "일회성 보안 대화",

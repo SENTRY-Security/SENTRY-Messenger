@@ -992,7 +992,8 @@
     "ok": "OK",
     "backToConversationList": "Quay lại danh sách hội thoại",
     "urlOnlyHttps": "Chỉ chấp nhận URL HTTPS",
-    "invalidUrl": "Vui lòng nhập URL http/https hợp lệ, hoặc chọn trang đăng xuất mặc định."
+    "invalidUrl": "Vui lòng nhập URL http/https hợp lệ, hoặc chọn trang đăng xuất mặc định.",
+    "me": "Tôi"
   },
   "ephemeral": {
     "splashSublabel": "TRÒ CHUYỆN MẬT MỘT LẦN",

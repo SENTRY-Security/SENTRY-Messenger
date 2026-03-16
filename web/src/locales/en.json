@@ -992,7 +992,8 @@
     "ok": "OK",
     "backToConversationList": "Back to conversation list",
     "urlOnlyHttps": "Only HTTPS URLs accepted",
-    "invalidUrl": "Please enter a valid http/https URL, or select the default logout page."
+    "invalidUrl": "Please enter a valid http/https URL, or select the default logout page.",
+    "me": "Me"
   },
   "ephemeral": {
     "splashSublabel": "ONE-TIME SECURE CHAT",

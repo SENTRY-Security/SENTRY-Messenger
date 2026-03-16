@@ -88,7 +88,7 @@ export function createBizConvInfoModal({ deps }) {
             let nickname, avatarHtml, isFriend;
             if (isSelf) {
               const selfInfo = resolveMemberInfo(digest);
-              nickname = t('misc.you') || 'You';
+              nickname = t('misc.me') || 'Me';
               avatarHtml = memberAvatarHtml(selfInfo);
               isFriend = true;
             } else {

@@ -992,7 +992,8 @@
     "ok": "確定",
     "backToConversationList": "返回對話列表",
     "urlOnlyHttps": "僅接受 HTTPS 網址",
-    "invalidUrl": "請輸入有效的 http/https 網址，或改選預設登出頁面。"
+    "invalidUrl": "請輸入有效的 http/https 網址，或改選預設登出頁面。",
+    "me": "我"
   },
   "ephemeral": {
     "splashSublabel": "單次機密對話",
