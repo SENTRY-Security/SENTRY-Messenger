@@ -340,12 +340,16 @@ export class CallLogController extends BaseController {
             direction: isOutgoing ? 'outgoing' : 'incoming'
         });
 
-        if (entry.id && !this.sentCallLogIds.has(entry.id) && !exists) {
+        // Only the call initiator (outgoing) sends the DR call-log.
+        // The DR is stored in the shared conversation on the server, so on
+        // replay both sides can see it — the caller as outgoing, the callee
+        // as incoming. Sending from both sides would create duplicate entries.
+        if (isOutgoing && entry.id && !this.sentCallLogIds.has(entry.id) && !exists) {
             this.sentCallLogIds.add(entry.id);
             console.warn('[CallLog] DR SEND starting', { callId: entry.callId, peerDigest: peerDigest?.slice(-8) });
             this._sendCallLog(entry, conversationId, peerDigest, peerDeviceId, outcome, durationSeconds, normalizedReason, startedAt, endedAt, localMessage);
         } else {
-            console.warn('[CallLog] DR SEND skipped', { hasId: !!entry.id, inSet: this.sentCallLogIds.has(entry.id), exists });
+            console.warn('[CallLog] DR SEND skipped', { hasId: !!entry.id, inSet: this.sentCallLogIds.has(entry.id), exists, isOutgoing });
         }
 
         this.releaseCallLogPlaceholder(peerDigest, entry.callId);
