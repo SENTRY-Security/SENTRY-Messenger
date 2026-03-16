@@ -229,7 +229,8 @@ export class ConversationListController extends BaseController {
             });
         }
         for (const convId of Array.from(threads.keys())) {
-            if (!seen.has(convId)) threads.delete(convId);
+            const thread = threads.get(convId);
+            if (!seen.has(convId) && thread?.type !== 'biz-conv') threads.delete(convId);
         }
         return threads;
     }
