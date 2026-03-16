@@ -207,6 +207,14 @@ export function createBizConvInfoModal({ deps }) {
             const targetDigest = btn.dataset.digest;
             const targetInfo = resolveMemberInfo(targetDigest);
             await bizConvTransfer(conversationId, targetDigest);
+            // Update local ownership state
+            const cs = BizConvStore.conversations.get(conversationId);
+            if (cs) {
+              cs.isOwner = false;
+              cs.owner_account_digest = targetDigest;
+            }
+            const th = getConversationThreads().get(conversationId);
+            if (th) th.bizConvIsOwner = false;
             markBizConvBackupDirty();
             appendUserMessage(conversationId, {
               messageId: `tombstone-transfer-${Date.now()}`,
@@ -216,8 +224,8 @@ export function createBizConvInfoModal({ deps }) {
               direction: 'system'
             });
             showToast?.(t('messages.bizConvOwnershipTransferred'));
-            closeModal();
             renderConversationList?.();
+            open(conversationId);
           } catch (err) {
             showToast?.(err?.message || 'Failed');
           }
