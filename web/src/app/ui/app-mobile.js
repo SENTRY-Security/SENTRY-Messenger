@@ -1448,8 +1448,8 @@ async function sendBizConvKDM(peerAccountDigest, peerDeviceId, kdmPayload) {
   try {
     const oneOnOneConvId = result?.convId || null;
     if (oneOnOneConvId && kdmPayload?.meta?.name) {
-      const { appendUserMessage } = await import('../app/features/timeline-store.js');
-      const { getConversationThreads } = await import('../app/features/conversation-updates.js');
+      const { appendUserMessage } = await import('../features/timeline-store.js');
+      const { getConversationThreads } = await import('../features/conversation-updates.js');
       const groupName = kdmPayload.meta.name;
       const threads = getConversationThreads();
       const thread = threads.get(oneOnOneConvId);

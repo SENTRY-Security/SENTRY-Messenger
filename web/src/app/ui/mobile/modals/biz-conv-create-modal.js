@@ -241,9 +241,11 @@ export function createBizConvCreateModal({ deps }) {
           closeModal();
           renderConversationList?.();
         } catch (err) {
-          log({ bizConvCreateError: err?.message });
+          log({ bizConvCreateError: err?.message, stack: err?.stack });
+          console.error('[biz-conv-create] doCreate failed:', err);
           if (progressEl) progressEl.style.display = 'none';
-          if (statusEl) statusEl.textContent = t('messages.bizConvCreateFailed');
+          const errDetail = err?.message || '';
+          if (statusEl) statusEl.textContent = t('messages.bizConvCreateFailed') + (errDetail ? ` (${errDetail})` : '');
           if (btn) btn.disabled = false;
           if (backBtn) backBtn.disabled = false;
         }
