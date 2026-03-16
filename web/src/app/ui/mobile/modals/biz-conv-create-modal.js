@@ -353,6 +353,26 @@ export function createBizConvCreateModal({ deps }) {
     for (const member of members) {
       try {
         await bizConvInvite(conversationId, member.accountDigest);
+
+        // Resolve device ID: prefer member.deviceId, fallback to DR session map
+        let deviceId = member.deviceId || null;
+        if (!deviceId && member.accountDigest) {
+          const drSessMap = deps.getDrSessMap?.();
+          if (drSessMap) {
+            for (const [key] of drSessMap) {
+              if (typeof key === 'string' && key.toUpperCase().startsWith(member.accountDigest.toUpperCase() + '::')) {
+                deviceId = key.split('::')[1] || null;
+                break;
+              }
+            }
+          }
+        }
+
+        if (!deviceId) {
+          log({ bizConvKdmSkipNoDevice: { member: member.accountDigest?.slice(-8) } });
+          continue;
+        }
+
         const kdm = buildKDM({
           conversationId,
           epoch: 0,
@@ -365,7 +385,7 @@ export function createBizConvCreateModal({ deps }) {
           }
         });
         if (typeof deps.sendBizConvKDM === 'function') {
-          await deps.sendBizConvKDM(member.accountDigest, member.deviceId, kdm);
+          await deps.sendBizConvKDM(member.accountDigest, deviceId, kdm);
         }
       } catch (err) {
         log({ bizConvInviteError: { member: member.accountDigest?.slice(-8), error: err?.message } });

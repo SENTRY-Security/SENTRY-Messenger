@@ -289,6 +289,12 @@ export class MessageFlowController extends BaseController {
 
             if (result?.skipped) return;
 
+            // KDM processed — a new group thread was created, re-render the list
+            if (result?.processed && result?.reason === 'biz-conv-kdm') {
+                this.deps.renderConversationList?.();
+                return;
+            }
+
             if (result?.action === 'conversation_deleted') {
                 if (result.isActive) {
                     // Do NOT clear messages. 

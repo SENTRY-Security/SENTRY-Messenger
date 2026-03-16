@@ -1408,14 +1408,31 @@ document.addEventListener('subscription:gate', showSubscriptionGateModal);
 
 // --- Business Conversation Create Modal ---
 async function sendBizConvKDM(peerAccountDigest, peerDeviceId, kdmPayload) {
-  if (!peerAccountDigest || !peerDeviceId) {
-    log({ bizConvKdmSkip: 'missing peer info', peerAccountDigest: peerAccountDigest?.slice(-8) });
+  if (!peerAccountDigest) {
+    log({ bizConvKdmSkip: 'missing peer digest' });
+    return;
+  }
+  // Resolve device ID from DR session map if not provided
+  let deviceId = peerDeviceId || null;
+  if (!deviceId) {
+    const drMap = getDrSessMap?.();
+    if (drMap) {
+      for (const [key] of drMap) {
+        if (typeof key === 'string' && key.toUpperCase().startsWith(peerAccountDigest.toUpperCase() + '::')) {
+          deviceId = key.split('::')[1] || null;
+          break;
+        }
+      }
+    }
+  }
+  if (!deviceId) {
+    log({ bizConvKdmSkip: 'no device ID', peer: peerAccountDigest?.slice(-8) });
     return;
   }
   await sendDrPlaintext({
     text: JSON.stringify(kdmPayload),
     peerAccountDigest,
-    peerDeviceId,
+    peerDeviceId: deviceId,
     messageId: `kdm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     metaOverrides: { msgType: 'biz-conv-kdm' }
   });
