@@ -508,7 +508,7 @@ export function createWsIntegration({ deps }) {
 
   // --- Incoming message dispatch ---
 
-  function handleMessage(msg) {
+  async function handleMessage(msg) {
     const type = msg?.type;
     if (type === 'hello') return;
     if (type === 'pong') {
