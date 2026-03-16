@@ -126,7 +126,7 @@ import { ConversationListController } from './controllers/conversation-list-cont
 import { SecureStatusController } from './controllers/secure-status-controller.js';
 import { CallLogController } from './controllers/call-log-controller.js';
 import { MessageFlowController } from './controllers/message-flow-controller.js';
-import { GroupBuilderController } from './controllers/group-builder-controller.js';
+
 import { LayoutController } from './controllers/layout-controller.js';
 import { ComposerController } from './controllers/composer-controller.js';
 import { MessageStatusController } from './controllers/message-status-controller.js';
@@ -138,7 +138,7 @@ import { EphemeralController } from './controllers/ephemeral-controller.js';
 // sentCallLogIds, callLogPlaceholders removed (managed by CallLogController)
 
 // Moved PLACEHOLDER_* constants to renderer.js
-const GROUPS_ENABLED = false;
+
 const decryptBannerLogDedup = new Set();
 const setActiveFailLogKeys = new Set();
 const renderState = { conversationId: null, renderedIds: [], placeholderCount: 0 };
@@ -312,8 +312,6 @@ function stopActivePoll() {
   }
 }
 
-const LOCAL_GROUP_STORAGE_KEY = 'groups-drafts-v1';
-// localGroups and groupBuilderEl removed (managed by GroupBuilderController)
 
 // Removed loadLocalGroups and persistLocalGroups
 export function initMessagesPane({
@@ -346,8 +344,6 @@ export function initMessagesPane({
     conversationRefreshEl: dom.conversationRefreshEl ?? document.querySelector('.conversation-refresh'),
     conversationRefreshLabelEl: dom.conversationRefreshLabelEl ?? document.querySelector('.conversation-refresh .label'),
     conversationQuickActions: dom.conversationQuickActionsEl ?? document.querySelector('.conversation-quick-actions'),
-    createGroupBtn: dom.createGroupBtn ?? document.getElementById('btnCreateGroup'),
-    groupDraftsEl: dom.groupDraftsEl ?? document.getElementById('groupDrafts'),
     messagesWsIndicator: dom.messagesWsIndicatorEl ?? document.querySelector('.messages-ws-indicator'),
     messagesPlaceholders: dom.messagesPlaceholdersEl ?? document.getElementById('messagePlaceholders'),
     messagesList: dom.messagesListEl ?? document.getElementById('messagesList'),
@@ -467,7 +463,6 @@ export function initMessagesPane({
   });
 
   const controllers = {
-    groupBuilder: new GroupBuilderController(deps),
     secureStatus: new SecureStatusController(deps),
     layout: new LayoutController(deps),
     conversationList: new ConversationListController(deps),
@@ -1338,8 +1333,6 @@ export function initMessagesPane({
         controllers.composer.handleConversationAction(callType);
       }
     });
-    elements.createGroupBtn?.addEventListener('click', () => controllers.groupBuilder.handleCreateGroup());
-
     if (elements.scrollEl) {
       elements.scrollEl.addEventListener('scroll', handleMessagesScroll, { passive: true });
       elements.scrollEl.addEventListener('touchend', handleMessagesTouchEnd, { passive: true });
@@ -1371,7 +1364,6 @@ export function initMessagesPane({
       controllers.messageFlow.loadActiveConversationMessages({ append: true, reason: 'scroll' });
     });
 
-    elements.createGroupBtn?.addEventListener('click', () => controllers.groupBuilder.handleCreateGroup());
 
 
 
@@ -1529,7 +1521,6 @@ export function initMessagesPane({
 
   registerOutboxHooks();
   ensureSetup();
-  controllers.groupBuilder.renderGroupDrafts();
 
 
   // [DEBUG-TOOL] Long Press for Debug Modal

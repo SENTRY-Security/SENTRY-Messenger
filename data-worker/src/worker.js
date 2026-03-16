@@ -483,43 +483,7 @@ function normalizeSignedPrekey(spk) {
   };
 }
 
-function normalizeGroupId(value) {
-  const token = String(value || '').trim();
-  if (!token) return null;
-  if (!/^[A-Za-z0-9_-]{8,128}$/.test(token)) return null;
-  return token;
-}
-
-function normalizeGroupName(value) {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  return trimmed.slice(0, 120);
-}
-
-function normalizeGroupRole(value) {
-  const role = String(value || '').toLowerCase();
-  if (role === 'owner' || role === 'admin') return role;
-  return 'member';
-}
-
-function normalizeGroupStatus(value) {
-  const status = String(value || '').toLowerCase();
-  if (['active', 'left', 'kicked', 'removed'].includes(status)) return status;
-  return null;
-}
-
-function normalizeGroupAvatar(value) {
-  if (value === null || value === undefined) return null;
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    return trimmed ? trimmed : null;
-  }
-  if (typeof value === 'object') {
-    try { return JSON.stringify(value); } catch { return null; }
-  }
-  return null;
-}
+// [REMOVED] Old group normalize functions — replaced by Business Conversation architecture
 
 function normalizeInviteDropboxEnvelope(envelope) {
   if (!envelope || typeof envelope !== 'object') return null;
@@ -867,87 +831,9 @@ async function removeConversationAccess(env, { conversationId, accountDigest }) 
   }
 }
 
-async function upsertGroupMember(env, {
-  groupId,
-  accountDigest,
-  role = 'member',
-  status = 'active',
-  inviterAccountDigest = null,
-  joinedAt = null
-} = {}) {
-  if (!groupId || !accountDigest) return false;
-  const normalizedRole = normalizeGroupRole(role);
-  const normalizedStatus = normalizeGroupStatus(status) || 'active';
-  const joined = Number.isFinite(Number(joinedAt)) && Number(joinedAt) > 0
-    ? Math.floor(Number(joinedAt))
-    : Math.floor(Date.now() / 1000);
-  try {
-    await env.DB.prepare(`
-      INSERT INTO group_members (
-        group_id, account_digest, role, status,
-        inviter_account_digest, joined_at
-      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-      ON CONFLICT(group_id, account_digest) DO UPDATE SET
-        role=excluded.role,
-        status=excluded.status,
-        inviter_account_digest=COALESCE(excluded.inviter_account_digest, group_members.inviter_account_digest),
-        joined_at=COALESCE(group_members.joined_at, excluded.joined_at),
-        updated_at=strftime('%s','now')
-    `).bind(
-      groupId,
-      accountDigest,
-      normalizedRole,
-      normalizedStatus,
-      inviterAccountDigest || null,
-      joined
-    ).run();
-    return true;
-  } catch (err) {
-    console.warn('group_member_upsert_failed', err?.message || err);
-    return false;
-  }
-}
+// [REMOVED] upsertGroupMember — replaced by Business Conversation architecture
 
-async function fetchGroupWithMembers(env, groupId) {
-  if (!groupId) return null;
-  await ensureDataTables(env);
-  const groupRows = await env.DB.prepare(
-    `SELECT group_id, conversation_id, creator_account_digest, name, avatar_json, created_at, updated_at
-       FROM groups WHERE group_id=?1`
-  ).bind(groupId).all();
-  const group = groupRows?.results?.[0] || null;
-  if (!group) return null;
-  const membersRes = await env.DB.prepare(
-    `SELECT group_id, account_digest, role, status, inviter_account_digest,
-            joined_at, muted_until, last_read_ts, created_at, updated_at
-       FROM group_members
-      WHERE group_id=?1`
-  ).bind(groupId).all();
-  const members = (membersRes?.results || []).map((row) => ({
-    group_id: row.group_id,
-    account_digest: row.account_digest,
-    role: row.role || 'member',
-    status: row.status || 'active',
-    inviter_account_digest: row.inviter_account_digest || null,
-    joined_at: Number(row.joined_at) || null,
-    muted_until: Number(row.muted_until) || null,
-    last_read_ts: Number(row.last_read_ts) || null,
-    created_at: Number(row.created_at) || null,
-    updated_at: Number(row.updated_at) || null
-  }));
-  return {
-    group: {
-      group_id: group.group_id,
-      conversation_id: group.conversation_id,
-      creator_account_digest: group.creator_account_digest,
-      name: group.name || null,
-      avatar: safeJSON(group.avatar_json) || null,
-      created_at: Number(group.created_at) || null,
-      updated_at: Number(group.updated_at) || null
-    },
-    members
-  };
-}
+// [REMOVED] fetchGroupWithMembers — replaced by Business Conversation architecture
 
 async function trimContactSecretBackups(env, accountDigest, limit = 5) {
   if (!accountDigest) return;
@@ -1451,9 +1337,6 @@ async function ensureDataTables(env) {
     'call_sessions',
     'call_events',
     'contact_secret_backups',
-    'groups',
-    'group_members',
-    'group_invites',
     'subscriptions',
     'tokens',
     'extend_logs'
@@ -4623,7 +4506,13 @@ async function handleMessageKeyVaultRoutes(req, env) {
   return null;
 }
 
+// [REMOVED] handleGroupsRoutes — replaced by Business Conversation architecture
+// Returns 410 Gone for all legacy group API calls
 async function handleGroupsRoutes(req, env) {
+  return json({ error: 'Removed', message: 'Legacy groups API removed. Use Business Conversation API.' }, { status: 410 });
+}
+
+async function _handleGroupsRoutes_REMOVED(req, env) {
   const url = new URL(req.url);
 
   if (req.method === 'POST' && url.pathname === '/d1/groups/create') {
