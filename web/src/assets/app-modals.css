@@ -1363,10 +1363,11 @@
 .biz-conv-contact-item input[type="checkbox"] {
   -webkit-appearance: none;
   appearance: none;
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
+  box-sizing: border-box;
   flex-shrink: 0;
-  border: 2px solid #475569;
+  border: 1.5px solid #475569;
   border-radius: 50%;
   background: transparent;
   cursor: pointer;
@@ -1380,13 +1381,13 @@
 .biz-conv-contact-item input[type="checkbox"]:checked::after {
   content: '';
   position: absolute;
-  top: 3px;
-  left: 6px;
-  width: 5px;
-  height: 9px;
+  top: 50%;
+  left: 50%;
+  width: 6px;
+  height: 10px;
   border: solid #fff;
   border-width: 0 2px 2px 0;
-  transform: rotate(45deg);
+  transform: translate(-50%, -60%) rotate(45deg);
 }
 .biz-conv-contact-avatar {
   width: 32px;
