@@ -310,7 +310,11 @@ export class ActiveConversationController extends BaseController {
         const groupName = thread.bizConvName || t('messages.bizConvDefault');
         const memberCount = thread.bizConvMemberCount || 0;
         this.updatePeerNameDisplay(memberCount > 0 ? `${groupName} (${memberCount})` : groupName);
-        this.updatePeerAvatar({ initials: groupName.slice(0, 2).toUpperCase() });
+        if (thread.bizConvAvatar) {
+            this.updatePeerAvatar({ thumbDataUrl: thread.bizConvAvatar });
+        } else {
+            this.updatePeerAvatar({ initials: groupName.slice(0, 2).toUpperCase() });
+        }
 
         // Make header name clickable for group info
         if (this.elements.peerName) {

@@ -17,6 +17,8 @@ import { rotateGroupKey } from '../../../features/biz-conv-key-rotation.js';
 import { getAccountDigest } from '../../../core/store.js';
 import { findContactCoreByAccountDigest, resolveContactAvatarUrl } from '../contact-core-store.js';
 import { getConversationThreads } from '../../../features/conversation-updates.js';
+import { appendUserMessage } from '../../../features/timeline-store.js';
+import { sessionStore } from '../session-store.js';
 import { log } from '../../../core/log.js';
 
 export function createBizConvInfoModal({ deps }) {
@@ -71,11 +73,17 @@ export function createBizConvInfoModal({ deps }) {
     }
 
     const memberCount = members.length;
+    const threads = getConversationThreads();
+    const threadData = threads.get(conversationId) || {};
+    const groupAvatarUrl = threadData.bizConvAvatar || null;
+    const groupAvatarHtml = groupAvatarUrl
+      ? `<img class="biz-conv-info-avatar biz-conv-info-avatar--img" src="${escapeHtml(groupAvatarUrl)}" alt="" />`
+      : `<div class="biz-conv-info-avatar">${escapeHtml(groupName.slice(0, 2).toUpperCase())}</div>`;
 
     body.innerHTML = `
       <div class="biz-conv-info">
         <div class="biz-conv-info-header">
-          <div class="biz-conv-info-avatar">${escapeHtml(groupName.slice(0, 2).toUpperCase())}</div>
+          ${groupAvatarHtml}
           <div class="biz-conv-info-name">${escapeHtml(groupName)}</div>
           <div class="biz-conv-info-count">${memberCount} ${t('messages.bizConvMemberCount')}</div>
         </div>
@@ -88,8 +96,9 @@ export function createBizConvInfoModal({ deps }) {
 
             let nickname, avatarHtml, isFriend;
             if (isSelf) {
-              const selfInfo = resolveMemberInfo(digest);
-              nickname = t('misc.me') || 'Me';
+              const selfAvatarUrl = sessionStore.currentAvatarUrl || null;
+              const selfInfo = { nickname: t('misc.me') || 'Me', avatarUrl: selfAvatarUrl, isFriend: true };
+              nickname = selfInfo.nickname;
               avatarHtml = memberAvatarHtml(selfInfo);
               isFriend = true;
             } else {
@@ -195,8 +204,17 @@ export function createBizConvInfoModal({ deps }) {
       body.querySelectorAll('.biz-conv-transfer-pick').forEach(btn => {
         btn.addEventListener('click', async () => {
           try {
-            await bizConvTransfer(conversationId, btn.dataset.digest);
+            const targetDigest = btn.dataset.digest;
+            const targetInfo = resolveMemberInfo(targetDigest);
+            await bizConvTransfer(conversationId, targetDigest);
             markBizConvBackupDirty();
+            appendUserMessage(conversationId, {
+              messageId: `tombstone-transfer-${Date.now()}`,
+              msgType: 'biz-conv-tombstone',
+              text: t('messages.bizConvOwnershipTransferred') + ' → ' + targetInfo.nickname,
+              ts: Date.now(),
+              direction: 'system'
+            });
             showToast?.(t('messages.bizConvOwnershipTransferred'));
             closeModal();
             renderConversationList?.();

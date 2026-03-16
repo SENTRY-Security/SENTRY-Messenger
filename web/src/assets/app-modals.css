@@ -1600,6 +1600,10 @@
   text-transform: uppercase;
   margin-bottom: 8px;
 }
+.biz-conv-info-avatar--img {
+  object-fit: cover;
+  background: none;
+}
 .biz-conv-info-name {
   font-size: 18px;
   font-weight: 600;
