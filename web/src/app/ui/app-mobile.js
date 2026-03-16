@@ -1417,7 +1417,14 @@ const bizConvCreateModal = createBizConvCreateModal({
 const bizConvInfoModal = createBizConvInfoModal({
   deps: {
     openModal, closeModal, resetModalVariants, showToast, showConfirmModal,
-    renderConversationList: () => messagesPane.renderConversationList()
+    renderConversationList: () => messagesPane.renderConversationList(),
+    navigateToList: () => {
+      const state = messagesPane.getMessageState();
+      state.activeBizConv = false;
+      state.conversationId = null;
+      state.viewMode = 'list';
+      messagesPane.applyMessagesLayout();
+    }
   }
 });
 

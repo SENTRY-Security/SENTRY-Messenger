@@ -274,7 +274,10 @@
     "bizConvMemberRemoved": "Đã xóa thành viên",
     "bizConvNoMembersToTransfer": "Không có thành viên để chuyển quyền",
     "bizConvOwnershipTransferred": "Đã chuyển quyền sở hữu",
-    "bizConvTransferHint": "Chọn thành viên để chuyển quyền sở hữu"
+    "bizConvTransferHint": "Chọn thành viên để chuyển quyền sở hữu",
+    "bizConvActionFailed": "Thao tác thất bại",
+    "bizConvLeftGroup": "Bạn đã rời nhóm",
+    "bizConvDissolved": "Nhóm đã bị giải tán"
   },
   "encryption": {
     "decryptFailed": "Không thể giải mã",

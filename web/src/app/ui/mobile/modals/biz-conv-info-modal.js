@@ -22,7 +22,7 @@ import { sessionStore } from '../session-store.js';
 import { log } from '../../../core/log.js';
 
 export function createBizConvInfoModal({ deps }) {
-  const { openModal, closeModal, resetModalVariants, showToast, showConfirmModal, renderConversationList } = deps;
+  const { openModal, closeModal, resetModalVariants, showToast, showConfirmModal, renderConversationList, navigateToList } = deps;
 
   function resolveMemberInfo(digest) {
     const matches = findContactCoreByAccountDigest(digest);
@@ -154,6 +154,19 @@ export function createBizConvInfoModal({ deps }) {
         if (!digest) return;
         try {
           await bizConvRemove(conversationId, digest);
+          // Filter removed member locally to avoid stale server data
+          members = members.filter(m => {
+            const d = m.account_digest || m.accountDigest || '';
+            return d !== digest;
+          });
+          // Also update BizConvStore local members
+          const cs = BizConvStore.conversations.get(conversationId);
+          if (cs?.members) {
+            cs.members = cs.members.filter(m => {
+              const d = m.account_digest || m.accountDigest || '';
+              return d !== digest;
+            });
+          }
           try {
             await rotateGroupKey(conversationId, {
               reason: 'member-removed',
@@ -164,9 +177,14 @@ export function createBizConvInfoModal({ deps }) {
             log({ bizConvRotateAfterKickError: rotErr?.message });
           }
           showToast?.(t('messages.bizConvMemberRemoved'));
-          open(conversationId);
+          // Remove the member row from DOM directly instead of re-fetching
+          const row = body.querySelector(`.biz-conv-member-item[data-digest="${CSS.escape(digest)}"]`);
+          if (row) row.remove();
+          // Update member count display
+          const countEl = body.querySelector('.biz-conv-info-count');
+          if (countEl) countEl.textContent = `${members.length} ${t('messages.bizConvMemberCount')}`;
         } catch (err) {
-          showToast?.(err?.message || 'Failed');
+          showToast?.(t('messages.bizConvActionFailed'));
         }
       });
     });
@@ -227,7 +245,7 @@ export function createBizConvInfoModal({ deps }) {
             renderConversationList?.();
             open(conversationId);
           } catch (err) {
-            showToast?.(err?.message || 'Failed');
+            showToast?.(t('messages.bizConvActionFailed'));
           }
         });
       });
@@ -241,13 +259,21 @@ export function createBizConvInfoModal({ deps }) {
         onConfirm: async () => {
           try {
             await bizConvLeave(conversationId);
+            appendUserMessage(conversationId, {
+              messageId: `tombstone-leave-${Date.now()}`,
+              msgType: 'biz-conv-tombstone',
+              text: t('messages.bizConvLeftGroup'),
+              ts: Date.now(),
+              direction: 'system'
+            });
             BizConvStore.conversations.delete(conversationId);
             getConversationThreads().delete(conversationId);
             markBizConvBackupDirty();
             closeModal();
             renderConversationList?.();
+            navigateToList?.();
           } catch (err) {
-            showToast?.(err?.message || 'Failed');
+            showToast?.(t('messages.bizConvActionFailed'));
           }
         }
       });
@@ -261,13 +287,21 @@ export function createBizConvInfoModal({ deps }) {
         onConfirm: async () => {
           try {
             await bizConvDissolve(conversationId);
+            appendUserMessage(conversationId, {
+              messageId: `tombstone-dissolve-${Date.now()}`,
+              msgType: 'biz-conv-tombstone',
+              text: t('messages.bizConvDissolved'),
+              ts: Date.now(),
+              direction: 'system'
+            });
             BizConvStore.conversations.delete(conversationId);
             getConversationThreads().delete(conversationId);
             markBizConvBackupDirty();
             closeModal();
             renderConversationList?.();
+            navigateToList?.();
           } catch (err) {
-            showToast?.(err?.message || 'Failed');
+            showToast?.(t('messages.bizConvActionFailed'));
           }
         }
       });

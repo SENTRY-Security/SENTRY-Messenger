@@ -274,7 +274,10 @@
     "bizConvMemberRemoved": "멤버가 제거되었습니다",
     "bizConvNoMembersToTransfer": "이전할 멤버가 없습니다",
     "bizConvOwnershipTransferred": "소유권이 이전되었습니다",
-    "bizConvTransferHint": "소유권을 이전할 멤버를 선택하세요"
+    "bizConvTransferHint": "소유권을 이전할 멤버를 선택하세요",
+    "bizConvActionFailed": "작업 실패",
+    "bizConvLeftGroup": "그룹에서 나갔습니다",
+    "bizConvDissolved": "그룹이 해산되었습니다"
   },
   "encryption": {
     "decryptFailed": "복호화할 수 없음",

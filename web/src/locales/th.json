@@ -274,7 +274,10 @@
     "bizConvMemberRemoved": "ลบสมาชิกแล้ว",
     "bizConvNoMembersToTransfer": "ไม่มีสมาชิกให้โอนสิทธิ์",
     "bizConvOwnershipTransferred": "โอนสิทธิ์เจ้าของแล้ว",
-    "bizConvTransferHint": "เลือกสมาชิกที่จะโอนสิทธิ์เจ้าของให้"
+    "bizConvTransferHint": "เลือกสมาชิกที่จะโอนสิทธิ์เจ้าของให้",
+    "bizConvActionFailed": "การดำเนินการล้มเหลว",
+    "bizConvLeftGroup": "คุณออกจากกลุ่มแล้ว",
+    "bizConvDissolved": "กลุ่มถูกยุบแล้ว"
   },
   "encryption": {
     "decryptFailed": "ไม่สามารถถอดรหัสได้",

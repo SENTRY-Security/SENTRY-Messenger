@@ -274,7 +274,10 @@
     "bizConvMemberRemoved": "Member removed",
     "bizConvNoMembersToTransfer": "No members to transfer ownership to",
     "bizConvOwnershipTransferred": "Ownership transferred",
-    "bizConvTransferHint": "Select a member to transfer ownership to"
+    "bizConvTransferHint": "Select a member to transfer ownership to",
+    "bizConvActionFailed": "Action failed",
+    "bizConvLeftGroup": "You left the group",
+    "bizConvDissolved": "Group dissolved"
   },
   "encryption": {
     "decryptFailed": "Cannot decrypt",
