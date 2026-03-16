@@ -258,6 +258,7 @@
     "bizConvGroupInviteTombstone": "{sender} があなたをグループ「{group}」に追加しました",
     "bizConvGroupInviteSenderUnknown": "誰か",
     "bizConvGroupInviteGroupUnknown": "グループ",
+    "bizConvGroupInviteTombstoneSender": "{receiver} をグループ「{group}」に招待しました",
     "bizConvLeave": "グループを退出",
     "bizConvLeaveConfirm": "「{name}」を退出しますか？",
     "bizConvDissolve": "グループを解散",

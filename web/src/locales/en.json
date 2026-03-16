@@ -258,6 +258,7 @@
     "bizConvGroupInviteTombstone": "{sender} added you to the group \"{group}\"",
     "bizConvGroupInviteSenderUnknown": "Someone",
     "bizConvGroupInviteGroupUnknown": "a group",
+    "bizConvGroupInviteTombstoneSender": "You invited {receiver} to the group \"{group}\"",
     "bizConvLeave": "Leave Group",
     "bizConvLeaveConfirm": "Are you sure you want to leave \"{name}\"?",
     "bizConvDissolve": "Dissolve Group",

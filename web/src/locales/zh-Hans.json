@@ -258,6 +258,7 @@
     "bizConvGroupInviteTombstone": "{sender} 已将您加入「{group}」群组",
     "bizConvGroupInviteSenderUnknown": "某人",
     "bizConvGroupInviteGroupUnknown": "某个群组",
+    "bizConvGroupInviteTombstoneSender": "您已邀请 {receiver} 加入「{group}」群组",
     "bizConvLeave": "离开群组",
     "bizConvLeaveConfirm": "确定要离开「{name}」吗？",
     "bizConvDissolve": "解散群组",

@@ -258,6 +258,7 @@
     "bizConvGroupInviteTombstone": "{sender} đã thêm bạn vào nhóm \"{group}\"",
     "bizConvGroupInviteSenderUnknown": "Ai đó",
     "bizConvGroupInviteGroupUnknown": "một nhóm",
+    "bizConvGroupInviteTombstoneSender": "Bạn đã mời {receiver} vào nhóm \"{group}\"",
     "bizConvLeave": "Rời nhóm",
     "bizConvLeaveConfirm": "Bạn có chắc muốn rời khỏi「{name}」không?",
     "bizConvDissolve": "Giải tán nhóm",

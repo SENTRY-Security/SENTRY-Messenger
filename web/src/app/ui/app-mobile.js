@@ -1436,13 +1436,41 @@ async function sendBizConvKDM(peerAccountDigest, peerDeviceId, kdmPayload) {
     log({ bizConvKdmSkip: 'no device ID', peer: peerAccountDigest?.slice(-8) });
     return;
   }
-  await sendDrPlaintext({
+  const result = await sendDrPlaintext({
     text: JSON.stringify(kdmPayload),
     peerAccountDigest,
     peerDeviceId: deviceId,
     messageId: `kdm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     metaOverrides: { msgType: 'biz-conv-kdm' }
   });
+
+  // Insert tombstone in the 1:1 conversation on sender side
+  try {
+    const oneOnOneConvId = result?.convId || null;
+    if (oneOnOneConvId && kdmPayload?.meta?.name) {
+      const { appendUserMessage } = await import('../app/features/timeline-store.js');
+      const { getConversationThreads } = await import('../app/features/conversation-updates.js');
+      const groupName = kdmPayload.meta.name;
+      const threads = getConversationThreads();
+      const thread = threads.get(oneOnOneConvId);
+      const peerName = thread?.nickname || null;
+      const tombstoneText = t('messages.bizConvGroupInviteTombstoneSender', {
+        receiver: peerName || t('messages.bizConvGroupInviteSenderUnknown'),
+        group: groupName
+      });
+      const tombstoneId = `kdm-sent-${kdmPayload?.conversation_id || ''}-${peerAccountDigest?.slice(-8)}-${Date.now()}`;
+      appendUserMessage(oneOnOneConvId, {
+        messageId: tombstoneId,
+        msgType: 'system',
+        subtype: 'system',
+        text: tombstoneText,
+        ts: Math.floor(Date.now() / 1000),
+        direction: 'outgoing'
+      });
+    }
+  } catch (err) {
+    console.warn('[sendBizConvKDM] tombstone insert failed', err?.message);
+  }
 }
 const bizConvCreateModal = createBizConvCreateModal({
   deps: {

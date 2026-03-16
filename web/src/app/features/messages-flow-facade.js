@@ -454,7 +454,14 @@ function createMessagesFlowFacade() {
 
       // [UNIFIED] Single-path: handle control events directly, content via Live Flow.
       // No Legacy Handler involved at all.
+      // Check meta from multiple locations: direct meta, header.meta (DR encrypted header),
+      // and top-level msgType fields. The header.meta is available when the server relays
+      // the DR header object intact.
+      const headerMeta = event?.header?.meta || (typeof event?.header_json === 'string'
+        ? (() => { try { return JSON.parse(event.header_json)?.meta; } catch { return null; } })()
+        : null);
       const rawMsgType = event?.meta?.msgType || event?.meta?.msg_type
+        || headerMeta?.msgType || headerMeta?.msg_type
         || event?.msgType || event?.msg_type || null;
       const normalizedMsgType = typeof rawMsgType === 'string'
         ? rawMsgType.replace(/-/g, '_').toLowerCase().trim() : null;
