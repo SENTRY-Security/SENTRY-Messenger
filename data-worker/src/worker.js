@@ -4064,6 +4064,7 @@ async function handleContactSecretsRoutes(req, env) {
     const limitParam = Number(url.searchParams.get('limit') || 1);
     const limit = Math.min(Math.max(limitParam || 1, 1), 10);
     const versionParam = Number(url.searchParams.get('version') || 0);
+    const reasonFilter = (url.searchParams.get('reason') || '').trim();
 
     let stmt;
     if (Number.isFinite(versionParam) && versionParam > 0) {
@@ -4073,6 +4074,16 @@ async function handleContactSecretsRoutes(req, env) {
           ORDER BY updated_at DESC
           LIMIT 1`
       ).bind(accountDigest, Math.floor(versionParam));
+    } else if (reasonFilter) {
+      // Filter by reason (e.g. 'biz-conv-backup') so the client can fetch
+      // specifically the backup type it needs without it being buried under
+      // other backup types in a shared limit.
+      stmt = env.DB.prepare(
+        `SELECT * FROM contact_secret_backups
+          WHERE account_digest=?1 AND reason=?2
+          ORDER BY updated_at DESC, id DESC
+          LIMIT ?3`
+      ).bind(accountDigest, reasonFilter, limit);
     } else {
       stmt = env.DB.prepare(
         `SELECT * FROM contact_secret_backups
@@ -7647,8 +7658,10 @@ async function handlePublicRoutes(req, env) {
     if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
     const limit = Math.min(Math.max(Number(url.searchParams.get('limit') || 1), 1), 10);
     const version = Number(url.searchParams.get('version') || 0);
+    const reason = url.searchParams.get('reason') || '';
     let qs = `?accountDigest=${encodeURIComponent(auth.accountDigest)}&limit=${limit}`;
     if (version > 0) qs += `&version=${Math.floor(version)}`;
+    if (reason) qs += `&reason=${encodeURIComponent(reason)}`;
     return handleContactSecretsRoutes(internalRequest(`/d1/contact-secrets/backup${qs}`, 'GET', null, baseUrl), env);
   }
 

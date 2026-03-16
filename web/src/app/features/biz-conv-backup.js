@@ -153,18 +153,31 @@ export async function hydrateBizConvFromBackup(activeServerIds = null) {
   if (!mkRaw) return;
 
   try {
-    const r = await fetchWithTimeout('/api/v1/contact-secrets/backup?limit=5', {
+    // Try reason-filtered fetch first (efficient — only biz-conv-backup rows).
+    // Fall back to unfiltered fetch if server doesn't support reason column yet.
+    let backups = [];
+    const r1 = await fetchWithTimeout('/api/v1/contact-secrets/backup?limit=3&reason=biz-conv-backup', {
       method: 'GET',
       headers: authHeaders()
     }, 15000);
-
-    if (!r.ok) {
-      log({ bizConvHydrateFail: r.status });
-      return;
+    if (r1.ok) {
+      const data1 = await r1.json();
+      backups = data1?.backups || data1?.results || [];
+    }
+    if (!backups.length) {
+      // Fallback: unfiltered fetch (older server without reason column)
+      const r2 = await fetchWithTimeout('/api/v1/contact-secrets/backup?limit=10', {
+        method: 'GET',
+        headers: authHeaders()
+      }, 15000);
+      if (!r2.ok) {
+        log({ bizConvHydrateFail: r2.status });
+        return;
+      }
+      const data2 = await r2.json();
+      backups = data2?.backups || data2?.results || [];
     }
 
-    const data = await r.json();
-    const backups = data?.backups || data?.results || [];
     if (!backups.length) {
       console.warn('[biz-conv-backup] hydrate: 0 backup rows returned');
       return;

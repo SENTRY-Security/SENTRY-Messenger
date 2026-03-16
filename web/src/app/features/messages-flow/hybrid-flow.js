@@ -153,6 +153,20 @@ export async function smartFetchMessages({
         try {
             const { BizConvStore } = await import('../biz-conv.js');
             const { t } = await import('/locales/index.js');
+
+            // Pre-check: if BizConvStore has no state for this conversation,
+            // attempt a one-shot hydration from backup before giving up.
+            if (!BizConvStore.get(conversationId)) {
+                try {
+                    const { hydrateBizConvFromBackup, fetchActiveServerGroupIds } = await import('../biz-conv-backup.js');
+                    const activeIds = await fetchActiveServerGroupIds();
+                    await hydrateBizConvFromBackup(activeIds);
+                    console.warn('[hybrid-flow] biz-conv replay: triggered on-demand hydration for', conversationId.slice(0, 16));
+                } catch (hydrateErr) {
+                    console.warn('[hybrid-flow] biz-conv replay: on-demand hydration failed', hydrateErr?.message);
+                }
+            }
+
             for (const item of bizConvItems) {
                 const h = item._parsedHeader;
                 const envelope = {
@@ -165,7 +179,7 @@ export async function smartFetchMessages({
                 try {
                     const state = BizConvStore.get(conversationId);
                     if (!state) {
-                        console.warn('[hybrid-flow] biz-conv replay: no session for', conversationId.slice(0, 16));
+                        console.warn('[hybrid-flow] biz-conv replay: no session for', conversationId.slice(0, 16), '(even after hydration)');
                         continue;
                     }
                     const plaintext = await BizConvStore.decryptMessage(conversationId, envelope);
