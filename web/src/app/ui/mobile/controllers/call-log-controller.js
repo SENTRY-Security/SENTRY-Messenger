@@ -306,7 +306,7 @@ export class CallLogController extends BaseController {
         const viewerMessage = this.createCallLogMessage(entry, { messageDirection: isOutgoing ? 'outgoing' : 'incoming' });
 
         let localMessage = null;
-        if (isActive && !exists) {
+        if (!exists) {
             localMessage = { ...viewerMessage };
             localMessage.id = localMessage.id || entry.id;
             localMessage.messageId = localMessage.id;
@@ -322,13 +322,15 @@ export class CallLogController extends BaseController {
             localMessage.conversationId = conversationId;
 
             const appended = appendUserMessage(conversationId, localMessage);
-            console.warn('[CallLog] LOCAL message appended', { appended, messageId: localMessage.id, ts: localMessage.ts });
+            console.warn('[CallLog] LOCAL message appended', { appended, messageId: localMessage.id, ts: localMessage.ts, isActive });
 
-            this.deps.refreshTimelineState?.(conversationId);
-            this.deps.updateMessagesUI?.({ scrollToEnd: outcome === CALL_LOG_OUTCOME.SUCCESS });
+            if (isActive) {
+                this.deps.refreshTimelineState?.(conversationId);
+                this.deps.updateMessagesUI?.({ scrollToEnd: outcome === CALL_LOG_OUTCOME.SUCCESS });
+            }
             this.trackCallLogPlaceholder(peerDigest, entry.callId, localMessage);
         } else {
-            console.warn('[CallLog] LOCAL message SKIPPED', { isActive, exists });
+            console.warn('[CallLog] LOCAL message SKIPPED (exists)', { exists });
         }
 
         this.updateThreadsWithCallLogDisplay({
