@@ -21,6 +21,7 @@ import {
 import { t } from '/locales/index.js';
 
 const CALL_LOG_PHONE_ICON = '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.003 5.884l3.75-1.5a1 1 0 011.316.593l1.2 3.199a1 1 0 01-.232 1.036l-1.516 1.52a11.037 11.037 0 005.516 5.516l1.52-1.516a1 1 0 011.036-.232l3.2 1.2a1 1 0 01.593 1.316l-1.5 3.75a1 1 0 01-1.17.6c-2.944-.73-5.59-2.214-7.794-4.418-2.204-2.204-3.688-4.85-4.418-7.794a1 1 0 01.6-1.17z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
+const CALL_LOG_VIDEO_ICON = '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="1.5" y="4.5" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.6"></rect><path d="M13.5 8.5l4.5-2.5v8l-4.5-2.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
 
 const PLACEHOLDER_FAILED_TEXT = t('encryption.decryptFailed');
 const PLACEHOLDER_BLOCKED_TEXT = t('encryption.decryptBlocked');
@@ -890,11 +891,13 @@ export class MessageRenderer {
                 li.className = 'call-log-entry';
                 const chip = document.createElement('div');
                 const outcome = callLogObj.outcome || 'missed';
+                const callKind = callLogObj.kind || 'voice';
                 chip.className = `call-log-chip ${outcome}`;
+                chip.style.cursor = 'pointer';
 
                 const icon = document.createElement('span');
                 icon.className = 'call-log-icon';
-                icon.innerHTML = CALL_LOG_PHONE_ICON;
+                icon.innerHTML = callKind === 'video' ? CALL_LOG_VIDEO_ICON : CALL_LOG_PHONE_ICON;
                 chip.appendChild(icon);
 
                 const textGroup = document.createElement('div');
@@ -917,6 +920,14 @@ export class MessageRenderer {
                 }
 
                 chip.appendChild(textGroup);
+
+                // Click-to-redial: clicking a call-log chip initiates a call of the same type
+                chip.addEventListener('click', () => {
+                    if (this.callbacks.onCallLogRedial) {
+                        this.callbacks.onCallLogRedial({ kind: callKind, msg });
+                    }
+                });
+
                 li.appendChild(chip);
                 this.listEl.appendChild(li);
                 continue;

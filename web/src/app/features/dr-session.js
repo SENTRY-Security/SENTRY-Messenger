@@ -3799,7 +3799,10 @@ export async function sendDrCallLog(params = {}) {
     call_ended_at: endedAtSec
   };
   const text = JSON.stringify(payload);
-  const conversation = params?.conversation || conversationContext || null;
+  // Merge conversationContext (has token_b64 from peer lookup) with params.conversation
+  // (has conversation_id from caller). Using || would discard the token when params.conversation
+  // is truthy but incomplete.
+  const conversation = { ...(conversationContext || {}), ...(params?.conversation || {}) };
   const result = await sendDrPlaintext({
     ...params,
     peerAccountDigest,
