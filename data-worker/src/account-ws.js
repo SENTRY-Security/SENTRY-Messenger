@@ -412,25 +412,34 @@ export class AccountWebSocket {
         sent++;
       }
 
-      // Store in messages_secure for offline retrieval
+      // Store in messages_secure for offline retrieval (reuses 1:1 table schema)
+      const senderDeviceId = msg.sender_device_id || msg.senderDeviceId || 'unknown';
+      const msgCounter = Number.isFinite(Number(msg.counter)) ? Number(msg.counter) : 0;
       try {
         await this.env.DB.prepare(`
-          INSERT INTO messages_secure (id, conversation_id, sender_account_digest, header_json, body_enc, created_at_sec)
-          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+          INSERT INTO messages_secure (
+            id, conversation_id, sender_account_digest, sender_device_id,
+            receiver_account_digest, receiver_device_id,
+            header_json, ciphertext_b64, counter, created_at
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
         `).bind(
           messageId,
           conversationId,
           senderDigest,
+          senderDeviceId,
+          conversationId,  // receiver = group convId (fan-out, not point-to-point)
+          null,
           JSON.stringify({
             type: 'biz-conv-message',
+            meta: { msgType: 'biz-conv-text' },
             epoch: msg.epoch,
-            sender_device_id: msg.sender_device_id || msg.senderDeviceId,
-            counter: msg.counter
-          }),
-          JSON.stringify({
+            sender_device_id: senderDeviceId,
+            counter: msgCounter,
             iv_b64: msg.iv_b64,
             ciphertext_b64: msg.ciphertext_b64
           }),
+          msg.ciphertext_b64 || '',
+          msgCounter,
           Math.floor(ts / 1000)
         ).run();
       } catch (storeErr) {

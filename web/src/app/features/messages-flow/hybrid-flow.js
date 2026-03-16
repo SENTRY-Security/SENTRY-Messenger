@@ -132,6 +132,83 @@ export async function smartFetchMessages({
         return { items: [], errors: [], nextCursor };
     }
 
+    // ── Biz-Conv Message Interception ──
+    // Separate biz-conv messages from regular DR messages.
+    // Biz-conv uses Sender Key (not DR), so they bypass the vault/DR decrypt pipeline.
+    const bizConvItems = [];
+    const drItems = [];
+    for (const item of rawItems) {
+        let header = null;
+        try { header = item.header_json ? JSON.parse(item.header_json) : (item.header || null); } catch { }
+        if (header?.type === 'biz-conv-message') {
+            bizConvItems.push({ ...item, _parsedHeader: header });
+        } else {
+            drItems.push(item);
+        }
+    }
+
+    // Decrypt biz-conv items directly using BizConvStore
+    const bizConvDecrypted = [];
+    if (bizConvItems.length > 0) {
+        try {
+            const { BizConvStore } = await import('../biz-conv.js');
+            const { t } = await import('/locales/index.js');
+            for (const item of bizConvItems) {
+                const h = item._parsedHeader;
+                const envelope = {
+                    epoch: h.epoch,
+                    sender_device_id: h.sender_device_id,
+                    counter: h.counter,
+                    iv_b64: h.iv_b64,
+                    ciphertext_b64: h.ciphertext_b64
+                };
+                try {
+                    const state = BizConvStore.get(conversationId);
+                    if (!state) {
+                        console.warn('[hybrid-flow] biz-conv replay: no session for', conversationId.slice(0, 16));
+                        continue;
+                    }
+                    const plaintext = await BizConvStore.decryptMessage(conversationId, envelope);
+                    const messageId = item.id || item.messageId || `biz-${conversationId}:${h.counter}`;
+                    const ts = Number(item.created_at || item.createdAt || item.ts || 0);
+                    const senderDigest = item.sender_account_digest || item.senderAccountDigest || '';
+                    const isSelf = selfDigest && senderDigest &&
+                        senderDigest.toUpperCase() === selfDigest.toUpperCase();
+                    bizConvDecrypted.push({
+                        messageId,
+                        id: messageId,
+                        conversationId,
+                        msgType: 'biz-conv-text',
+                        subtype: 'biz-conv-text',
+                        text: typeof plaintext === 'string' ? plaintext : (plaintext?.text || JSON.stringify(plaintext)),
+                        senderAccountDigest: senderDigest,
+                        direction: isSelf ? 'outgoing' : 'incoming',
+                        ts: ts > 100000000000 ? Math.floor(ts / 1000) : ts,
+                        tsMs: ts > 100000000000 ? ts : ts * 1000,
+                        decrypted: true,
+                        counter: h.counter
+                    });
+                } catch (err) {
+                    console.warn('[hybrid-flow] biz-conv decrypt failed', {
+                        messageId: item.id?.slice(0, 12),
+                        counter: h.counter,
+                        error: err?.message
+                    });
+                }
+            }
+        } catch (err) {
+            console.warn('[hybrid-flow] biz-conv replay init failed', err?.message);
+        }
+    }
+
+    // If this conversation has ONLY biz-conv messages, return them directly
+    if (drItems.length === 0) {
+        return { items: bizConvDecrypted, errors: [], nextCursor };
+    }
+
+    // Continue with DR items only (biz-conv items already handled)
+    rawItems = drItems;
+
     // 3. Sort ASC for Sequential Processing
     // API returns DESC (Newest First). Reverse to process Oldest -> Newest.
     const sortedItems = [...rawItems].sort((a, b) => {
@@ -725,7 +802,12 @@ export async function smartFetchMessages({
         decrypted: decryptedItems.length,
         errors: errors.length
     });
-    console.warn('[HybridVerify] Done. Total Decrypted:', decryptedItems.length);
+    // Merge biz-conv decrypted items into the result set
+    if (bizConvDecrypted.length > 0) {
+        decryptedItems.push(...bizConvDecrypted);
+    }
+
+    console.warn('[HybridVerify] Done. Total Decrypted:', decryptedItems.length, '(biz-conv:', bizConvDecrypted.length, ')');
 
     return { items: decryptedItems, errors, nextCursor };
 }

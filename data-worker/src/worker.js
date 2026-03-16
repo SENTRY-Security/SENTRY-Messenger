@@ -3602,12 +3602,13 @@ async function handleMessagesRoutes(req, env) {
     }
     await ensureDataTables(env);
 
-    const SEMANTIC_VISIBLE = new Set(['text', 'media', 'call-log', 'system']);
+    const SEMANTIC_VISIBLE = new Set(['text', 'media', 'call-log', 'system', 'biz-conv-text', 'biz-conv-message']);
     function isVisibleItem(row) {
       if (!row || !row.header_json) return false;
       try {
         const header = JSON.parse(row.header_json);
-        let type = header?.meta?.msgType || header?.meta?.msg_type || null;
+        // Check meta.msgType first (standard), then header.type (biz-conv uses this)
+        let type = header?.meta?.msgType || header?.meta?.msg_type || header?.type || null;
         if (!type && row.ciphertext_b64) {
           type = 'text';
         }
