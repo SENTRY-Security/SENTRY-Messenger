@@ -640,7 +640,10 @@ export class ConversationListController extends BaseController {
             const fadeRange = 25;
             const alpha = Math.min(1, Math.max(0, (clamped - fadeStart) / fadeRange));
             this.elements.conversationRefreshEl.style.opacity = String(alpha);
-            this.elements.conversationRefreshEl.style.transform = 'translateY(0)';
+            // Centre the indicator in the gap opened by the pull
+            const indicatorH = this.elements.conversationRefreshEl.offsetHeight || 36;
+            const centerY = Math.max(0, (clamped - indicatorH) / 2);
+            this.elements.conversationRefreshEl.style.transform = `translateY(${centerY}px)`;
             const spinner = this.elements.conversationRefreshEl.querySelector('.icon');
             const labelEl = this.elements.conversationRefreshLabelEl || this.elements.conversationRefreshEl.querySelector('.label');
             if (spinner && labelEl) {
