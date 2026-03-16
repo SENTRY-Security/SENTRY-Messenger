@@ -269,7 +269,11 @@
     "bizConvPolicyAllowFriendship": "允许加好友",
     "bizConvPolicyAllowFriendshipDesc": "让成员可以在群组内发送好友请求",
     "bizConvPolicyMaxMembers": "人数上限",
-    "bizConvPolicyMaxMembersDesc": "此群组的最大成员数量"
+    "bizConvPolicyMaxMembersDesc": "此群组的最大成员数量",
+    "bizConvMemberCount": "位成员",
+    "bizConvMemberRemoved": "已移除成员",
+    "bizConvNoMembersToTransfer": "没有可移交的成员",
+    "bizConvOwnershipTransferred": "已移交群主权限"
   },
   "encryption": {
     "decryptFailed": "无法解密",

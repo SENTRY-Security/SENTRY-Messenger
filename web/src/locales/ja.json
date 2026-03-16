@@ -269,7 +269,11 @@
     "bizConvPolicyAllowFriendship": "友達リクエストを許可",
     "bizConvPolicyAllowFriendshipDesc": "メンバーがグループ内で友達リクエストを送信できるようにする",
     "bizConvPolicyMaxMembers": "最大人数",
-    "bizConvPolicyMaxMembersDesc": "このグループの最大メンバー数"
+    "bizConvPolicyMaxMembersDesc": "このグループの最大メンバー数",
+    "bizConvMemberCount": "人のメンバー",
+    "bizConvMemberRemoved": "メンバーを削除しました",
+    "bizConvNoMembersToTransfer": "移譲できるメンバーがいません",
+    "bizConvOwnershipTransferred": "オーナー権限を移譲しました"
   },
   "encryption": {
     "decryptFailed": "復号できません",

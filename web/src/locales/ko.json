@@ -269,7 +269,11 @@
     "bizConvPolicyAllowFriendship": "친구 요청 허용",
     "bizConvPolicyAllowFriendshipDesc": "멤버가 그룹 내에서 친구 요청을 보낼 수 있도록 합니다",
     "bizConvPolicyMaxMembers": "최대 인원",
-    "bizConvPolicyMaxMembersDesc": "이 그룹의 최대 멤버 수"
+    "bizConvPolicyMaxMembersDesc": "이 그룹의 최대 멤버 수",
+    "bizConvMemberCount": "명의 멤버",
+    "bizConvMemberRemoved": "멤버가 제거되었습니다",
+    "bizConvNoMembersToTransfer": "이전할 멤버가 없습니다",
+    "bizConvOwnershipTransferred": "소유권이 이전되었습니다"
   },
   "encryption": {
     "decryptFailed": "복호화할 수 없음",

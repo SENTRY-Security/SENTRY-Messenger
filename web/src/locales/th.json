@@ -269,7 +269,11 @@
     "bizConvPolicyAllowFriendship": "อนุญาตให้เพิ่มเพื่อน",
     "bizConvPolicyAllowFriendshipDesc": "ให้สมาชิกส่งคำขอเป็นเพื่อนในกลุ่มได้",
     "bizConvPolicyMaxMembers": "จำนวนสมาชิกสูงสุด",
-    "bizConvPolicyMaxMembersDesc": "จำนวนสมาชิกสูงสุดในกลุ่มนี้"
+    "bizConvPolicyMaxMembersDesc": "จำนวนสมาชิกสูงสุดในกลุ่มนี้",
+    "bizConvMemberCount": "สมาชิก",
+    "bizConvMemberRemoved": "ลบสมาชิกแล้ว",
+    "bizConvNoMembersToTransfer": "ไม่มีสมาชิกให้โอนสิทธิ์",
+    "bizConvOwnershipTransferred": "โอนสิทธิ์เจ้าของแล้ว"
   },
   "encryption": {
     "decryptFailed": "ไม่สามารถถอดรหัสได้",

@@ -269,7 +269,11 @@
     "bizConvPolicyAllowFriendship": "Allow friend requests",
     "bizConvPolicyAllowFriendshipDesc": "Let members send friend requests within the group",
     "bizConvPolicyMaxMembers": "Max members",
-    "bizConvPolicyMaxMembersDesc": "Maximum number of members in this group"
+    "bizConvPolicyMaxMembersDesc": "Maximum number of members in this group",
+    "bizConvMemberCount": "members",
+    "bizConvMemberRemoved": "Member removed",
+    "bizConvNoMembersToTransfer": "No members to transfer ownership to",
+    "bizConvOwnershipTransferred": "Ownership transferred"
   },
   "encryption": {
     "decryptFailed": "Cannot decrypt",

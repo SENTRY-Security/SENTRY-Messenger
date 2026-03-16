@@ -269,7 +269,11 @@
     "bizConvPolicyAllowFriendship": "Cho phép kết bạn",
     "bizConvPolicyAllowFriendshipDesc": "Cho phép thành viên gửi yêu cầu kết bạn trong nhóm",
     "bizConvPolicyMaxMembers": "Số thành viên tối đa",
-    "bizConvPolicyMaxMembersDesc": "Số thành viên tối đa trong nhóm này"
+    "bizConvPolicyMaxMembersDesc": "Số thành viên tối đa trong nhóm này",
+    "bizConvMemberCount": "thành viên",
+    "bizConvMemberRemoved": "Đã xóa thành viên",
+    "bizConvNoMembersToTransfer": "Không có thành viên để chuyển quyền",
+    "bizConvOwnershipTransferred": "Đã chuyển quyền sở hữu"
   },
   "encryption": {
     "decryptFailed": "Không thể giải mã",
