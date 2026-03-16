@@ -636,7 +636,7 @@ async function decryptIncomingSingle(params = {}, adapters) {
                   sender: senderName || t('messages.bizConvGroupInviteSenderUnknown'),
                   group: groupName || t('messages.bizConvGroupInviteGroupUnknown')
                 });
-                const tombstoneId = `kdm-invite-${kdmPayload?.conversation_id || ''}`;
+                const tombstoneId = `kdm-invite-${kdmPayload?.conversation_id || ''}-epoch-${kdmPayload?.epoch || 0}`;
                 appendUserMessage(oneOnOneConvId, {
                   messageId: tombstoneId,
                   msgType: 'system',
@@ -655,6 +655,9 @@ async function decryptIncomingSingle(params = {}, adapters) {
         }
         result.reasonCode = 'KDM_PROCESSED';
         result.successCount = 1;
+        // CRITICAL: return mutatedState so the caller persists the ratchet advance.
+        // Without this, the DR session state is lost and subsequent messages fail.
+        result.mutatedState = state;
         return result;
       }
 

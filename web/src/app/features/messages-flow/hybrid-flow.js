@@ -516,8 +516,8 @@ export async function smartFetchMessages({
                                     sender: senderName || t('messages.bizConvGroupInviteSenderUnknown'),
                                     group: groupName || t('messages.bizConvGroupInviteGroupUnknown')
                                   });
-                            // Deterministic ID: same KDM always produces the same tombstone
-                            const tombstoneId = `kdm-invite-${groupConvId}`;
+                            // Deterministic ID: same KDM+epoch always produces the same tombstone
+                            const tombstoneId = `kdm-invite-${groupConvId}-epoch-${kdmPayload?.epoch || 0}`;
                             appendUserMessage(conversationId, {
                                 messageId: tombstoneId,
                                 msgType: 'system',
