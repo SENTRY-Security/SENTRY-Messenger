@@ -1315,7 +1315,7 @@
   flex-direction: column;
   gap: 12px;
 }
-.biz-conv-create-form label {
+.biz-conv-create-form > label {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1348,6 +1348,7 @@
 }
 .biz-conv-contact-item {
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 8px;
   padding: 6px;
