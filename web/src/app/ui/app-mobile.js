@@ -120,6 +120,7 @@ import {
   getLatestBackupMeta
 } from '../features/contact-backup.js';
 import { hydrateBizConvFromBackup, triggerBizConvBackupIfDirty, clearBizConvOnLogout, syncBizConvListFromServer, flushBizConvBackupBeacon, fetchActiveServerGroupIds } from '../features/biz-conv-backup.js';
+import { hydrateCallLogFromBackup, clearCallLogOnLogout } from '../features/call-log-backup.js';
 import { createBizConvCreateModal } from './mobile/modals/biz-conv-create-modal.js';
 import { createBizConvInfoModal } from './mobile/modals/biz-conv-info-modal.js';
 import { subscriptionStatus, redeemSubscription, uploadSubscriptionQr } from '../api/subscription.js';
@@ -551,6 +552,8 @@ async function secureLogout(message = t('auth.loggedOut'), { auto = false } = {}
 
   // Clear biz-conv (business conversation) in-memory state
   clearBizConvOnLogout();
+  // Clear call-log backup in-memory state
+  clearCallLogOnLogout();
 
   wsIntegration.close();
   presenceManager?.clearPresenceState?.();
@@ -1951,6 +1954,12 @@ async function runPostLoginContactHydrate() {
     await hydrateBizConvFromBackup(activeGroupIds);
   } catch (err) {
     log({ bizConvHydrateError: err?.message || err, source: 'post-login-hydrate' });
+  }
+  // Hydrate call-log entries from encrypted server backup (1:1 conversations).
+  try {
+    await hydrateCallLogFromBackup();
+  } catch (err) {
+    log({ callLogHydrateError: err?.message || err, source: 'post-login-hydrate' });
   }
   // Sync group list from server to rebuild threads and purge any remaining stale groups.
   // Blocking: ensures cleanup completes before UI renders the conversation list.

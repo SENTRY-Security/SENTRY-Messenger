@@ -1082,9 +1082,7 @@ async function commitIncomingSingle(params = {}, adapters) {
         if (msgType === 'call-log' && batchCallLog && entries[0]) {
           try {
             const { addCallLogEntry } = await import('../../call-log-backup.js');
-            const { markBizConvBackupDirty } = await import('../../biz-conv-backup.js');
             addCallLogEntry(conversationId, entries[0]);
-            markBizConvBackupDirty();
           } catch { /* non-critical */ }
         }
 
