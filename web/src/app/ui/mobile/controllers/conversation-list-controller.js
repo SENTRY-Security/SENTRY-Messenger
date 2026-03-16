@@ -893,6 +893,8 @@ export class ConversationListController extends BaseController {
             li.addEventListener('click', (e) => {
                 // Suppress accidental selection when user was scrolling
                 if (this._scrolledDuringTouch) return;
+                // Fallback: check if container scrolled since touchstart
+                if (this.elements.conversationList && Math.abs(this.elements.conversationList.scrollTop - this._touchStartScroll) > 2) return;
                 if (li.classList.contains('show-delete')) {
                     e.preventDefault();
                     e.stopPropagation();
@@ -938,7 +940,7 @@ export class ConversationListController extends BaseController {
             this.elements.conversationList.addEventListener('touchend', () => this.handleConversationPullEnd());
             this.elements.conversationList.addEventListener('touchcancel', () => this.handleConversationPullEnd());
 
-            // Scroll-vs-tap: track finger + scroll movement to suppress click during scroll
+            // Scroll-vs-tap: robust detection using scroll event + finger movement
             this.elements.conversationList.addEventListener('touchstart', (e) => {
                 if (e.touches.length === 1) {
                     this._touchStartY = e.touches[0].clientY;
@@ -947,12 +949,15 @@ export class ConversationListController extends BaseController {
                     this._scrolledDuringTouch = false;
                 }
             }, { passive: true });
+            // The scroll event fires reliably on iOS even during momentum scroll
+            this.elements.conversationList.addEventListener('scroll', () => {
+                this._scrolledDuringTouch = true;
+            }, { passive: true });
             this.elements.conversationList.addEventListener('touchmove', (e) => {
                 if (!this._scrolledDuringTouch && e.touches.length === 1) {
                     const dy = Math.abs(e.touches[0].clientY - this._touchStartY);
                     const dx = Math.abs(e.touches[0].clientX - this._touchStartX);
-                    const dScroll = Math.abs(this.elements.conversationList.scrollTop - this._touchStartScroll);
-                    if (dy > 6 || dx > 6 || dScroll > 4) {
+                    if (dy > 6 || dx > 6) {
                         this._scrolledDuringTouch = true;
                     }
                 }
