@@ -737,7 +737,6 @@ export class ConversationListController extends BaseController {
     handleConversationPullMove(e) {
         if (!this.conversationPullTracking || this.conversationPullInvalid || this.conversationsRefreshing) return;
         if (e.touches?.length !== 1) return;
-        console.log('[ConvPull] move check', { y: e.touches[0].clientY, startY: this.conversationPullStartY, tracking: this.conversationPullTracking });
         const dy = e.touches[0].clientY - this.conversationPullStartY;
         const dx = Math.abs(e.touches[0].clientX - this.conversationPullStartX);
         if (!this.conversationPullDecided) {
@@ -761,11 +760,13 @@ export class ConversationListController extends BaseController {
      * Handle touch end for pull-to-refresh.
      */
     handleConversationPullEnd() {
-        if (!this.conversationPullTracking) return;
+        const wasTracking = this.conversationPullTracking;
         this.conversationPullTracking = false;
-        if (this.conversationsRefreshing) return;
-        if (this.conversationPullInvalid) {
-            this.resetConversationPull({ animate: true });
+        // Always reset visual if any pull offset was applied, regardless of tracking state
+        if (!wasTracking || this.conversationsRefreshing || this.conversationPullInvalid) {
+            if (this.conversationPullDistance > 0 || this.conversationsRefreshing) {
+                this.resetConversationPull({ animate: true });
+            }
             return;
         }
         if (this.conversationPullDistance >= CONV_PULL_THRESHOLD) {
@@ -941,17 +942,24 @@ export class ConversationListController extends BaseController {
             this.elements.conversationList.addEventListener('touchcancel', () => this.handleConversationPullEnd());
 
             // Scroll-vs-tap: robust detection using scroll event + finger movement
+            this._touchActive = false;
             this.elements.conversationList.addEventListener('touchstart', (e) => {
                 if (e.touches.length === 1) {
+                    this._touchActive = true;
                     this._touchStartY = e.touches[0].clientY;
                     this._touchStartX = e.touches[0].clientX;
                     this._touchStartScroll = this.elements.conversationList.scrollTop;
                     this._scrolledDuringTouch = false;
                 }
             }, { passive: true });
+            this.elements.conversationList.addEventListener('touchend', () => {
+                // Keep _touchActive true briefly so the scroll event that fires
+                // after touchend (iOS momentum) still suppresses the click
+                setTimeout(() => { this._touchActive = false; }, 400);
+            }, { passive: true });
             // The scroll event fires reliably on iOS even during momentum scroll
             this.elements.conversationList.addEventListener('scroll', () => {
-                this._scrolledDuringTouch = true;
+                if (this._touchActive) this._scrolledDuringTouch = true;
             }, { passive: true });
             this.elements.conversationList.addEventListener('touchmove', (e) => {
                 if (!this._scrolledDuringTouch && e.touches.length === 1) {
