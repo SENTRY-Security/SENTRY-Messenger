@@ -1361,10 +1361,32 @@
   background: rgba(99,102,241,0.08);
 }
 .biz-conv-contact-item input[type="checkbox"] {
-  accent-color: #6366f1;
-  width: 18px;
-  height: 18px;
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
   flex-shrink: 0;
+  border: 2px solid #475569;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  position: relative;
+  transition: border-color .15s, background .15s;
+}
+.biz-conv-contact-item input[type="checkbox"]:checked {
+  border-color: #6366f1;
+  background: #6366f1;
+}
+.biz-conv-contact-item input[type="checkbox"]:checked::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 6px;
+  width: 5px;
+  height: 9px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
 }
 .biz-conv-contact-avatar {
   width: 32px;
