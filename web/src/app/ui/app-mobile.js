@@ -1467,6 +1467,12 @@ const bizConvInfoModal = createBizConvInfoModal({
   }
 });
 
+// Re-render conversation list when a new biz-conv thread is added via KDM
+// (safety net in case message-flow-controller doesn't trigger it)
+window.addEventListener('biz-conv:thread-added', () => {
+  try { messagesPane.renderConversationList(); } catch (_) { /* ignore */ }
+});
+
 disableZoom();
 
 settingsInitPromise = bootLoadSettings()

@@ -210,13 +210,26 @@ export async function handleEpochKdm(kdm) {
 
   // Create/update conversation thread so the group appears in the conversation list
   const groupName = meta?.name || null;
+  const memberCount = (meta?.members && Array.isArray(meta.members)) ? meta.members.length : 0;
   upsertBizConvThread(parsed.conversationId, {
     name: groupName,
+    memberCount,
     isOwner: false,
     status: 'active',
     avatar: meta?.avatar || null,
     unreadCount: 0  // KDM is not a user message — don't show unread badge
   });
+
+  // Dispatch a custom event so the UI can re-render the conversation list.
+  // The message-flow-controller should also trigger this, but this is a safety net
+  // in case the KDM arrives through a different code path (e.g. sync, restore).
+  try {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('biz-conv:thread-added', {
+        detail: { conversationId: parsed.conversationId, name: groupName }
+      }));
+    }
+  } catch (_) { /* ignore in non-browser env */ }
 
   // Confirm epoch with server
   try {

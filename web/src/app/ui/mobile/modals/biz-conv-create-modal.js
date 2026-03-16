@@ -192,6 +192,12 @@ export function createBizConvCreateModal({ deps }) {
               }
             </div>
           </div>
+          <div id="bizConvCreateProgress" class="biz-conv-create-progress" role="status" aria-live="polite" style="display:none">
+            <div class="biz-conv-progress-bar-track">
+              <div id="bizConvProgressBar" class="biz-conv-progress-bar-fill"></div>
+            </div>
+            <div id="bizConvProgressStep" class="biz-conv-progress-step"></div>
+          </div>
           <div id="bizConvCreateStatus" class="biz-conv-create-status" role="status" aria-live="polite"></div>
           <div class="biz-conv-wizard-actions biz-conv-wizard-actions--dual">
             <button type="button" id="bizConvBack3" class="btn btn-ghost">${t('messages.bizConvBack')}</button>
@@ -200,6 +206,16 @@ export function createBizConvCreateModal({ deps }) {
         </div>`;
 
       const statusEl = document.getElementById('bizConvCreateStatus');
+      const progressEl = document.getElementById('bizConvCreateProgress');
+      const progressBarEl = document.getElementById('bizConvProgressBar');
+      const progressStepEl = document.getElementById('bizConvProgressStep');
+
+      function updateProgress(percent, stepText) {
+        if (progressEl) progressEl.style.display = '';
+        if (progressBarEl) progressBarEl.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+        if (progressStepEl) progressStepEl.textContent = stepText;
+        if (statusEl) statusEl.textContent = '';
+      }
 
       document.getElementById('bizConvBack3')?.addEventListener('click', () => {
         collectSelectedMembers();
@@ -214,18 +230,22 @@ export function createBizConvCreateModal({ deps }) {
           return;
         }
         const btn = document.getElementById('bizConvSubmit');
+        const backBtn = document.getElementById('bizConvBack3');
         if (btn) btn.disabled = true;
-        if (statusEl) statusEl.textContent = t('messages.bizConvCreating');
+        if (backBtn) backBtn.disabled = true;
 
         try {
-          await doCreate(state.groupName, state.selectedMembers, state.policy, state.avatarDataUrl);
+          await doCreate(state.groupName, state.selectedMembers, state.policy, state.avatarDataUrl, updateProgress);
+          updateProgress(100, t('messages.bizConvCreated'));
           showToast?.(t('messages.bizConvCreated'));
           closeModal();
           renderConversationList?.();
         } catch (err) {
           log({ bizConvCreateError: err?.message });
+          if (progressEl) progressEl.style.display = 'none';
           if (statusEl) statusEl.textContent = t('messages.bizConvCreateFailed');
           if (btn) btn.disabled = false;
+          if (backBtn) backBtn.disabled = false;
         }
       });
 
@@ -262,11 +282,17 @@ export function createBizConvCreateModal({ deps }) {
     openModal();
   }
 
-  async function doCreate(groupName, members, policy, avatarDataUrl) {
+  async function doCreate(groupName, members, policy, avatarDataUrl, onProgress) {
+    const report = typeof onProgress === 'function' ? onProgress : () => {};
+    const totalMembers = members.length;
+    // Progress allocation: keys 10%, server 25%, local 35%, invite loop 40-95%, done 100%
+
     const selfDigest = getAccountDigest();
     const selfDeviceId = ensureDeviceId();
     if (!selfDigest || !selfDeviceId) throw new Error('Not authenticated');
 
+    // ── Step 1: Generate encryption keys ──
+    report(5, t('messages.bizConvProgressKeys'));
     const groupSeed = crypto.getRandomValues(new Uint8Array(32));
     const { conversationId } = await deriveBizConvId(groupSeed);
     const metaKey = await deriveGroupMetaKey(groupSeed);
@@ -288,14 +314,20 @@ export function createBizConvCreateModal({ deps }) {
       role: 'owner',
       joined_at: Date.now()
     });
+    report(15, t('messages.bizConvProgressKeys'));
 
+    // ── Step 2: Create group on server ──
+    report(20, t('messages.bizConvProgressServer'));
     await bizConvCreate({
       conversationId,
       encryptedMetaBlob: JSON.stringify(encryptedMeta),
       encryptedPolicyBlob: JSON.stringify(encryptedPolicy),
       members: []
     });
+    report(30, t('messages.bizConvProgressServer'));
 
+    // ── Step 3: Initialize local state ──
+    report(35, t('messages.bizConvProgressLocal'));
     const st = BizConvStore.getOrCreate(conversationId);
     st.seeds[0] = groupSeed;
     st.currentEpoch = 0;
@@ -350,7 +382,14 @@ export function createBizConvCreateModal({ deps }) {
       }
     }
 
-    for (const member of members) {
+    // ── Step 4: Invite members & distribute keys ──
+    const inviteErrors = [];
+    for (let i = 0; i < members.length; i++) {
+      const member = members[i];
+      const memberNick = member.nickname || member.accountDigest?.slice(-8) || `#${i + 1}`;
+      const pctBase = 40 + Math.round((i / totalMembers) * 55);
+      report(pctBase, t('messages.bizConvProgressInvite', { current: i + 1, total: totalMembers, name: memberNick }));
+
       try {
         await bizConvInvite(conversationId, member.accountDigest);
 
@@ -370,6 +409,7 @@ export function createBizConvCreateModal({ deps }) {
 
         if (!deviceId) {
           log({ bizConvKdmSkipNoDevice: { member: member.accountDigest?.slice(-8) } });
+          inviteErrors.push(memberNick);
           continue;
         }
 
@@ -389,11 +429,18 @@ export function createBizConvCreateModal({ deps }) {
         }
       } catch (err) {
         log({ bizConvInviteError: { member: member.accountDigest?.slice(-8), error: err?.message } });
+        inviteErrors.push(memberNick);
       }
     }
 
+    report(95, t('messages.bizConvProgressFinishing'));
     markBizConvBackupDirty();
-    log({ bizConvCreated: { conversationId: conversationId?.slice(-8), members: members.length } });
+    log({ bizConvCreated: { conversationId: conversationId?.slice(-8), members: members.length, inviteErrors: inviteErrors.length } });
+
+    // Notify if some invites failed
+    if (inviteErrors.length > 0) {
+      log({ bizConvPartialInviteFailures: inviteErrors });
+    }
   }
 
   return { open };

@@ -461,6 +461,25 @@ function createMessagesFlowFacade() {
 
 
 
+      // Business Conversation KDM — route directly to handleIncomingSecureMessage
+      // bypassing the live job pipeline which may drop or delay KDMs
+      if (normalizedMsgType === 'biz_conv_kdm') {
+        const handlerFn = isPayloadObject
+          ? payloadOrEvent?.handleIncomingSecureMessage
+          : null;
+        if (typeof handlerFn === 'function') {
+          try { await handlerFn(event); } catch (e) {
+            console.warn('[facade] KDM direct handler failed', e?.message);
+          }
+        } else {
+          // Dispatch event so controllers can pick it up
+          try {
+            document.dispatchEvent(new CustomEvent('sentry:biz-conv-kdm', { detail: event }));
+          } catch {}
+        }
+        return;
+      }
+
       // Receipt signals — dispatch to controller for UI update
       if (normalizedMsgType === 'read_receipt' || normalizedMsgType === 'delivery_receipt') {
         try {

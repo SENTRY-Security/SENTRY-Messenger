@@ -119,8 +119,15 @@ export class MessageFlowController extends BaseController {
                 this.updateMessagesUI({ preserveScroll: true, forceFullRender: true });
             }
         };
+        // [FIX] Listen for KDM events dispatched by facade when live job path is bypassed
+        this._onBizConvKdm = (e) => {
+            if (e?.detail) {
+                this.handleIncomingSecureMessage(e.detail);
+            }
+        };
         document.addEventListener('sentry:conversation-deleted', this._onConversationDeleted);
         document.addEventListener('sentry:receipt', this._onReceipt);
+        document.addEventListener('sentry:biz-conv-kdm', this._onBizConvKdm);
     }
 
     /**
