@@ -3956,6 +3956,7 @@ async function handleContactSecretsRoutes(req, env) {
   const url = new URL(req.url);
 
   if (req.method === 'POST' && url.pathname === '/d1/contact-secrets/backup') {
+    await ensureDataTables(env);
     let body;
     try {
       body = await req.json();
@@ -4054,6 +4055,7 @@ async function handleContactSecretsRoutes(req, env) {
   }
 
   if (req.method === 'GET' && url.pathname === '/d1/contact-secrets/backup') {
+    await ensureDataTables(env);
     const accountDigest = normalizeAccountDigest(
       url.searchParams.get('accountDigest')
       || url.searchParams.get('account_digest')

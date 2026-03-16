@@ -276,6 +276,68 @@ export function createConversationThreadsManager(deps) {
         const selfDigest = storeGetAccountDigest();
         const tasks = [];
         for (const thread of threads) {
+            // Biz-conv threads: fetch latest message and decrypt via BizConvStore
+            if (thread?.type === 'biz-conv' && thread?.conversationId) {
+                if (!force && thread.previewLoaded && !thread.needsRefresh) continue;
+                tasks.push((async () => {
+                    try {
+                        const { r, data } = await listSecureMessages({
+                            conversationId: thread.conversationId,
+                            limit: 1,
+                            includeKeys: false
+                        });
+                        if (!r?.ok) return;
+                        const items = Array.isArray(data?.items) ? data.items : [];
+                        if (!items.length) {
+                            thread.previewLoaded = true;
+                            return;
+                        }
+                        const latest = items[0];
+                        let header = latest.header || null;
+                        if (!header && typeof latest.header_json === 'string') {
+                            try { header = JSON.parse(latest.header_json); } catch { }
+                        }
+                        const tsRaw = latest.created_at ?? latest.createdAt ?? latest.ts ?? null;
+                        const ts = Number.isFinite(Number(tsRaw)) ? Number(tsRaw) : null;
+                        const messageId = latest.id || latest.messageId || latest.message_id || null;
+                        const senderDigest = latest.sender_account_digest || latest.senderAccountDigest || '';
+                        const isSelf = selfDigest && senderDigest && senderDigest.toUpperCase() === selfDigest.toUpperCase();
+                        const direction = isSelf ? 'outgoing' : 'incoming';
+
+                        // Try to decrypt using BizConvStore
+                        let rawText = null;
+                        if (header?.type === 'biz-conv-message') {
+                            try {
+                                const { BizConvStore } = await import('../../features/biz-conv.js');
+                                const state = BizConvStore.get(thread.conversationId);
+                                if (state) {
+                                    const envelope = {
+                                        epoch: header.epoch,
+                                        sender_device_id: header.sender_device_id,
+                                        counter: header.counter,
+                                        iv_b64: header.iv_b64,
+                                        ciphertext_b64: header.ciphertext_b64
+                                    };
+                                    const plaintext = await BizConvStore.decryptMessage(thread.conversationId, envelope);
+                                    rawText = typeof plaintext === 'string' ? plaintext : (plaintext?.text || null);
+                                }
+                            } catch { /* decrypt failed */ }
+                        }
+
+                        const text = rawText && typeof rawText === 'string' && rawText.trim()
+                            ? resolveMessagePreview({ text: rawText, msgType: 'biz-conv-text' })
+                            : '';
+                        updateThreadPreview(thread, { text, ts, messageId, direction, msgType: 'biz-conv-text' });
+                    } catch (err) {
+                        log({ bizConvPreviewError: err?.message, conversationId: thread?.conversationId });
+                    } finally {
+                        thread.previewLoaded = true;
+                        thread.needsRefresh = false;
+                    }
+                })());
+                continue;
+            }
+
             const peerDigest = threadPeer(thread);
             if (!thread?.conversationId || !thread?.conversationToken || !peerDigest || !thread?.peerDeviceId) {
                 if (!thread?.peerDeviceId) {
@@ -401,7 +463,8 @@ export function createConversationThreadsManager(deps) {
 
     function getThreadsForRender() {
         return Array.from(getConversationThreads().values())
-            .filter((thread) => thread?.conversationId && threadPeer(thread)
+            .filter((thread) => thread?.conversationId
+                && (thread.type === 'biz-conv' || threadPeer(thread))
                 && thread.lastMsgType !== 'conversation-deleted')
             .sort((a, b) => (b.lastMessageTs || 0) - (a.lastMessageTs || 0));
     }
