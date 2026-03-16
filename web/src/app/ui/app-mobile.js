@@ -119,7 +119,7 @@ import {
   getLastBackupHydrateResult,
   getLatestBackupMeta
 } from '../features/contact-backup.js';
-import { hydrateBizConvFromBackup, triggerBizConvBackupIfDirty, clearBizConvOnLogout, syncBizConvListFromServer, flushBizConvBackupBeacon, fetchActiveServerGroupIds } from '../features/biz-conv-backup.js';
+import { hydrateBizConvFromBackup, triggerBizConvBackupIfDirty, clearBizConvOnLogout, flushBizConvBackupBeforeLogout, syncBizConvListFromServer, flushBizConvBackupBeacon, fetchActiveServerGroupIds } from '../features/biz-conv-backup.js';
 import { createBizConvCreateModal } from './mobile/modals/biz-conv-create-modal.js';
 import { createBizConvInfoModal } from './mobile/modals/biz-conv-info-modal.js';
 import { subscriptionStatus, redeemSubscription, uploadSubscriptionQr } from '../api/subscription.js';
@@ -549,7 +549,12 @@ async function secureLogout(message = t('auth.loggedOut'), { auto = false } = {}
     }
   }
 
-  // Clear biz-conv (business conversation) in-memory state
+  // Flush biz-conv backup before clearing in-memory state
+  try {
+    await flushBizConvBackupBeforeLogout();
+  } catch (err) {
+    log({ bizConvLogoutFlushError: err?.message || err });
+  }
   clearBizConvOnLogout();
 
   wsIntegration.close();

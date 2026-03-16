@@ -835,19 +835,62 @@ async function removeConversationAccess(env, { conversationId, accountDigest }) 
 
 // [REMOVED] fetchGroupWithMembers — replaced by Business Conversation architecture
 
-async function trimContactSecretBackups(env, accountDigest, limit = 5) {
+async function trimContactSecretBackups(env, accountDigest, limit = 5, currentReason = 'auto') {
   if (!accountDigest) return;
   const keep = Math.max(Number(limit) || 1, 1);
-  await env.DB.prepare(
-    `DELETE FROM contact_secret_backups
-       WHERE account_digest=?1
-         AND id NOT IN (
-           SELECT id FROM contact_secret_backups
-            WHERE account_digest=?1
-            ORDER BY updated_at DESC, id DESC
-            LIMIT ?2
-         )`
-  ).bind(accountDigest, keep).run();
+
+  // When trimming after a non-default reason (e.g. 'biz-conv-backup'),
+  // preserve the latest row of OTHER reason types so they don't get pushed out.
+  // This prevents frequent contact-secrets backups from evicting the biz-conv backup.
+  const protectedIds = [];
+  if (currentReason !== 'biz-conv-backup') {
+    // Protect the latest biz-conv-backup row
+    try {
+      const bizRow = await env.DB.prepare(
+        `SELECT id FROM contact_secret_backups
+          WHERE account_digest=?1 AND reason='biz-conv-backup'
+          ORDER BY updated_at DESC, id DESC LIMIT 1`
+      ).bind(accountDigest).first();
+      if (bizRow?.id) protectedIds.push(bizRow.id);
+    } catch { /* column may not exist yet */ }
+  } else {
+    // Protect the latest auto/contact-secrets row
+    try {
+      const autoRow = await env.DB.prepare(
+        `SELECT id FROM contact_secret_backups
+          WHERE account_digest=?1 AND reason != 'biz-conv-backup'
+          ORDER BY updated_at DESC, id DESC LIMIT 1`
+      ).bind(accountDigest).first();
+      if (autoRow?.id) protectedIds.push(autoRow.id);
+    } catch { /* column may not exist yet */ }
+  }
+
+  if (protectedIds.length > 0) {
+    // Keep the top N rows PLUS any protected rows from other reason types
+    const placeholders = protectedIds.map((_, i) => `?${i + 3}`).join(',');
+    await env.DB.prepare(
+      `DELETE FROM contact_secret_backups
+         WHERE account_digest=?1
+           AND id NOT IN (
+             SELECT id FROM contact_secret_backups
+              WHERE account_digest=?1
+              ORDER BY updated_at DESC, id DESC
+              LIMIT ?2
+           )
+           AND id NOT IN (${placeholders})`
+    ).bind(accountDigest, keep, ...protectedIds).run();
+  } else {
+    await env.DB.prepare(
+      `DELETE FROM contact_secret_backups
+         WHERE account_digest=?1
+           AND id NOT IN (
+             SELECT id FROM contact_secret_backups
+              WHERE account_digest=?1
+              ORDER BY updated_at DESC, id DESC
+              LIMIT ?2
+           )`
+    ).bind(accountDigest, keep).run();
+  }
 }
 
 const CallStatusSet = new Set(['dialing', 'ringing', 'connecting', 'connected', 'in_call', 'ended', 'failed', 'cancelled', 'timeout', 'pending']);
@@ -1453,6 +1496,17 @@ async function ensureDataTables(env) {
         await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ephemeral_sessions_expires ON ephemeral_sessions(expires_at)`).run();
         console.log('ensureDataTables: created ephemeral_sessions table');
       } catch (e) { console.warn('ensureDataTables: ephemeral_sessions create failed', e?.message); }
+    }
+    // Auto-add reason column to contact_secret_backups (migration 0014)
+    try {
+      await env.DB.prepare(`SELECT reason FROM contact_secret_backups LIMIT 0`).all();
+    } catch {
+      try {
+        await env.DB.prepare(`ALTER TABLE contact_secret_backups ADD COLUMN reason TEXT NOT NULL DEFAULT 'auto'`).run();
+        console.log('ensureDataTables: added reason column to contact_secret_backups');
+      } catch (alterErr) {
+        console.warn('ensureDataTables: reason column add failed (may already exist)', alterErr?.message);
+      }
     }
     if (missingTables.length || missingColumns.length) {
       const detail = [
@@ -3923,6 +3977,7 @@ async function handleContactSecretsRoutes(req, env) {
     const checksum = typeof body?.checksum === 'string' ? String(body.checksum).slice(0, 128) : null;
     const deviceLabel = typeof body?.deviceLabel === 'string' ? String(body.deviceLabel).slice(0, 120) : null;
     const deviceId = typeof body?.deviceId === 'string' ? String(body.deviceId).slice(0, 120) : null;
+    const reason = typeof body?.reason === 'string' ? String(body.reason).slice(0, 64) : 'auto';
     const updatedAt = normalizeTimestampMs(body?.updatedAt || body?.updated_at) || Date.now();
     let version = Number.isFinite(Number(body?.version)) && Number(body.version) > 0
       ? Math.floor(Number(body.version))
@@ -3964,8 +4019,8 @@ async function handleContactSecretsRoutes(req, env) {
     await env.DB.prepare(
       `INSERT INTO contact_secret_backups (
           account_digest, version, payload_json, snapshot_version, entries,
-          checksum, bytes, updated_at, device_label, device_id, created_at
-       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, strftime('%s','now'))`
+          checksum, bytes, updated_at, device_label, device_id, reason, created_at
+       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%s','now'))`
     ).bind(
       accountDigest,
       version,
@@ -3976,10 +4031,11 @@ async function handleContactSecretsRoutes(req, env) {
       bytes,
       updatedAt,
       deviceLabel,
-      deviceId
+      deviceId,
+      reason
     ).run();
 
-    await trimContactSecretBackups(env, accountDigest, 5);
+    await trimContactSecretBackups(env, accountDigest, 5, reason);
 
     return json({
       ok: true,

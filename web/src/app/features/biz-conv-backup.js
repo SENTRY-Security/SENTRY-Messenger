@@ -253,7 +253,16 @@ export async function syncBizConvListFromServer() {
           if (meta) {
             if (meta.name) groupName = meta.name;
             if (meta.avatar) groupAvatar = meta.avatar;
-            if (state) state.meta = meta;
+            // Merge server meta with existing meta to preserve fields (e.g. avatar)
+            // that might be present in backup but absent from older server blobs
+            if (state) {
+              const prevMeta = state.meta || {};
+              state.meta = { ...prevMeta, ...meta };
+              // Ensure avatar is preserved if server meta didn't include it
+              if (!state.meta.avatar && prevMeta.avatar) {
+                state.meta.avatar = prevMeta.avatar;
+              }
+            }
           }
         } catch { /* can't decrypt yet */ }
       }
@@ -289,6 +298,24 @@ export async function syncBizConvListFromServer() {
     log({ bizConvListSync: conversations.length, active: activeServerIds.size });
   } catch (err) {
     log({ bizConvListSyncError: err?.message });
+  }
+}
+
+/**
+ * Flush any pending biz-conv backup before logout.
+ * Must be called BEFORE clearBizConvOnLogout so the latest state is persisted.
+ */
+export async function flushBizConvBackupBeforeLogout() {
+  if (backupDebounceTimer) {
+    clearTimeout(backupDebounceTimer);
+    backupDebounceTimer = null;
+  }
+  if (backupDirty || BizConvStore.conversations.size > 0) {
+    try {
+      await uploadBizConvBackup();
+    } catch (err) {
+      log({ bizConvLogoutFlushError: err?.message });
+    }
   }
 }
 

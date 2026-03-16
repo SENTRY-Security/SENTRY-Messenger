@@ -11,12 +11,13 @@
  *   6. Owner creates a tombstone recording the rotation event
  */
 
-import { BizConvStore, deriveGroupMetaKey, buildKDM, parseKDM, encryptTombstonePayload } from './biz-conv.js';
+import { BizConvStore, deriveGroupMetaKey, buildKDM, parseKDM, encryptTombstonePayload, encryptMetaBlob } from './biz-conv.js';
 import {
   bizConvIncrementEpoch,
   bizConvConfirmEpoch,
   bizConvMembers,
-  bizConvCreateTombstone
+  bizConvCreateTombstone,
+  bizConvUpdateMeta
 } from '../api/biz-conv.js';
 import { markBizConvBackupDirty } from './biz-conv-backup.js';
 import { upsertBizConvThread } from './conversation-updates.js';
@@ -78,6 +79,17 @@ export async function rotateGroupKey(conversationId, opts = {}) {
   // Clear sender chains for old epoch (they're now stale for sending)
   // Keep them for decryption of old messages that may still arrive
   markBizConvBackupDirty();
+
+  // 3b. Re-encrypt server meta blob with new key so it can be decrypted
+  // after backup restore with the new epoch's key
+  if (state.meta && state._groupMetaKey) {
+    try {
+      const encryptedMeta = await encryptMetaBlob(state._groupMetaKey, state.meta);
+      await bizConvUpdateMeta(conversationId, JSON.stringify(encryptedMeta));
+    } catch (err) {
+      log({ bizConvRotationMetaUpdateError: err?.message });
+    }
+  }
 
   // 4. Get remaining active members
   let activeMembers = [];
