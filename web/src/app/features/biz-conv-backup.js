@@ -8,10 +8,12 @@
 
 import { getMkRaw } from '../core/store.js';
 import { log } from '../core/log.js';
-import { BizConvStore } from './biz-conv.js';
+import { BizConvStore, decryptMetaBlob } from './biz-conv.js';
 import { wrapWithMK_JSON, unwrapWithMK_JSON } from '../../shared/crypto/aead.js';
 import { fetchWithTimeout } from '../core/http.js';
 import { getAccountToken, getAccountDigest, ensureDeviceId } from '../core/store.js';
+import { bizConvList } from '../api/biz-conv.js';
+import { upsertBizConvThread } from './conversation-updates.js';
 
 const BIZ_CONV_BACKUP_INFO = 'biz-conv-backup/v1';
 let backupDirty = false;
@@ -126,6 +128,59 @@ export async function hydrateBizConvFromBackup() {
 export async function triggerBizConvBackupIfDirty() {
   if (!backupDirty) return;
   return uploadBizConvBackup();
+}
+
+/**
+ * Sync group list from server and rebuild threads.
+ * Called after hydrateBizConvFromBackup to ensure threads exist for all groups.
+ * Decrypts meta when possible (requires seed from backup).
+ */
+export async function syncBizConvListFromServer() {
+  try {
+    const result = await bizConvList();
+    const conversations = result?.conversations || [];
+    if (!conversations.length) return;
+
+    const selfDigest = getAccountDigest();
+    for (const conv of conversations) {
+      const convId = conv.conversation_id;
+      if (!convId || conv.status !== 'active') continue;
+
+      const state = BizConvStore.get(convId);
+      const isOwner = selfDigest && conv.owner_account_digest
+        ? selfDigest.toUpperCase() === conv.owner_account_digest.toUpperCase()
+        : false;
+
+      // Update local ownership info
+      if (state) {
+        state.owner_account_digest = conv.owner_account_digest;
+        state.isOwner = isOwner;
+      }
+
+      // Try to decrypt meta if we have the key
+      let groupName = state?.meta?.name || null;
+      if (!groupName && state?._groupMetaKey && conv.encrypted_meta_blob) {
+        try {
+          const meta = await decryptMetaBlob(state._groupMetaKey, conv.encrypted_meta_blob);
+          if (meta?.name) {
+            groupName = meta.name;
+            state.meta = meta;
+          }
+        } catch { /* can't decrypt yet */ }
+      }
+
+      // Ensure thread exists for UI
+      upsertBizConvThread(convId, {
+        name: groupName,
+        isOwner,
+        status: 'active'
+      });
+    }
+
+    log({ bizConvListSync: conversations.length });
+  } catch (err) {
+    log({ bizConvListSyncError: err?.message });
+  }
 }
 
 /**
