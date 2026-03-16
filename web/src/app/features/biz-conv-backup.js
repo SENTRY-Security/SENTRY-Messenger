@@ -98,7 +98,7 @@ export async function uploadBizConvBackup() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({
-        payload: JSON.stringify(encrypted),
+        payload: encrypted,  // Must be object — server rejects typeof !== 'object'
         reason: 'biz-conv-backup'
       })
     }, 15000);
@@ -153,7 +153,7 @@ export async function hydrateBizConvFromBackup(activeServerIds = null) {
   if (!mkRaw) return;
 
   try {
-    const r = await fetchWithTimeout('/api/v1/contact-secrets/backup?limit=1', {
+    const r = await fetchWithTimeout('/api/v1/contact-secrets/backup?limit=5', {
       method: 'GET',
       headers: authHeaders()
     }, 15000);
@@ -165,7 +165,11 @@ export async function hydrateBizConvFromBackup(activeServerIds = null) {
 
     const data = await r.json();
     const backups = data?.backups || data?.results || [];
-    if (!backups.length) return;
+    if (!backups.length) {
+      console.warn('[biz-conv-backup] hydrate: 0 backup rows returned');
+      return;
+    }
+    console.warn('[biz-conv-backup] hydrate: scanning', backups.length, 'backup rows for biz-conv-backup/v1');
 
     // Find the biz-conv backup (by parsing each backup's payload)
     for (const backup of backups) {
@@ -175,7 +179,10 @@ export async function hydrateBizConvFromBackup(activeServerIds = null) {
         const envelope = typeof payloadStr === 'string' ? JSON.parse(payloadStr) : payloadStr;
 
         // Only process biz-conv-backup/v1 tagged envelopes
-        if (envelope?.info !== BIZ_CONV_BACKUP_INFO) continue;
+        if (envelope?.info !== BIZ_CONV_BACKUP_INFO) {
+          console.warn('[biz-conv-backup] hydrate: skip row (info=', envelope?.info, ')');
+          continue;
+        }
 
         const decrypted = await unwrapWithMK_JSON(envelope, mkRaw);
         if (decrypted && decrypted.conversations) {
