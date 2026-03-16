@@ -336,7 +336,7 @@ export function createBizConvCreateModal({ deps }) {
     st._groupMetaKey = metaKey;
     st.owner_account_digest = selfDigest;
     st.status = 'active';
-    st.meta = { name: groupName };
+    st.meta = { name: groupName, avatar: avatarDataUrl || null };
     st.policy = policy;
     st.members = [{ accountDigest: selfDigest, deviceId: selfDeviceId, role: 'owner' }];
 

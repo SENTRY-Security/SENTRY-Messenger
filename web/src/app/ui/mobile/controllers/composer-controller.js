@@ -633,7 +633,7 @@ export class ComposerController extends BaseController {
             const sent = this.deps.wsSend?.({
                 type: 'biz-conv-message',
                 conversation_id: convId,
-                envelope,
+                ...envelope,
                 message_id: msgId,
                 ts
             });
