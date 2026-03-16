@@ -7,7 +7,7 @@
 
 import { t } from '/locales/index.js';
 import { escapeHtml } from '../ui-utils.js';
-import { listReadyContacts } from '../contact-core-store.js';
+import { listReadyContacts, resolveContactAvatarUrl } from '../contact-core-store.js';
 import { bizConvCreate, bizConvInvite } from '../../../api/biz-conv.js';
 import { BizConvStore } from '../../../features/biz-conv.js';
 import { deriveBizConvId, deriveGroupMetaKey, encryptMetaBlob, encryptRoleBlob, buildKDM } from '../../../../shared/crypto/biz-conv.js';
@@ -44,9 +44,15 @@ export function createBizConvCreateModal({ deps }) {
             : contacts.map((c, i) => {
                 const nick = c.nickname || c.peerKey?.slice(-8) || `#${i}`;
                 const digest = c.peerAccountDigest || c.peerKey || '';
+                const avatarUrl = resolveContactAvatarUrl(c);
+                const initial = nick.charAt(0).toUpperCase();
+                const avatarHtml = avatarUrl
+                  ? `<img class="biz-conv-contact-avatar" src="${escapeHtml(avatarUrl)}" alt="" />`
+                  : `<span class="biz-conv-contact-avatar biz-conv-contact-avatar--initial">${escapeHtml(initial)}</span>`;
                 return `<label class="biz-conv-contact-item">
                   <input type="checkbox" name="member" value="${escapeHtml(digest)}" data-device-id="${escapeHtml(c.peerDeviceId || '')}" />
-                  <span>${escapeHtml(nick)}</span>
+                  ${avatarHtml}
+                  <span class="biz-conv-contact-nick">${escapeHtml(nick)}</span>
                 </label>`;
               }).join('')
           }
