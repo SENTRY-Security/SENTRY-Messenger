@@ -1077,17 +1077,6 @@ async function commitIncomingSingle(params = {}, adapters) {
       }];
       try {
         adapters.appendTimelineBatch(entries, { directionalOrder: 'chronological' });
-
-        // Persist incoming call-log for cloud backup (survives re-login)
-        if (msgType === 'call-log' && batchCallLog && entries[0]) {
-          try {
-            const { addCallLogEntry } = await import('../../call-log-backup.js');
-            const { markBizConvBackupDirty } = await import('../../biz-conv-backup.js');
-            addCallLogEntry(conversationId, entries[0]);
-            markBizConvBackupDirty();
-          } catch { /* non-critical */ }
-        }
-
         // [FIX] Clean up stale live placeholder for this message.
         // After gap-queue successfully decrypts & appends to timeline via
         // commitIncomingSingle, the pendingLivePlaceholder must be removed.
