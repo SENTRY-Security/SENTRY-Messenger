@@ -123,10 +123,32 @@ export async function uploadBizConvBackup() {
 }
 
 /**
+ * Fetch the set of active group IDs from the server.
+ * Used to filter stale groups during backup restore.
+ * @returns {Promise<Set<string>|null>} Set of active conversation IDs, or null on failure
+ */
+export async function fetchActiveServerGroupIds() {
+  try {
+    const result = await bizConvList();
+    const conversations = result?.conversations || [];
+    const ids = new Set();
+    for (const conv of conversations) {
+      const convId = conv.conversation_id;
+      if (convId && conv.status === 'active') ids.add(convId);
+    }
+    return ids;
+  } catch (err) {
+    log({ bizConvFetchActiveIdsFail: err?.message });
+    return null;
+  }
+}
+
+/**
  * Download and restore biz-conv backup from server.
  * Called during login hydration.
+ * @param {Set<string>|null} [activeServerIds] - Pre-fetched active group IDs to filter stale groups
  */
-export async function hydrateBizConvFromBackup() {
+export async function hydrateBizConvFromBackup(activeServerIds = null) {
   const mkRaw = getMkRaw();
   if (!mkRaw) return;
 
@@ -157,8 +179,10 @@ export async function hydrateBizConvFromBackup() {
 
         const decrypted = await unwrapWithMK_JSON(envelope, mkRaw);
         if (decrypted && decrypted.conversations) {
-          await BizConvStore.restoreFromBackup(decrypted);
-          log({ bizConvHydrateOk: Object.keys(decrypted.conversations).length });
+          const totalInBackup = Object.keys(decrypted.conversations).length;
+          await BizConvStore.restoreFromBackup(decrypted, activeServerIds);
+          const restored = BizConvStore.conversations.size;
+          log({ bizConvHydrateOk: restored, backupTotal: totalInBackup, filtered: totalInBackup - restored });
           return;
         }
       } catch (err) {

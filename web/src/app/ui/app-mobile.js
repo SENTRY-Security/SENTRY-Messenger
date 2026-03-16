@@ -119,7 +119,7 @@ import {
   getLastBackupHydrateResult,
   getLatestBackupMeta
 } from '../features/contact-backup.js';
-import { hydrateBizConvFromBackup, triggerBizConvBackupIfDirty, clearBizConvOnLogout, syncBizConvListFromServer, flushBizConvBackupBeacon } from '../features/biz-conv-backup.js';
+import { hydrateBizConvFromBackup, triggerBizConvBackupIfDirty, clearBizConvOnLogout, syncBizConvListFromServer, flushBizConvBackupBeacon, fetchActiveServerGroupIds } from '../features/biz-conv-backup.js';
 import { createBizConvCreateModal } from './mobile/modals/biz-conv-create-modal.js';
 import { createBizConvInfoModal } from './mobile/modals/biz-conv-info-modal.js';
 import { subscriptionStatus, redeemSubscription, uploadSubscriptionQr } from '../api/subscription.js';
@@ -1910,16 +1910,27 @@ async function runPostLoginContactHydrate() {
   } catch (err) {
     log({ drSnapshotHydrateError: err?.message || err, source: 'post-login-hydrate' });
   }
-  // Hydrate biz-conv (business conversation) state from encrypted server backup
+  // Hydrate biz-conv (business conversation) state from encrypted server backup.
+  // Fetch active group IDs from server FIRST so stale (left/dissolved) groups
+  // in the old backup are filtered out and never appear in the UI.
+  let activeGroupIds = null;
   try {
-    await hydrateBizConvFromBackup();
+    activeGroupIds = await fetchActiveServerGroupIds();
+  } catch (err) {
+    log({ bizConvActiveIdsFetchError: err?.message || err, source: 'post-login-hydrate' });
+  }
+  try {
+    await hydrateBizConvFromBackup(activeGroupIds);
   } catch (err) {
     log({ bizConvHydrateError: err?.message || err, source: 'post-login-hydrate' });
   }
-  // Sync group list from server to rebuild threads (non-blocking)
-  syncBizConvListFromServer().catch(err => {
+  // Sync group list from server to rebuild threads and purge any remaining stale groups.
+  // Blocking: ensures cleanup completes before UI renders the conversation list.
+  try {
+    await syncBizConvListFromServer();
+  } catch (err) {
     log({ bizConvListSyncError: err?.message || err, source: 'post-login-hydrate' });
-  });
+  }
   let loadError = null;
   try {
     await loadInitialContacts();

@@ -153,11 +153,16 @@ export const BizConvStore = {
 
   /**
    * Restore from decrypted backup payload.
+   * @param {Object} backup - Decrypted backup with `conversations` map
+   * @param {Set<string>|null} [activeServerIds] - If provided, skip groups not in this set
    */
-  async restoreFromBackup(backup) {
+  async restoreFromBackup(backup, activeServerIds = null) {
     if (!backup || !backup.conversations) return;
 
     for (const [convId, convData] of Object.entries(backup.conversations)) {
+      // Skip groups that were left/dissolved (server no longer lists them)
+      if (activeServerIds && !activeServerIds.has(convId)) continue;
+
       const state = this.getOrCreate(convId);
 
       // Restore seeds
