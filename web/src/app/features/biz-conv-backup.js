@@ -14,6 +14,12 @@ import { fetchWithTimeout } from '../core/http.js';
 import { getAccountToken, getAccountDigest, ensureDeviceId } from '../core/store.js';
 import { bizConvList } from '../api/biz-conv.js';
 import { upsertBizConvThread } from './conversation-updates.js';
+import {
+  buildCallLogBackupPayload,
+  restoreCallLogFromPayload,
+  injectCallLogsIntoTimeline,
+  clearCallLogOnLogout as clearCallLogStore
+} from './call-log-backup.js';
 
 const BIZ_CONV_BACKUP_INFO = 'biz-conv-backup/v1';
 let backupDirty = false;
@@ -76,7 +82,7 @@ export function flushBizConvBackupBeacon() {
  * Encrypt and upload biz-conv backup to server.
  */
 export async function uploadBizConvBackup() {
-  if (!backupDirty && BizConvStore.conversations.size === 0) return;
+  if (!backupDirty) return;
   if (backupInFlight) return; // Prevent concurrent uploads
 
   const mkRaw = getMkRaw();
@@ -88,6 +94,8 @@ export async function uploadBizConvBackup() {
   backupInFlight = true;
   try {
     const payload = BizConvStore.buildBackupPayload();
+    // Embed call-log entries in the same backup payload
+    payload.callLogs = buildCallLogBackupPayload();
     // Mark clean before upload — if new changes arrive during upload,
     // markBizConvBackupDirty will re-set and schedule another round.
     backupDirty = false;
@@ -183,6 +191,17 @@ export async function hydrateBizConvFromBackup(activeServerIds = null) {
           await BizConvStore.restoreFromBackup(decrypted, activeServerIds);
           const restored = BizConvStore.conversations.size;
           log({ bizConvHydrateOk: restored, backupTotal: totalInBackup, filtered: totalInBackup - restored });
+
+          // Restore call-log entries from the same backup payload
+          if (decrypted.callLogs) {
+            try {
+              restoreCallLogFromPayload(decrypted.callLogs);
+              await injectCallLogsIntoTimeline();
+              log({ callLogHydrateOk: true });
+            } catch (clErr) {
+              log({ callLogHydrateFail: clErr?.message });
+            }
+          }
           return;
         }
       } catch (err) {
@@ -294,5 +313,6 @@ export function clearBizConvOnLogout() {
     backupDebounceTimer = null;
   }
   BizConvStore.clear();
+  clearCallLogStore();
   backupDirty = false;
 }

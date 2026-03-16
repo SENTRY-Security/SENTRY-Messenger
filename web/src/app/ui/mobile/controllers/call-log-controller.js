@@ -15,6 +15,7 @@ import { CALL_LOG_OUTCOME, describeCallLogForViewer, resolveViewerRole } from '.
 import { sendDrCallLog } from '../../../features/dr-session.js';
 import { appendUserMessage } from '../../../features/timeline-store.js';
 import { addCallLogEntry } from '../../../features/call-log-backup.js';
+import { markBizConvBackupDirty } from '../../../features/biz-conv-backup.js';
 import { t } from '/locales/index.js';
 
 export class CallLogController extends BaseController {
@@ -328,6 +329,7 @@ export class CallLogController extends BaseController {
             // Persist call-log entry for cloud backup (survives re-login)
             try {
                 addCallLogEntry(conversationId, localMessage);
+                markBizConvBackupDirty();
             } catch (backupErr) {
                 console.warn('[CallLog] backup store failed', backupErr?.message);
             }
