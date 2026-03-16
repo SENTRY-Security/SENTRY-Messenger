@@ -1339,7 +1339,10 @@ async function ensureDataTables(env) {
     'contact_secret_backups',
     'subscriptions',
     'tokens',
-    'extend_logs'
+    'extend_logs',
+    'business_conversations',
+    'business_conversation_members',
+    'business_conversation_tombstones'
   ];
   try {
     const tableRows = await env.DB.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all();
@@ -4512,171 +4515,697 @@ async function handleGroupsRoutes(req, env) {
   return json({ error: 'Removed', message: 'Legacy groups API removed. Use Business Conversation API.' }, { status: 410 });
 }
 
-async function _handleGroupsRoutes_REMOVED(req, env) {
-  const url = new URL(req.url);
+// _handleGroupsRoutes_REMOVED — legacy group code deleted in Business Conversation redesign
 
-  if (req.method === 'POST' && url.pathname === '/d1/groups/create') {
+// ───── Business Conversation Routes ─────────────────────────────────────────
+
+async function requireBizConvMember(env, conversationId, accountDigest) {
+  const row = await env.DB.prepare(
+    `SELECT status FROM business_conversation_members
+     WHERE conversation_id = ?1 AND account_digest = ?2`
+  ).bind(conversationId, accountDigest).first();
+  if (!row || row.status !== 'active') {
+    throw { status: 403, error: 'NotMember' };
+  }
+}
+
+async function requireBizConvOwner(env, conversationId, accountDigest) {
+  const row = await env.DB.prepare(
+    `SELECT owner_account_digest FROM business_conversations
+     WHERE conversation_id = ?1 AND status = 'active'`
+  ).bind(conversationId).first();
+  if (!row || row.owner_account_digest !== accountDigest) {
+    throw { status: 403, error: 'NotOwner' };
+  }
+}
+
+async function handleBizConvRoutes(req, env) {
+  const url = new URL(req.url);
+  const path = url.pathname;
+  const method = req.method;
+
+  // ── POST /d1/biz-conv/create ───────────────────────────────────
+  if (method === 'POST' && path === '/d1/biz-conv/create') {
     let body;
-    try {
-      body = await req.json();
-    } catch {
+    try { body = await req.json(); } catch {
       return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
     }
-    const groupId = normalizeGroupId(body?.groupId || body?.group_id);
     const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
-    const creatorAccountDigest = normalizeAccountDigest(body?.creatorAccountDigest || body?.creator_account_digest);
-    const name = normalizeGroupName(body?.name);
-    const avatarJson = normalizeGroupAvatar(body?.avatar || body?.avatarJson || body?.avatar_json);
+    const ownerDigest = normalizeAccountDigest(body?.ownerAccountDigest || body?.owner_account_digest);
+    const encryptedMetaBlob = body?.encrypted_meta_blob || body?.encryptedMetaBlob || null;
+    const encryptedPolicyBlob = body?.encrypted_policy_blob || body?.encryptedPolicyBlob || null;
     const membersInput = Array.isArray(body?.members) ? body.members : [];
-    if (!groupId || !conversationId || !creatorAccountDigest) {
-      return json({ error: 'BadRequest', message: 'groupId, conversationId, creatorAccountDigest required' }, { status: 400 });
+
+    if (!conversationId || !ownerDigest) {
+      return json({ error: 'BadRequest', message: 'conversation_id and owner_account_digest required' }, { status: 400 });
     }
 
     await ensureDataTables(env);
     const now = Math.floor(Date.now() / 1000);
-    try {
-      await env.DB.prepare(`
-        INSERT INTO groups (group_id, conversation_id, creator_account_digest, name, avatar_json, created_at, updated_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
-        ON CONFLICT(group_id) DO UPDATE SET
-          conversation_id=excluded.conversation_id,
-          name=excluded.name,
-          avatar_json=excluded.avatar_json,
-          updated_at=strftime('%s','now')
-      `).bind(groupId, conversationId, creatorAccountDigest, name, avatarJson, now).run();
-    } catch (err) {
-      console.warn('group_create_failed', err?.message || err);
-      return json({ error: 'CreateFailed', message: err?.message || 'unable to create group' }, { status: 500 });
+
+    // Check for existing conversation
+    const existing = await env.DB.prepare(
+      `SELECT conversation_id FROM business_conversations WHERE conversation_id = ?1`
+    ).bind(conversationId).first();
+    if (existing) {
+      return json({ error: 'Conflict', message: 'conversation_id already exists' }, { status: 409 });
     }
 
-    await upsertGroupMember(env, {
-      groupId,
-      accountDigest: creatorAccountDigest,
-      role: 'owner',
-      status: 'active',
-      inviterAccountDigest: creatorAccountDigest,
-      joinedAt: now
-    });
-    await grantConversationAccess(env, { conversationId, accountDigest: creatorAccountDigest });
+    // Create business_conversations record
+    await env.DB.prepare(`
+      INSERT INTO business_conversations (conversation_id, owner_account_digest, encrypted_meta_blob, encrypted_policy_blob, key_epoch, status, created_at, updated_at)
+      VALUES (?1, ?2, ?3, ?4, 0, 'active', ?5, ?5)
+    `).bind(
+      conversationId, ownerDigest,
+      encryptedMetaBlob ? JSON.stringify(encryptedMetaBlob) : null,
+      encryptedPolicyBlob ? JSON.stringify(encryptedPolicyBlob) : null,
+      now
+    ).run();
 
-    const seenDigests = new Set([creatorAccountDigest]);
+    // Add owner as member
+    await env.DB.prepare(`
+      INSERT INTO business_conversation_members (conversation_id, account_digest, encrypted_role_blob, status, confirmed_epoch, inviter_account_digest, created_at, updated_at)
+      VALUES (?1, ?2, NULL, 'active', 0, ?2, ?3, ?3)
+    `).bind(conversationId, ownerDigest, now).run();
+
+    // Grant conversation ACL for owner
+    await grantConversationAccess(env, { conversationId, accountDigest: ownerDigest });
+
+    // Add initial members
+    const seenDigests = new Set([ownerDigest]);
+    let membersCount = 1;
     for (const entry of membersInput) {
       const acct = normalizeAccountDigest(entry?.accountDigest || entry?.account_digest);
       if (!acct || seenDigests.has(acct)) continue;
       seenDigests.add(acct);
-      const role = normalizeGroupRole(entry?.role);
-      await upsertGroupMember(env, {
-        groupId,
-        accountDigest: acct,
-        role,
-        status: 'active',
-        inviterAccountDigest: creatorAccountDigest,
-        joinedAt: now
-      });
+
+      await env.DB.prepare(`
+        INSERT INTO business_conversation_members (conversation_id, account_digest, encrypted_role_blob, status, confirmed_epoch, inviter_account_digest, created_at, updated_at)
+        VALUES (?1, ?2, NULL, 'active', 0, ?3, ?4, ?4)
+      `).bind(conversationId, acct, ownerDigest, now).run();
       await grantConversationAccess(env, { conversationId, accountDigest: acct });
+      membersCount++;
     }
 
-    const detail = await fetchGroupWithMembers(env, groupId);
-    return json(detail ? { ok: true, ...detail } : { ok: true, groupId });
+    // Create member_joined tombstones for all members
+    for (const digest of seenDigests) {
+      const tombId = crypto.randomUUID();
+      await env.DB.prepare(`
+        INSERT INTO business_conversation_tombstones (id, conversation_id, tombstone_type, encrypted_payload_blob, actor_account_digest, key_epoch, created_at)
+        VALUES (?1, ?2, 'member_joined', '{}', ?3, 0, ?4)
+      `).bind(tombId, conversationId, digest, now).run();
+    }
+
+    return json({ ok: true, conversation_id: conversationId, key_epoch: 0, members_count: membersCount });
   }
 
-  if (req.method === 'POST' && url.pathname === '/d1/groups/members/add') {
-    let body;
-    try {
-      body = await req.json();
-    } catch {
-      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
-    }
-    const groupId = normalizeGroupId(body?.groupId || body?.group_id);
-    const membersInput = Array.isArray(body?.members) ? body.members : [];
-    if (!groupId || !membersInput.length) {
-      return json({ error: 'BadRequest', message: 'groupId and members required' }, { status: 400 });
-    }
-    await ensureDataTables(env);
-    const groupRow = await env.DB.prepare(`SELECT conversation_id FROM groups WHERE group_id=?1`).bind(groupId).all();
-    const group = groupRow?.results?.[0] || null;
-    if (!group) {
-      return json({ error: 'NotFound', message: 'group not found' }, { status: 404 });
-    }
-    const conversationId = group.conversation_id;
-    const now = Math.floor(Date.now() / 1000);
-    let added = 0;
-    for (const entry of membersInput) {
-      const acct = normalizeAccountDigest(entry?.accountDigest || entry?.account_digest);
-      if (!acct) continue;
-      const role = normalizeGroupRole(entry?.role);
-      const inviterAcct = normalizeAccountDigest(entry?.inviterAccountDigest || entry?.inviter_account_digest);
-      await upsertGroupMember(env, {
-        groupId,
-        accountDigest: acct,
-        role,
-        status: 'active',
-        inviterAccountDigest: inviterAcct,
-        joinedAt: now
-      });
-      await grantConversationAccess(env, { conversationId, accountDigest: acct });
-      added += 1;
-    }
-    const detail = await fetchGroupWithMembers(env, groupId);
-    return json(detail ? { ok: true, added, ...detail } : { ok: true, added });
-  }
-
-  if (req.method === 'POST' && url.pathname === '/d1/groups/members/remove') {
-    let body;
-    try {
-      body = await req.json();
-    } catch {
-      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
-    }
-    const groupId = normalizeGroupId(body?.groupId || body?.group_id);
-    const membersInput = Array.isArray(body?.members) ? body.members : [];
-    const statusOverride = normalizeGroupStatus(body?.status);
-    if (!groupId || !membersInput.length) {
-      return json({ error: 'BadRequest', message: 'groupId and members required' }, { status: 400 });
-    }
-    await ensureDataTables(env);
-    const groupRow = await env.DB.prepare(`SELECT conversation_id FROM groups WHERE group_id=?1`).bind(groupId).all();
-    const group = groupRow?.results?.[0] || null;
-    if (!group) {
-      return json({ error: 'NotFound', message: 'group not found' }, { status: 404 });
-    }
-    const conversationId = group.conversation_id;
-    const now = Math.floor(Date.now() / 1000);
-    let removed = 0;
-    for (const entry of membersInput) {
-      const acct = normalizeAccountDigest(entry?.accountDigest || entry?.account_digest);
-      if (!acct) continue;
-      const status = statusOverride || normalizeGroupStatus(entry?.status) || 'removed';
-      try {
-        await env.DB.prepare(`
-          UPDATE group_members
-             SET status=?3,
-                 updated_at=strftime('%s','now')
-           WHERE group_id=?1 AND account_digest=?2
-        `).bind(groupId, acct, status).run();
-        removed += 1;
-      } catch (err) {
-        console.warn('group_member_remove_failed', err?.message || err);
-      }
-      await removeConversationAccess(env, { conversationId, accountDigest: acct });
-    }
-    const detail = await fetchGroupWithMembers(env, groupId);
-    return json(detail ? { ok: true, removed, ...detail } : { ok: true, removed });
-  }
-
-  if (req.method === 'GET' && url.pathname === '/d1/groups/get') {
-    const groupId = normalizeGroupId(
-      url.searchParams.get('groupId')
-      || url.searchParams.get('group_id')
+  // ── GET /d1/biz-conv/get ───────────────────────────────────────
+  if (method === 'GET' && path === '/d1/biz-conv/get') {
+    const conversationId = normalizeConversationId(
+      url.searchParams.get('conversationId') || url.searchParams.get('conversation_id')
     );
-    if (!groupId) {
-      return json({ error: 'BadRequest', message: 'groupId required' }, { status: 400 });
+    const accountDigest = normalizeAccountDigest(
+      url.searchParams.get('accountDigest') || url.searchParams.get('account_digest')
+    );
+    if (!conversationId) {
+      return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
     }
-    const detail = await fetchGroupWithMembers(env, groupId);
-    if (!detail) {
-      return json({ error: 'NotFound', message: 'group not found' }, { status: 404 });
+    await ensureDataTables(env);
+
+    try {
+      if (accountDigest) await requireBizConvMember(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
     }
-    return json({ ok: true, ...detail });
+
+    const row = await env.DB.prepare(`
+      SELECT conversation_id, owner_account_digest, encrypted_meta_blob, encrypted_policy_blob, key_epoch, status, created_at
+      FROM business_conversations WHERE conversation_id = ?1
+    `).bind(conversationId).first();
+    if (!row) {
+      return json({ error: 'NotFound', message: 'conversation not found' }, { status: 404 });
+    }
+
+    return json({
+      ok: true,
+      conversation_id: row.conversation_id,
+      owner_account_digest: row.owner_account_digest,
+      encrypted_meta_blob: row.encrypted_meta_blob ? JSON.parse(row.encrypted_meta_blob) : null,
+      encrypted_policy_blob: row.encrypted_policy_blob ? JSON.parse(row.encrypted_policy_blob) : null,
+      key_epoch: row.key_epoch,
+      status: row.status,
+      created_at: row.created_at
+    });
+  }
+
+  // ── PUT /d1/biz-conv/meta ─────────────────────────────────────
+  if (method === 'PUT' && path === '/d1/biz-conv/meta') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const encryptedMetaBlob = body?.encrypted_meta_blob || body?.encryptedMetaBlob;
+    if (!conversationId || !encryptedMetaBlob) {
+      return json({ error: 'BadRequest', message: 'conversationId and encrypted_meta_blob required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      await requireBizConvOwner(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    await env.DB.prepare(`
+      UPDATE business_conversations SET encrypted_meta_blob = ?2 WHERE conversation_id = ?1
+    `).bind(conversationId, JSON.stringify(encryptedMetaBlob)).run();
+
+    return json({ ok: true });
+  }
+
+  // ── PUT /d1/biz-conv/policy ───────────────────────────────────
+  if (method === 'PUT' && path === '/d1/biz-conv/policy') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const encryptedPolicyBlob = body?.encrypted_policy_blob || body?.encryptedPolicyBlob;
+    if (!conversationId || !encryptedPolicyBlob) {
+      return json({ error: 'BadRequest', message: 'conversationId and encrypted_policy_blob required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      await requireBizConvOwner(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    await env.DB.prepare(`
+      UPDATE business_conversations SET encrypted_policy_blob = ?2 WHERE conversation_id = ?1
+    `).bind(conversationId, JSON.stringify(encryptedPolicyBlob)).run();
+
+    // Create policy_changed tombstone
+    const now = Math.floor(Date.now() / 1000);
+    const conv = await env.DB.prepare(
+      `SELECT key_epoch FROM business_conversations WHERE conversation_id = ?1`
+    ).bind(conversationId).first();
+    const tombId = crypto.randomUUID();
+    await env.DB.prepare(`
+      INSERT INTO business_conversation_tombstones (id, conversation_id, tombstone_type, encrypted_payload_blob, actor_account_digest, key_epoch, created_at)
+      VALUES (?1, ?2, 'policy_changed', '{}', ?3, ?4, ?5)
+    `).bind(tombId, conversationId, accountDigest, conv?.key_epoch || 0, now).run();
+
+    return json({ ok: true });
+  }
+
+  // ── POST /d1/biz-conv/dissolve ────────────────────────────────
+  if (method === 'POST' && path === '/d1/biz-conv/dissolve') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    if (!conversationId) {
+      return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      await requireBizConvOwner(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    // Hard delete all related data (respecting FK order)
+    const del = async (sql, params = []) => {
+      try { const r = await env.DB.prepare(sql).bind(...params).run(); return r?.meta?.changes || 0; } catch { return 0; }
+    };
+
+    const summary = {};
+    summary.messages = await del(`DELETE FROM messages_secure WHERE conversation_id = ?1`, [conversationId]);
+    summary.attachments = await del(`DELETE FROM attachments WHERE conversation_id = ?1`, [conversationId]);
+    summary.tombstones = await del(`DELETE FROM business_conversation_tombstones WHERE conversation_id = ?1`, [conversationId]);
+    summary.members = await del(`DELETE FROM business_conversation_members WHERE conversation_id = ?1`, [conversationId]);
+    summary.acl = await del(`DELETE FROM conversation_acl WHERE conversation_id = ?1`, [conversationId]);
+    summary.conversation = await del(`DELETE FROM business_conversations WHERE conversation_id = ?1`, [conversationId]);
+    summary.keyVault = await del(`DELETE FROM message_key_vault WHERE conversation_id = ?1`, [conversationId]);
+
+    return json({ ok: true, deleted: true, summary });
+  }
+
+  // ── POST /d1/biz-conv/invite ──────────────────────────────────
+  if (method === 'POST' && path === '/d1/biz-conv/invite') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const inviteeDigest = normalizeAccountDigest(body?.invitee_account_digest || body?.inviteeAccountDigest);
+
+    if (!conversationId || !inviteeDigest) {
+      return json({ error: 'BadRequest', message: 'conversationId and invitee_account_digest required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      await requireBizConvMember(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    // Check if invitee is already active
+    const existingMember = await env.DB.prepare(
+      `SELECT status FROM business_conversation_members WHERE conversation_id = ?1 AND account_digest = ?2`
+    ).bind(conversationId, inviteeDigest).first();
+    if (existingMember && existingMember.status === 'active') {
+      return json({ error: 'Conflict', message: 'already an active member' }, { status: 409 });
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+
+    if (existingMember) {
+      // Re-activate left/removed member
+      await env.DB.prepare(`
+        UPDATE business_conversation_members SET status = 'active', confirmed_epoch = 0, inviter_account_digest = ?3, updated_at = ?4
+        WHERE conversation_id = ?1 AND account_digest = ?2
+      `).bind(conversationId, inviteeDigest, accountDigest, now).run();
+    } else {
+      await env.DB.prepare(`
+        INSERT INTO business_conversation_members (conversation_id, account_digest, encrypted_role_blob, status, confirmed_epoch, inviter_account_digest, created_at, updated_at)
+        VALUES (?1, ?2, NULL, 'active', 0, ?3, ?4, ?4)
+      `).bind(conversationId, inviteeDigest, accountDigest, now).run();
+    }
+
+    await grantConversationAccess(env, { conversationId, accountDigest: inviteeDigest });
+
+    // Create member_joined tombstone
+    const conv = await env.DB.prepare(
+      `SELECT key_epoch FROM business_conversations WHERE conversation_id = ?1`
+    ).bind(conversationId).first();
+    const tombId = crypto.randomUUID();
+    await env.DB.prepare(`
+      INSERT INTO business_conversation_tombstones (id, conversation_id, tombstone_type, encrypted_payload_blob, actor_account_digest, key_epoch, created_at)
+      VALUES (?1, ?2, 'member_joined', '{}', ?3, ?4, ?5)
+    `).bind(tombId, conversationId, inviteeDigest, conv?.key_epoch || 0, now).run();
+
+    return json({ ok: true, tombstone_id: tombId });
+  }
+
+  // ── POST /d1/biz-conv/remove ──────────────────────────────────
+  if (method === 'POST' && path === '/d1/biz-conv/remove') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const targetDigest = normalizeAccountDigest(body?.target_account_digest || body?.targetAccountDigest);
+
+    if (!conversationId || !targetDigest) {
+      return json({ error: 'BadRequest', message: 'conversationId and target_account_digest required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      await requireBizConvOwner(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    // Cannot remove self (owner)
+    if (targetDigest === accountDigest) {
+      return json({ error: 'BadRequest', message: 'owner cannot remove self' }, { status: 400 });
+    }
+
+    // Verify target is active member
+    const targetMember = await env.DB.prepare(
+      `SELECT status FROM business_conversation_members WHERE conversation_id = ?1 AND account_digest = ?2`
+    ).bind(conversationId, targetDigest).first();
+    if (!targetMember || targetMember.status !== 'active') {
+      return json({ error: 'NotFound', message: 'target is not an active member' }, { status: 404 });
+    }
+
+    await env.DB.prepare(`
+      UPDATE business_conversation_members SET status = 'removed', updated_at = ?3
+      WHERE conversation_id = ?1 AND account_digest = ?2
+    `).bind(conversationId, targetDigest, Math.floor(Date.now() / 1000)).run();
+
+    await removeConversationAccess(env, { conversationId, accountDigest: targetDigest });
+
+    // Create member_removed tombstone
+    const conv = await env.DB.prepare(
+      `SELECT key_epoch FROM business_conversations WHERE conversation_id = ?1`
+    ).bind(conversationId).first();
+    const now = Math.floor(Date.now() / 1000);
+    const tombId = crypto.randomUUID();
+    await env.DB.prepare(`
+      INSERT INTO business_conversation_tombstones (id, conversation_id, tombstone_type, encrypted_payload_blob, actor_account_digest, key_epoch, created_at)
+      VALUES (?1, ?2, 'member_removed', '{}', ?3, ?4, ?5)
+    `).bind(tombId, conversationId, accountDigest, conv?.key_epoch || 0, now).run();
+
+    return json({ ok: true, tombstone_id: tombId, requires_key_rotation: true });
+  }
+
+  // ── POST /d1/biz-conv/leave ───────────────────────────────────
+  if (method === 'POST' && path === '/d1/biz-conv/leave') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+
+    if (!conversationId) {
+      return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      await requireBizConvMember(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    // Owner cannot leave (must transfer first)
+    const conv = await env.DB.prepare(
+      `SELECT owner_account_digest, key_epoch FROM business_conversations WHERE conversation_id = ?1`
+    ).bind(conversationId).first();
+    if (conv && conv.owner_account_digest === accountDigest) {
+      return json({ error: 'Forbidden', message: 'owner cannot leave; transfer ownership first' }, { status: 403 });
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(`
+      UPDATE business_conversation_members SET status = 'left', updated_at = ?3
+      WHERE conversation_id = ?1 AND account_digest = ?2
+    `).bind(conversationId, accountDigest, now).run();
+
+    await removeConversationAccess(env, { conversationId, accountDigest });
+
+    const tombId = crypto.randomUUID();
+    await env.DB.prepare(`
+      INSERT INTO business_conversation_tombstones (id, conversation_id, tombstone_type, encrypted_payload_blob, actor_account_digest, key_epoch, created_at)
+      VALUES (?1, ?2, 'member_left', '{}', ?3, ?4, ?5)
+    `).bind(tombId, conversationId, accountDigest, conv?.key_epoch || 0, now).run();
+
+    return json({ ok: true, tombstone_id: tombId, requires_key_rotation: true });
+  }
+
+  // ── POST /d1/biz-conv/transfer ────────────────────────────────
+  if (method === 'POST' && path === '/d1/biz-conv/transfer') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const newOwnerDigest = normalizeAccountDigest(body?.new_owner_account_digest || body?.newOwnerAccountDigest);
+
+    if (!conversationId || !newOwnerDigest) {
+      return json({ error: 'BadRequest', message: 'conversationId and new_owner_account_digest required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      await requireBizConvOwner(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    // Verify new owner is active member
+    try {
+      await requireBizConvMember(env, conversationId, newOwnerDigest);
+    } catch (e) {
+      return json({ error: 'BadRequest', message: 'new owner must be an active member' }, { status: 400 });
+    }
+
+    await env.DB.prepare(`
+      UPDATE business_conversations SET owner_account_digest = ?2 WHERE conversation_id = ?1
+    `).bind(conversationId, newOwnerDigest).run();
+
+    const conv = await env.DB.prepare(
+      `SELECT key_epoch FROM business_conversations WHERE conversation_id = ?1`
+    ).bind(conversationId).first();
+    const now = Math.floor(Date.now() / 1000);
+    const tombId = crypto.randomUUID();
+    await env.DB.prepare(`
+      INSERT INTO business_conversation_tombstones (id, conversation_id, tombstone_type, encrypted_payload_blob, actor_account_digest, key_epoch, created_at)
+      VALUES (?1, ?2, 'ownership_transferred', '{}', ?3, ?4, ?5)
+    `).bind(tombId, conversationId, accountDigest, conv?.key_epoch || 0, now).run();
+
+    return json({ ok: true, tombstone_id: tombId });
+  }
+
+  // ── GET /d1/biz-conv/members ──────────────────────────────────
+  if (method === 'GET' && path === '/d1/biz-conv/members') {
+    const conversationId = normalizeConversationId(
+      url.searchParams.get('conversationId') || url.searchParams.get('conversation_id')
+    );
+    const accountDigest = normalizeAccountDigest(
+      url.searchParams.get('accountDigest') || url.searchParams.get('account_digest')
+    );
+    if (!conversationId) {
+      return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      if (accountDigest) await requireBizConvMember(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    const rows = await env.DB.prepare(`
+      SELECT account_digest, encrypted_role_blob, status, confirmed_epoch, created_at
+      FROM business_conversation_members WHERE conversation_id = ?1
+      ORDER BY created_at ASC
+    `).bind(conversationId).all();
+
+    const members = (rows?.results || []).map(m => ({
+      account_digest: m.account_digest,
+      encrypted_role_blob: m.encrypted_role_blob ? JSON.parse(m.encrypted_role_blob) : null,
+      status: m.status,
+      confirmed_epoch: m.confirmed_epoch,
+      created_at: m.created_at
+    }));
+
+    return json({ ok: true, members });
+  }
+
+  // ── POST /d1/biz-conv/epoch ───────────────────────────────────
+  if (method === 'POST' && path === '/d1/biz-conv/epoch') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+
+    if (!conversationId) {
+      return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      await requireBizConvOwner(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    await env.DB.prepare(`
+      UPDATE business_conversations SET key_epoch = key_epoch + 1 WHERE conversation_id = ?1
+    `).bind(conversationId).run();
+
+    const updated = await env.DB.prepare(
+      `SELECT key_epoch FROM business_conversations WHERE conversation_id = ?1`
+    ).bind(conversationId).first();
+
+    return json({ ok: true, new_epoch: updated?.key_epoch || 0 });
+  }
+
+  // ── POST /d1/biz-conv/epoch/confirm ───────────────────────────
+  if (method === 'POST' && path === '/d1/biz-conv/epoch/confirm') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const epoch = Number(body?.epoch);
+
+    if (!conversationId || !Number.isFinite(epoch)) {
+      return json({ error: 'BadRequest', message: 'conversationId and epoch required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      await requireBizConvMember(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    await env.DB.prepare(`
+      UPDATE business_conversation_members
+      SET confirmed_epoch = MAX(confirmed_epoch, ?3), updated_at = ?4
+      WHERE conversation_id = ?1 AND account_digest = ?2
+    `).bind(conversationId, accountDigest, epoch, Math.floor(Date.now() / 1000)).run();
+
+    return json({ ok: true });
+  }
+
+  // ── GET /d1/biz-conv/epoch ────────────────────────────────────
+  if (method === 'GET' && path === '/d1/biz-conv/epoch') {
+    const conversationId = normalizeConversationId(
+      url.searchParams.get('conversationId') || url.searchParams.get('conversation_id')
+    );
+    const accountDigest = normalizeAccountDigest(
+      url.searchParams.get('accountDigest') || url.searchParams.get('account_digest')
+    );
+    if (!conversationId) {
+      return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      if (accountDigest) await requireBizConvMember(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    const conv = await env.DB.prepare(
+      `SELECT key_epoch FROM business_conversations WHERE conversation_id = ?1`
+    ).bind(conversationId).first();
+    if (!conv) {
+      return json({ error: 'NotFound' }, { status: 404 });
+    }
+
+    const pendingRows = await env.DB.prepare(`
+      SELECT account_digest, confirmed_epoch
+      FROM business_conversation_members
+      WHERE conversation_id = ?1 AND status = 'active' AND confirmed_epoch < ?2
+    `).bind(conversationId, conv.key_epoch).all();
+
+    return json({
+      ok: true,
+      key_epoch: conv.key_epoch,
+      pending_members: (pendingRows?.results || []).map(r => ({
+        account_digest: r.account_digest,
+        confirmed_epoch: r.confirmed_epoch
+      }))
+    });
+  }
+
+  // ── POST /d1/biz-conv/tombstone ───────────────────────────────
+  if (method === 'POST' && path === '/d1/biz-conv/tombstone') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const tombstoneType = body?.tombstone_type || body?.tombstoneType;
+    const encryptedPayloadBlob = body?.encrypted_payload_blob || body?.encryptedPayloadBlob || '{}';
+
+    if (!conversationId || !tombstoneType) {
+      return json({ error: 'BadRequest', message: 'conversationId and tombstone_type required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      await requireBizConvMember(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    const conv = await env.DB.prepare(
+      `SELECT key_epoch FROM business_conversations WHERE conversation_id = ?1`
+    ).bind(conversationId).first();
+    const now = Math.floor(Date.now() / 1000);
+    const tombId = crypto.randomUUID();
+
+    await env.DB.prepare(`
+      INSERT INTO business_conversation_tombstones (id, conversation_id, tombstone_type, encrypted_payload_blob, actor_account_digest, key_epoch, created_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+    `).bind(
+      tombId, conversationId, tombstoneType,
+      typeof encryptedPayloadBlob === 'string' ? encryptedPayloadBlob : JSON.stringify(encryptedPayloadBlob),
+      accountDigest, conv?.key_epoch || 0, now
+    ).run();
+
+    return json({ ok: true, tombstone_id: tombId, created_at: now });
+  }
+
+  // ── GET /d1/biz-conv/tombstones ───────────────────────────────
+  if (method === 'GET' && path === '/d1/biz-conv/tombstones') {
+    const conversationId = normalizeConversationId(
+      url.searchParams.get('conversationId') || url.searchParams.get('conversation_id')
+    );
+    const accountDigest = normalizeAccountDigest(
+      url.searchParams.get('accountDigest') || url.searchParams.get('account_digest')
+    );
+    const since = Number(url.searchParams.get('since') || 0);
+    const limit = Math.min(Math.max(Number(url.searchParams.get('limit') || 50), 1), 200);
+
+    if (!conversationId) {
+      return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      if (accountDigest) await requireBizConvMember(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    const rows = await env.DB.prepare(`
+      SELECT id, tombstone_type, encrypted_payload_blob, actor_account_digest, key_epoch, created_at
+      FROM business_conversation_tombstones
+      WHERE conversation_id = ?1 AND created_at > ?2
+      ORDER BY created_at ASC
+      LIMIT ?3
+    `).bind(conversationId, since, limit + 1).all();
+
+    const results = rows?.results || [];
+    const hasMore = results.length > limit;
+    const tombstones = results.slice(0, limit).map(t => ({
+      id: t.id,
+      tombstone_type: t.tombstone_type,
+      encrypted_payload_blob: t.encrypted_payload_blob,
+      actor_account_digest: t.actor_account_digest,
+      key_epoch: t.key_epoch,
+      created_at: t.created_at
+    }));
+
+    return json({ ok: true, tombstones, has_more: hasMore });
+  }
+
+  // ── GET /d1/biz-conv/list ─────────────────────────────────────
+  if (method === 'GET' && path === '/d1/biz-conv/list') {
+    const accountDigest = normalizeAccountDigest(
+      url.searchParams.get('accountDigest') || url.searchParams.get('account_digest')
+    );
+    if (!accountDigest) {
+      return json({ error: 'BadRequest', message: 'accountDigest required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+
+    const rows = await env.DB.prepare(`
+      SELECT bc.conversation_id, bc.owner_account_digest, bc.encrypted_meta_blob,
+             bc.key_epoch, bc.status, bc.created_at,
+             bcm.status AS my_status, bcm.confirmed_epoch AS my_confirmed_epoch
+      FROM business_conversations bc
+      JOIN business_conversation_members bcm
+        ON bc.conversation_id = bcm.conversation_id
+      WHERE bcm.account_digest = ?1 AND bcm.status = 'active'
+      ORDER BY bc.updated_at DESC
+    `).bind(accountDigest).all();
+
+    const conversations = (rows?.results || []).map(r => ({
+      conversation_id: r.conversation_id,
+      owner_account_digest: r.owner_account_digest,
+      encrypted_meta_blob: r.encrypted_meta_blob ? JSON.parse(r.encrypted_meta_blob) : null,
+      key_epoch: r.key_epoch,
+      status: r.status,
+      my_status: r.my_status,
+      my_confirmed_epoch: r.my_confirmed_epoch,
+      created_at: r.created_at
+    }));
+
+    return json({ ok: true, conversations });
   }
 
   return null;
@@ -5638,25 +6167,21 @@ async function handleAccountsRoutes(req, env) {
       [accountDigest]
     );
 
-    if (groupList.length) {
-      summary.groupInvites = await del(
-        `DELETE FROM group_invites WHERE group_id IN (${groupPlaceholders})`,
-        groupList
-      );
-      summary.groupMembers = await del(
-        `DELETE FROM group_members WHERE group_id IN (${groupPlaceholders})`,
-        groupList
-      );
-      summary.groups = await del(
-        `DELETE FROM groups WHERE group_id IN (${groupPlaceholders})`,
-        groupList
-      );
-    } else {
-      summary.groupMembers = await del(
-        `DELETE FROM group_members WHERE account_digest=?1`,
-        [accountDigest]
-      );
-    }
+    // Business Conversation cleanup for purged account
+    summary.bizConvTombstones = await del(
+      `DELETE FROM business_conversation_tombstones WHERE conversation_id IN (
+        SELECT conversation_id FROM business_conversation_members WHERE account_digest=?1
+      )`, [accountDigest]
+    );
+    summary.bizConvMembers = await del(
+      `DELETE FROM business_conversation_members WHERE account_digest=?1`,
+      [accountDigest]
+    );
+    // Dissolve conversations owned by purged account
+    summary.bizConvOwned = await del(
+      `DELETE FROM business_conversations WHERE owner_account_digest=?1`,
+      [accountDigest]
+    );
 
     summary.extendLogs = await del(
       `DELETE FROM extend_logs WHERE digest=?1`,
@@ -6723,7 +7248,7 @@ async function handlePublicRoutes(req, env) {
   let body = null;
   const contentType = (req.headers.get('content-type') || '').toLowerCase();
   const isJsonContent = !contentType || contentType.includes('application/json') || contentType.includes('text/');
-  if (method === 'POST' && isJsonContent) {
+  if ((method === 'POST' || method === 'PUT') && isJsonContent) {
     try { body = await req.json(); } catch {
       return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
     }
@@ -6791,57 +7316,128 @@ async function handlePublicRoutes(req, env) {
     }
   }
 
-  // ── Groups ────────────────────────────────────────────────────
-  if (path === '/api/v1/groups/create' && method === 'POST') {
+  // ── Groups (Legacy — returns 410) ──────────────────────────────
+  if (path.startsWith('/api/v1/groups/')) {
+    return json({ error: 'Removed', message: 'Legacy groups API removed. Use Business Conversation API (/api/v1/biz-conv/).' }, { status: 410 });
+  }
+
+  // ── Business Conversations ─────────────────────────────────────
+  if (path.startsWith('/api/v1/biz-conv/')) {
     const auth = await resolvePublicAuth(req, env, { body });
     if (!auth) return json({ error: 'Unauthorized', message: 'account verification failed' }, { status: 401 });
-    const intBody = {
-      groupId: body.group_id || body.groupId,
-      conversationId: body.conversation_id || body.conversationId,
-      creatorAccountDigest: auth.accountDigest,
-      name: body.name || null,
-      avatar: body.avatar ?? null,
-      members: (body.members || []).map(m => ({
-        accountDigest: m.account_digest || m.accountDigest
-      }))
-    };
-    return handleGroupsRoutes(internalRequest('/d1/groups/create', 'POST', intBody, baseUrl), env);
-  }
 
-  if (path === '/api/v1/groups/members/add' && method === 'POST') {
-    const auth = await resolvePublicAuth(req, env, { body });
-    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
-    const intBody = {
-      groupId: body.group_id || body.groupId,
-      members: (body.members || []).map(m => ({
-        accountDigest: m.account_digest || m.accountDigest
-      }))
-    };
-    return handleGroupsRoutes(internalRequest('/d1/groups/members/add', 'POST', intBody, baseUrl), env);
-  }
-
-  if (path === '/api/v1/groups/members/remove' && method === 'POST') {
-    const auth = await resolvePublicAuth(req, env, { body });
-    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
-    const intBody = {
-      groupId: body.group_id || body.groupId,
-      members: (body.members || []).map(m => ({
-        accountDigest: m.account_digest || m.accountDigest
-      })),
-      status: body.status || null
-    };
-    return handleGroupsRoutes(internalRequest('/d1/groups/members/remove', 'POST', intBody, baseUrl), env);
-  }
-
-  {
-    const groupMatch = path.match(/^\/api\/v1\/groups\/([A-Za-z0-9_-]{8,128})$/);
-    if (groupMatch && method === 'GET') {
-      const groupId = groupMatch[1];
-      const accountDigest = url.searchParams.get('account_digest') || url.searchParams.get('accountDigest') || '';
-      if (!accountDigest) return json({ error: 'BadRequest', message: 'account_digest required' }, { status: 400 });
-      const qs = `?groupId=${encodeURIComponent(groupId)}&accountDigest=${encodeURIComponent(accountDigest)}`;
-      return handleGroupsRoutes(internalRequest(`/d1/groups/get${qs}`, 'GET', null, baseUrl), env);
+    // POST /api/v1/biz-conv/create
+    if (path === '/api/v1/biz-conv/create' && method === 'POST') {
+      const intBody = {
+        conversationId: body?.conversation_id || body?.conversationId,
+        ownerAccountDigest: auth.accountDigest,
+        encrypted_meta_blob: body?.encrypted_meta_blob || body?.encryptedMetaBlob,
+        encrypted_policy_blob: body?.encrypted_policy_blob || body?.encryptedPolicyBlob,
+        members: body?.members || []
+      };
+      return handleBizConvRoutes(internalRequest('/d1/biz-conv/create', 'POST', intBody, baseUrl), env);
     }
+
+    // GET /api/v1/biz-conv/list
+    if (path === '/api/v1/biz-conv/list' && method === 'GET') {
+      const qs = `?accountDigest=${encodeURIComponent(auth.accountDigest)}`;
+      return handleBizConvRoutes(internalRequest(`/d1/biz-conv/list${qs}`, 'GET', null, baseUrl), env);
+    }
+
+    // Match /api/v1/biz-conv/:convId and /api/v1/biz-conv/:convId/action
+    const convMatch = path.match(/^\/api\/v1\/biz-conv\/([A-Za-z0-9_:=-]{8,128})(?:\/(.+))?$/);
+    if (convMatch) {
+      const convId = convMatch[1];
+      const action = convMatch[2] || null;
+
+      // GET /api/v1/biz-conv/:convId (no action)
+      if (!action && method === 'GET') {
+        const qs = `?conversationId=${encodeURIComponent(convId)}&accountDigest=${encodeURIComponent(auth.accountDigest)}`;
+        return handleBizConvRoutes(internalRequest(`/d1/biz-conv/get${qs}`, 'GET', null, baseUrl), env);
+      }
+
+      // PUT /api/v1/biz-conv/:convId/meta
+      if (action === 'meta' && method === 'PUT') {
+        const intBody = { conversationId: convId, accountDigest: auth.accountDigest, encrypted_meta_blob: body?.encrypted_meta_blob || body?.encryptedMetaBlob };
+        return handleBizConvRoutes(internalRequest('/d1/biz-conv/meta', 'PUT', intBody, baseUrl), env);
+      }
+
+      // PUT /api/v1/biz-conv/:convId/policy
+      if (action === 'policy' && method === 'PUT') {
+        const intBody = { conversationId: convId, accountDigest: auth.accountDigest, encrypted_policy_blob: body?.encrypted_policy_blob || body?.encryptedPolicyBlob };
+        return handleBizConvRoutes(internalRequest('/d1/biz-conv/policy', 'PUT', intBody, baseUrl), env);
+      }
+
+      // POST /api/v1/biz-conv/:convId/dissolve
+      if (action === 'dissolve' && method === 'POST') {
+        const intBody = { conversationId: convId, accountDigest: auth.accountDigest };
+        return handleBizConvRoutes(internalRequest('/d1/biz-conv/dissolve', 'POST', intBody, baseUrl), env);
+      }
+
+      // POST /api/v1/biz-conv/:convId/invite
+      if (action === 'invite' && method === 'POST') {
+        const intBody = { conversationId: convId, accountDigest: auth.accountDigest, invitee_account_digest: body?.invitee_account_digest || body?.inviteeAccountDigest };
+        return handleBizConvRoutes(internalRequest('/d1/biz-conv/invite', 'POST', intBody, baseUrl), env);
+      }
+
+      // POST /api/v1/biz-conv/:convId/remove
+      if (action === 'remove' && method === 'POST') {
+        const intBody = { conversationId: convId, accountDigest: auth.accountDigest, target_account_digest: body?.target_account_digest || body?.targetAccountDigest };
+        return handleBizConvRoutes(internalRequest('/d1/biz-conv/remove', 'POST', intBody, baseUrl), env);
+      }
+
+      // POST /api/v1/biz-conv/:convId/leave
+      if (action === 'leave' && method === 'POST') {
+        const intBody = { conversationId: convId, accountDigest: auth.accountDigest };
+        return handleBizConvRoutes(internalRequest('/d1/biz-conv/leave', 'POST', intBody, baseUrl), env);
+      }
+
+      // POST /api/v1/biz-conv/:convId/transfer
+      if (action === 'transfer' && method === 'POST') {
+        const intBody = { conversationId: convId, accountDigest: auth.accountDigest, new_owner_account_digest: body?.new_owner_account_digest || body?.newOwnerAccountDigest };
+        return handleBizConvRoutes(internalRequest('/d1/biz-conv/transfer', 'POST', intBody, baseUrl), env);
+      }
+
+      // GET /api/v1/biz-conv/:convId/members
+      if (action === 'members' && method === 'GET') {
+        const qs = `?conversationId=${encodeURIComponent(convId)}&accountDigest=${encodeURIComponent(auth.accountDigest)}`;
+        return handleBizConvRoutes(internalRequest(`/d1/biz-conv/members${qs}`, 'GET', null, baseUrl), env);
+      }
+
+      // POST /api/v1/biz-conv/:convId/epoch
+      if (action === 'epoch' && method === 'POST') {
+        const intBody = { conversationId: convId, accountDigest: auth.accountDigest };
+        return handleBizConvRoutes(internalRequest('/d1/biz-conv/epoch', 'POST', intBody, baseUrl), env);
+      }
+
+      // GET /api/v1/biz-conv/:convId/epoch
+      if (action === 'epoch' && method === 'GET') {
+        const qs = `?conversationId=${encodeURIComponent(convId)}&accountDigest=${encodeURIComponent(auth.accountDigest)}`;
+        return handleBizConvRoutes(internalRequest(`/d1/biz-conv/epoch${qs}`, 'GET', null, baseUrl), env);
+      }
+
+      // POST /api/v1/biz-conv/:convId/epoch/confirm
+      if (action === 'epoch/confirm' && method === 'POST') {
+        const intBody = { conversationId: convId, accountDigest: auth.accountDigest, epoch: body?.epoch };
+        return handleBizConvRoutes(internalRequest('/d1/biz-conv/epoch/confirm', 'POST', intBody, baseUrl), env);
+      }
+
+      // POST /api/v1/biz-conv/:convId/tombstone
+      if (action === 'tombstone' && method === 'POST') {
+        const intBody = { conversationId: convId, accountDigest: auth.accountDigest, tombstone_type: body?.tombstone_type || body?.tombstoneType, encrypted_payload_blob: body?.encrypted_payload_blob || body?.encryptedPayloadBlob };
+        return handleBizConvRoutes(internalRequest('/d1/biz-conv/tombstone', 'POST', intBody, baseUrl), env);
+      }
+
+      // GET /api/v1/biz-conv/:convId/tombstones
+      if (action === 'tombstones' && method === 'GET') {
+        const since = url.searchParams.get('since') || '0';
+        const limit = url.searchParams.get('limit') || '50';
+        const qs = `?conversationId=${encodeURIComponent(convId)}&accountDigest=${encodeURIComponent(auth.accountDigest)}&since=${since}&limit=${limit}`;
+        return handleBizConvRoutes(internalRequest(`/d1/biz-conv/tombstones${qs}`, 'GET', null, baseUrl), env);
+      }
+    }
+
+    return json({ error: 'NotFound', message: 'unknown biz-conv endpoint' }, { status: 404 });
   }
 
   // ── Contact Secrets ───────────────────────────────────────────
@@ -8286,6 +8882,9 @@ export default {
 
       const groupsResult = await handleGroupsRoutes(req, env);
       if (groupsResult) return groupsResult;
+
+      const bizConvResult = await handleBizConvRoutes(req, env);
+      if (bizConvResult) return bizConvResult;
 
       const mediaResult = await handleMediaRoutes(req, env);
       if (mediaResult) return mediaResult;
