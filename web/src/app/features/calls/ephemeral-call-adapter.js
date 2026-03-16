@@ -7,6 +7,7 @@ import { log } from '../../core/log.js';
 import { normalizeAccountDigest, normalizePeerDeviceId, ensureDeviceId } from '../../core/store.js';
 import {
   CALL_REQUEST_KIND,
+  CALL_SESSION_DIRECTION,
   canStartCall,
   requestOutgoingCall,
   completeCallSession
@@ -18,6 +19,7 @@ import {
   sendCallInviteSignal
 } from './signaling.js';
 import { startOutgoingCallMedia } from './media-session.js';
+import { prepareCallKeyEnvelope } from './key-manager.js';
 
 // ── Ephemeral context ──
 let _ephCtx = null;
@@ -98,7 +100,7 @@ function _ephemeralSignalSender(payload) {
   // real WebSocket deviceId on the target's Durable Object. If targetDeviceId is
   // present, _handleNotify filters out ALL sockets and the message is never delivered.
   delete msg.targetDeviceId;
-  delete msg.envelope;
+  // Keep msg.envelope so E2EE key envelope is forwarded to peer
   delete msg.capabilities;
   delete msg.traceId;
 
@@ -131,12 +133,16 @@ export function handleEphemeralCallMessage(msg) {
     senderDeviceId: msg.senderDeviceId || _ephCtx.peerDeviceId
   };
 
-  // Incoming invite: inject peer profile
+  // Incoming invite: inject peer profile and forward envelope
   if (callType === 'call-invite') {
     translated.payload = translated.payload || {};
     translated.payload.metadata = translated.payload.metadata || translated.metadata || {};
     if (_ephCtx.peerDisplayName) {
       translated.payload.metadata.displayName = translated.payload.metadata.displayName || _ephCtx.peerDisplayName;
+    }
+    // Forward E2EE key envelope into payload so handleIncomingInvite can read it
+    if (msg.envelope && !translated.payload.envelope) {
+      translated.payload.envelope = msg.envelope;
     }
     translated.mode = translated.mode || msg.mode || 'voice';
   }
@@ -194,6 +200,20 @@ export async function initiateEphemeralCall({ mode = 'voice' } = {}) {
 
   const callId = result.callId;
 
+  // Prepare E2EE key envelope (best-effort — if no conversation token, skip)
+  let envelope = null;
+  try {
+    envelope = await prepareCallKeyEnvelope({
+      callId,
+      peerAccountDigest: _ephCtx.peerDigest,
+      peerDeviceId: _ephCtx.peerDeviceId,
+      direction: CALL_SESSION_DIRECTION.OUTGOING
+    });
+    log({ ephCallE2EE: 'envelope-prepared', callId });
+  } catch (err) {
+    log({ ephCallE2EESkipped: err?.message || err, callId });
+  }
+
   // Send invite signal → adapter translates to ephemeral-call-invite
   sendCallInviteSignal({
     callId,
@@ -201,7 +221,8 @@ export async function initiateEphemeralCall({ mode = 'voice' } = {}) {
     mode,
     metadata: {
       displayName: _ephCtx.peerDisplayName || 'Ephemeral User'
-    }
+    },
+    envelope
   });
 
   // Start WebRTC media pipeline (creates offer, etc.)
@@ -214,6 +235,25 @@ export async function initiateEphemeralCall({ mode = 'voice' } = {}) {
   }
 
   return { callId, mode };
+}
+
+/**
+ * Derive a call conversation token from the DR root key.
+ * Both sides (guest & owner) share the same rk after X3DH, so they derive
+ * the same token — enabling the standard call E2EE key derivation pipeline.
+ * @param {Uint8Array} rk - DR root key (32 bytes)
+ * @returns {Promise<Uint8Array>} 32-byte token
+ */
+export async function deriveCallTokenFromDR(rk) {
+  if (!rk || rk.length < 32) throw new Error('DR root key required');
+  const enc = new TextEncoder();
+  const hkdfKey = await crypto.subtle.importKey('raw', rk, 'HKDF', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({
+    name: 'HKDF', hash: 'SHA-256',
+    salt: enc.encode('ephemeral-call-token-salt'),
+    info: enc.encode('ephemeral-call-token')
+  }, hkdfKey, 256);
+  return new Uint8Array(bits);
 }
 
 function _generateCallId() {

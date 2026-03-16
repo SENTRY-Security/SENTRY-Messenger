@@ -22,8 +22,11 @@ import {
   deactivateEphemeralCallMode,
   handleEphemeralCallMessage,
   initiateEphemeralCall,
-  isEphemeralCallMode
+  isEphemeralCallMode,
+  deriveCallTokenFromDR
 } from '../../../features/calls/ephemeral-call-adapter.js';
+import { setContactSecret } from '../../../core/contact-secrets.js';
+import { bytesToB64Url } from '../../../../shared/utils/base64.js';
 import {
   initCallMediaSession,
   endCallMediaSession,
@@ -1317,6 +1320,22 @@ export class EphemeralController extends BaseController {
     // X3DH: Owner as responder
     const drSt = await x3dhRespond(ownerPriv, msg.guestBundle);
     this._drStates.set(sessionId, drSt);
+
+    // Derive call token from DR root key and store for call E2EE
+    if (drSt?.rk && session?.guest_digest) {
+      try {
+        const tokenBytes = await deriveCallTokenFromDR(drSt.rk);
+        const callToken = bytesToB64Url(tokenBytes);
+        setContactSecret(session.guest_digest, {
+          conversation: { token: callToken },
+          peerDeviceId: session.guest_device_id || 'ephemeral-guest',
+          __debugSource: 'ephemeral-call-token-owner'
+        });
+        console.log('[Ephemeral] call token stored for guest', sessionId);
+      } catch (err) {
+        console.warn('[Ephemeral] call token derive failed:', err?.message);
+      }
+    }
 
     // Clean up pending invite key (no longer needed — DR state is established)
     if (token) {

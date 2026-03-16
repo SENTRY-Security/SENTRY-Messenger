@@ -81,5 +81,6 @@ export {
   isEphemeralCallMode,
   getEphemeralCallContext,
   handleEphemeralCallMessage,
-  initiateEphemeralCall
+  initiateEphemeralCall,
+  deriveCallTokenFromDR
 } from './ephemeral-call-adapter.js';

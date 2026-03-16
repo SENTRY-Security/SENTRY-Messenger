@@ -14,8 +14,11 @@ import {
   deactivateEphemeralCallMode,
   handleEphemeralCallMessage,
   initiateEphemeralCall,
-  isEphemeralCallMode
+  isEphemeralCallMode,
+  deriveCallTokenFromDR
 } from '../features/calls/ephemeral-call-adapter.js';
+import { setContactSecret } from '../core/contact-secrets.js';
+import { bytesToB64Url } from '../../shared/utils/base64.js';
 import { initCallOverlay } from './mobile/call-overlay.js';
 import {
   initCallMediaSession,
@@ -507,6 +510,18 @@ function handleWsMessage(msg) {
         cancelKeyExchangeRetry();
         addSystemMessage(_t('ephemeral.e2eEstablished'));
         console.log('[EphE2EE] key exchange complete, encryption ready');
+        // Derive call token from DR root key and store for call E2EE
+        if (ephDrState?.rk && sessionState?.owner_digest) {
+          deriveCallTokenFromDR(ephDrState.rk).then(tokenBytes => {
+            const token = bytesToB64Url(tokenBytes);
+            setContactSecret(sessionState.owner_digest, {
+              conversation: { token },
+              peerDeviceId: 'owner-device',
+              __debugSource: 'ephemeral-call-token-guest'
+            });
+            console.log('[EphE2EE] call token stored for owner');
+          }).catch(err => console.warn('[EphE2EE] call token derive failed:', err?.message));
+        }
         // Send nickname via encrypted control message
         if (guestNickname) _sendNicknameControl();
         // Notify owner if WebRTC is not supported
