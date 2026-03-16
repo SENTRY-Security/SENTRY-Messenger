@@ -277,7 +277,9 @@
     "bizConvTransferHint": "Select a member to transfer ownership to",
     "bizConvActionFailed": "Action failed",
     "bizConvLeftGroup": "You left the group",
-    "bizConvDissolved": "Group dissolved"
+    "bizConvDissolved": "Group dissolved",
+    "bizConvDissolvedNotice": "\"{name}\" has been dissolved.",
+    "bizConvRemovedNotice": "You have been removed from \"{name}\"."
   },
   "encryption": {
     "decryptFailed": "Cannot decrypt",

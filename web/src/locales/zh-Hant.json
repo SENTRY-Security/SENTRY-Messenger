@@ -277,7 +277,9 @@
     "bizConvTransferHint": "選擇要移交群主的成員",
     "bizConvActionFailed": "操作失敗",
     "bizConvLeftGroup": "您已離開群組",
-    "bizConvDissolved": "群組已解散"
+    "bizConvDissolved": "群組已解散",
+    "bizConvDissolvedNotice": "「{name}」已被解散。",
+    "bizConvRemovedNotice": "您已被移出「{name}」。"
   },
   "encryption": {
     "decryptFailed": "無法解密",

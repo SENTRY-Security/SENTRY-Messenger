@@ -762,20 +762,48 @@ export function createWsIntegration({ deps }) {
       } catch {}
       return;
     }
-    if (type === 'biz-conv-dissolved') {
-      log({ bizConvDissolved: msg?.conversation_id?.slice(0, 16) });
+    if (type === 'biz-conv-dissolved' || type === 'biz-conv-removed-notification') {
+      const convId = String(msg?.conversation_id || '').trim();
+      const isDissolved = type === 'biz-conv-dissolved';
+      log({ [isDissolved ? 'bizConvDissolved' : 'bizConvRemoved']: convId?.slice(0, 16) });
       try {
         const { BizConvStore } = await import('../../features/biz-conv.js');
-        BizConvStore.remove(msg?.conversation_id);
-      } catch {}
-      return;
-    }
-    if (type === 'biz-conv-removed-notification') {
-      log({ bizConvRemoved: msg?.conversation_id?.slice(0, 16) });
-      try {
-        const { BizConvStore } = await import('../../features/biz-conv.js');
-        BizConvStore.remove(msg?.conversation_id);
-      } catch {}
+        const { getConversationThreads } = await import('../../features/conversation-updates.js');
+        const { markBizConvBackupDirty } = await import('../../features/biz-conv-backup.js');
+
+        // Get group name before removing (for notification)
+        const thread = getConversationThreads().get(convId);
+        const groupName = thread?.bizConvName || BizConvStore.get(convId)?.meta?.name || t('messages.bizConvDefault');
+
+        // Hard-delete from store and threads
+        BizConvStore.remove(convId);
+        getConversationThreads().delete(convId);
+        markBizConvBackupDirty();
+
+        const mp = getMessagesPane();
+        const state = mp?.getMessageState?.();
+
+        // If user is currently viewing this group, kick back to list
+        if (state && state.activeBizConv && state.conversationId === convId) {
+          state.activeBizConv = false;
+          state.conversationId = null;
+          state.viewMode = 'list';
+          mp?.clearMessagesView?.();
+          mp?.renderConversationList?.();
+        } else {
+          mp?.renderConversationList?.();
+        }
+
+        // Show notification via custom event (picked up by toast controller)
+        const msgText = isDissolved
+          ? (t('messages.bizConvDissolvedNotice') || '"{name}" has been dissolved.').replace('{name}', groupName)
+          : (t('messages.bizConvRemovedNotice') || 'You have been removed from "{name}".').replace('{name}', groupName);
+        if (typeof document !== 'undefined') {
+          document.dispatchEvent(new CustomEvent('sentry:toast', { detail: { message: msgText } }));
+        }
+      } catch (err) {
+        log({ bizConvDissolveHandleError: err?.message });
+      }
       return;
     }
     if (type === 'biz-conv-ownership-transferred') {

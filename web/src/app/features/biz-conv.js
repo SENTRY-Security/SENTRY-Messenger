@@ -119,6 +119,9 @@ export const BizConvStore = {
   buildBackupPayload() {
     const conversations = {};
     for (const [convId, state] of this.conversations) {
+      // Only backup active groups — dissolved/left groups are hard-deleted
+      if (state.status !== 'active') continue;
+
       const seeds = {};
       for (const [epoch, seed] of Object.entries(state.seeds)) {
         seeds[epoch] = bytesToB64Url(seed);

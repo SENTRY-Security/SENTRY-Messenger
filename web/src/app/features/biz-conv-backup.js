@@ -189,12 +189,18 @@ export async function syncBizConvListFromServer() {
   try {
     const result = await bizConvList();
     const conversations = result?.conversations || [];
-    if (!conversations.length) return;
+
+    // Build set of active server-side conversation IDs
+    const activeServerIds = new Set();
 
     const selfDigest = getAccountDigest();
-    for (const conv of conversations) {
+    const { getConversationThreads } = await import('./conversation-updates.js');
+    const threads = getConversationThreads();
+
+    for (const conv of (conversations || [])) {
       const convId = conv.conversation_id;
       if (!convId || conv.status !== 'active') continue;
+      activeServerIds.add(convId);
 
       const state = BizConvStore.get(convId);
       const isOwner = selfDigest && conv.owner_account_digest
@@ -209,28 +215,47 @@ export async function syncBizConvListFromServer() {
 
       // Try to decrypt meta if we have the key
       let groupName = state?.meta?.name || null;
-      if (!groupName && state?._groupMetaKey && conv.encrypted_meta_blob) {
+      let groupAvatar = state?.meta?.avatar || null;
+      if (state?._groupMetaKey && conv.encrypted_meta_blob) {
         try {
           const meta = await decryptMetaBlob(state._groupMetaKey, conv.encrypted_meta_blob);
-          if (meta?.name) {
-            groupName = meta.name;
-            state.meta = meta;
+          if (meta) {
+            if (meta.name) groupName = meta.name;
+            if (meta.avatar) groupAvatar = meta.avatar;
+            if (state) state.meta = meta;
           }
         } catch { /* can't decrypt yet */ }
       }
 
       // Ensure thread exists for UI (preserve existing unreadCount during sync)
-      const threads = (await import('./conversation-updates.js')).getConversationThreads();
       const existingThread = threads.get(convId);
       upsertBizConvThread(convId, {
         name: groupName,
         isOwner,
         status: 'active',
+        avatar: groupAvatar,
         unreadCount: existingThread?.unreadCount ?? 0
       });
     }
 
-    log({ bizConvListSync: conversations.length });
+    // Remove stale groups: locally restored from backup but no longer active on server
+    // This handles dissolved/left groups whose backup wasn't updated before logout
+    let removed = 0;
+    const staleIds = [];
+    for (const [convId] of BizConvStore.conversations) {
+      if (!activeServerIds.has(convId)) staleIds.push(convId);
+    }
+    for (const convId of staleIds) {
+      BizConvStore.remove(convId);
+      threads.delete(convId);
+      removed++;
+    }
+    if (removed > 0) {
+      markBizConvBackupDirty();
+      log({ bizConvSyncPurged: removed });
+    }
+
+    log({ bizConvListSync: conversations.length, active: activeServerIds.size });
   } catch (err) {
     log({ bizConvListSyncError: err?.message });
   }

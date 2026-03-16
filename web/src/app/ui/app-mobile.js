@@ -219,6 +219,13 @@ const MODAL_VARIANTS = [
 let settingsInitPromise = null;
 
 const { showToast, hideToast } = createToastController(document.getElementById('appToast'));
+// Global toast event listener (for modules that don't have direct access to showToast)
+if (typeof document !== 'undefined') {
+  document.addEventListener('sentry:toast', (e) => {
+    const msg = e?.detail?.message;
+    if (msg) showToast(msg);
+  });
+}
 const rootStyle = typeof document !== 'undefined' ? document.documentElement?.style || null : null;
 
 const navbarEl = document.querySelector('.navbar');
