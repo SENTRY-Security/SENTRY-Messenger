@@ -645,8 +645,11 @@ async function ensurePeerConnection() {
   peerConnection.ontrack = (event) => {
     remoteStream = event.streams[0] || new MediaStream([event.track]);
     log({ callRemoteTrack: event.track?.kind, readyState: event.track?.readyState, callId: activeCallId });
-    attachRemoteStream(remoteStream);
+    // Set up receiver E2EE transform BEFORE attaching the stream to DOM
+    // elements.  This ensures encrypted frames are decrypted before the
+    // codec/decoder sees them — avoids decoder errors that abort play().
     setupInsertableStreamsForReceiver(event.receiver, event.track);
+    attachRemoteStream(remoteStream);
     promoteSessionToInCall('remote-track');
   };
   // Log DTLS transport state changes — DTLS failure is often
@@ -1296,6 +1299,10 @@ function cleanupPeerConnection(reason) {
     clearTimeout(audioPlayRetryTimer);
     audioPlayRetryTimer = null;
   }
+  if (videoPlayRetryTimer) {
+    clearTimeout(videoPlayRetryTimer);
+    videoPlayRetryTimer = null;
+  }
   if (peerConnection) {
     try { peerConnection.onicecandidate = null; } catch { }
     try { peerConnection.ontrack = null; } catch { }
@@ -1392,12 +1399,9 @@ function attachRemoteStream(stream) {
         remoteVideoEl.srcObject = stream;
         remoteVideoEl.muted = true;
       }
-      // Always call play() as a secondary measure for browsers that do
-      // pick up new tracks but need an explicit play() to start rendering.
-      const maybePlay = remoteVideoEl.play();
-      if (maybePlay && typeof maybePlay.catch === 'function') {
-        maybePlay.catch((err) => log({ callMediaVideoPlayError: err?.message || err }));
-      }
+      // Use the same retry mechanism as audio to avoid rapid play() calls
+      // aborting each other ("The operation was aborted." on iOS Safari).
+      attemptRemoteVideoPlayback();
     } catch (err) {
       log({ callMediaVideoAttachError: err?.message || err });
     }
@@ -1433,6 +1437,37 @@ function attemptRemoteAudioPlayback(retryCount = 0) {
     }
   } catch (err) {
     log({ callMediaPlayError: err?.message || err });
+  }
+}
+
+let videoPlayRetryTimer = null;
+
+function attemptRemoteVideoPlayback(retryCount = 0) {
+  if (videoPlayRetryTimer) {
+    clearTimeout(videoPlayRetryTimer);
+    videoPlayRetryTimer = null;
+  }
+  if (!remoteVideoEl || typeof remoteVideoEl.play !== 'function') return;
+  try {
+    const maybePromise = remoteVideoEl.play();
+    if (maybePromise && typeof maybePromise.catch === 'function') {
+      maybePromise.catch((err) => {
+        log({ callMediaVideoPlayError: err?.message || err, retryCount });
+        // iOS Safari aborts play() when srcObject changes rapidly or the
+        // decoder hasn't received data yet.  Retry with exponential backoff
+        // (300ms, 600ms, 1200ms, 2400ms) up to 4 times.
+        const MAX_RETRIES = 4;
+        if (retryCount < MAX_RETRIES && remoteVideoEl && peerConnection) {
+          const delay = 300 * Math.pow(2, retryCount);
+          videoPlayRetryTimer = setTimeout(() => {
+            videoPlayRetryTimer = null;
+            attemptRemoteVideoPlayback(retryCount + 1);
+          }, delay);
+        }
+      });
+    }
+  } catch (err) {
+    log({ callMediaVideoPlayError: err?.message || err });
   }
 }
 
@@ -1523,17 +1558,15 @@ function applySenderTransformsDeferred() {
 }
 
 /**
- * Request a keyframe from the peer after the video receiver transform is
- * set up.  Uses RTCRtpSender.generateKeyFrame() on the local VIDEO sender
- * to trigger an I-frame that will reach the peer's receiver correctly.
- * Also tries to trigger the remote peer to send a keyframe by briefly
- * toggling the receiver's jitter buffer target, which causes the browser
- * to emit a PLI (Picture Loss Indication) RTCP message.
+ * Request a keyframe after the video receiver transform is set up.
+ * Uses RTCRtpSender.generateKeyFrame() on the local VIDEO sender so the
+ * remote peer's receiver gets a clean I-frame.  Also triggers a deferred
+ * video play() retry via attemptRemoteVideoPlayback so the local decoder
+ * picks up the first decrypted keyframe.
  */
 function requestKeyFrameFromPeer() {
   if (!peerConnection) return;
-  // Approach 1: Generate a local keyframe so the remote peer's receiver
-  // (which may also be initialising transforms) gets a clean I-frame.
+  // Generate a local keyframe so the remote peer gets a clean I-frame.
   try {
     for (const sender of peerConnection.getSenders()) {
       if (sender.track?.kind === 'video' && typeof sender.generateKeyFrame === 'function') {
@@ -1541,23 +1574,11 @@ function requestKeyFrameFromPeer() {
       }
     }
   } catch { }
-  // Approach 2: After a short delay, reassign the remote video element's
-  // srcObject to force the browser to request a keyframe (PLI).
-  setTimeout(() => {
-    if (!peerConnection || !remoteVideoEl || !remoteStream) return;
-    try {
-      const videoTracks = remoteStream.getVideoTracks();
-      if (videoTracks.length && videoTracks[0].readyState === 'live') {
-        remoteVideoEl.srcObject = null;
-        remoteVideoEl.srcObject = remoteStream;
-        remoteVideoEl.play().catch(() => {});
-      }
-    } catch { }
-  }, 300);
-  // Approach 3: After a longer delay, request keyframe again in case the
-  // first attempt was too early (transform not fully initialised).
+  // Retry video play after a delay — the decoder may now have valid data.
   setTimeout(() => {
     if (!peerConnection) return;
+    attemptRemoteVideoPlayback();
+    // Second keyframe request in case the first was too early.
     try {
       for (const sender of peerConnection.getSenders()) {
         if (sender.track?.kind === 'video' && typeof sender.generateKeyFrame === 'function') {
@@ -1565,7 +1586,7 @@ function requestKeyFrameFromPeer() {
         }
       }
     } catch { }
-  }, 1000);
+  }, 500);
 }
 
 function createEncryptionTransform(keyName, mode) {
