@@ -588,12 +588,12 @@ async function ensurePeerConnection() {
     // Continue without explicit certificate — browser picks its default
   }
 
-  // Enable encoded insertable streams so the legacy createEncodedStreams()
-  // API works on Chrome.  Safari uses RTCRtpScriptTransform which does not
-  // need this flag.  If the peer does not support E2EE the transforms are
-  // simply not applied (peerSupportsInsertableStreams check) and frames pass
-  // through unchanged — setting the flag has no negative side-effect.
-  if (supportsInsertableStreams()) {
+  // Enable encodedInsertableStreams ONLY for the legacy createEncodedStreams()
+  // path (Chrome).  On Safari (RTCRtpScriptTransform), setting this flag
+  // puts the RTCPeerConnection into an encoded-streams mode that conflicts
+  // with ScriptTransform — video frames get queued waiting for
+  // createEncodedStreams() and never reach the ScriptTransform worker.
+  if (supportsInsertableStreams() && !usesScriptTransform()) {
     rtcConfig.encodedInsertableStreams = true;
     peerConnectionEncodedStreams = true;
   }
