@@ -141,7 +141,8 @@ export const BizConvStore = {
         meta: state.meta || null,
         owner_account_digest: state.owner_account_digest || null,
         status: state.status || 'active',
-        member_profiles: state.memberProfiles || null
+        member_profiles: state.memberProfiles || null,
+        policy: state.policy || null
       };
     }
     return {
@@ -190,6 +191,7 @@ export const BizConvStore = {
       if (convData.meta) state.meta = convData.meta;
       if (convData.owner_account_digest) state.owner_account_digest = convData.owner_account_digest;
       if (convData.member_profiles) state.memberProfiles = convData.member_profiles;
+      if (convData.policy) state.policy = convData.policy;
       state.status = convData.status || 'active';
 
       // Rebuild conversation thread so it appears in the UI
