@@ -164,49 +164,64 @@ export const BizConvStore = {
       // Skip groups that were left/dissolved (server no longer lists them)
       if (activeServerIds && !activeServerIds.has(convId)) continue;
 
-      const state = this.getOrCreate(convId);
+      // Per-group try/catch: one corrupt group must not abort all restoration
+      try {
+        const state = this.getOrCreate(convId);
 
-      // Restore seeds
-      for (const [epoch, seedB64] of Object.entries(convData.seeds || {})) {
-        state.seeds[Number(epoch)] = b64UrlToBytes(seedB64);
-      }
-      state.currentEpoch = convData.current_epoch || 0;
+        // Restore seeds
+        for (const [epoch, seedB64] of Object.entries(convData.seeds || {})) {
+          state.seeds[Number(epoch)] = b64UrlToBytes(seedB64);
+        }
+        state.currentEpoch = convData.current_epoch || 0;
 
-      // Derive groupMetaKey from current seed
-      const currentSeed = state.seeds[state.currentEpoch];
-      if (currentSeed) {
-        state._groupMetaKey = await deriveGroupMetaKey(currentSeed);
-      }
+        // Derive groupMetaKey — try currentEpoch first, fall back to highest available epoch
+        const currentSeed = state.seeds[state.currentEpoch];
+        if (currentSeed) {
+          state._groupMetaKey = await deriveGroupMetaKey(currentSeed);
+        } else {
+          // currentEpoch seed missing (e.g. stale backup after key rotation) — try highest epoch
+          const epochs = Object.keys(state.seeds).map(Number).sort((a, b) => b - a);
+          for (const ep of epochs) {
+            if (state.seeds[ep]) {
+              state._groupMetaKey = await deriveGroupMetaKey(state.seeds[ep]);
+              state.currentEpoch = ep;
+              break;
+            }
+          }
+        }
 
-      // Restore sender chain states
-      for (const [key, chain] of Object.entries(convData.sender_chains || {})) {
-        state.senderChains[key] = {
-          chainKey: b64UrlToBytes(chain.chain_key_b64),
-          counter: chain.counter,
-          skippedKeys: new Map()
-        };
-      }
+        // Restore sender chain states
+        for (const [key, chain] of Object.entries(convData.sender_chains || {})) {
+          state.senderChains[key] = {
+            chainKey: b64UrlToBytes(chain.chain_key_b64),
+            counter: chain.counter,
+            skippedKeys: new Map()
+          };
+        }
 
-      // Restore metadata
-      if (convData.meta) state.meta = convData.meta;
-      if (convData.owner_account_digest) state.owner_account_digest = convData.owner_account_digest;
-      if (convData.member_profiles) state.memberProfiles = convData.member_profiles;
-      if (convData.policy) state.policy = convData.policy;
-      state.status = convData.status || 'active';
+        // Restore metadata
+        if (convData.meta) state.meta = convData.meta;
+        if (convData.owner_account_digest) state.owner_account_digest = convData.owner_account_digest;
+        if (convData.member_profiles) state.memberProfiles = convData.member_profiles;
+        if (convData.policy) state.policy = convData.policy;
+        state.status = convData.status || 'active';
 
-      // Rebuild conversation thread so it appears in the UI
-      if (state.status === 'active') {
-        const selfDigest = getAccountDigest();
-        const isOwner = selfDigest && state.owner_account_digest
-          ? selfDigest.toUpperCase() === state.owner_account_digest.toUpperCase()
-          : false;
-        upsertBizConvThread(convId, {
-          name: state.meta?.name || null,
-          isOwner,
-          status: 'active',
-          avatar: state.meta?.avatar || null,
-          unreadCount: 0  // Restoring from backup — don't show phantom unread badges
-        });
+        // Rebuild conversation thread so it appears in the UI
+        if (state.status === 'active') {
+          const selfDigest = getAccountDigest();
+          const isOwner = selfDigest && state.owner_account_digest
+            ? selfDigest.toUpperCase() === state.owner_account_digest.toUpperCase()
+            : false;
+          upsertBizConvThread(convId, {
+            name: state.meta?.name || null,
+            isOwner,
+            status: 'active',
+            avatar: state.meta?.avatar || null,
+            unreadCount: 0  // Restoring from backup — don't show phantom unread badges
+          });
+        }
+      } catch (err) {
+        console.warn('[biz-conv] restoreFromBackup: skipping group', convId?.slice(0, 16), err?.message);
       }
     }
   },

@@ -8,7 +8,7 @@
 
 import { getMkRaw } from '../core/store.js';
 import { log } from '../core/log.js';
-import { BizConvStore, decryptMetaBlob } from './biz-conv.js';
+import { BizConvStore, decryptMetaBlob, deriveGroupMetaKey } from './biz-conv.js';
 import { wrapWithMK_JSON, unwrapWithMK_JSON } from '../../shared/crypto/aead.js';
 import { fetchWithTimeout } from '../core/http.js';
 import { getAccountToken, getAccountDigest, ensureDeviceId } from '../core/store.js';
@@ -250,21 +250,45 @@ export async function syncBizConvListFromServer() {
       if (!convId || conv.status !== 'active') continue;
       activeServerIds.add(convId);
 
-      const state = BizConvStore.get(convId);
+      // Ensure local state exists for every server-side group.
+      // If backup was lost or never uploaded, we still need a BizConvStore entry
+      // so that future KDM processing and meta decryption can work.
+      let state = BizConvStore.get(convId);
+      if (!state) {
+        state = BizConvStore.getOrCreate(convId);
+        state.status = 'active';
+      }
+
       const isOwner = selfDigest && conv.owner_account_digest
         ? selfDigest.toUpperCase() === conv.owner_account_digest.toUpperCase()
         : false;
 
       // Update local ownership info
-      if (state) {
-        state.owner_account_digest = conv.owner_account_digest;
-        state.isOwner = isOwner;
+      state.owner_account_digest = conv.owner_account_digest;
+      state.isOwner = isOwner;
+
+      // Self-heal: derive _groupMetaKey if missing but seeds are available.
+      // This covers the case where restoreFromBackup partially failed or
+      // the backup had a stale currentEpoch pointing to a missing seed.
+      if (!state._groupMetaKey) {
+        const seedEpochs = Object.keys(state.seeds).map(Number).sort((a, b) => b - a);
+        for (const ep of seedEpochs) {
+          if (state.seeds[ep]) {
+            try {
+              state._groupMetaKey = await deriveGroupMetaKey(state.seeds[ep]);
+              state.currentEpoch = ep;
+            } catch (err) {
+              console.warn('[biz-conv-sync] deriveGroupMetaKey failed', convId.slice(0, 16), err?.message);
+            }
+            break;
+          }
+        }
       }
 
-      // Try to decrypt meta if we have the key
-      let groupName = state?.meta?.name || null;
-      let groupAvatar = state?.meta?.avatar || null;
-      if (state?._groupMetaKey && conv.encrypted_meta_blob) {
+      // Resolve name/avatar: backup meta → server encrypted meta blob → null
+      let groupName = state.meta?.name || null;
+      let groupAvatar = state.meta?.avatar || null;
+      if (state._groupMetaKey && conv.encrypted_meta_blob) {
         try {
           const meta = await decryptMetaBlob(state._groupMetaKey, conv.encrypted_meta_blob);
           if (meta) {
@@ -272,21 +296,22 @@ export async function syncBizConvListFromServer() {
             if (meta.avatar) groupAvatar = meta.avatar;
             // Merge server meta with existing meta to preserve fields (e.g. avatar)
             // that might be present in backup but absent from older server blobs
-            if (state) {
-              const prevMeta = state.meta || {};
-              state.meta = { ...prevMeta, ...meta };
-              // Ensure avatar is preserved if server meta didn't include it
-              if (!state.meta.avatar && prevMeta.avatar) {
-                state.meta.avatar = prevMeta.avatar;
-              }
-              // [FIX] Mark backup dirty so the updated meta from server is persisted.
-              // Without this, meta decrypted from server blob (e.g. name/avatar
-              // changed by another member while we were offline) is only in memory
-              // and lost on tab close or next login.
-              markBizConvBackupDirty();
+            const prevMeta = state.meta || {};
+            state.meta = { ...prevMeta, ...meta };
+            // Ensure avatar is preserved if server meta didn't include it
+            if (!state.meta.avatar && prevMeta.avatar) {
+              state.meta.avatar = prevMeta.avatar;
             }
+            // Mark backup dirty so the updated meta from server is persisted.
+            // Without this, meta decrypted from server blob (e.g. name/avatar
+            // changed by another member while we were offline) is only in memory
+            // and lost on tab close or next login.
+            markBizConvBackupDirty();
           }
-        } catch { /* can't decrypt yet */ }
+        } catch (err) {
+          // Log instead of swallowing — helps diagnose key/epoch mismatches
+          console.warn('[biz-conv-sync] meta decrypt failed', convId.slice(0, 16), err?.message);
+        }
       }
 
       // Ensure thread exists for UI (preserve existing unreadCount during sync)
@@ -318,6 +343,16 @@ export async function syncBizConvListFromServer() {
     }
 
     log({ bizConvListSync: conversations.length, active: activeServerIds.size });
+
+    // Signal UI to re-render conversation list with restored name/avatar data.
+    // Without this, the list may render before sync completes and show stale entries.
+    try {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('biz-conv:threads-synced', {
+          detail: { count: activeServerIds.size }
+        }));
+      }
+    } catch (_) { /* ignore in non-browser env */ }
   } catch (err) {
     log({ bizConvListSyncError: err?.message });
   }

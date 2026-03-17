@@ -1506,6 +1506,10 @@ const bizConvInfoModal = createBizConvInfoModal({
 window.addEventListener('biz-conv:thread-added', () => {
   try { messagesPane.renderConversationList(); } catch (_) { /* ignore */ }
 });
+// Re-render after server sync restores group name/avatar into threads
+window.addEventListener('biz-conv:threads-synced', () => {
+  try { messagesPane.renderConversationList(); } catch (_) { /* ignore */ }
+});
 
 disableZoom();
 
