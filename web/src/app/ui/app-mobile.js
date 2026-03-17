@@ -120,6 +120,7 @@ import {
   getLatestBackupMeta
 } from '../features/contact-backup.js';
 import { hydrateBizConvFromBackup, triggerBizConvBackupIfDirty, clearBizConvOnLogout, flushBizConvBackupBeforeLogout, syncBizConvListFromServer, flushBizConvBackupBeacon, fetchActiveServerGroupIds } from '../features/biz-conv-backup.js';
+import { replayAllBizConvMessages } from '../features/biz-conv-replay.js';
 import { createBizConvCreateModal } from './mobile/modals/biz-conv-create-modal.js';
 import { createBizConvInfoModal } from './mobile/modals/biz-conv-info-modal.js';
 import { subscriptionStatus, redeemSubscription, uploadSubscriptionQr } from '../api/subscription.js';
@@ -1964,6 +1965,10 @@ async function runPostLoginContactHydrate() {
   } catch (err) {
     log({ bizConvListSyncError: err?.message || err, source: 'post-login-hydrate' });
   }
+  // Replay recent group messages from server (non-blocking — runs in background)
+  replayAllBizConvMessages().catch(err => {
+    log({ bizConvReplayError: err?.message || err, source: 'post-login-hydrate' });
+  });
   let loadError = null;
   try {
     await loadInitialContacts();
