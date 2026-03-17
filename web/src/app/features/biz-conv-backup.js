@@ -294,14 +294,17 @@ export async function syncBizConvListFromServer() {
           if (meta) {
             if (meta.name) groupName = meta.name;
             if (meta.avatar) groupAvatar = meta.avatar;
-            // Merge server meta with existing meta to preserve fields (e.g. avatar)
-            // that might be present in backup but absent from older server blobs
+            // Merge server meta with existing local meta.
+            // Server meta is authoritative for core fields (name, owner, created_at);
+            // local meta may have avatar not present in older server blobs.
+            // Strip `members` if present — stored separately in state.memberProfiles.
             const prevMeta = state.meta || {};
-            state.meta = { ...prevMeta, ...meta };
+            const { members: _m, ...merged } = { ...prevMeta, ...meta };
             // Ensure avatar is preserved if server meta didn't include it
-            if (!state.meta.avatar && prevMeta.avatar) {
-              state.meta.avatar = prevMeta.avatar;
+            if (!merged.avatar && prevMeta.avatar) {
+              merged.avatar = prevMeta.avatar;
             }
+            state.meta = merged;
             // Mark backup dirty so the updated meta from server is persisted.
             // Without this, meta decrypted from server blob (e.g. name/avatar
             // changed by another member while we were offline) is only in memory

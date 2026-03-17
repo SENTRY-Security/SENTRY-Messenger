@@ -199,10 +199,14 @@ export async function handleEpochKdm(kdm) {
   const state = await BizConvStore.initFromKDM(parsed);
   if (!state) return;
 
-  // Store group metadata from KDM if available
+  // Store group metadata from KDM if available.
+  // Strip `members` — it's stored separately in state.memberProfiles to avoid
+  // bloating state.meta (and by extension the backup payload) with duplicate
+  // avatar data URLs that can be hundreds of KB each.
   const meta = parsed.meta || kdm.meta || null;
   if (meta) {
-    state.meta = meta;
+    const { members: _members, ...coreMeta } = meta;
+    state.meta = coreMeta;
     if (meta.owner) state.owner_account_digest = meta.owner;
   }
   state.status = 'active';

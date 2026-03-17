@@ -134,11 +134,20 @@ export const BizConvStore = {
           // skipped_keys not backed up (too large, short-lived)
         };
       }
+      // Normalize meta for backup: only persist core fields.
+      // `members` is stored separately in member_profiles; keeping it in meta
+      // would double-store avatar data URLs and bloat the encrypted payload.
+      let backupMeta = null;
+      if (state.meta) {
+        const { members: _m, ...core } = state.meta;
+        backupMeta = core;
+      }
+
       conversations[convId] = {
         seeds,
         current_epoch: state.currentEpoch,
         sender_chains: senderChains,
-        meta: state.meta || null,
+        meta: backupMeta,
         owner_account_digest: state.owner_account_digest || null,
         status: state.status || 'active',
         member_profiles: state.memberProfiles || null,
