@@ -57,7 +57,11 @@ function scheduleDebouncedBackup() {
  * Uses navigator.sendBeacon as last resort since fetch may be cancelled.
  */
 export function flushBizConvBackupBeacon() {
-  if (!backupDirty || BizConvStore.conversations.size === 0) return;
+  // [FIX] Use OR: flush when dirty OR when conversations exist.
+  // Previous AND logic (`!backupDirty || size === 0`) skipped flush when
+  // state was modified (e.g. meta updated from server) without markDirty,
+  // causing name/avatar/chain state loss on tab close.
+  if (!backupDirty && BizConvStore.conversations.size === 0) return;
   // sendBeacon is fire-and-forget, best effort on tab close
   // We can't encrypt here (async), so only useful if a recent upload succeeded.
   // The primary protection is the debounced upload that fires within 2s of any change.
@@ -275,6 +279,11 @@ export async function syncBizConvListFromServer() {
               if (!state.meta.avatar && prevMeta.avatar) {
                 state.meta.avatar = prevMeta.avatar;
               }
+              // [FIX] Mark backup dirty so the updated meta from server is persisted.
+              // Without this, meta decrypted from server blob (e.g. name/avatar
+              // changed by another member while we were offline) is only in memory
+              // and lost on tab close or next login.
+              markBizConvBackupDirty();
             }
           }
         } catch { /* can't decrypt yet */ }
@@ -322,6 +331,17 @@ export async function flushBizConvBackupBeforeLogout() {
   if (backupDebounceTimer) {
     clearTimeout(backupDebounceTimer);
     backupDebounceTimer = null;
+  }
+  // [FIX] If a debounced upload is currently in flight, wait for it to finish
+  // before attempting our own upload.  Without this, the flush silently skips
+  // when backupInFlight is true, and any state changes that occurred AFTER the
+  // in-flight upload captured its payload are lost.
+  if (backupInFlight) {
+    // Poll briefly — uploadBizConvBackup is typically fast (<2s)
+    const deadline = Date.now() + 5000;
+    while (backupInFlight && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 100));
+    }
   }
   if (backupDirty || BizConvStore.conversations.size > 0) {
     try {

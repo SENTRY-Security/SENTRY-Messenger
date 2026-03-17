@@ -320,6 +320,14 @@ export function createConversationThreadsManager(deps) {
                                     };
                                     const plaintext = await BizConvStore.decryptMessage(thread.conversationId, envelope);
                                     rawText = typeof plaintext === 'string' ? plaintext : (plaintext?.text || null);
+                                    // [FIX] Decrypting the preview ratchets the sender chain forward.
+                                    // Mark backup dirty so the advanced chain state is persisted;
+                                    // otherwise the same message is re-decrypted on every login,
+                                    // and chain state diverges from backup.
+                                    try {
+                                        const { markBizConvBackupDirty } = await import('../../features/biz-conv-backup.js');
+                                        markBizConvBackupDirty();
+                                    } catch { /* best effort */ }
                                 }
                             } catch { /* decrypt failed */ }
                         }
