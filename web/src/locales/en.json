@@ -1091,7 +1091,8 @@
     "peerAwayHint": "Peer is away — messages may not be delivered",
     "webrtcUnsupported": "Your browser does not support voice/video calls. You can still join for text messaging.",
     "webrtcCallsDisabled": "⚠️ Voice and video calls are unavailable — your browser does not support WebRTC",
-    "peerNoWebrtc": "⚠️ The guest's browser does not support voice/video calls. Only text messaging is available."
+    "peerNoWebrtc": "⚠️ The guest's browser does not support voice/video calls. Only text messaging is available.",
+    "randomNicknames": ["🍊 Orange", "🍎 Apple", "🍌 Banana", "🍇 Grape", "🍓 Strawberry", "🍑 Peach", "🍒 Cherry", "🥝 Kiwi", "🍍 Pineapple", "🫐 Blueberry", "🍋 Lemon", "🥭 Mango", "🍉 Watermelon", "🌽 Corn", "🥕 Carrot", "🌻 Sunflower"]
   },
   "loginStages": {
     "authenticating": "AUTHENTICATING...",

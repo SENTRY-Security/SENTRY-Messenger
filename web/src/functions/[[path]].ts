@@ -3,6 +3,45 @@ const DEBUG_ALLOWED_IPS = ['60.248.6.250'];
 const RESTRICTED_PATHS = ['/pages/debug.html', '/debug.html', '/debug'];
 
 // ── Ephemeral link OG meta — i18n strings ──
+// ── In-app browser interstitial — i18n strings ──
+const INAPP_I18N: Record<string, { warn: string; btnContinue: string; btnExternal: string }> = {
+  en: {
+    warn: 'You are using an in-app browser. Voice and video calls may not work properly.',
+    btnContinue: 'Continue',
+    btnExternal: 'Open in Browser',
+  },
+  'zh-Hant': {
+    warn: '您正在使用應用程式內建瀏覽器，視訊及通話功能可能無法正常使用。',
+    btnContinue: '繼續使用',
+    btnExternal: '使用瀏覽器開啟',
+  },
+  'zh-Hans': {
+    warn: '您正在使用应用内置浏览器，视频及通话功能可能无法正常使用。',
+    btnContinue: '继续使用',
+    btnExternal: '使用浏览器打开',
+  },
+  ja: {
+    warn: 'アプリ内ブラウザを使用中です。音声・ビデオ通話が正常に動作しない場合があります。',
+    btnContinue: '続ける',
+    btnExternal: 'ブラウザで開く',
+  },
+  ko: {
+    warn: '인앱 브라우저를 사용 중입니다. 음성 및 영상 통화가 제대로 작동하지 않을 수 있습니다.',
+    btnContinue: '계속 사용',
+    btnExternal: '브라우저로 열기',
+  },
+  th: {
+    warn: 'คุณกำลังใช้เบราว์เซอร์ในแอป การโทรด้วยเสียงและวิดีโอคอลอาจไม่ทำงานตามปกติ',
+    btnContinue: 'ดำเนินการต่อ',
+    btnExternal: 'เปิดในเบราว์เซอร์',
+  },
+  vi: {
+    warn: 'Bạn đang sử dụng trình duyệt trong ứng dụng. Cuộc gọi thoại và video có thể không hoạt động bình thường.',
+    btnContinue: 'Tiếp tục',
+    btnExternal: 'Mở trong trình duyệt',
+  },
+};
+
 const OG_I18N: Record<string, { title: string; desc: string; siteName: string }> = {
   en: {
     title: '🔒 You are invited to a secure conversation',
@@ -62,6 +101,12 @@ function isCrawler(request: Request): boolean {
   return /facebookexternalhit|twitterbot|linkedinbot|slackbot|telegrambot|whatsapp|line\/|discordbot|kakaotalk|googlebot|bingbot|applebot/i.test(ua);
 }
 
+/** Detect in-app browsers (LINE, WeChat, FB, IG, KakaoTalk, Telegram, etc.) */
+function isInAppBrowser(request: Request): boolean {
+  const ua = (request.headers.get('User-Agent') || '');
+  return /FBAV|FBAN|Instagram|Line\/|MicroMessenger|WeChat|KakaoTalk|NAVER|Snapchat|Twitter\/|BytedanceWebview|TikTok/i.test(ua);
+}
+
 /** Build a minimal HTML page with OG meta tags for /e/ short links */
 function ephemeralOgHtml(
   origin: string,
@@ -100,6 +145,81 @@ ${withRedirect ? `<script>location.replace(${JSON.stringify(chatUrl)})</script>`
 </html>`;
 }
 
+/** Build an in-app browser interstitial page with warning + two action buttons */
+function ephemeralInAppHtml(
+  origin: string,
+  chatUrl: string,
+  shareUrl: string,
+  ogStrings: { title: string; desc: string; siteName: string },
+  inappStrings: { warn: string; btnContinue: string; btnExternal: string },
+  locale: string,
+): string {
+  const ogImage = `${origin}/assets/images/og-ephemeral.png`;
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  return `<!DOCTYPE html>
+<html lang="${esc(locale)}">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"/>
+<title>${esc(ogStrings.title)}</title>
+<meta property="og:type" content="website"/>
+<meta property="og:title" content="${esc(ogStrings.title)}"/>
+<meta property="og:description" content="${esc(ogStrings.desc)}"/>
+<meta property="og:image" content="${esc(ogImage)}"/>
+<meta property="og:image:width" content="1200"/>
+<meta property="og:image:height" content="630"/>
+<meta property="og:url" content="${esc(shareUrl)}"/>
+<meta property="og:site_name" content="${esc(ogStrings.siteName)}"/>
+<meta name="twitter:card" content="summary_large_image"/>
+<meta name="twitter:title" content="${esc(ogStrings.title)}"/>
+<meta name="twitter:description" content="${esc(ogStrings.desc)}"/>
+<meta name="twitter:image" content="${esc(ogImage)}"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#050a14;color:#e2e8f0;font-family:system-ui,-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px}
+.card{max-width:380px;width:100%;text-align:center}
+.lock{font-size:48px;margin-bottom:16px}
+.title{font-size:18px;font-weight:600;margin-bottom:8px}
+.desc{color:#94a3b8;font-size:14px;line-height:1.5;margin-bottom:24px}
+.warn-box{background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);border-radius:12px;padding:14px 16px;margin-bottom:28px;display:flex;align-items:flex-start;gap:10px;text-align:left}
+.warn-icon{font-size:20px;flex-shrink:0;line-height:1.4}
+.warn-text{color:#fbbf24;font-size:13px;line-height:1.5}
+.actions{display:flex;gap:12px}
+.btn{flex:1;padding:14px 8px;border-radius:12px;border:none;font-size:15px;font-weight:600;cursor:pointer;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:6px;transition:opacity .15s}
+.btn:active{opacity:.8}
+.btn-continue{background:#22c55e;color:#fff}
+.btn-external{background:rgba(255,255,255,.1);color:#e2e8f0;border:1px solid rgba(255,255,255,.15)}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="lock">🔒</div>
+  <div class="title">${esc(ogStrings.title.replace(/^🔒\s*/, ''))}</div>
+  <div class="desc">${esc(ogStrings.desc)}</div>
+  <div class="warn-box">
+    <span class="warn-icon">⚠️</span>
+    <span class="warn-text">${esc(inappStrings.warn)}</span>
+  </div>
+  <div class="actions">
+    <a href="${esc(chatUrl)}" class="btn btn-continue">${esc(inappStrings.btnContinue)}</a>
+    <button id="shareBtn" class="btn btn-external" type="button">${esc(inappStrings.btnExternal)}</button>
+  </div>
+</div>
+<script>
+document.getElementById('shareBtn').addEventListener('click',function(){
+  var u=${JSON.stringify(shareUrl)};
+  if(navigator.share){
+    navigator.share({url:u}).catch(function(){});
+  }else{
+    // Fallback: try to open in system browser
+    window.open(u,'_system')||window.open(u,'_blank');
+  }
+});
+</script>
+</body>
+</html>`;
+}
+
 export const onRequest: PagesFunction<{
   ORIGIN_API: string;
 }> = async ({ request, env, next }) => {
@@ -123,6 +243,7 @@ export const onRequest: PagesFunction<{
   const ephMatch = normalised.match(/^\/e\/([a-f0-9]{32})$/i);
   if (ephMatch) {
     const token = ephMatch[1];
+    const shareUrl = `${url.origin}/e/${token}`;
     const chatUrl = `${url.origin}/pages/ephemeral.html#${token}`;
     const locale = resolveOgLocale(url, request);
     const ogStrings = OG_I18N[locale] || OG_I18N['en'];
@@ -130,6 +251,15 @@ export const onRequest: PagesFunction<{
     if (isCrawler(request)) {
       // Crawlers get a minimal HTML with OG tags (no redirect)
       return new Response(ephemeralOgHtml(url.origin, chatUrl, ogStrings, locale), {
+        status: 200,
+        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+      });
+    }
+
+    if (isInAppBrowser(request)) {
+      // In-app browser: show warning interstitial with two choices
+      const inappStrings = INAPP_I18N[locale] || INAPP_I18N['en'];
+      return new Response(ephemeralInAppHtml(url.origin, chatUrl, shareUrl, ogStrings, inappStrings, locale), {
         status: 200,
         headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
       });

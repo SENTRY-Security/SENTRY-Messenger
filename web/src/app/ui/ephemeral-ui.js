@@ -803,6 +803,11 @@ async function boot() {
     // Show nickname input instead of going directly to chat
     hideSplash();
     if (nicknameScreen) {
+      // Pre-fill a random nickname from locale list
+      const nicks = _t('ephemeral.randomNicknames');
+      if (Array.isArray(nicks) && nicks.length && nicknameInput) {
+        nicknameInput.value = nicks[Math.floor(Math.random() * nicks.length)];
+      }
       nicknameScreen.style.display = 'flex';
       nicknameInput?.focus();
     } else {
@@ -1002,6 +1007,11 @@ nicknameInput?.addEventListener('keydown', (e) => {
     e.preventDefault();
     nicknameBtn?.click();
   }
+});
+
+// Auto-select all text when nickname input is focused
+nicknameInput?.addEventListener('focus', () => {
+  nicknameInput.select();
 });
 
 function sleep(ms) {
