@@ -179,8 +179,13 @@ function ephemeralInAppHtml(
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#050a14;color:#e2e8f0;font-family:system-ui,-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px}
-.card{max-width:380px;width:100%;text-align:center}
-.lock{font-size:48px;margin-bottom:16px}
+.card{max-width:380px;width:100%;text-align:center;display:flex;flex-direction:column;align-items:center}
+.logo-wrap{position:relative;width:72px;height:72px;margin-bottom:20px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:radial-gradient(circle at 50% 60%,rgba(239,68,68,.25) 0%,rgba(220,38,38,.10) 60%,transparent 80%)}
+.flame-ring{position:absolute;inset:-4px;border-radius:50%;background:conic-gradient(from 0deg,rgba(239,68,68,0) 0%,rgba(239,68,68,.5) 15%,rgba(249,115,22,.6) 30%,rgba(234,179,8,.4) 45%,rgba(239,68,68,0) 55%,rgba(220,38,38,.5) 70%,rgba(249,115,22,.4) 85%,rgba(239,68,68,0) 100%);animation:flame-spin 3s linear infinite;mask:radial-gradient(circle,transparent 58%,black 60%);-webkit-mask:radial-gradient(circle,transparent 58%,black 60%)}
+.logo-wrap::after{content:'';position:absolute;inset:0;border-radius:50%;box-shadow:0 0 0 2px rgba(239,68,68,.35),0 0 8px rgba(239,68,68,.15);animation:flame-border 2s ease-in-out infinite}
+.logo-icon{width:38px;height:38px;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Cpath fill='%23ef4444' d='M7.24,24.01v11.3l12,8.08-1.23-11.99s-3.03-1.09-4.77-2.18-1.78-2.87-1.78-2.87l-4.22-2.33Z'/%3E%3Cpath fill='%23ef4444' d='M40.7,21.2L15.97,14.48v-.76l8.03-2.18,16.71,4.54,.06-6.92L24.01,4.61v.02s-.02-.02-.02-.02L7.24,9.16h0s0,.01,0,.01v9.88h.09s14.75,4.02,14.75,4.02h0v11.76l1.98,1.44,1.93-1.44v-6.09l10.79-3.69-.34,1.92c-.17,.62-.59,1.56-1.67,2.24-1.75,1.1-4.77,2.18-4.77,2.18l-1.23,11.99,12-8.08v-11.3l-.04,.02-.03-2.84Z'/%3E%3C/svg%3E") no-repeat center/contain;position:relative;z-index:1;filter:drop-shadow(0 0 4px rgba(239,68,68,.6))}
+@keyframes flame-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@keyframes flame-border{0%,100%{box-shadow:0 0 0 2px rgba(239,68,68,.35),0 0 8px rgba(239,68,68,.15)}50%{box-shadow:0 0 0 2px rgba(249,115,22,.5),0 0 14px rgba(239,68,68,.3)}}
 .title{font-size:18px;font-weight:600;margin-bottom:8px}
 .desc{color:#94a3b8;font-size:14px;line-height:1.5;margin-bottom:24px}
 .warn-box{background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);border-radius:12px;padding:14px 16px;margin-bottom:28px;display:flex;align-items:flex-start;gap:10px;text-align:left}
@@ -195,7 +200,7 @@ body{background:#050a14;color:#e2e8f0;font-family:system-ui,-apple-system,sans-s
 </head>
 <body>
 <div class="card">
-  <div class="lock">🔒</div>
+  <div class="logo-wrap"><div class="flame-ring"></div><div class="logo-icon"></div></div>
   <div class="title">${esc(ogStrings.title.replace(/^🔒\s*/, ''))}</div>
   <div class="desc">${esc(ogStrings.desc)}</div>
   <div class="warn-box">
@@ -261,8 +266,13 @@ function ephemeralOgHtmlWithClientDetect(
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#050a14;color:#e2e8f0;font-family:system-ui,-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px;text-align:center}
-.card{max-width:380px;width:100%}
-.lock{font-size:48px;margin-bottom:16px}
+.card{max-width:380px;width:100%;display:flex;flex-direction:column;align-items:center}
+.logo-wrap{position:relative;width:72px;height:72px;margin-bottom:20px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:radial-gradient(circle at 50% 60%,rgba(239,68,68,.25) 0%,rgba(220,38,38,.10) 60%,transparent 80%)}
+.flame-ring{position:absolute;inset:-4px;border-radius:50%;background:conic-gradient(from 0deg,rgba(239,68,68,0) 0%,rgba(239,68,68,.5) 15%,rgba(249,115,22,.6) 30%,rgba(234,179,8,.4) 45%,rgba(239,68,68,0) 55%,rgba(220,38,38,.5) 70%,rgba(249,115,22,.4) 85%,rgba(239,68,68,0) 100%);animation:flame-spin 3s linear infinite;mask:radial-gradient(circle,transparent 58%,black 60%);-webkit-mask:radial-gradient(circle,transparent 58%,black 60%)}
+.logo-wrap::after{content:'';position:absolute;inset:0;border-radius:50%;box-shadow:0 0 0 2px rgba(239,68,68,.35),0 0 8px rgba(239,68,68,.15);animation:flame-border 2s ease-in-out infinite}
+.logo-icon{width:38px;height:38px;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Cpath fill='%23ef4444' d='M7.24,24.01v11.3l12,8.08-1.23-11.99s-3.03-1.09-4.77-2.18-1.78-2.87-1.78-2.87l-4.22-2.33Z'/%3E%3Cpath fill='%23ef4444' d='M40.7,21.2L15.97,14.48v-.76l8.03-2.18,16.71,4.54,.06-6.92L24.01,4.61v.02s-.02-.02-.02-.02L7.24,9.16h0s0,.01,0,.01v9.88h.09s14.75,4.02,14.75,4.02h0v11.76l1.98,1.44,1.93-1.44v-6.09l10.79-3.69-.34,1.92c-.17,.62-.59,1.56-1.67,2.24-1.75,1.1-4.77,2.18-4.77,2.18l-1.23,11.99,12-8.08v-11.3l-.04,.02-.03-2.84Z'/%3E%3C/svg%3E") no-repeat center/contain;position:relative;z-index:1;filter:drop-shadow(0 0 4px rgba(239,68,68,.6))}
+@keyframes flame-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@keyframes flame-border{0%,100%{box-shadow:0 0 0 2px rgba(239,68,68,.35),0 0 8px rgba(239,68,68,.15)}50%{box-shadow:0 0 0 2px rgba(249,115,22,.5),0 0 14px rgba(239,68,68,.3)}}
 .title{font-size:18px;font-weight:600;margin-bottom:8px}
 .desc{color:#94a3b8;font-size:14px;line-height:1.5;margin-bottom:24px}
 a{color:#f59e0b}
@@ -279,7 +289,7 @@ a{color:#f59e0b}
 </head>
 <body>
 <div class="card">
-  <div class="lock">🔒</div>
+  <div class="logo-wrap"><div class="flame-ring"></div><div class="logo-icon"></div></div>
   <div class="title">${esc(ogStrings.title.replace(/^🔒\s*/, ''))}</div>
   <div class="desc">${esc(ogStrings.desc)}</div>
   <div id="inapp-section">
