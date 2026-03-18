@@ -191,8 +191,10 @@ body{background:#050a14;color:#e2e8f0;font-family:system-ui,-apple-system,sans-s
 .warn-box{background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);border-radius:12px;padding:14px 16px;margin-bottom:28px;display:flex;align-items:flex-start;gap:10px;text-align:left}
 .warn-icon{font-size:20px;flex-shrink:0;line-height:1.4}
 .warn-text{color:#fbbf24;font-size:13px;line-height:1.5}
-.actions{display:flex;flex-direction:column;gap:10px;width:100%}
-.btn{width:100%;padding:14px 8px;border-radius:12px;border:none;font-size:15px;font-weight:600;cursor:pointer;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:6px;transition:opacity .15s;white-space:nowrap}
+.actions{display:flex;gap:10px;width:100%}
+.btn{padding:14px 12px;border-radius:12px;border:none;font-size:14px;font-weight:600;cursor:pointer;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:6px;transition:opacity .15s;white-space:nowrap}
+.btn-continue{flex:0 0 auto}
+.btn-external{flex:1 1 0%}
 .btn:active{opacity:.8}
 .btn-continue{background:#22c55e;color:#fff}
 .btn-external{background:rgba(255,255,255,.1);color:#e2e8f0;border:1px solid rgba(255,255,255,.15)}
@@ -279,8 +281,10 @@ a{color:#f59e0b}
 .warn-box{background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);border-radius:12px;padding:14px 16px;margin-bottom:28px;display:flex;align-items:flex-start;gap:10px;text-align:left}
 .warn-icon{font-size:20px;flex-shrink:0;line-height:1.4}
 .warn-text{color:#fbbf24;font-size:13px;line-height:1.5}
-.actions{display:flex;flex-direction:column;gap:10px;width:100%}
-.btn{width:100%;padding:14px 8px;border-radius:12px;border:none;font-size:15px;font-weight:600;cursor:pointer;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:6px;transition:opacity .15s;white-space:nowrap}
+.actions{display:flex;gap:10px;width:100%}
+.btn{padding:14px 12px;border-radius:12px;border:none;font-size:14px;font-weight:600;cursor:pointer;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:6px;transition:opacity .15s;white-space:nowrap}
+.btn-continue{flex:0 0 auto}
+.btn-external{flex:1 1 0%}
 .btn:active{opacity:.8}
 .btn-continue{background:#22c55e;color:#fff}
 .btn-external{background:rgba(255,255,255,.1);color:#e2e8f0;border:1px solid rgba(255,255,255,.15)}
