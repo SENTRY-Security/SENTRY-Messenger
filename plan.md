@@ -160,6 +160,145 @@ CREATE INDEX idx_push_sub_account ON push_subscriptions(account_digest);
 ```
 確保 SW 更新時立即生效。
 
+### 15. 前端：PWA 精簡介面（`web/src/pages/pwa-push.html`）
+
+**用途**：使用者從主畫面開啟 PWA 時（無法登入，因為需要 NTAG424 晶片），顯示精簡的推播管理介面。
+
+**偵測方式**：在 `app.html` 的早期 inline script 中判斷：
+```js
+const isPWA = window.matchMedia('(display-mode: standalone)').matches
+           || window.navigator.standalone === true;
+if (isPWA) {
+  location.replace('/pages/pwa-push.html');
+}
+```
+
+**頁面內容**（獨立 HTML，不經過 app-mobile.js）：
+- 品牌 Logo + 標題
+- i18n 支援（同 login.html 用 inline `__t()` 載入）
+- 推播狀態顯示（已啟用 / 已關閉 / 權限被拒）
+- 「關閉推播通知」按鈕 → 呼叫 `pushManager.getSubscription().then(s => s.unsubscribe())` + 通知後端刪除
+- 推播限制完整說明區塊（見下方）
+- 底部連結：「在瀏覽器中開啟以使用完整功能」
+
+**推播限制說明區塊**（詳細、分平台）：
+
+> **推播通知說明**
+>
+> **基本資訊**
+> - 推播通知僅會顯示「你有新訊息」，**不會包含任何訊息內容**
+> - 所有訊息內容皆受端對端加密保護，伺服器無法讀取
+> - 推播僅在您**未開啟應用**時觸發；開啟中則走即時連線
+>
+> **iOS (iPhone / iPad)**
+> - 必須先將此應用「**加入主畫面**」才能接收推播
+>   - Safari → 分享按鈕 (□↑) → 加入主畫面
+> - 需 **iOS 16.4** 或以上版本
+> - iOS 會在背景自動管理通知，不需要此應用持續運行
+> - 部分 iOS 版本可能偶發延遲（通常數秒內送達）
+>
+> **Android (Chrome)**
+> - 支援最完整，關閉瀏覽器後仍可收到通知
+> - 需在瀏覽器彈出的權限視窗中按「允許」
+> - 若曾封鎖通知權限，需到瀏覽器設定 > 網站設定 > 通知 中重新允許
+>
+> **桌面瀏覽器 (Chrome / Edge / Firefox)**
+> - 瀏覽器關閉後仍可收到推播（瀏覽器背景程序需運行）
+> - macOS 使用者需確認系統「通知」設定中已允許瀏覽器通知
+>
+> **不支援推播的環境**
+> - Firefox iOS 版（iOS 上僅 Safari/Chrome 支援）
+> - 無痕模式 / 隱私瀏覽模式
+> - 部分企業受管理的瀏覽器
+>
+> **可靠性說明**
+> - Web Push 由各平台的推播伺服器（Apple APNs / Google FCM / Mozilla）中繼
+> - 送達率約 90%+，極少數情況可能延遲數分鐘
+> - 本通知為輔助功能，重要訊息請定期開啟應用查看
+
+**不需要認證**：`pushManager.getSubscription()` 是瀏覽器 API，PWA 頁面可直接操作本機的推播訂閱，不需要 NTAG 登入。但若需同步通知後端刪除 subscription，需呼叫 `/d1/push/unsubscribe`（端點允許 endpoint 作為唯一識別，無需帳號認證）。
+
+### 16. 前端：設定頁裝置推播管理（修改 `settings-modal.js`）
+
+在推播通知開關下方，新增**已註冊裝置列表**：
+
+**UI 設計**：
+```
+推播通知        [開關]
+收到新訊息時顯示系統通知
+
+  已註冊的推播裝置：
+  ┌─────────────────────────────┐
+  │ 🔔 此裝置         [撤銷]   │
+  │ 🔔 iPhone Safari   [撤銷]   │
+  │ 🔔 Chrome Desktop  [撤銷]   │
+  └─────────────────────────────┘
+```
+
+**資料來源**：
+- 新增 API 端點 `POST /d1/push/list`
+  - 接收：`{ accountDigest }`
+  - 回傳：`[{ device_id, endpoint, created_at, user_agent }]`
+  - 需認證（同其他 /d1/ 端點）
+
+**裝置識別**：
+- D1 表 `push_subscriptions` 新增 `user_agent TEXT` 欄位
+- 訂閱時一併儲存 `navigator.userAgent`，用於顯示裝置名稱
+- 前端解析 UA 為人類可讀格式（如「iPhone Safari」「Chrome Windows」）
+
+**撤銷流程（雙方同步）**：
+1. 使用者在設定頁點擊「撤銷」某裝置
+2. 前端呼叫 `POST /d1/push/unsubscribe` → 後端刪除該 subscription 記錄
+3. 後端回傳 `{ ok: true, endpoint }` → 前端刷新列表
+4. **若撤銷的是「此裝置」**：同時呼叫本機 `pushManager.getSubscription().then(s => s?.unsubscribe())`
+5. **若撤銷的是「其他裝置」**：
+   - 後端已刪除 subscription，該裝置不會再收到推播
+   - 下次該裝置的 PWA 頁面開啟時，`getSubscription()` 仍會回傳已失效的 subscription
+   - DO 發送推播時若 push service 回傳 410 Gone → 自動清理殘留記錄
+   - 該裝置若從 PWA 頁面檢查狀態，發現後端無記錄 → 顯示「已停用」
+
+**確認對話框**：
+撤銷前顯示確認：「確定要撤銷此裝置的推播通知？該裝置將不再收到新訊息通知。」
+
+### 17. 後端：Push 裝置列表 API（修改 `worker.js`）
+
+**`POST /d1/push/list`**
+- 接收：`{ accountDigest }`
+- 回傳：`{ items: [{ device_id, endpoint, user_agent, created_at }] }`
+- 需認證
+
+### 18. 後端：推播失敗自動清理（修改 `web-push.js`）
+
+Web Push 發送後檢查回應：
+- **410 Gone** 或 **404 Not Found** → subscription 已失效，自動從 D1 刪除
+- **429 Too Many Requests** → 尊重 Retry-After，暫停推播
+- 其他錯誤 → log 但不刪除（可能是暫時性錯誤）
+
+### 19. 後端：D1 Schema 更新
+
+`push_subscriptions` 表最終版：
+```sql
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_digest TEXT NOT NULL,
+  device_id TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  keys_p256dh TEXT NOT NULL,
+  keys_auth TEXT NOT NULL,
+  user_agent TEXT DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  UNIQUE(account_digest, endpoint)
+);
+CREATE INDEX idx_push_sub_account ON push_subscriptions(account_digest);
+```
+
+### 20. 前端：manifest.json 的 start_url
+
+```json
+{ "start_url": "/pages/app.html?source=pwa" }
+```
+搭配 `display-mode: standalone` 偵測，雙重確認 PWA 來源。
+
 ---
 
 ## 檔案變更清單
@@ -168,6 +307,7 @@ CREATE INDEX idx_push_sub_account ON push_subscriptions(account_digest);
 |------|------|
 | 新建 | `web/src/sw.js` |
 | 新建 | `web/src/manifest.json` |
+| 新建 | `web/src/pages/pwa-push.html` |
 | 新建 | `web/src/app/features/push-subscription.js` |
 | 新建 | `data-worker/src/web-push.js` |
 | 修改 | `web/src/app/ui/mobile/modals/settings-modal.js` |
@@ -187,11 +327,29 @@ CREATE INDEX idx_push_sub_account ON push_subscriptions(account_digest);
 
 ## 使用者流程
 
+### A. 首次啟用（瀏覽器登入後）
+
 1. 使用者進入「設定」→ 看到「推播通知」開關
-2. 點擊啟用 → 彈出說明確認頁
+2. 點擊啟用 → 彈出說明確認頁（含完整推播限制說明）
 3. 確認後 → 瀏覽器彈出通知權限請求
-4. 授權後 → 訂閱 Push → 儲存到後端
+4. 授權後 → 訂閱 Push → subscription 儲存到後端
 5. 之後：
    - 有 WS 連線時 → 照舊走 WS 即時通知
    - 無 WS 連線時 → DO 觸發 Web Push → 系統通知「你有新訊息」
 6. 點擊通知 → 開啟 app.html
+
+### B. PWA 主畫面開啟
+
+1. 使用者從主畫面開啟 PWA
+2. 偵測 `display-mode: standalone` → 導向 `pwa-push.html`
+3. 顯示推播狀態 + 推播限制完整說明
+4. 可直接關閉推播（本機取消訂閱 + 通知後端）
+5. 無法登入或使用其他功能
+
+### C. 從設定頁管理其他裝置
+
+1. 使用者在設定頁看到「已註冊的推播裝置」列表
+2. 點擊某裝置的「撤銷」→ 確認對話框
+3. 確認後 → 後端刪除該 subscription
+4. 該裝置不再收到推播（DO 側生效）
+5. 若撤銷的是本機裝置 → 同時取消本機 SW 訂閱
