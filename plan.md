@@ -1,139 +1,197 @@
-# 聯絡人列表捲動驅動重構計劃
+# PWA Web Push 通知系統實作計畫
 
 ## 目標
+讓使用者在瀏覽器關閉/背景時收到「有新訊息」通知（不含訊息內容，符合 E2EE 原則）。設定頁啟用時先跳說明確認頁。
 
-重寫聯絡人 tab 的捲動機制，讓原生 scroll 驅動漸進式隱藏 UI，最終達到全螢幕列表。
-取代現有 touchmove + passive:false 的做法，徹底解決無法捲動的問題。
+---
 
-## 行為規格
+## 架構概覽
 
-### 往上滑（scrollTop 增加）
-
-| 階段 | scrollTop 範圍 | 行為 |
-|------|---------------|------|
-| 1 | 0 → headerH (~40px) | 「N個好友」依比例淡出（opacity） |
-| 2 | headerH → headerH+searchH (~90px) | 搜尋 bar 自然捲出可視區 |
-| 3 | > headerH+searchH | topbar 向上滑出、navbar 向下滑出（漸進 ~60px） |
-
-全部是**位置驅動**。
-
-### 往下滑（從全螢幕狀態）
-
-| 順序 | 觸發條件 | 行為 |
-|------|---------|------|
-| 1 | 方向改變瞬間 | topbar + navbar 立即動畫回復 |
-| 2 | 繼續往下滑 | 搜尋 bar 自然捲回 |
-| 3 | scrollTop 40→0 | 「N個好友」淡入 |
-
-隱藏＝位置驅動，回復＝方向驅動。
-
-### 特殊狀況
-
-- scrollTop === 0 且 bars 可見 → 允許 pull-to-refresh
-- 切換到其他 tab → 強制回復 bars
-- bars 回復後再往上滑 → 再次隱藏（循環）
+```
+[訊息進入 DO] → sent === 0（無 WS 連線）
+      ↓
+[DO 查 KV push subscription]
+      ↓
+[用 Web Push Protocol 發送推播]
+      ↓
+[瀏覽器/OS 喚醒 Service Worker]
+      ↓
+[SW 顯示系統通知：「你有新訊息」]
+```
 
 ---
 
 ## 實作步驟
 
-### Step 1: 新建 contacts-scroll-controller.js
+### 1. 前端：Service Worker (`web/src/sw.js`)
 
-`web/src/app/ui/mobile/contacts-scroll-controller.js`
+新建 `sw.js`，放在 `web/src/` 根目錄（確保 scope 為 `/`）：
+- 監聽 `push` event → 顯示 `self.registration.showNotification()`
+- 通知標題/內容用通用文字（E2EE 不傳明文）
+- 監聽 `notificationclick` → `clients.openWindow('/pages/app.html')`
+- 不做任何離線快取（這不是完整 PWA，只用推播功能）
 
-職責：
-- 監聽 `contactsScrollEl` 的原生 `scroll` 事件
-- 追蹤捲動方向（比較 scrollTop 與 prevScrollTop）
-- 計算階段並驅動所有視覺變化
-- 管理 pull-to-refresh 觸發條件
-- 提供 `destroy()` 清理和 `restoreBars()` 供 tab 切換呼叫
+### 2. 前端：manifest.json (`web/src/manifest.json`)
 
-狀態變數：
-- `prevScrollTop` — 方向偵測
-- `barsHidden` — bars 是否已隱藏
-- `headerH` / `searchH` — 從 DOM 量測（一次）
-- `rafId` — requestAnimationFrame 節流
+最小化的 Web App Manifest，僅提供 PWA 安裝所需資訊：
+- `name`, `short_name`, `start_url`, `display: standalone`
+- `icons` 引用現有 logo
+- `background_color`, `theme_color`
 
-### Step 2: 「N個好友」淡出（階段 1）
+在 `app.html` 的 `<head>` 中加入 `<link rel="manifest" href="/manifest.json">`
 
-scroll handler 內：
+### 3. 前端：推播管理模組 (`web/src/app/features/push-subscription.js`)
+
+新模組負責：
+- `subscribePush()`: 請求通知權限 → `registration.pushManager.subscribe()` → 送 subscription 到後端
+- `unsubscribePush()`: 取消訂閱 → 通知後端刪除
+- `getPushStatus()`: 檢查當前訂閱狀態
+- VAPID public key 從環境變數或 hardcode 帶入
+
+### 4. 前端：設定頁 UI（修改 `settings-modal.js`）
+
+在「語言」設定項下方新增「推播通知」開關：
+- Toggle switch，同現有 autoLogoutOnBackground 樣式
+- **啟用時**：先跳說明確認 Modal（用現有 `showAlertModal` 或 `openModal`）
+  - 說明內容：
+    - iOS 使用者需先「加入主畫面」
+    - 將請求瀏覽器通知權限
+    - 只會通知「有新訊息」，不會顯示內容
+  - 確認按鈕 → 呼叫 `subscribePush()`
+  - 取消 → toggle 恢復關閉
+- **關閉時**：呼叫 `unsubscribePush()`
+
+### 5. 前端：Settings 資料模型（修改 `settings.js`）
+
+- `DEFAULT_SETTINGS` 新增 `pushNotifications: false`
+- `normalizeSettings()` 新增 `pushNotifications` boolean 正規化
+- `persistPatch` 的 `trackedKeys` 新增 `'pushNotifications'`
+
+### 6. 前端：SW 註冊（修改 `app-mobile.js`）
+
+在 app 初始化時（bootLoad 之後）：
 ```js
-opacity = clamp(1 - scrollTop / headerH, 0, 1)
-contactListHeaderEl.style.opacity = opacity
-```
-opacity = 0 時加 `visibility: hidden`。
-
-### Step 3: topbar/navbar 隱藏（階段 3 — 位置驅動）
-
-scrollTop 超過 barThreshold (headerH + searchH) 後：
-```js
-barRange = 60
-progress = clamp((scrollTop - barThreshold) / barRange, 0, 1)
-topbar.style.transform = `translateY(${-progress * 100}%)`
-navbar.style.transform = `translateY(${progress * 100}%)`
-```
-progress = 1 時：加 `.contacts-fullscreen` class 讓 tab 擴展到全螢幕。
-
-### Step 4: topbar/navbar 回復（方向驅動）
-
-偵測到 scrollTop < prevScrollTop（往下滑）時：
-- 若 bars 已隱藏 → 立即移除 transform，加 CSS transition 做平滑動畫
-- 移除 `.contacts-fullscreen`
-- 設 `barsHidden = false`
-
-再次往上滑超過門檻 → 重新隱藏。
-
-### Step 5: 全螢幕佈局
-
-CSS：
-```css
-#tab-contacts.contacts-fullscreen {
-  position: fixed;
-  inset: 0;
-  height: auto;
-  z-index: 9;
-}
-#tab-contacts.contacts-fullscreen .contacts-scroll {
-  padding-bottom: 28px; /* 移除 navbar 高度的 padding */
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js');
 }
 ```
+只註冊，不自動訂閱推播。訂閱由設定頁觸發。
 
-### Step 6: pull-to-refresh 整合
+### 7. 前端：Build 設定（修改 `build.mjs`）
 
-保留現有 pull-to-refresh，但加入前置條件：
-- 僅在 `scrollTop === 0` **且** `barsHidden === false` 時啟動
-- pull-to-refresh 繼續使用 touchmove（僅用於下拉手勢）
-- 一般捲動完全由原生 scroll 處理，不被 touchmove 阻擋
+- `staticFiles` 陣列新增 `'sw.js'`, `'manifest.json'`
+- SW 必須在根路徑，build 時從 `src/sw.js` 複製到 `dist/sw.js`
 
-### Step 7: tab 切換清理
+### 8. 前端：CSP Headers（修改 `_headers`）
 
-`switchTab()` 切離 contacts 時呼叫 `restoreBars()`，確保其他 tab 的 topbar/navbar 正常。
+- `worker-src` 已含 `'self'`，SW 可正常載入
+- 無需修改（確認即可）
 
-### Step 8: CSS 變更
+### 9. 前端：i18n（修改所有 locale JSON）
 
-- `app-contacts.css`：新增 `.contacts-fullscreen`、`will-change: opacity` on header
-- `app-layout.css`：topbar/navbar 加 `transition: transform 220ms ease-out`、`will-change: transform`
+新增 `settings.pushNotifications` 相關翻譯：
+- `settings.pushNotifications`: "Push notifications" / "推播通知"
+- `settings.pushNotificationsDesc`: "Receive notification when new messages arrive" / "收到新訊息時顯示系統通知"
+- `settings.pushExplainTitle`: "Enable push notifications" / "啟用推播通知"
+- `settings.pushExplainBody`: 說明文字（iOS 需加主畫面、只通知有新訊息等）
+- `settings.pushExplainIOS`: iOS 專屬說明
+- `settings.pushEnabled`: "Push notifications enabled" / "推播通知已啟用"
+- `settings.pushDisabled`: "Push notifications disabled" / "推播通知已關閉"
+- `settings.pushPermissionDenied`: "Notification permission denied" / "通知權限被拒絕"
 
-### Step 9: 清理舊 workaround
+### 10. 後端：Push Subscription API（修改 `worker.js`）
 
-- 移除 pull-to-refresh 對 scroll container 的 transform: translateY 操作
-- 清理殘留的 transition/transform inline styles
+新增兩個端點：
+
+**`POST /d1/push/subscribe`**
+- 接收：`{ accountDigest, deviceId, subscription }` (subscription = PushSubscription JSON)
+- 存入 D1 表 `push_subscriptions`
+- 需認證（同其他 /d1/ 端點）
+
+**`POST /d1/push/unsubscribe`**
+- 接收：`{ accountDigest, deviceId, endpoint }`
+- 從 D1 表刪除對應記錄
+
+### 11. 後端：D1 Schema
+
+新增 `push_subscriptions` 表：
+```sql
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_digest TEXT NOT NULL,
+  device_id TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  keys_p256dh TEXT NOT NULL,
+  keys_auth TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  UNIQUE(account_digest, endpoint)
+);
+CREATE INDEX idx_push_sub_account ON push_subscriptions(account_digest);
+```
+
+### 12. 後端：VAPID Key 配置（修改 `wrangler.toml`）
+
+新增環境變數：
+- `VAPID_PUBLIC_KEY` — 前端用，可公開
+- `VAPID_PRIVATE_KEY` — Worker secret，用於簽署推播
+- `VAPID_SUBJECT` — `mailto:` 或 URL
+
+### 13. 後端：Web Push 發送（修改 `account-ws.js`）
+
+在 `_handleNotify()` 中，當 `sent === 0`（無活躍 WS 連線）時：
+- 查詢 D1 的 `push_subscriptions`（by accountDigest）
+- 用 Web Push Protocol（RFC 8291）發送推播
+- Payload：`{ type: 'new-message', ts: Date.now() }`（通用，不含明文）
+- 實作 Web Push 加密（ECDH + HKDF + AES-128-GCM）
+
+由於 Cloudflare Workers 沒有 `web-push` npm 包的直接支援（依賴 Node crypto），需用 Web Crypto API 實作：
+- 新建 `data-worker/src/web-push.js` 工具模組
+- VAPID JWT 簽名（ES256）
+- Push payload 加密（RFC 8291: ECDH + HKDF + AES-128-GCM）
+- 向 push service endpoint 發送 HTTP POST
+
+### 14. 前端：SW 快取策略 Headers
+
+新增 `_headers` 規則：
+```
+/sw.js
+  Cache-Control: no-cache, must-revalidate, max-age=0
+  Service-Worker-Allowed: /
+```
+確保 SW 更新時立即生效。
 
 ---
 
-## 修改的檔案
+## 檔案變更清單
 
-| 檔案 | 變更 |
+| 操作 | 檔案 |
 |------|------|
-| `contacts-scroll-controller.js` | **新建** — 捲動控制器 |
-| `contacts-view.js` | 整合 scroll controller，簡化 pull-to-refresh |
-| `app-mobile.js` | tab 切換時呼叫 restoreBars() |
-| `app-contacts.css` | fullscreen class、transitions、will-change |
-| `app-layout.css` | topbar/navbar transition 屬性 |
+| 新建 | `web/src/sw.js` |
+| 新建 | `web/src/manifest.json` |
+| 新建 | `web/src/app/features/push-subscription.js` |
+| 新建 | `data-worker/src/web-push.js` |
+| 修改 | `web/src/app/ui/mobile/modals/settings-modal.js` |
+| 修改 | `web/src/app/features/settings.js` |
+| 修改 | `web/src/app/ui/app-mobile.js` |
+| 修改 | `web/src/pages/app.html` |
+| 修改 | `web/build.mjs` |
+| 修改 | `web/src/_headers` |
+| 修改 | `web/src/locales/en.json` |
+| 修改 | `web/src/locales/zh-Hant.json` |
+| 修改 | `web/src/locales/zh-Hans.json` (+ ja, ko, th, vi) |
+| 修改 | `data-worker/src/worker.js` |
+| 修改 | `data-worker/src/account-ws.js` |
+| 修改 | `data-worker/wrangler.toml` |
 
-## 效能注意事項
+---
 
-- 所有動畫僅用 `transform` 和 `opacity`（compositor-only，不觸發 reflow）
-- scroll handler 以 `requestAnimationFrame` 節流
-- topbar/navbar 加 `will-change: transform` 提前建立 compositing layer
-- 不再有 `passive: false` 的 touchmove 阻擋原生捲動
+## 使用者流程
+
+1. 使用者進入「設定」→ 看到「推播通知」開關
+2. 點擊啟用 → 彈出說明確認頁
+3. 確認後 → 瀏覽器彈出通知權限請求
+4. 授權後 → 訂閱 Push → 儲存到後端
+5. 之後：
+   - 有 WS 連線時 → 照舊走 WS 即時通知
+   - 無 WS 連線時 → DO 觸發 Web Push → 系統通知「你有新訊息」
+6. 點擊通知 → 開啟 app.html
