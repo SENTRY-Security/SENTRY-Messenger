@@ -21,9 +21,7 @@ export function loadArgon2() {
   if (_argon2Loading) return _argon2Loading;
   _argon2Loading = new Promise((resolve, reject) => {
     const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/argon2-browser@1.18.0/dist/argon2-bundled.min.js';
-    s.integrity = 'sha384-XOR3aNvHciLPIf6r+2glkrmbBbLmIJ1EChMXjw8eBKBf8gE0rDq1TyUNuRdorOqi';
-    s.crossOrigin = 'anonymous';
+    s.src = '/assets/libs/argon2-bundled.min.js';
     s.onload = resolve;
     s.onerror = () => { _argon2Loading = null; reject(new Error('argon2 load failed')); };
     document.head.appendChild(s);

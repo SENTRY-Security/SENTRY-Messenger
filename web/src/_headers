@@ -6,7 +6,26 @@
   X-Frame-Options: DENY
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: camera=(self), microphone=(self), geolocation=()
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net https://esm.sh blob:; style-src 'self' 'unsafe-inline' https://unpkg.com; connect-src 'self' https://cdn.jsdelivr.net https://esm.sh wss:; img-src 'self' blob: data:; media-src 'self' blob:; font-src 'self' https://unpkg.com; worker-src 'self' blob: https://cdn.jsdelivr.net; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' wss:; img-src 'self' blob: data:; media-src 'self' blob:; font-src 'self'; worker-src 'self' blob:; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'
+
+# JS chunks are content-hashed by esbuild — safe to cache indefinitely
+/app/ui/chunks/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Vendor libs are version-pinned — safe to cache indefinitely
+/assets/libs/**
+  Cache-Control: public, max-age=31536000, immutable
+
+# App JS entry points and CSS bundle — re-validate daily
+/app/ui/*.js
+  Cache-Control: public, max-age=86400
+
+/assets/app-bundle.css
+  Cache-Control: public, max-age=86400
+
+# Locale JSON — re-validate daily
+/locales/*
+  Cache-Control: public, max-age=86400
 
 /*.html
   Cache-Control: no-store, no-cache, must-revalidate, max-age=0

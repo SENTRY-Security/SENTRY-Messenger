@@ -60,8 +60,8 @@ function getNativeDetector() {
 // background; skin-color detection is used in the interim.
 
 const MP_VERSION = '0.10.14';
-const MP_CDN = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}`;
-const MP_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite';
+const MP_CDN = '/assets/libs/mediapipe';
+const MP_MODEL = '/assets/libs/mediapipe/models/blaze_face_short_range.tflite';
 const MP_LOAD_TIMEOUT_MS = 20_000;
 
 let mpDetector = null;

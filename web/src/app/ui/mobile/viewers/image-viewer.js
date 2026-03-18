@@ -10,17 +10,14 @@
 
 import { log } from '../../../core/log.js';
 import Cropper from '../../../lib/vendor/cropper.esm.js';
-import { importWithSRI } from '/shared/utils/sri.js';
-import { CDN_SRI } from '/shared/utils/cdn-integrity.js';
 import { t } from '/locales/index.js';
 
-/* ── Fabric.js lazy loader (CDN, SRI-verified) ── */
+/* ── Fabric.js lazy loader (self-hosted) ── */
 let fabricLibPromise = null;
-const FABRIC_URL = 'https://cdn.jsdelivr.net/npm/fabric@6.9.1/dist/index.min.mjs';
 
 async function getFabric() {
   if (fabricLibPromise) return fabricLibPromise;
-  fabricLibPromise = importWithSRI(FABRIC_URL, CDN_SRI[FABRIC_URL], { useNativeImport: true })
+  fabricLibPromise = import(/* webpackIgnore: true */ '/assets/libs/fabric.min.mjs')
     .then(mod => {
       // Fabric.js v6 ESM uses named exports: { Canvas, PencilBrush, FabricImage, ... }
       // The +esm wrapper may wrap them under mod.default; fall back to mod itself.

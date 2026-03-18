@@ -16,7 +16,7 @@
 import { t } from '/locales/index.js';
 import { mergeInitSegments } from './mp4-remuxer.js';
 
-const MP4BOX_CDN_URL = 'https://esm.sh/mp4box@0.5.3';
+const MP4BOX_CDN_URL = '/assets/libs/mp4box.mjs';
 
 let _mp4boxModule = null;
 
