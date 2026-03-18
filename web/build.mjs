@@ -25,6 +25,9 @@ const absolutePathPlugin = {
     b.onResolve({ filter: /^\/(shared|libs|locales)\// }, (args) => ({
       path: resolve(src, args.path.slice(1))
     }));
+    // /assets/libs/* are runtime-only dynamic imports (self-hosted vendor bundles).
+    // Mark as external so esbuild doesn't try to resolve/bundle them.
+    b.onResolve({ filter: /^\/assets\// }, () => ({ external: true }));
   }
 };
 
