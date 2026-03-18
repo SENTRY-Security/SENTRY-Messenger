@@ -85,6 +85,7 @@ export async function uploadBizConvBackup() {
 
   const mkRaw = getMkRaw();
   if (!mkRaw) {
+    console.warn('[biz-conv-backup] upload: SKIP — no MK available');
     log({ bizConvBackupSkip: 'no MK' });
     return;
   }
@@ -92,6 +93,18 @@ export async function uploadBizConvBackup() {
   backupInFlight = true;
   try {
     const payload = BizConvStore.buildBackupPayload();
+    const groupCount = Object.keys(payload?.conversations || {}).length;
+    // Diagnostic: verify meta is present in payload
+    const metaSummary = {};
+    for (const [cid, conv] of Object.entries(payload?.conversations || {})) {
+      metaSummary[cid.slice(0, 12)] = {
+        hasName: !!conv?.meta?.name,
+        hasSeeds: Object.keys(conv?.seeds || {}).length,
+        epoch: conv?.current_epoch
+      };
+    }
+    console.warn('[biz-conv-backup] upload: payload built', { groupCount, metaSummary });
+
     // Mark clean before upload — if new changes arrive during upload,
     // markBizConvBackupDirty will re-set and schedule another round.
     backupDirty = false;
@@ -108,16 +121,19 @@ export async function uploadBizConvBackup() {
     }, 15000);
 
     if (r.ok) {
+      console.warn('[biz-conv-backup] upload: OK', { groupCount });
       log({ bizConvBackupOk: BizConvStore.conversations.size });
     } else {
       // Upload failed — re-mark dirty so next debounce retries
       backupDirty = true;
       scheduleDebouncedBackup();
+      console.warn('[biz-conv-backup] upload: FAIL', { status: r.status });
       log({ bizConvBackupFail: r.status });
     }
   } catch (err) {
     backupDirty = true;
     scheduleDebouncedBackup();
+    console.warn('[biz-conv-backup] upload: ERROR', err?.message);
     log({ bizConvBackupError: err?.message });
   } finally {
     backupInFlight = false;
@@ -154,7 +170,14 @@ export async function fetchActiveServerGroupIds() {
  */
 export async function hydrateBizConvFromBackup(activeServerIds = null) {
   const mkRaw = getMkRaw();
-  if (!mkRaw) return;
+  if (!mkRaw) {
+    console.warn('[biz-conv-backup] hydrate: SKIP — no MK available');
+    return;
+  }
+  console.warn('[biz-conv-backup] hydrate: starting', {
+    hasMK: true,
+    activeServerIds: activeServerIds ? activeServerIds.size : null
+  });
 
   try {
     // Try reason-filtered fetch first (efficient — only biz-conv-backup rows).
@@ -164,9 +187,11 @@ export async function hydrateBizConvFromBackup(activeServerIds = null) {
       method: 'GET',
       headers: authHeaders()
     }, 15000);
+    console.warn('[biz-conv-backup] hydrate: reason-filtered fetch', { ok: r1.ok, status: r1.status });
     if (r1.ok) {
       const data1 = await r1.json();
       backups = data1?.backups || data1?.results || [];
+      console.warn('[biz-conv-backup] hydrate: reason-filtered rows', backups.length);
     }
     if (!backups.length) {
       // Fallback: unfiltered fetch (older server without reason column)
@@ -175,45 +200,71 @@ export async function hydrateBizConvFromBackup(activeServerIds = null) {
         headers: authHeaders()
       }, 15000);
       if (!r2.ok) {
+        console.warn('[biz-conv-backup] hydrate: unfiltered fetch FAIL', { status: r2.status });
         log({ bizConvHydrateFail: r2.status });
         return;
       }
       const data2 = await r2.json();
       backups = data2?.backups || data2?.results || [];
+      console.warn('[biz-conv-backup] hydrate: unfiltered rows', backups.length);
     }
 
     if (!backups.length) {
-      console.warn('[biz-conv-backup] hydrate: 0 backup rows returned');
+      console.warn('[biz-conv-backup] hydrate: 0 backup rows returned — NO BACKUP ON SERVER');
       return;
     }
     console.warn('[biz-conv-backup] hydrate: scanning', backups.length, 'backup rows for biz-conv-backup/v1');
 
     // Find the biz-conv backup (by parsing each backup's payload)
-    for (const backup of backups) {
+    for (let i = 0; i < backups.length; i++) {
+      const backup = backups[i];
       try {
         const payloadStr = backup?.payload;
-        if (!payloadStr) continue;
+        if (!payloadStr) {
+          console.warn('[biz-conv-backup] hydrate: row', i, 'has no payload');
+          continue;
+        }
         const envelope = typeof payloadStr === 'string' ? JSON.parse(payloadStr) : payloadStr;
+
+        console.warn('[biz-conv-backup] hydrate: row', i, 'info=', envelope?.info, 'v=', envelope?.v, 'aead=', envelope?.aead);
 
         // Only process biz-conv-backup/v1 tagged envelopes
         if (envelope?.info !== BIZ_CONV_BACKUP_INFO) {
-          console.warn('[biz-conv-backup] hydrate: skip row (info=', envelope?.info, ')');
+          console.warn('[biz-conv-backup] hydrate: skip row', i, '(info mismatch:', envelope?.info, 'vs', BIZ_CONV_BACKUP_INFO, ')');
           continue;
         }
 
         const decrypted = await unwrapWithMK_JSON(envelope, mkRaw);
         if (decrypted && decrypted.conversations) {
           const totalInBackup = Object.keys(decrypted.conversations).length;
+          // Diagnostic: show what was in the backup
+          const backupMetaSummary = {};
+          for (const [cid, conv] of Object.entries(decrypted.conversations)) {
+            backupMetaSummary[cid.slice(0, 12)] = {
+              hasName: !!conv?.meta?.name,
+              name: conv?.meta?.name?.slice(0, 20) || null,
+              hasSeeds: Object.keys(conv?.seeds || {}).length,
+              epoch: conv?.current_epoch,
+              status: conv?.status
+            };
+          }
+          console.warn('[biz-conv-backup] hydrate: decrypted OK', { totalInBackup, backupMetaSummary });
+
           await BizConvStore.restoreFromBackup(decrypted, activeServerIds);
           const restored = BizConvStore.conversations.size;
+          console.warn('[biz-conv-backup] hydrate: restored', restored, 'groups from backup');
           log({ bizConvHydrateOk: restored, backupTotal: totalInBackup, filtered: totalInBackup - restored });
           return;
+        } else {
+          console.warn('[biz-conv-backup] hydrate: decrypted but no conversations field');
         }
       } catch (err) {
+        console.warn('[biz-conv-backup] hydrate: decrypt FAIL for row', i, err?.message);
         log({ bizConvHydrateDecryptFail: err?.message });
       }
     }
 
+    console.warn('[biz-conv-backup] hydrate: NO matching biz-conv backup found in', backups.length, 'rows');
     log({ bizConvHydrate: 'no biz-conv backup found in results' });
   } catch (err) {
     log({ bizConvHydrateError: err?.message });
@@ -245,6 +296,9 @@ export async function syncBizConvListFromServer() {
     const { getConversationThreads } = await import('./conversation-updates.js');
     const threads = getConversationThreads();
 
+    console.warn('[biz-conv-sync] server returned', conversations.length, 'conversations,',
+      'BizConvStore has', BizConvStore.conversations.size, 'local groups');
+
     for (const conv of (conversations || [])) {
       const convId = conv.conversation_id;
       if (!convId || conv.status !== 'active') continue;
@@ -254,6 +308,7 @@ export async function syncBizConvListFromServer() {
       // If backup was lost or never uploaded, we still need a BizConvStore entry
       // so that future KDM processing and meta decryption can work.
       let state = BizConvStore.get(convId);
+      const hadLocalState = !!state;
       if (!state) {
         state = BizConvStore.getOrCreate(convId);
         state.status = 'active';
@@ -284,6 +339,16 @@ export async function syncBizConvListFromServer() {
           }
         }
       }
+
+      // Diagnostic: log per-group state before resolution
+      console.warn('[biz-conv-sync] group', convId.slice(0, 12), {
+        hadLocalState,
+        hasSeeds: Object.keys(state.seeds).length,
+        hasMetaKey: !!state._groupMetaKey,
+        hasLocalMeta: !!state.meta?.name,
+        localName: state.meta?.name?.slice(0, 20) || null,
+        hasServerBlob: !!conv.encrypted_meta_blob
+      });
 
       // Resolve name/avatar: backup meta → server encrypted meta blob → null
       let groupName = state.meta?.name || null;
@@ -319,6 +384,11 @@ export async function syncBizConvListFromServer() {
 
       // Ensure thread exists for UI (preserve existing unreadCount during sync)
       const existingThread = threads.get(convId);
+      console.warn('[biz-conv-sync] upsert thread', convId.slice(0, 12), {
+        resolvedName: groupName?.slice(0, 20) || null,
+        hasAvatar: !!groupAvatar,
+        isOwner
+      });
       upsertBizConvThread(convId, {
         name: groupName,
         isOwner,
