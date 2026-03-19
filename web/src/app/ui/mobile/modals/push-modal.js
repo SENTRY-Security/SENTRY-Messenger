@@ -101,33 +101,58 @@ export function createPushModal({ deps }) {
           <span style="font-size:12px;">${escapeHtml(t('push.statusUnsupportedDetail'))}</span>
         </div>`;
     } else if (iosNeedsPWA || iosNoPush) {
-      // iOS browser mode — generate PIN for PWA enrollment
+      // iOS browser mode — step-by-step guide with images
       const currentSettings = getEffectiveSettings ? getEffectiveSettings() : {};
       const autoLogoutOn = !!currentSettings.autoLogoutOnBackground;
+      const stepStyle = 'display:flex;gap:12px;padding:14px 0;border-bottom:1px solid var(--line);';
+      const numStyle = 'flex-shrink:0;width:24px;height:24px;border-radius:50%;background:rgba(56,189,248,0.15);color:#38bdf8;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;margin-top:2px;';
+      const imgStyle = 'width:100%;border-radius:8px;margin-top:8px;border:1px solid rgba(148,163,184,0.12);';
       contentHTML = `
-        <div style="padding:16px 0;font-size:14px;">
-          <div style="font-weight:600;margin-bottom:10px;">${escapeHtml(t('push.iosRequiresPWA'))}</div>
-          <div style="font-size:13px;color:var(--muted);line-height:1.7;margin-bottom:14px;">
-            ${escapeHtml(t('push.iosRequiresPWADetail'))}
-          </div>
-          <button type="button" id="pushGeneratePin" style="width:100%;padding:10px 16px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;background:rgba(56,189,248,0.15);color:#38bdf8;">
-            ${escapeHtml(t('push.generatePin'))}
-          </button>
-          <div id="pushPinDisplay" style="display:none;margin-top:16px;">
-            <div style="text-align:center;">
-              <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">${escapeHtml(t('push.pinInstruction'))}</div>
-              <div id="pushPinCode" style="font-size:32px;font-weight:700;letter-spacing:8px;font-family:monospace;color:var(--accent);padding:12px;background:rgba(56,189,248,0.08);border-radius:10px;"></div>
-              <div style="font-size:11px;color:var(--muted);margin-top:8px;">${escapeHtml(t('push.pinExpiry'))}</div>
+        <div style="padding:8px 0;">
+          <div style="${stepStyle}">
+            <span style="${numStyle}">1</span>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:13px;font-weight:600;">${escapeHtml(t('push.iosStep1'))}</div>
+              <img src="/assets/images/step1.jpg" alt="Step 1" style="${imgStyle}" />
             </div>
-            <div id="pushAutoLogoutToggle" style="display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding:12px;background:rgba(148,163,184,0.08);border-radius:10px;">
-              <div style="flex:1;">
-                <div style="font-size:13px;font-weight:600;">${escapeHtml(t('push.keepSessionAlive'))}</div>
-                <div style="font-size:11px;color:var(--muted);margin-top:2px;">${escapeHtml(t('push.keepSessionAliveDesc'))}</div>
+          </div>
+          <div style="${stepStyle}">
+            <span style="${numStyle}">2</span>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:13px;font-weight:600;">${escapeHtml(t('push.iosStep2'))}</div>
+              <img src="/assets/images/step2.jpg" alt="Step 2" style="${imgStyle}" />
+            </div>
+          </div>
+          <div style="${stepStyle}">
+            <span style="${numStyle}">3</span>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:13px;font-weight:600;">${escapeHtml(t('push.iosStep3'))}</div>
+              <img src="/assets/images/step3.jpg" alt="Step 3" style="${imgStyle}" />
+            </div>
+          </div>
+          <div style="${stepStyle}border-bottom:none;">
+            <span style="${numStyle}">4</span>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:13px;font-weight:600;margin-bottom:10px;">${escapeHtml(t('push.iosStep4'))}</div>
+              <button type="button" id="pushGeneratePin" style="width:100%;padding:10px 16px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;background:rgba(56,189,248,0.15);color:#38bdf8;">
+                ${escapeHtml(t('push.generatePin'))}
+              </button>
+              <div id="pushPinDisplay" style="display:none;margin-top:12px;">
+                <div style="text-align:center;">
+                  <div id="pushPinCode" style="font-size:32px;font-weight:700;letter-spacing:8px;font-family:monospace;color:var(--accent);padding:12px;background:rgba(56,189,248,0.08);border-radius:10px;"></div>
+                  <div style="font-size:11px;color:var(--muted);margin-top:6px;">${escapeHtml(t('push.pinExpiry'))}</div>
+                </div>
+                <div id="pushAutoLogoutToggle" style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;padding:12px;background:rgba(148,163,184,0.08);border-radius:10px;">
+                  <div style="flex:1;">
+                    <div style="font-size:13px;font-weight:600;">${escapeHtml(t('push.keepSessionAlive'))}</div>
+                    <div style="font-size:11px;color:var(--muted);margin-top:2px;">${escapeHtml(t('push.keepSessionAliveDesc'))}</div>
+                  </div>
+                  <label class="settings-switch" style="margin-left:10px;">
+                    <input type="checkbox" id="pushKeepAliveToggle" ${autoLogoutOn ? '' : 'checked'} />
+                    <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+                  </label>
+                </div>
               </div>
-              <label class="settings-switch" style="margin-left:10px;">
-                <input type="checkbox" id="pushKeepAliveToggle" ${autoLogoutOn ? '' : 'checked'} />
-                <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
-              </label>
             </div>
           </div>
         </div>
