@@ -53,7 +53,24 @@
 
       /* Header */
       .pwa-header { text-align:center; padding:32px 0 24px; }
-      .pwa-logo { width:56px; height:56px; margin-bottom:12px; }
+      .pwa-logo-wrap {
+        position:relative; display:inline-flex; align-items:center; justify-content:center;
+        width:72px; height:72px; margin-bottom:16px;
+      }
+      .pwa-logo-glow {
+        position:absolute; inset:-8px; border-radius:50%;
+        background:radial-gradient(circle, rgba(56,189,248,0.35) 0%, rgba(59,130,246,0.18) 50%, transparent 70%);
+        animation:logo-breathe 3s ease-in-out infinite;
+        pointer-events:none;
+      }
+      @keyframes logo-breathe {
+        0%, 100% { transform:scale(0.85); opacity:0.5; }
+        50% { transform:scale(1.2); opacity:1; }
+      }
+      .pwa-logo {
+        position:relative; z-index:1; width:56px; height:56px;
+        filter:brightness(0) saturate(100%) invert(62%) sepia(93%) saturate(1200%) hue-rotate(176deg) brightness(100%) contrast(96%);
+      }
       .pwa-title { font-size:18px; font-weight:700; letter-spacing:1.5px; margin-bottom:4px; }
       .pwa-subtitle { font-size:13px; color:var(--muted); }
 
@@ -100,6 +117,26 @@
       .pwa-footer a { color:var(--accent); font-size:13px; text-decoration:none; }
       .pwa-footer a:hover { text-decoration:underline; }
 
+      /* PIN digit boxes */
+      .pin-boxes { display:flex; gap:8px; justify-content:center; margin-bottom:14px; }
+      .pin-box {
+        width:44px; height:54px; border:1.5px solid var(--line); border-radius:12px;
+        background:rgba(15,23,42,0.5); color:var(--fg);
+        font-size:24px; font-weight:700; font-family:monospace;
+        text-align:center; line-height:54px;
+        caret-color:var(--accent);
+        outline:none; transition:border-color .15s, box-shadow .15s;
+        -webkit-text-security:none;
+      }
+      .pin-box:focus {
+        border-color:var(--accent);
+        box-shadow:0 0 0 3px rgba(56,189,248,0.2);
+      }
+      .pin-box.filled {
+        border-color:var(--accent);
+        background:rgba(56,189,248,0.06);
+      }
+
       /* Toast */
       .toast {
         position:fixed; bottom:env(safe-area-inset-bottom,20px); left:50%; transform:translateX(-50%);
@@ -113,7 +150,10 @@
   <body>
     <div class="pwa-shell">
       <div class="pwa-header">
-        <img src="/assets/images/logo.svg" alt="SENTRY" class="pwa-logo" />
+        <div class="pwa-logo-wrap">
+          <div class="pwa-logo-glow"></div>
+          <img src="/assets/images/logo.svg" alt="SENTRY" class="pwa-logo" />
+        </div>
         <div class="pwa-title">SENTRY MESSENGER</div>
         <div class="pwa-subtitle" data-i18n="push.pwaSubtitle"></div>
       </div>
@@ -134,11 +174,16 @@
       <div class="status-card" id="pinCard" style="display:none">
         <div style="font-weight:600;font-size:15px;margin-bottom:8px;" data-i18n="push.pinEnrollTitle"></div>
         <div style="font-size:13px;color:var(--muted);line-height:1.5;margin-bottom:14px;" data-i18n="push.pinEnrollDesc"></div>
-        <div style="display:flex;gap:6px;margin-bottom:12px;">
-          <input type="text" id="pinInput" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" autocomplete="one-time-code"
-            style="flex:1;padding:12px 16px;font-size:20px;font-weight:700;letter-spacing:6px;text-align:center;font-family:monospace;border:1px solid var(--line);border-radius:10px;background:transparent;color:var(--fg);outline:none;"
-            placeholder="000000" />
+        <div class="pin-boxes" id="pinBoxes">
+          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="0" autocomplete="off" />
+          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="1" autocomplete="off" />
+          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="2" autocomplete="off" />
+          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="3" autocomplete="off" />
+          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="4" autocomplete="off" />
+          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="5" autocomplete="off" />
         </div>
+        <!-- Hidden field to gather the full PIN value -->
+        <input type="hidden" id="pinInput" />
         <button class="btn" id="btnEnroll" type="button" style="width:100%;background:var(--accent);color:#000;" data-i18n="push.pinEnrollBtn"></button>
         <div id="pinError" style="font-size:12px;color:var(--danger);margin-top:8px;display:none;"></div>
       </div>
@@ -273,7 +318,8 @@
         // Check push subscription status
         async function checkStatus() {
           if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-            setStatus(false, t('push.statusUnsupported'), t('push.statusUnsupportedDetail'));
+            var isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+            setStatus(false, t('push.statusUnsupported'), isIOS ? t('push.iosRequiresPWA') : t('push.statusUnsupportedDetail'));
             if (pinCard) pinCard.style.display = 'none';
             return;
           }
@@ -364,9 +410,54 @@
           }
         });
 
-        // Allow Enter key on PIN input
-        pinInput.addEventListener('keydown', function (e) {
-          if (e.key === 'Enter') { e.preventDefault(); btnEnroll.click(); }
+        // PIN digit boxes logic
+        var pinBoxes = document.querySelectorAll('.pin-box');
+        function syncPinValue() {
+          var val = '';
+          pinBoxes.forEach(function(b) { val += (b.value || ''); });
+          pinInput.value = val;
+        }
+        pinBoxes.forEach(function(box, i) {
+          box.addEventListener('input', function(e) {
+            var v = box.value.replace(/\D/g, '');
+            box.value = v.charAt(0) || '';
+            box.classList.toggle('filled', !!box.value);
+            syncPinValue();
+            if (box.value && i < 5) pinBoxes[i + 1].focus();
+            // If pasted multiple digits, fill remaining boxes
+            if (v.length > 1) {
+              var chars = v.split('');
+              for (var j = 0; j < chars.length && (i + j) < 6; j++) {
+                pinBoxes[i + j].value = chars[j];
+                pinBoxes[i + j].classList.add('filled');
+              }
+              var nextIdx = Math.min(i + chars.length, 5);
+              pinBoxes[nextIdx].focus();
+              syncPinValue();
+            }
+          });
+          box.addEventListener('keydown', function(e) {
+            if (e.key === 'Backspace' && !box.value && i > 0) {
+              pinBoxes[i - 1].value = '';
+              pinBoxes[i - 1].classList.remove('filled');
+              pinBoxes[i - 1].focus();
+              syncPinValue();
+            }
+            if (e.key === 'Enter') { e.preventDefault(); btnEnroll.click(); }
+          });
+          box.addEventListener('focus', function() { box.select(); });
+          // Handle paste on any box
+          box.addEventListener('paste', function(e) {
+            e.preventDefault();
+            var paste = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '').slice(0, 6);
+            for (var j = 0; j < 6; j++) {
+              pinBoxes[j].value = paste.charAt(j) || '';
+              pinBoxes[j].classList.toggle('filled', !!pinBoxes[j].value);
+            }
+            var focusIdx = Math.min(paste.length, 5);
+            pinBoxes[focusIdx].focus();
+            syncPinValue();
+          });
         });
 
         // Disable push
