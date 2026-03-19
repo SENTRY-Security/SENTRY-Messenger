@@ -1,15 +1,92 @@
 // Service Worker — push notification only (no offline cache)
 // Scope: / (root)
 
-// i18n: push notification translations keyed by locale
+// i18n: push notification translations keyed by locale, then by message type
 const PUSH_I18N = {
-  en:      { title: 'SENTRY MESSENGER', body: 'You have a new message' },
-  'zh-Hant': { title: 'SENTRY MESSENGER', body: '你有一則新訊息' },
-  'zh-Hans': { title: 'SENTRY MESSENGER', body: '你有一条新消息' },
-  ja:      { title: 'SENTRY MESSENGER', body: '新しいメッセージがあります' },
-  ko:      { title: 'SENTRY MESSENGER', body: '새 메시지가 있습니다' },
-  th:      { title: 'SENTRY MESSENGER', body: 'คุณมีข้อความใหม่' },
-  vi:      { title: 'SENTRY MESSENGER', body: 'Bạn có tin nhắn mới' }
+  en: {
+    title: 'SENTRY MESSENGER',
+    body: {
+      'message-new':       'You have a new message',
+      'secure-message':    'You have a new message',
+      'biz-conv-message':  'You have a new group message',
+      'ephemeral-message': 'You have a new ephemeral message',
+      'call-invite':       'You have an incoming call',
+      'notify':            'You have a system notification',
+      _default:            'You have a new message'
+    }
+  },
+  'zh-Hant': {
+    title: 'SENTRY MESSENGER',
+    body: {
+      'message-new':       '你有一則新訊息',
+      'secure-message':    '你有一則新訊息',
+      'biz-conv-message':  '你有一則新群組訊息',
+      'ephemeral-message': '你有一則新臨時訊息',
+      'call-invite':       '你有一通來電',
+      'notify':            '你有一則系統通知',
+      _default:            '你有一則新訊息'
+    }
+  },
+  'zh-Hans': {
+    title: 'SENTRY MESSENGER',
+    body: {
+      'message-new':       '你有一条新消息',
+      'secure-message':    '你有一条新消息',
+      'biz-conv-message':  '你有一条新群组消息',
+      'ephemeral-message': '你有一条新临时消息',
+      'call-invite':       '你有一通来电',
+      'notify':            '你有一条系统通知',
+      _default:            '你有一条新消息'
+    }
+  },
+  ja: {
+    title: 'SENTRY MESSENGER',
+    body: {
+      'message-new':       '新しいメッセージがあります',
+      'secure-message':    '新しいメッセージがあります',
+      'biz-conv-message':  '新しいグループメッセージがあります',
+      'ephemeral-message': '新しい一時メッセージがあります',
+      'call-invite':       '着信があります',
+      'notify':            'システム通知があります',
+      _default:            '新しいメッセージがあります'
+    }
+  },
+  ko: {
+    title: 'SENTRY MESSENGER',
+    body: {
+      'message-new':       '새 메시지가 있습니다',
+      'secure-message':    '새 메시지가 있습니다',
+      'biz-conv-message':  '새 그룹 메시지가 있습니다',
+      'ephemeral-message': '새 임시 메시지가 있습니다',
+      'call-invite':       '수신 전화가 있습니다',
+      'notify':            '시스템 알림이 있습니다',
+      _default:            '새 메시지가 있습니다'
+    }
+  },
+  th: {
+    title: 'SENTRY MESSENGER',
+    body: {
+      'message-new':       'คุณมีข้อความใหม่',
+      'secure-message':    'คุณมีข้อความใหม่',
+      'biz-conv-message':  'คุณมีข้อความกลุ่มใหม่',
+      'ephemeral-message': 'คุณมีข้อความชั่วคราวใหม่',
+      'call-invite':       'คุณมีสายเรียกเข้า',
+      'notify':            'คุณมีการแจ้งเตือนระบบ',
+      _default:            'คุณมีข้อความใหม่'
+    }
+  },
+  vi: {
+    title: 'SENTRY MESSENGER',
+    body: {
+      'message-new':       'Bạn có tin nhắn mới',
+      'secure-message':    'Bạn có tin nhắn mới',
+      'biz-conv-message':  'Bạn có tin nhắn nhóm mới',
+      'ephemeral-message': 'Bạn có tin nhắn tạm thời mới',
+      'call-invite':       'Bạn có cuộc gọi đến',
+      'notify':            'Bạn có thông báo hệ thống',
+      _default:            'Bạn có tin nhắn mới'
+    }
+  }
 };
 
 function resolvePushLocale() {
@@ -50,11 +127,13 @@ self.addEventListener('push', (e) => {
 
   const locale = resolvePushLocale();
   const i18n = PUSH_I18N[locale] || PUSH_I18N.en;
+  const bodyMap = i18n.body || PUSH_I18N.en.body;
 
   const icon = (payload.type && PUSH_TYPE_ICONS[payload.type]) || '/assets/images/push/message.png';
   const title = payload.title || i18n.title;
+  const localizedBody = (payload.type && bodyMap[payload.type]) || bodyMap._default;
   const options = {
-    body: payload.body || payload.message || i18n.body,
+    body: payload.body || payload.message || localizedBody,
     icon: icon,
     badge: '/assets/images/logo.svg',
     tag: 'sentry-push',
