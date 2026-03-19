@@ -123,8 +123,10 @@
         border-bottom:1px solid var(--line);
       }
       .notify-type-row:last-child { border-bottom:none; }
-      .notify-type-icon { width:28px; height:28px; flex-shrink:0; border-radius:6px; object-fit:contain; }
-      .notify-type-label { flex:1; font-size:14px; font-weight:500; }
+      .notify-type-icon { width:28px; height:28px; flex-shrink:0; border-radius:6px; object-fit:contain; align-self:flex-start; margin-top:2px; }
+      .notify-type-text { flex:1; display:flex; flex-direction:column; gap:2px; }
+      .notify-type-label { font-size:14px; font-weight:500; }
+      .notify-type-desc { font-size:11px; color:var(--text-secondary, #888); line-height:1.4; }
       .notify-switch {
         position:relative; display:inline-block; width:42px; height:24px; flex-shrink:0;
       }
@@ -201,27 +203,42 @@
         <div class="notify-types-title" data-i18n="push.notifyTypesTitle"></div>
         <div class="notify-type-row">
           <img src="/assets/images/push/message.png" class="notify-type-icon" alt="" />
-          <span class="notify-type-label" data-i18n="push.notifyTypeMessage"></span>
+          <div class="notify-type-text">
+            <span class="notify-type-label" data-i18n="push.notifyTypeMessage"></span>
+            <span class="notify-type-desc" data-i18n="push.notifyTypeMessageDesc"></span>
+          </div>
           <label class="notify-switch"><input type="checkbox" checked data-ntype="message" /><span class="notify-track"></span></label>
         </div>
         <div class="notify-type-row">
           <img src="/assets/images/push/group-chat.png" class="notify-type-icon" alt="" />
-          <span class="notify-type-label" data-i18n="push.notifyTypeGroupChat"></span>
+          <div class="notify-type-text">
+            <span class="notify-type-label" data-i18n="push.notifyTypeGroupChat"></span>
+            <span class="notify-type-desc" data-i18n="push.notifyTypeGroupChatDesc"></span>
+          </div>
           <label class="notify-switch"><input type="checkbox" checked data-ntype="group-chat" /><span class="notify-track"></span></label>
         </div>
         <div class="notify-type-row">
           <img src="/assets/images/push/ephemeral.png" class="notify-type-icon" alt="" />
-          <span class="notify-type-label" data-i18n="push.notifyTypeEphemeral"></span>
+          <div class="notify-type-text">
+            <span class="notify-type-label" data-i18n="push.notifyTypeEphemeral"></span>
+            <span class="notify-type-desc" data-i18n="push.notifyTypeEphemeralDesc"></span>
+          </div>
           <label class="notify-switch"><input type="checkbox" checked data-ntype="ephemeral" /><span class="notify-track"></span></label>
         </div>
         <div class="notify-type-row">
           <img src="/assets/images/push/incoming-call.png" class="notify-type-icon" alt="" />
-          <span class="notify-type-label" data-i18n="push.notifyTypeCall"></span>
+          <div class="notify-type-text">
+            <span class="notify-type-label" data-i18n="push.notifyTypeCall"></span>
+            <span class="notify-type-desc" data-i18n="push.notifyTypeCallDesc"></span>
+          </div>
           <label class="notify-switch"><input type="checkbox" checked data-ntype="call" /><span class="notify-track"></span></label>
         </div>
         <div class="notify-type-row">
           <img src="/assets/images/push/system.png" class="notify-type-icon" alt="" />
-          <span class="notify-type-label" data-i18n="push.notifyTypeSystem"></span>
+          <div class="notify-type-text">
+            <span class="notify-type-label" data-i18n="push.notifyTypeSystem"></span>
+            <span class="notify-type-desc" data-i18n="push.notifyTypeSystemDesc"></span>
+          </div>
           <label class="notify-switch"><input type="checkbox" checked data-ntype="system" /><span class="notify-track"></span></label>
         </div>
       </div>

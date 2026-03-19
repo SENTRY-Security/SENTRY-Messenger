@@ -1166,10 +1166,15 @@
     "devicePaired": "푸시 디바이스 페어링 완료",
     "notifyTypesTitle": "알림 유형",
     "notifyTypeMessage": "메시지",
+    "notifyTypeMessageDesc": "연락처와의 개인 대화 — 텍스트, 이미지, 동영상, 파일",
     "notifyTypeGroupChat": "그룹 채팅",
+    "notifyTypeGroupChatDesc": "다인 그룹 대화 — 텍스트, 이미지, 동영상, 파일",
     "notifyTypeEphemeral": "임시 채팅",
+    "notifyTypeEphemeralDesc": "자동 삭제되는 대화 — 텍스트 및 이미지(5 MB 이하)",
     "notifyTypeCall": "수신 전화",
-    "notifyTypeSystem": "시스템"
+    "notifyTypeCallDesc": "개인 또는 임시 채팅의 음성·영상 통화 초대",
+    "notifyTypeSystem": "시스템",
+    "notifyTypeSystemDesc": "친구 요청, 그룹 멤버 변경, 읽음 확인 등 시스템 이벤트"
   },
   "loginStages": {
     "authenticating": "인증 중...",

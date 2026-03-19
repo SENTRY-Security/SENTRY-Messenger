@@ -1168,10 +1168,15 @@
     "devicePaired": "Push device paired successfully",
     "notifyTypesTitle": "Notification types",
     "notifyTypeMessage": "Messages",
+    "notifyTypeMessageDesc": "Private conversations with contacts — text, images, videos, and files",
     "notifyTypeGroupChat": "Group chats",
+    "notifyTypeGroupChatDesc": "Messages in multi-member groups — text, images, videos, and files",
     "notifyTypeEphemeral": "Ephemeral chats",
+    "notifyTypeEphemeralDesc": "Self-destructing conversations — text and images (up to 5 MB)",
     "notifyTypeCall": "Incoming calls",
-    "notifyTypeSystem": "System"
+    "notifyTypeCallDesc": "Voice or video call invitations from private or ephemeral chats",
+    "notifyTypeSystem": "System",
+    "notifyTypeSystemDesc": "Friend requests, group member changes, read receipts, and other system events"
   },
   "loginStages": {
     "authenticating": "AUTHENTICATING...",

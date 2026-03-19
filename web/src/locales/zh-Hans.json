@@ -1168,10 +1168,15 @@
     "devicePaired": "推送设备配对成功",
     "notifyTypesTitle": "通知类型",
     "notifyTypeMessage": "消息",
+    "notifyTypeMessageDesc": "与联系人的私人对话 — 可发送文字、图片、视频及文件",
     "notifyTypeGroupChat": "群组聊天",
+    "notifyTypeGroupChatDesc": "多人群组中的对话消息 — 可发送文字、图片、视频及文件",
     "notifyTypeEphemeral": "临时聊天",
+    "notifyTypeEphemeralDesc": "限时自动销毁的对话 — 可发送文字及图片（限 5 MB）",
     "notifyTypeCall": "来电",
-    "notifyTypeSystem": "系统"
+    "notifyTypeCallDesc": "来自私人对话或临时对话的语音／视频通话邀请",
+    "notifyTypeSystem": "系统",
+    "notifyTypeSystemDesc": "好友邀请、群组成员变动、已读回执等系统自动产生的通知"
   },
   "loginStages": {
     "authenticating": "验证中...",

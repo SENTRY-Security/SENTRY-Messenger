@@ -1166,10 +1166,15 @@
     "devicePaired": "จับคู่อุปกรณ์พุชสำเร็จ",
     "notifyTypesTitle": "ประเภทการแจ้งเตือน",
     "notifyTypeMessage": "ข้อความ",
+    "notifyTypeMessageDesc": "การสนทนาส่วนตัวกับผู้ติดต่อ — ข้อความ รูปภาพ วิดีโอ และไฟล์",
     "notifyTypeGroupChat": "แชทกลุ่ม",
+    "notifyTypeGroupChatDesc": "ข้อความในกลุ่มหลายคน — ข้อความ รูปภาพ วิดีโอ และไฟล์",
     "notifyTypeEphemeral": "แชทชั่วคราว",
+    "notifyTypeEphemeralDesc": "การสนทนาที่ลบอัตโนมัติ — ข้อความและรูปภาพ (สูงสุด 5 MB)",
     "notifyTypeCall": "สายเรียกเข้า",
-    "notifyTypeSystem": "ระบบ"
+    "notifyTypeCallDesc": "คำเชิญสายเสียงหรือวิดีโอจากแชทส่วนตัวหรือแชทชั่วคราว",
+    "notifyTypeSystem": "ระบบ",
+    "notifyTypeSystemDesc": "คำขอเป็นเพื่อน การเปลี่ยนแปลงสมาชิกกลุ่ม ใบตอบรับการอ่าน และเหตุการณ์ระบบอื่น ๆ"
   },
   "loginStages": {
     "authenticating": "กำลังยืนยันตัวตน...",

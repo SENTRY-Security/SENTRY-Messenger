@@ -1166,10 +1166,15 @@
     "devicePaired": "Ghép nối thiết bị đẩy thành công",
     "notifyTypesTitle": "Loại thông báo",
     "notifyTypeMessage": "Tin nhắn",
+    "notifyTypeMessageDesc": "Hội thoại riêng tư với liên hệ — văn bản, hình ảnh, video và tệp",
     "notifyTypeGroupChat": "Nhóm chat",
+    "notifyTypeGroupChatDesc": "Tin nhắn trong nhóm nhiều người — văn bản, hình ảnh, video và tệp",
     "notifyTypeEphemeral": "Chat tạm thời",
+    "notifyTypeEphemeralDesc": "Hội thoại tự hủy — văn bản và hình ảnh (tối đa 5 MB)",
     "notifyTypeCall": "Cuộc gọi đến",
-    "notifyTypeSystem": "Hệ thống"
+    "notifyTypeCallDesc": "Lời mời gọi thoại hoặc video từ chat riêng tư hoặc chat tạm thời",
+    "notifyTypeSystem": "Hệ thống",
+    "notifyTypeSystemDesc": "Lời mời kết bạn, thay đổi thành viên nhóm, xác nhận đã đọc và các sự kiện hệ thống khác"
   },
   "loginStages": {
     "authenticating": "ĐANG XÁC THỰC...",

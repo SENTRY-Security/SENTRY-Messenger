@@ -1168,10 +1168,15 @@
     "devicePaired": "推播裝置配對成功",
     "notifyTypesTitle": "通知類型",
     "notifyTypeMessage": "訊息",
+    "notifyTypeMessageDesc": "與聯絡人的私人對話 — 可傳送文字、圖片、影片及檔案",
     "notifyTypeGroupChat": "群組聊天",
+    "notifyTypeGroupChatDesc": "多人群組中的對話訊息 — 可傳送文字、圖片、影片及檔案",
     "notifyTypeEphemeral": "臨時聊天",
+    "notifyTypeEphemeralDesc": "限時自動銷毀的對話 — 可傳送文字及圖片（限 5 MB）",
     "notifyTypeCall": "來電",
-    "notifyTypeSystem": "系統"
+    "notifyTypeCallDesc": "來自私人對話或臨時對話的語音／視訊通話邀請",
+    "notifyTypeSystem": "系統",
+    "notifyTypeSystemDesc": "好友邀請、群組成員異動、已讀回條等系統自動產生的通知"
   },
   "loginStages": {
     "authenticating": "驗證中...",

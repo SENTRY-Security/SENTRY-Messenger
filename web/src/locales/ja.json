@@ -1166,10 +1166,15 @@
     "devicePaired": "プッシュデバイスのペアリングが完了しました",
     "notifyTypesTitle": "通知タイプ",
     "notifyTypeMessage": "メッセージ",
+    "notifyTypeMessageDesc": "連絡先とのプライベート会話 — テキスト、画像、動画、ファイル",
     "notifyTypeGroupChat": "グループチャット",
+    "notifyTypeGroupChatDesc": "複数人グループでの会話 — テキスト、画像、動画、ファイル",
     "notifyTypeEphemeral": "一時チャット",
+    "notifyTypeEphemeralDesc": "時限付き自動消去の会話 — テキストと画像（5 MB まで）",
     "notifyTypeCall": "着信",
-    "notifyTypeSystem": "システム"
+    "notifyTypeCallDesc": "プライベートまたは一時チャットからの音声・ビデオ通話",
+    "notifyTypeSystem": "システム",
+    "notifyTypeSystemDesc": "友達リクエスト、グループメンバーの変更、既読通知などのシステムイベント"
   },
   "loginStages": {
     "authenticating": "認証中...",
