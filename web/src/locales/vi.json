@@ -1145,7 +1145,16 @@
     "infoReliabilityTitle": "Độ tin cậy",
     "infoReliability1": "Web Push được chuyển tiếp qua máy chủ đẩy của nền tảng (Apple APNs / Google FCM / Mozilla)",
     "infoReliability2": "Tỷ lệ gửi thành công khoảng 90% trở lên; trong một số trường hợp hiếm hoi có thể trì hoãn vài phút",
-    "infoReliability3": "Đây là tính năng bổ trợ — vui lòng mở ứng dụng định kỳ để kiểm tra tin nhắn quan trọng"
+    "infoReliability3": "Đây là tính năng bổ trợ — vui lòng mở ứng dụng định kỳ để kiểm tra tin nhắn quan trọng",
+    "generatePin": "Tạo mã PIN đăng ký",
+    "regeneratePin": "Tạo mã PIN mới",
+    "pinInstruction": "Nhập mã PIN này trong ứng dụng trên Màn hình chính",
+    "pinExpiry": "Mã PIN sẽ hết hạn sau 5 phút",
+    "pinEnrollTitle": "Bật thông báo đẩy",
+    "pinEnrollDesc": "Nhập mã PIN 6 chữ số từ ứng dụng để kích hoạt thông báo đẩy trên thiết bị này.",
+    "pinEnrollBtn": "Xác minh và bật",
+    "pinInvalid": "Vui lòng nhập mã PIN 6 chữ số hợp lệ",
+    "pinVerifyFailed": "Xác minh PIN thất bại. Mã có thể đã hết hạn — vui lòng tạo mã mới từ ứng dụng."
   },
   "loginStages": {
     "authenticating": "ĐANG XÁC THỰC...",

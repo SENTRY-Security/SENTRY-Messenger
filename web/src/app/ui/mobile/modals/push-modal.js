@@ -95,12 +95,20 @@ export function createPushModal({ deps }) {
           <span style="font-size:12px;">${escapeHtml(t('push.statusUnsupportedDetail'))}</span>
         </div>`;
     } else if (iosNeedsPWA) {
-      // iOS browser mode — guide user to add to Home Screen
+      // iOS browser mode — generate PIN for PWA enrollment
       contentHTML = `
         <div style="padding:16px 0;font-size:14px;">
           <div style="font-weight:600;margin-bottom:10px;">${escapeHtml(t('push.iosRequiresPWA'))}</div>
-          <div style="font-size:13px;color:var(--muted);line-height:1.7;">
+          <div style="font-size:13px;color:var(--muted);line-height:1.7;margin-bottom:14px;">
             ${escapeHtml(t('push.iosRequiresPWADetail'))}
+          </div>
+          <button type="button" id="pushGeneratePin" style="width:100%;padding:10px 16px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;background:rgba(56,189,248,0.15);color:#38bdf8;">
+            ${escapeHtml(t('push.generatePin'))}
+          </button>
+          <div id="pushPinDisplay" style="display:none;margin-top:16px;text-align:center;">
+            <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">${escapeHtml(t('push.pinInstruction'))}</div>
+            <div id="pushPinCode" style="font-size:32px;font-weight:700;letter-spacing:8px;font-family:monospace;color:var(--accent);padding:12px;background:rgba(56,189,248,0.08);border-radius:10px;"></div>
+            <div style="font-size:11px;color:var(--muted);margin-top:8px;">${escapeHtml(t('push.pinExpiry'))}</div>
           </div>
         </div>
         <div style="padding:14px 0;border-top:1px solid var(--line);">
@@ -155,9 +163,36 @@ export function createPushModal({ deps }) {
 
     const deviceList = body.querySelector('#pushDeviceList');
 
-    // iOS browser mode — only show device list, no subscribe
+    // iOS browser mode: generate PIN + manage existing devices
     if (iosNeedsPWA) {
       renderDeviceList(deviceList, null);
+
+      const generatePinBtn = body.querySelector('#pushGeneratePin');
+      const pinDisplay = body.querySelector('#pushPinDisplay');
+      const pinCode = body.querySelector('#pushPinCode');
+
+      generatePinBtn?.addEventListener('click', async () => {
+        generatePinBtn.disabled = true;
+        generatePinBtn.textContent = t('common.loading');
+        try {
+          const res = await fetch('/d1/push/pin/generate', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ accountDigest: getAccountDigest() })
+          });
+          const data = await res.json();
+          if (!res.ok || !data.pin) throw new Error(data.error || 'Failed');
+          if (pinCode) pinCode.textContent = data.pin;
+          if (pinDisplay) pinDisplay.style.display = 'block';
+          generatePinBtn.textContent = t('push.regeneratePin');
+          generatePinBtn.disabled = false;
+        } catch (err) {
+          log({ pushPinGenerateError: err?.message || err });
+          showAlertModal({ title: t('errors.operationFailed'), message: err?.message || '' });
+          generatePinBtn.textContent = t('push.generatePin');
+          generatePinBtn.disabled = false;
+        }
+      });
       return;
     }
 

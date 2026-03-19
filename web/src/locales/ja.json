@@ -1145,7 +1145,16 @@
     "infoReliabilityTitle": "信頼性について",
     "infoReliability1": "Web Push は各プラットフォームのプッシュサーバー（Apple APNs / Google FCM / Mozilla）を経由して配信されます",
     "infoReliability2": "到達率はおよそ 90% 以上ですが、まれに数分遅延することがあります",
-    "infoReliability3": "本機能は補助的なものです。重要なメッセージは定期的にアプリを開いてご確認ください"
+    "infoReliability3": "本機能は補助的なものです。重要なメッセージは定期的にアプリを開いてご確認ください",
+    "generatePin": "登録PINを生成",
+    "regeneratePin": "PINを再生成",
+    "pinInstruction": "ホーム画面のアプリでこのPINを入力してください",
+    "pinExpiry": "PINは5分後に失効します",
+    "pinEnrollTitle": "プッシュ通知を有効化",
+    "pinEnrollDesc": "アプリから取得した6桁のPINコードを入力して、このデバイスでプッシュ通知を有効にします。",
+    "pinEnrollBtn": "確認して有効化",
+    "pinInvalid": "有効な6桁のPINコードを入力してください",
+    "pinVerifyFailed": "PINの確認に失敗しました。有効期限が切れている可能性があります。アプリから再生成してください。"
   },
   "loginStages": {
     "authenticating": "認証中...",

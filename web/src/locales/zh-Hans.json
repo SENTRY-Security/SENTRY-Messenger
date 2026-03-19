@@ -1147,7 +1147,16 @@
     "infoReliabilityTitle": "可靠性说明",
     "infoReliability1": "Web Push 由各平台的推送服务器（Apple APNs / Google FCM / Mozilla）中转",
     "infoReliability2": "送达率约 90% 以上，极少数情况可能延迟数分钟",
-    "infoReliability3": "本通知为辅助功能，重要消息请定期打开应用查看"
+    "infoReliability3": "本通知为辅助功能，重要消息请定期打开应用查看",
+    "generatePin": "生成启用 PIN 码",
+    "regeneratePin": "重新生成 PIN 码",
+    "pinInstruction": "在主屏幕 App 中输入此 PIN 码",
+    "pinExpiry": "PIN 码将在 5 分钟后过期",
+    "pinEnrollTitle": "启用推送通知",
+    "pinEnrollDesc": "输入从 App 获取的 6 位数 PIN 码，以在此设备启用推送通知。",
+    "pinEnrollBtn": "验证并启用",
+    "pinInvalid": "请输入有效的 6 位数 PIN 码",
+    "pinVerifyFailed": "PIN 码验证失败，可能已过期 — 请从 App 重新生成。"
   },
   "loginStages": {
     "authenticating": "验证中...",

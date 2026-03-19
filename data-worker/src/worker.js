@@ -9091,6 +9091,89 @@ async function handlePushRoutes(req, env) {
     }
   }
 
+  // POST /d1/push/pin/generate — generate a 6-digit PIN for PWA push enrollment (iOS)
+  // Requires HMAC auth (called from authenticated Safari session)
+  if (req.method === 'POST' && url.pathname === '/d1/push/pin/generate') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    if (!accountDigest) {
+      return json({ error: 'BadRequest', message: 'accountDigest required' }, { status: 400 });
+    }
+    if (!env.AUTH_KV) {
+      return json({ error: 'ServerError', message: 'KV not configured' }, { status: 500 });
+    }
+    // Generate 6-digit PIN
+    const pin = String(Math.floor(100000 + Math.random() * 900000));
+    const kvKey = `push-pin:${pin}`;
+    try {
+      await env.AUTH_KV.put(kvKey, JSON.stringify({
+        accountDigest,
+        createdAt: Date.now()
+      }), { expirationTtl: 300 }); // 5 minutes
+      return json({ ok: true, pin });
+    } catch (err) {
+      console.error('push_pin_generate_failed', err?.message || err);
+      return json({ error: 'PinGenerateFailed', message: err?.message || 'pin generate failed' }, { status: 500 });
+    }
+  }
+
+  // POST /d1/push/pin/verify — verify PIN and subscribe push (from PWA, no HMAC needed)
+  if (req.method === 'POST' && url.pathname === '/d1/push/pin/verify') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const pin = String(body?.pin || '').trim();
+    const sub = body?.subscription;
+    if (!pin || pin.length !== 6) {
+      return json({ error: 'BadRequest', message: 'valid 6-digit pin required' }, { status: 400 });
+    }
+    if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth) {
+      return json({ error: 'BadRequest', message: 'subscription (endpoint, keys.p256dh, keys.auth) required' }, { status: 400 });
+    }
+    if (!env.AUTH_KV) {
+      return json({ error: 'ServerError', message: 'KV not configured' }, { status: 500 });
+    }
+    // Lookup and consume PIN
+    const kvKey = `push-pin:${pin}`;
+    try {
+      const raw = await env.AUTH_KV.get(kvKey);
+      if (!raw) {
+        return json({ error: 'InvalidPin', message: 'PIN expired or invalid' }, { status: 401 });
+      }
+      const data = JSON.parse(raw);
+      const accountDigest = data.accountDigest;
+      // Consume PIN immediately (one-time use)
+      await env.AUTH_KV.delete(kvKey);
+      // Register push subscription
+      await ensureDataTables(env);
+      await env.DB.prepare(
+        `INSERT INTO push_subscriptions (account_digest, device_id, endpoint, keys_p256dh, keys_auth, user_agent, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, strftime('%s','now'))
+         ON CONFLICT(endpoint) DO UPDATE SET
+           account_digest=excluded.account_digest,
+           device_id=excluded.device_id,
+           keys_p256dh=excluded.keys_p256dh,
+           keys_auth=excluded.keys_auth,
+           user_agent=excluded.user_agent`
+      ).bind(
+        accountDigest,
+        body?.deviceId || null,
+        sub.endpoint,
+        sub.keys.p256dh,
+        sub.keys.auth,
+        body?.userAgent || null
+      ).run();
+      return json({ ok: true, accountDigest });
+    } catch (err) {
+      console.error('push_pin_verify_failed', err?.message || err);
+      return json({ error: 'PinVerifyFailed', message: err?.message || 'pin verify failed' }, { status: 500 });
+    }
+  }
+
   // POST /d1/push/list — list push subscriptions for an account
   if (req.method === 'POST' && url.pathname === '/d1/push/list') {
     await ensureDataTables(env);
@@ -9147,6 +9230,12 @@ export default {
         if (result) return withCORS(result, req, env);
         // No matching public route
         return withCORS(json({ error: 'not_found', message: 'no matching route' }, { status: 404 }), req, env);
+      }
+
+      // ── Push PIN verify + unsubscribe (no HMAC — authenticated by PIN / endpoint) ──
+      if (req.method === 'POST' && (url.pathname === '/d1/push/pin/verify' || url.pathname === '/d1/push/unsubscribe')) {
+        const result = await handlePushRoutes(req, env);
+        if (result) return result;
       }
 
       // ── Internal API (HMAC-protected, backward-compat) ──

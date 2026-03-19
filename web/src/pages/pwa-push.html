@@ -130,6 +130,19 @@
         </div>
       </div>
 
+      <!-- PIN enrollment card (shown when no active subscription) -->
+      <div class="status-card" id="pinCard" style="display:none">
+        <div style="font-weight:600;font-size:15px;margin-bottom:8px;" data-i18n="push.pinEnrollTitle"></div>
+        <div style="font-size:13px;color:var(--muted);line-height:1.5;margin-bottom:14px;" data-i18n="push.pinEnrollDesc"></div>
+        <div style="display:flex;gap:6px;margin-bottom:12px;">
+          <input type="text" id="pinInput" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" autocomplete="one-time-code"
+            style="flex:1;padding:12px 16px;font-size:20px;font-weight:700;letter-spacing:6px;text-align:center;font-family:monospace;border:1px solid var(--line);border-radius:10px;background:transparent;color:var(--fg);outline:none;"
+            placeholder="000000" />
+        </div>
+        <button class="btn" id="btnEnroll" type="button" style="width:100%;background:var(--accent);color:#000;" data-i18n="push.pinEnrollBtn"></button>
+        <div id="pinError" style="font-size:12px;color:var(--danger);margin-top:8px;display:none;"></div>
+      </div>
+
       <!-- Push limitations: Basic info -->
       <div class="info-section">
         <div class="info-title" data-i18n="push.infoBasicTitle"></div>
@@ -212,11 +225,17 @@
     <script>
       (function () {
         var t = window.__t;
+        var VAPID_PUBLIC_KEY = 'BGNlllC_H-lqHnnKrxT2IhF_5_xei3is_loJHesBmzjhfgmGMwq_nwlVVaKkrOhTnCO9_DeFtlotIl3Oug3eI2k';
+
         var statusDot = document.getElementById('statusDot');
         var statusLabel = document.getElementById('statusLabel');
         var statusDetail = document.getElementById('statusDetail');
         var actionRow = document.getElementById('actionRow');
         var btnDisable = document.getElementById('btnDisable');
+        var pinCard = document.getElementById('pinCard');
+        var pinInput = document.getElementById('pinInput');
+        var btnEnroll = document.getElementById('btnEnroll');
+        var pinError = document.getElementById('pinError');
         var toastEl = document.getElementById('toast');
 
         // Apply i18n to data-i18n elements
@@ -226,6 +245,15 @@
         });
 
         btnDisable.textContent = t('push.disableBtn');
+
+        function urlBase64ToUint8Array(base64String) {
+          var padding = '='.repeat((4 - base64String.length % 4) % 4);
+          var base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+          var raw = atob(base64);
+          var arr = new Uint8Array(raw.length);
+          for (var i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+          return arr;
+        }
 
         function showToast(msg) {
           toastEl.textContent = msg;
@@ -238,17 +266,21 @@
           statusLabel.textContent = label;
           statusDetail.textContent = detail;
           actionRow.style.display = active ? 'flex' : 'none';
+          // Show PIN card only when inactive and push is supported
+          if (pinCard) pinCard.style.display = active ? 'none' : 'block';
         }
 
         // Check push subscription status
         async function checkStatus() {
           if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
             setStatus(false, t('push.statusUnsupported'), t('push.statusUnsupportedDetail'));
+            if (pinCard) pinCard.style.display = 'none';
             return;
           }
 
           if (Notification.permission === 'denied') {
             setStatus(false, t('push.statusDenied'), t('push.statusDeniedDetail'));
+            if (pinCard) pinCard.style.display = 'none';
             return;
           }
 
@@ -270,6 +302,73 @@
           }
         }
 
+        // PIN enrollment: verify PIN → subscribe push
+        btnEnroll.addEventListener('click', async function () {
+          var pin = (pinInput.value || '').replace(/\D/g, '').trim();
+          if (pin.length !== 6) {
+            pinError.textContent = t('push.pinInvalid');
+            pinError.style.display = 'block';
+            pinInput.focus();
+            return;
+          }
+          pinError.style.display = 'none';
+          btnEnroll.disabled = true;
+          btnEnroll.textContent = t('common.loading');
+
+          try {
+            // 1. Request notification permission
+            var permission = await Notification.requestPermission();
+            if (permission !== 'granted') {
+              throw { code: 'PERMISSION_DENIED', message: t('push.permissionDenied') };
+            }
+
+            // 2. Register SW + subscribe push
+            var reg = await navigator.serviceWorker.getRegistration('/sw.js');
+            if (!reg) {
+              reg = await navigator.serviceWorker.register('/sw.js');
+              await navigator.serviceWorker.ready;
+            }
+            var sub = await reg.pushManager.subscribe({
+              userVisibleOnly: true,
+              applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+            });
+            var subJSON = sub.toJSON();
+
+            // 3. Verify PIN + register subscription on backend
+            var res = await fetch('/d1/push/pin/verify', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                pin: pin,
+                subscription: subJSON,
+                userAgent: navigator.userAgent
+              })
+            });
+            var data = await res.json();
+            if (!res.ok) {
+              // If PIN invalid, unsubscribe the push we just created
+              try { await sub.unsubscribe(); } catch {}
+              throw new Error(data.message || data.error || 'Verification failed');
+            }
+
+            showToast(t('push.enabledToast'));
+            pinInput.value = '';
+            checkStatus();
+          } catch (err) {
+            console.error('[pwa-push] enroll failed', err);
+            pinError.textContent = err.message || t('push.pinVerifyFailed');
+            pinError.style.display = 'block';
+          } finally {
+            btnEnroll.disabled = false;
+            btnEnroll.textContent = t('push.pinEnrollBtn');
+          }
+        });
+
+        // Allow Enter key on PIN input
+        pinInput.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); btnEnroll.click(); }
+        });
+
         // Disable push
         btnDisable.addEventListener('click', async function () {
           if (!confirm(t('push.disableConfirm'))) return;
@@ -282,7 +381,6 @@
               if (sub) {
                 var endpoint = sub.endpoint;
                 await sub.unsubscribe();
-                // Notify backend (best-effort, no auth needed for unsubscribe-by-endpoint)
                 try {
                   await fetch('/d1/push/unsubscribe', {
                     method: 'POST',

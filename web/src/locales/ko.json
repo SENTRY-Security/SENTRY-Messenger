@@ -1145,7 +1145,16 @@
     "infoReliabilityTitle": "안정성",
     "infoReliability1": "Web Push는 각 플랫폼의 푸시 서버(Apple APNs / Google FCM / Mozilla)를 통해 전달됩니다",
     "infoReliability2": "전달률은 약 90% 이상이며, 드물게 몇 분 지연될 수 있습니다",
-    "infoReliability3": "이 기능은 보조 기능입니다. 중요한 메시지는 주기적으로 앱을 열어 확인해 주세요"
+    "infoReliability3": "이 기능은 보조 기능입니다. 중요한 메시지는 주기적으로 앱을 열어 확인해 주세요",
+    "generatePin": "등록 PIN 생성",
+    "regeneratePin": "PIN 재생성",
+    "pinInstruction": "홈 화면 앱에서 이 PIN을 입력하세요",
+    "pinExpiry": "PIN은 5분 후 만료됩니다",
+    "pinEnrollTitle": "푸시 알림 활성화",
+    "pinEnrollDesc": "앱에서 받은 6자리 PIN 코드를 입력하여 이 기기에서 푸시 알림을 활성화합니다.",
+    "pinEnrollBtn": "확인 후 활성화",
+    "pinInvalid": "유효한 6자리 PIN 코드를 입력해 주세요",
+    "pinVerifyFailed": "PIN 확인에 실패했습니다. 만료되었을 수 있습니다. 앱에서 다시 생성해 주세요."
   },
   "loginStages": {
     "authenticating": "인증 중...",

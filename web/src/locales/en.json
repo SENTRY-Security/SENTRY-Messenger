@@ -1147,7 +1147,16 @@
     "infoReliabilityTitle": "Reliability",
     "infoReliability1": "Web Push is relayed by platform push servers (Apple APNs / Google FCM / Mozilla)",
     "infoReliability2": "Delivery rate is approximately 90%+; in rare cases notifications may be delayed by a few minutes",
-    "infoReliability3": "This is a supplementary feature — please open the app periodically to check for important messages"
+    "infoReliability3": "This is a supplementary feature — please open the app periodically to check for important messages",
+    "generatePin": "Generate enrollment PIN",
+    "regeneratePin": "Generate new PIN",
+    "pinInstruction": "Enter this PIN in the Home Screen app",
+    "pinExpiry": "PIN expires in 5 minutes",
+    "pinEnrollTitle": "Enable push notifications",
+    "pinEnrollDesc": "Enter the 6-digit PIN from the app to activate push notifications on this device.",
+    "pinEnrollBtn": "Verify and enable",
+    "pinInvalid": "Please enter a valid 6-digit PIN",
+    "pinVerifyFailed": "PIN verification failed. It may have expired — generate a new one from the app."
   },
   "loginStages": {
     "authenticating": "AUTHENTICATING...",
