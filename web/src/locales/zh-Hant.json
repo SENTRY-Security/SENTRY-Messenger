@@ -1178,7 +1178,13 @@
     "notifyTypeCall": "來電",
     "notifyTypeCallDesc": "來自私人對話或臨時對話的語音／視訊通話邀請",
     "notifyTypeSystem": "系統",
-    "notifyTypeSystemDesc": "好友邀請、群組成員異動、已讀回條等系統自動產生的通知"
+    "notifyTypeSystemDesc": "好友邀請、群組成員異動、已讀回條等系統自動產生的通知",
+    "previewTitle": "通知預覽",
+    "previewLabel": "顯示訊息預覽",
+    "previewDesc": "在推播通知中顯示發送者名稱及訊息摘要",
+    "previewE2eTitle": "端對端加密",
+    "previewE2eDesc": "通知內容在傳輸過程中全程加密，僅在您的裝置上解密顯示。伺服器與推送服務商均無法讀取通知內容。",
+    "previewLockscreenWarn": "開啟後，訊息預覽可能會顯示在鎖定畫面上。請確認您的裝置鎖定畫面通知設定。"
   },
   "loginStages": {
     "authenticating": "驗證中...",

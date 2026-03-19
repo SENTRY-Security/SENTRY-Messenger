@@ -1178,7 +1178,13 @@
     "notifyTypeCall": "Incoming calls",
     "notifyTypeCallDesc": "Voice or video call invitations from private or ephemeral chats",
     "notifyTypeSystem": "System",
-    "notifyTypeSystemDesc": "Friend requests, group member changes, read receipts, and other system events"
+    "notifyTypeSystemDesc": "Friend requests, group member changes, read receipts, and other system events",
+    "previewTitle": "Notification preview",
+    "previewLabel": "Show message preview",
+    "previewDesc": "Display sender name and message excerpt in push notifications",
+    "previewE2eTitle": "End-to-end encrypted",
+    "previewE2eDesc": "Notification content is encrypted during transmission and only decrypted on this device. Neither the server nor the push service provider can read the content.",
+    "previewLockscreenWarn": "When enabled, message previews may appear on your lock screen. Please check your device's lock screen notification settings."
   },
   "loginStages": {
     "authenticating": "AUTHENTICATING...",

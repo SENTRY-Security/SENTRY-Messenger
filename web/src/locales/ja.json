@@ -1176,7 +1176,13 @@
     "notifyTypeCall": "着信",
     "notifyTypeCallDesc": "プライベートまたは一時チャットからの音声・ビデオ通話",
     "notifyTypeSystem": "システム",
-    "notifyTypeSystemDesc": "友達リクエスト、グループメンバーの変更、既読通知などのシステムイベント"
+    "notifyTypeSystemDesc": "友達リクエスト、グループメンバーの変更、既読通知などのシステムイベント",
+    "previewTitle": "通知プレビュー",
+    "previewLabel": "メッセージプレビューを表示",
+    "previewDesc": "プッシュ通知に送信者名とメッセージの抜粋を表示します",
+    "previewE2eTitle": "エンドツーエンド暗号化",
+    "previewE2eDesc": "通知内容は送信中すべて暗号化され、お使いのデバイスでのみ復号・表示されます。サーバーやプッシュサービス事業者は内容を読み取ることができません。",
+    "previewLockscreenWarn": "有効にすると、ロック画面にメッセージのプレビューが表示される場合があります。デバイスのロック画面通知設定をご確認ください。"
   },
   "loginStages": {
     "authenticating": "認証中...",

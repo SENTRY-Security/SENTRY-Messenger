@@ -137,6 +137,29 @@ const PUSH_TYPE_ICONS = {
   'notify':             '/assets/images/push/system.png'        // 系統通知
 };
 
+// Read preview preference from IndexedDB (async, SW-compatible)
+function getPreviewPref() {
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open('sentry-push-prefs', 1);
+      req.onupgradeneeded = (ev) => {
+        const db = ev.target.result;
+        if (!db.objectStoreNames.contains('prefs')) db.createObjectStore('prefs');
+      };
+      req.onsuccess = (ev) => {
+        try {
+          const db = ev.target.result;
+          const tx = db.transaction('prefs', 'readonly');
+          const get = tx.objectStore('prefs').get('preview');
+          get.onsuccess = () => resolve(!!get.result);
+          get.onerror = () => resolve(false);
+        } catch { resolve(false); }
+      };
+      req.onerror = () => resolve(false);
+    } catch { resolve(false); }
+  });
+}
+
 self.addEventListener('push', (e) => {
   let payload = {};
   if (e.data) {
@@ -152,16 +175,31 @@ self.addEventListener('push', (e) => {
   const icon = (payload.type && PUSH_TYPE_ICONS[payload.type]) || '/assets/images/push/message.png';
   const title = payload.title || i18n.title;
   const localizedBody = (payload.type && bodyMap[payload.type]) || bodyMap._default;
-  const options = {
-    body: payload.body || payload.message || localizedBody,
-    icon: icon,
-    badge: '/assets/images/logo.svg',
-    tag: 'sentry-push',
-    renotify: true,
-    data: { url: '/pages/app.html' }
-  };
 
-  e.waitUntil(self.registration.showNotification(title, options));
+  // If preview is enabled and payload contains encrypted preview, decrypt and show it.
+  // Otherwise fall back to generic localized body text.
+  const notifyPromise = getPreviewPref().then((previewOn) => {
+    let body = localizedBody;
+
+    if (previewOn && payload.encrypted_preview) {
+      // TODO: decrypt payload.encrypted_preview with push keypair from IndexedDB
+      // For now, fall back to localized body until E2E push encryption is implemented
+      body = localizedBody;
+    } else if (payload.body || payload.message) {
+      body = payload.body || payload.message;
+    }
+
+    return self.registration.showNotification(title, {
+      body: body,
+      icon: icon,
+      badge: '/assets/images/logo.svg',
+      tag: 'sentry-push',
+      renotify: true,
+      data: { url: '/pages/app.html' }
+    });
+  });
+
+  e.waitUntil(notifyPromise);
 });
 
 self.addEventListener('notificationclick', (e) => {

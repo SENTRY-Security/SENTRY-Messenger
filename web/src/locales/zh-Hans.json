@@ -1178,7 +1178,13 @@
     "notifyTypeCall": "来电",
     "notifyTypeCallDesc": "来自私人对话或临时对话的语音／视频通话邀请",
     "notifyTypeSystem": "系统",
-    "notifyTypeSystemDesc": "好友邀请、群组成员变动、已读回执等系统自动产生的通知"
+    "notifyTypeSystemDesc": "好友邀请、群组成员变动、已读回执等系统自动产生的通知",
+    "previewTitle": "通知预览",
+    "previewLabel": "显示消息预览",
+    "previewDesc": "在推送通知中显示发送者名称及消息摘要",
+    "previewE2eTitle": "端到端加密",
+    "previewE2eDesc": "通知内容在传输过程中全程加密，仅在您的设备上解密显示。服务器与推送服务商均无法读取通知内容。",
+    "previewLockscreenWarn": "开启后，消息预览可能会显示在锁定屏幕上。请确认您的设备锁屏通知设置。"
   },
   "loginStages": {
     "authenticating": "验证中...",

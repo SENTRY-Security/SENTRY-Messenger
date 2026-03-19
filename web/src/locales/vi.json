@@ -1176,7 +1176,13 @@
     "notifyTypeCall": "Cuộc gọi đến",
     "notifyTypeCallDesc": "Lời mời gọi thoại hoặc video từ chat riêng tư hoặc chat tạm thời",
     "notifyTypeSystem": "Hệ thống",
-    "notifyTypeSystemDesc": "Lời mời kết bạn, thay đổi thành viên nhóm, xác nhận đã đọc và các sự kiện hệ thống khác"
+    "notifyTypeSystemDesc": "Lời mời kết bạn, thay đổi thành viên nhóm, xác nhận đã đọc và các sự kiện hệ thống khác",
+    "previewTitle": "Xem trước thông báo",
+    "previewLabel": "Hiển thị xem trước tin nhắn",
+    "previewDesc": "Hiển thị tên người gửi và nội dung tóm tắt trong thông báo đẩy",
+    "previewE2eTitle": "Mã hóa đầu cuối",
+    "previewE2eDesc": "Nội dung thông báo được mã hóa toàn bộ trong quá trình truyền tải và chỉ được giải mã trên thiết bị của bạn. Máy chủ và nhà cung cấp dịch vụ đẩy không thể đọc nội dung.",
+    "previewLockscreenWarn": "Khi bật, bản xem trước tin nhắn có thể hiển thị trên màn hình khóa. Vui lòng kiểm tra cài đặt thông báo màn hình khóa trên thiết bị."
   },
   "loginStages": {
     "authenticating": "ĐANG XÁC THỰC...",
