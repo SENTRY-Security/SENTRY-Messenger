@@ -90,17 +90,6 @@ async function hkdfSha256(salt, ikm, info, length) {
   return t1.slice(0, length);
 }
 
-function createInfo(type, clientPublicKey, serverPublicKey) {
-  // "Content-Encoding: <type>\0" + recipient_public + sender_public
-  const typeBytes = encoder.encode(`Content-Encoding: ${type}\0`);
-  const clientLen = new Uint8Array(2);
-  clientLen[0] = (clientPublicKey.length >> 8) & 0xff;
-  clientLen[1] = clientPublicKey.length & 0xff;
-  const serverLen = new Uint8Array(2);
-  serverLen[0] = (serverPublicKey.length >> 8) & 0xff;
-  serverLen[1] = serverPublicKey.length & 0xff;
-  return concat(typeBytes, clientLen, clientPublicKey, serverLen, serverPublicKey);
-}
 
 async function encryptPayload(clientPublicKeyBytes, authSecret, payload) {
   // Generate ephemeral ECDH key pair
