@@ -8,7 +8,19 @@ import {
   unsubscribeByEndpoint, listPushDevices, getPushSubscription
 } from '../../../features/push-subscription.js';
 import { ensureDeviceId } from '../../../core/store.js';
-import { encryptPreview } from '../../../crypto/push-preview.js';
+// Lazy-load push preview crypto to avoid breaking the modal if module fails
+let _encryptPreview = null;
+async function loadEncryptPreview() {
+  if (!_encryptPreview) {
+    try {
+      const mod = await import('../../../crypto/push-preview.js');
+      _encryptPreview = mod.encryptPreview;
+    } catch (err) {
+      console.warn('[push-modal] failed to load push-preview crypto', err);
+    }
+  }
+  return _encryptPreview;
+}
 
 function isIOS() {
   return /iPhone|iPad|iPod/.test(navigator.userAgent)
@@ -35,7 +47,10 @@ export function createPushModal({ deps }) {
       let encrypted_preview = null;
       if (previewPublicKey) {
         try {
-          encrypted_preview = await encryptPreview(previewPublicKey, 'SENTRY: Test notification 🔔');
+          const encrypt = await loadEncryptPreview();
+          if (encrypt) {
+            encrypted_preview = await encrypt(previewPublicKey, 'SENTRY: Test notification 🔔');
+          }
         } catch (encErr) {
           console.warn('[push-test] encrypt preview failed', encErr);
         }
