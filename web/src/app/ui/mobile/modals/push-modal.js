@@ -101,48 +101,45 @@ export function createPushModal({ deps }) {
           <span style="font-size:12px;">${escapeHtml(t('push.statusUnsupportedDetail'))}</span>
         </div>`;
     } else if (iosNeedsPWA || iosNoPush) {
-      // iOS browser mode — step-by-step guide with images
+      // iOS browser mode — wizard-style step UI (one step at a time)
       const currentSettings = getEffectiveSettings ? getEffectiveSettings() : {};
       const autoLogoutOn = !!currentSettings.autoLogoutOnBackground;
-      const stepStyle = 'display:flex;gap:12px;padding:14px 0;border-bottom:1px solid var(--line);';
-      const numStyle = 'flex-shrink:0;width:24px;height:24px;border-radius:50%;background:rgba(56,189,248,0.15);color:#38bdf8;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;margin-top:2px;';
-      const imgStyle = 'width:100%;border-radius:8px;margin-top:8px;border:1px solid rgba(148,163,184,0.12);';
+      const stepLabels = [
+        escapeHtml(t('push.iosStep1')),
+        escapeHtml(t('push.iosStep2')),
+        escapeHtml(t('push.iosStep3')),
+        escapeHtml(t('push.iosStep4'))
+      ];
+      const imgStyle = 'width:100%;border-radius:10px;margin-top:12px;border:1px solid rgba(148,163,184,0.12);';
       contentHTML = `
-        <div style="padding:8px 0;">
-          <div style="${stepStyle}">
-            <span style="${numStyle}">1</span>
-            <div style="flex:1;min-width:0;">
-              <div style="font-size:13px;font-weight:600;">${escapeHtml(t('push.iosStep1'))}</div>
+        <div style="padding:12px 0;">
+          <!-- Step indicator dots -->
+          <div id="pushStepDots" style="display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:16px;">
+            ${[0,1,2,3].map(i => `<div data-dot="${i}" style="width:8px;height:8px;border-radius:50%;transition:all .2s;${i === 0 ? 'background:#38bdf8;transform:scale(1.2);' : 'background:rgba(148,163,184,0.3);'}"></div>`).join('')}
+          </div>
+          <!-- Step panels -->
+          <div id="pushStepPanels" style="position:relative;overflow:hidden;">
+            <div data-step="0" style="text-align:center;">
+              <div style="font-size:15px;font-weight:700;margin-bottom:4px;">${stepLabels[0]}</div>
               <img src="/assets/images/step1.jpg" alt="Step 1" style="${imgStyle}" />
             </div>
-          </div>
-          <div style="${stepStyle}">
-            <span style="${numStyle}">2</span>
-            <div style="flex:1;min-width:0;">
-              <div style="font-size:13px;font-weight:600;">${escapeHtml(t('push.iosStep2'))}</div>
+            <div data-step="1" style="display:none;text-align:center;">
+              <div style="font-size:15px;font-weight:700;margin-bottom:4px;">${stepLabels[1]}</div>
               <img src="/assets/images/step2.jpg" alt="Step 2" style="${imgStyle}" />
             </div>
-          </div>
-          <div style="${stepStyle}">
-            <span style="${numStyle}">3</span>
-            <div style="flex:1;min-width:0;">
-              <div style="font-size:13px;font-weight:600;">${escapeHtml(t('push.iosStep3'))}</div>
+            <div data-step="2" style="display:none;text-align:center;">
+              <div style="font-size:15px;font-weight:700;margin-bottom:4px;">${stepLabels[2]}</div>
               <img src="/assets/images/step3.jpg" alt="Step 3" style="${imgStyle}" />
             </div>
-          </div>
-          <div style="${stepStyle}border-bottom:none;">
-            <span style="${numStyle}">4</span>
-            <div style="flex:1;min-width:0;">
-              <div style="font-size:13px;font-weight:600;margin-bottom:10px;">${escapeHtml(t('push.iosStep4'))}</div>
+            <div data-step="3" style="display:none;text-align:center;">
+              <div style="font-size:15px;font-weight:700;margin-bottom:8px;">${stepLabels[3]}</div>
               <button type="button" id="pushGeneratePin" style="width:100%;padding:10px 16px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;background:rgba(56,189,248,0.15);color:#38bdf8;">
                 ${escapeHtml(t('push.generatePin'))}
               </button>
               <div id="pushPinDisplay" style="display:none;margin-top:12px;">
-                <div style="text-align:center;">
-                  <div id="pushPinCode" style="font-size:32px;font-weight:700;letter-spacing:8px;font-family:monospace;color:var(--accent);padding:12px;background:rgba(56,189,248,0.08);border-radius:10px;"></div>
-                  <div style="font-size:11px;color:var(--muted);margin-top:6px;">${escapeHtml(t('push.pinExpiry'))}</div>
-                </div>
-                <div id="pushAutoLogoutToggle" style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;padding:12px;background:rgba(148,163,184,0.08);border-radius:10px;">
+                <div id="pushPinCode" style="font-size:32px;font-weight:700;letter-spacing:8px;font-family:monospace;color:var(--accent);padding:12px;background:rgba(56,189,248,0.08);border-radius:10px;"></div>
+                <div style="font-size:11px;color:var(--muted);margin-top:6px;">${escapeHtml(t('push.pinExpiry'))}</div>
+                <div id="pushAutoLogoutToggle" style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;padding:12px;background:rgba(148,163,184,0.08);border-radius:10px;text-align:left;">
                   <div style="flex:1;">
                     <div style="font-size:13px;font-weight:600;">${escapeHtml(t('push.keepSessionAlive'))}</div>
                     <div style="font-size:11px;color:var(--muted);margin-top:2px;">${escapeHtml(t('push.keepSessionAliveDesc'))}</div>
@@ -154,6 +151,11 @@ export function createPushModal({ deps }) {
                 </div>
               </div>
             </div>
+          </div>
+          <!-- Nav buttons -->
+          <div style="display:flex;gap:10px;margin-top:16px;">
+            <button type="button" id="pushStepPrev" style="flex:1;padding:10px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;background:rgba(148,163,184,0.15);color:var(--fg);display:none;">&larr;</button>
+            <button type="button" id="pushStepNext" style="flex:1;padding:10px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;background:rgba(56,189,248,0.15);color:#38bdf8;">&rarr;</button>
           </div>
         </div>
         <div style="padding:14px 0;border-top:1px solid var(--line);">
@@ -208,9 +210,38 @@ export function createPushModal({ deps }) {
 
     const deviceList = body.querySelector('#pushDeviceList');
 
-    // iOS browser mode: generate PIN + manage existing devices
+    // iOS browser mode: step wizard + generate PIN + manage existing devices
     if (iosNeedsPWA || iosNoPush) {
       renderDeviceList(deviceList, null);
+
+      // Step wizard navigation
+      const TOTAL_STEPS = 4;
+      let currentStep = 0;
+      const panels = body.querySelectorAll('[data-step]');
+      const dots = body.querySelectorAll('[data-dot]');
+      const prevBtn = body.querySelector('#pushStepPrev');
+      const nextBtn = body.querySelector('#pushStepNext');
+
+      function goToStep(idx) {
+        currentStep = idx;
+        panels.forEach(p => { p.style.display = Number(p.dataset.step) === idx ? '' : 'none'; });
+        dots.forEach(d => {
+          const active = Number(d.dataset.dot) === idx;
+          d.style.background = active ? '#38bdf8' : 'rgba(148,163,184,0.3)';
+          d.style.transform = active ? 'scale(1.2)' : 'scale(1)';
+        });
+        if (prevBtn) prevBtn.style.display = idx > 0 ? '' : 'none';
+        if (nextBtn) nextBtn.style.display = idx < TOTAL_STEPS - 1 ? '' : 'none';
+      }
+
+      prevBtn?.addEventListener('click', () => { if (currentStep > 0) goToStep(currentStep - 1); });
+      nextBtn?.addEventListener('click', () => { if (currentStep < TOTAL_STEPS - 1) goToStep(currentStep + 1); });
+
+      // Allow tapping dots to jump to step
+      dots.forEach(d => {
+        d.style.cursor = 'pointer';
+        d.addEventListener('click', () => goToStep(Number(d.dataset.dot)));
+      });
 
       const generatePinBtn = body.querySelector('#pushGeneratePin');
       const pinDisplay = body.querySelector('#pushPinDisplay');
