@@ -10,11 +10,11 @@ self.addEventListener('activate', (e) => {
 });
 
 self.addEventListener('push', (e) => {
-  if (!e.data) return;
-
   let payload = {};
-  try { payload = e.data.json(); } catch {
-    try { payload = { body: e.data.text() }; } catch { /* empty */ }
+  if (e.data) {
+    try { payload = e.data.json(); } catch {
+      try { payload = { body: e.data.text() }; } catch { /* empty */ }
+    }
   }
 
   const title = payload.title || 'SENTRY MESSENGER';
