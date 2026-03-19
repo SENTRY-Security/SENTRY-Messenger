@@ -9313,7 +9313,8 @@ async function handlePushRoutes(req, env) {
       const testType = body?.type || 'message-new';
       const pushPayload = JSON.stringify({
         title: 'SENTRY MESSENGER',
-        type: testType
+        type: testType,
+        body: 'SENTRY: Test push notification 🔔'
       });
       const result = await sendPushNotification({
         endpoint: row.endpoint,

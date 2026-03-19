@@ -176,18 +176,20 @@ self.addEventListener('push', (e) => {
   const title = payload.title || i18n.title;
   const localizedBody = (payload.type && bodyMap[payload.type]) || bodyMap._default;
 
-  // If preview is enabled and payload contains encrypted preview, decrypt and show it.
-  // Otherwise fall back to generic localized body text.
+  // Preview logic:
+  //   OFF → always show generic localized body (no content leak)
+  //   ON  → show payload.body/message if available; later: decrypt encrypted_preview
   const notifyPromise = getPreviewPref().then((previewOn) => {
     let body = localizedBody;
 
-    if (previewOn && payload.encrypted_preview) {
-      // TODO: decrypt payload.encrypted_preview with push keypair from IndexedDB
-      // For now, fall back to localized body until E2E push encryption is implemented
-      body = localizedBody;
-    } else if (payload.body || payload.message) {
-      body = payload.body || payload.message;
+    if (previewOn) {
+      // Preview enabled — show message content if server provided it
+      if (payload.body || payload.message) {
+        body = payload.body || payload.message;
+      }
+      // TODO: when E2E push encryption is implemented, decrypt payload.encrypted_preview here
     }
+    // Preview disabled — always use generic localized text (body stays as localizedBody)
 
     return self.registration.showNotification(title, {
       body: body,
