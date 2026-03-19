@@ -2,7 +2,6 @@
 
 import { escapeHtml } from '../ui-utils.js';
 import { t, getCurrentLang, setLang, applyDOMTranslations } from '/locales/index.js';
-import { isPushSupported } from '../../../features/push-subscription.js';
 
 const SUPPORTED_LANGUAGES = [
   { code: 'zh-Hant', label: '🇹🇼 繁體中文' },
@@ -283,7 +282,6 @@ export function createSettingsModule({ deps }) {
             ${SUPPORTED_LANGUAGES.map(l => `<option value="${l.code}" ${l.code === getCurrentLang() ? 'selected' : ''}>${escapeHtml(l.label)}</option>`).join('')}
           </select>
         </div>
-        ${isPushSupported() ? `
         <div class="settings-item" id="settingsPushRow" style="cursor:pointer;">
           <div class="settings-text">
             <strong>${escapeHtml(t('push.settingsTitle'))}</strong>
@@ -291,7 +289,6 @@ export function createSettingsModule({ deps }) {
           </div>
           <span style="color:var(--muted);font-size:18px;">›</span>
         </div>
-        ` : ''}
         <div class="settings-actions">
           <button type="button" class="secondary" id="settingsClose">${escapeHtml(t('common.close'))}</button>
         </div>
