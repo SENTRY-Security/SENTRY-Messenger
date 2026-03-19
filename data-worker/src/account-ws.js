@@ -292,20 +292,13 @@ export class AccountWebSocket {
       }
     }
 
-    // Send Web Push notification when no active socket is connected
-    if (sent === 0) {
-      const hasVapid = !!(this.env.VAPID_PUBLIC_KEY && this.env.VAPID_PRIVATE_KEY);
-      console.log('[ws-do] no active sockets, push path', {
-        type: payload.type,
-        accountDigest: this.accountDigest?.slice(0, 16) || 'null',
-        hasVapid
-      });
-      if (this.accountDigest && hasVapid) {
-        try {
-          await this._sendPushNotifications(payload);
-        } catch (pushErr) {
-          console.warn('[ws-do] push notification failed', pushErr?.message || pushErr);
-        }
+    // Always send Web Push notification (even when WS is connected)
+    const hasVapid = !!(this.env.VAPID_PUBLIC_KEY && this.env.VAPID_PRIVATE_KEY);
+    if (this.accountDigest && hasVapid) {
+      try {
+        await this._sendPushNotifications(payload);
+      } catch (pushErr) {
+        console.warn('[ws-do] push notification failed', pushErr?.message || pushErr);
       }
     }
 
