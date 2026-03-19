@@ -38,7 +38,7 @@ export function createPushModal({ deps }) {
   // Send test push notification via backend (UAT only)
   async function sendTestPush(endpoint, previewPublicKey, btn) {
     const digest = getAccountDigest();
-    if (!digest) return;
+    if (!digest) { showToast('[debug] no digest'); return; }
     const origText = btn.textContent;
     btn.disabled = true;
     btn.textContent = '...';
@@ -64,13 +64,13 @@ export function createPushModal({ deps }) {
       if (data.gone) {
         showToast(t('push.testGone'));
       } else if (data.ok) {
-        showToast(t('push.testSent'));
+        showToast(t('push.testSent') + ' (HTTP ' + res.status + ')');
       } else {
-        showToast(data.message || 'Failed');
+        showToast('Push failed: ' + (data.message || data.error || 'HTTP ' + res.status));
       }
     } catch (err) {
       log({ pushTestError: err?.message || err });
-      showToast(err?.message || 'Test failed');
+      showToast('Test error: ' + (err?.message || 'unknown'));
     } finally {
       btn.disabled = false;
       btn.textContent = origText;

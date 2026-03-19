@@ -247,63 +247,80 @@ function getPreviewPref() {
 }
 
 self.addEventListener('push', (e) => {
-  let payload = {};
-  if (e.data) {
-    try { payload = e.data.json(); } catch {
-      try { payload = { body: e.data.text() }; } catch { /* empty */ }
-    }
-  }
-
-  const locale = resolvePushLocale();
-  const i18n = PUSH_I18N[locale] || PUSH_I18N.en;
-  const bodyMap = i18n.body || PUSH_I18N.en.body;
-
-  const icon = (payload.type && PUSH_TYPE_ICONS[payload.type]) || '/assets/images/push/message.png';
-  const title = payload.title || i18n.title;
-  const localizedBody = (payload.type && bodyMap[payload.type]) || bodyMap._default;
-
-  // Preview logic:
-  //   OFF → always show generic localized body (no content leak)
-  //   ON  → decrypt encrypted_preview if available, else show generic text
-  const notifyPromise = getPreviewPref().then(async (previewOn) => {
-    let body = localizedBody;
-
-    if (previewOn && payload.encrypted_preview) {
-      // E2E decrypt: server never sees the plaintext
-      try {
-        const privKey = await getPreviewPrivateKey();
-        if (privKey) {
-          body = await decryptPreview(privKey, payload.encrypted_preview);
-        }
-      } catch (err) {
-        console.warn('[sw] preview decrypt failed', err);
-        // Fall back to generic text on decrypt failure
+  // Wrap entire handler in try/catch — if anything outside the promise throws,
+  // the browser silently swallows the push and shows nothing.
+  try {
+    let payload = {};
+    if (e.data) {
+      try { payload = e.data.json(); } catch {
+        try { payload = { body: e.data.text() }; } catch { /* empty */ }
       }
     }
-    // Preview disabled or no encrypted_preview → generic localized text
 
-    return self.registration.showNotification(title, {
-      body: body,
-      icon: icon,
-      badge: '/assets/images/logo.svg',
-      tag: 'sentry-push',
-      renotify: true,
-      data: { url: '/pages/app.html' }
-    });
-  }).catch((err) => {
-    // Last-resort fallback: ensure notification always shows even if preview logic fails
-    console.error('[sw] push handler error, showing fallback notification', err);
-    return self.registration.showNotification(title, {
-      body: localizedBody,
-      icon: icon,
-      badge: '/assets/images/logo.svg',
-      tag: 'sentry-push',
-      renotify: true,
-      data: { url: '/pages/app.html' }
-    });
-  });
+    const locale = resolvePushLocale();
+    const i18n = PUSH_I18N[locale] || PUSH_I18N.en;
+    const bodyMap = i18n.body || PUSH_I18N.en.body;
 
-  e.waitUntil(notifyPromise);
+    const icon = (payload.type && PUSH_TYPE_ICONS[payload.type]) || '/assets/images/push/message.png';
+    const title = payload.title || i18n.title;
+    const localizedBody = (payload.type && bodyMap[payload.type]) || bodyMap._default;
+
+    // Preview logic:
+    //   OFF → always show generic localized body (no content leak)
+    //   ON  → decrypt encrypted_preview if available, else show generic text
+    const notifyPromise = getPreviewPref().then(async (previewOn) => {
+      let body = localizedBody;
+
+      if (previewOn && payload.encrypted_preview) {
+        // E2E decrypt: server never sees the plaintext
+        try {
+          const privKey = await getPreviewPrivateKey();
+          if (privKey) {
+            body = await decryptPreview(privKey, payload.encrypted_preview);
+          }
+        } catch (err) {
+          console.warn('[sw] preview decrypt failed', err);
+          // Fall back to generic text on decrypt failure
+        }
+      }
+      // Preview disabled or no encrypted_preview → generic localized text
+
+      return self.registration.showNotification(title, {
+        body: body,
+        icon: icon,
+        badge: '/assets/images/logo.svg',
+        tag: 'sentry-push',
+        renotify: true,
+        data: { url: '/pages/app.html' }
+      });
+    }).catch((err) => {
+      // Last-resort fallback: ensure notification always shows even if preview logic fails
+      console.error('[sw] push handler error, showing fallback notification', err);
+      return self.registration.showNotification('SENTRY MESSENGER', {
+        body: '[SW-ERR] ' + (err?.message || 'unknown error'),
+        icon: '/assets/images/push/message.png',
+        badge: '/assets/images/logo.svg',
+        tag: 'sentry-push',
+        renotify: true,
+        data: { url: '/pages/app.html' }
+      });
+    });
+
+    e.waitUntil(notifyPromise);
+  } catch (outerErr) {
+    // Catastrophic fallback — something threw before the promise chain even started
+    console.error('[sw] push outer error', outerErr);
+    e.waitUntil(
+      self.registration.showNotification('SENTRY MESSENGER', {
+        body: '[SW-OUTER-ERR] ' + (outerErr?.message || 'unknown'),
+        icon: '/assets/images/push/message.png',
+        badge: '/assets/images/logo.svg',
+        tag: 'sentry-push',
+        renotify: true,
+        data: { url: '/pages/app.html' }
+      })
+    );
+  }
 });
 
 self.addEventListener('notificationclick', (e) => {
