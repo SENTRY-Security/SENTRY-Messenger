@@ -2,7 +2,7 @@
 
 import { escapeHtml } from '../ui-utils.js';
 import { t, getCurrentLang, setLang, applyDOMTranslations } from '/locales/index.js';
-import { isPushSupported, subscribePush, unsubscribePush, unsubscribeByEndpoint, listPushDevices, getPushSubscription } from '../../features/push-subscription.js';
+import { isPushSupported, subscribePush, unsubscribePush, unsubscribeByEndpoint, listPushDevices, getPushSubscription } from '../../../features/push-subscription.js';
 
 const SUPPORTED_LANGUAGES = [
   { code: 'zh-Hant', label: '🇹🇼 繁體中文' },
