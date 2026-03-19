@@ -1497,7 +1497,24 @@ async function ensureDataTables(env) {
         console.log('ensureDataTables: created ephemeral_sessions table');
       } catch (e) { console.warn('ensureDataTables: ephemeral_sessions create failed', e?.message); }
     }
-    // push_subscriptions table is now created via migration 0015
+    // push_subscriptions table — migration 0015, with auto-create fallback
+    if (!tableNames.has('push_subscriptions')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS push_subscriptions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_digest TEXT NOT NULL,
+          device_id TEXT,
+          endpoint TEXT NOT NULL UNIQUE,
+          keys_p256dh TEXT NOT NULL,
+          keys_auth TEXT NOT NULL,
+          user_agent TEXT,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+        )`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_push_subs_account ON push_subscriptions(account_digest)`).run();
+        await env.DB.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_push_subs_endpoint ON push_subscriptions(endpoint)`).run();
+        console.log('ensureDataTables: created push_subscriptions table (migration 0015 fallback)');
+      } catch (e) { console.warn('ensureDataTables: push_subscriptions create failed', e?.message); }
+    }
     // Auto-add reason column to contact_secret_backups (migration 0014)
     try {
       await env.DB.prepare(`SELECT reason FROM contact_secret_backups LIMIT 0`).all();

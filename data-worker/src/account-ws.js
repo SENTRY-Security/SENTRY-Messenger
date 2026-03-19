@@ -520,7 +520,10 @@ export class AccountWebSocket {
       const relayPayload = { ...msg, senderDigest: senderDigest };
       const relayRes = await stub.fetch('https://do/notify', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          'x-account-digest': targetDigest
+        },
         body: JSON.stringify(relayPayload)
       });
       const relayResult = await relayRes.json().catch(() => ({}));
@@ -722,7 +725,10 @@ export class AccountWebSocket {
           const stub = this.env.ACCOUNT_WS.get(id);
           await stub.fetch('https://do/notify', {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: {
+              'content-type': 'application/json',
+              'x-account-digest': watcherDigest
+            },
             body: payload
           });
         } catch {}
@@ -783,7 +789,10 @@ export class AccountWebSocket {
       const stub = this.env.ACCOUNT_WS.get(id);
       await stub.fetch('https://do/notify', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          'x-account-digest': targetDigest
+        },
         body: JSON.stringify(payload)
       });
     } catch (err) {
@@ -1124,8 +1133,11 @@ export class AccountWebSocket {
       console.warn('[ws-do] push skipped: no accountDigest or DB', { digest: !!this.accountDigest, db: !!this.env.DB });
       return;
     }
-    // Only send push for message-type notifications
-    const pushTypes = new Set(['message-new', 'secure-message', 'notify']);
+    // Only send push for notification-worthy message types
+    const pushTypes = new Set([
+      'message-new', 'secure-message', 'notify',
+      'biz-conv-message', 'call-invite'
+    ]);
     if (!pushTypes.has(payload.type)) return;
 
     const rows = await this.env.DB.prepare(
@@ -1237,7 +1249,10 @@ export class AccountWebSocket {
         const stub = this.env.ACCOUNT_WS.get(doId);
         await stub.fetch('https://do/notify', {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: {
+            'content-type': 'application/json',
+            'x-account-digest': peerDigest
+          },
           body: JSON.stringify({
             type: 'ephemeral-peer-reconnected',
             conversationId: row.conversation_id,
@@ -1269,7 +1284,10 @@ export class AccountWebSocket {
         const stub = this.env.ACCOUNT_WS.get(doId);
         await stub.fetch('https://do/notify', {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: {
+            'content-type': 'application/json',
+            'x-account-digest': peerDigest
+          },
           body: JSON.stringify({
             type: 'ephemeral-peer-disconnected',
             conversationId: row.conversation_id,
