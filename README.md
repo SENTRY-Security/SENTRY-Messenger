@@ -28,6 +28,7 @@ Open-source end-to-end encrypted messenger with Signal Protocol, ephemeral chat,
 - [資料庫 Schema](#資料庫-schema)
 - [API 端點](#api-端點)
 - [WebSocket 即時通訊](#websocket-即時通訊)
+- [Web Push 推播通知](#web-push-推播通知)
 - [安全設計原則](#安全設計原則)
 - [安全審計與威脅模型](#安全審計與威脅模型)
 - [橫向部署與擴展優勢](#橫向部署與擴展優勢)
@@ -1618,6 +1619,100 @@ Client                          Worker                         Durable Object
 | 一般信令 JSON | 16 KB |
 | SDP 描述 | 64 KB（支援 Safari 延伸 codec） |
 | 字串欄位 | 128–4096 bytes（依欄位） |
+
+---
+
+## Web Push 推播通知
+
+### 架構概覽
+
+```
+ 發送者                    Cloudflare Worker (DO)              接收者裝置
+┌────────┐  POST /messages  ┌──────────────────────┐  Web Push API  ┌─────────────┐
+│ Client │ ───────────────▶ │ notifyAccountDO()    │ ────────────▶  │ Service     │
+│        │                  │   ↓                  │                │ Worker (SW) │
+└────────┘                  │ _sendPushNotifications│                │   ↓         │
+                            │   ↓ VAPID + AES-GCM  │                │ showNotify  │
+                            │   ↓ RFC 8291/8292    │                │ (i18n)      │
+                            └──────────────────────┘                └─────────────┘
+```
+
+推播通知基於 W3C Push API 標準，使用 VAPID 身份驗證（RFC 8292）和 AES-128-GCM 傳輸加密（RFC 8291）。所有推播流程在 Cloudflare Workers Durable Objects 內完成，不依賴第三方推播服務。
+
+### 隱私設計
+
+| 原則 | 說明 |
+|------|------|
+| 零內容暴露 | 推播 payload 僅含 `{ title: "SENTRY MESSENGER" }`，不包含訊息內容、發送者資訊或對話 ID |
+| 客戶端 i18n | 通知文字由 Service Worker 根據接收者的 `navigator.language` 在本地解析，伺服器不傳送任何語系資訊 |
+| 訂閱隔離 | 每個 `account_digest` 獨立管理訂閱端點，Durable Object 隔離確保無跨帳號洩漏 |
+
+### 訊息類型過濾
+
+並非所有訊息都觸發推播。伺服器端執行兩層過濾：
+
+**第一層 — 通知類型白名單（Notification Type Allowlist）**
+
+僅以下 5 種通知類型允許觸發推播：
+
+| 通知類型 | 說明 |
+|----------|------|
+| `secure-message` | 1:1 加密訊息 |
+| `message-new` | 一般新訊息 |
+| `biz-conv-message` | 群組對話訊息 |
+| `call-invite` | 通話邀請 |
+| `notify` | 系統通知 |
+
+**第二層 — 控制訊息排除（Control Message Exclusion）**
+
+即使通知類型通過第一層，若訊息的 `msgType`（從 `header_json` 提取）屬於以下控制類型，仍不發送推播：
+
+```
+read-receipt, delivery-receipt, session-init, session-ack, session-error,
+profile-update, contact-share, conversation-deleted, placeholder
+```
+
+### 多語系支援 (i18n)
+
+Service Worker 內嵌翻譯字典，根據接收者瀏覽器語系自動選擇通知文字：
+
+| 語系 | 通知內容 |
+|------|---------|
+| `en` | You have a new message |
+| `zh-Hant` | 你有一則新訊息 |
+| `zh-Hans` | 你有一条新消息 |
+| `ja` | 新しいメッセージがあります |
+| `ko` | 새 메시지가 있습니다 |
+| `th` | คุณมีข้อความใหม่ |
+| `vi` | Bạn có tin nhắn mới |
+
+語系解析邏輯與主應用的 `locales/index.js` 一致（BCP-47 標準化），不支援的語系自動 fallback 至英文。
+
+### 訂閱管理
+
+| 操作 | 端點 | 說明 |
+|------|------|------|
+| 註冊訂閱 | `POST /api/v1/push/subscribe` | 儲存 endpoint + p256dh + auth 至 `push_subscriptions` |
+| 取消訂閱 | `POST /api/v1/push/unsubscribe` | 移除指定 endpoint |
+| 自動清理 | — | 推送時收到 404/410 回應自動刪除失效訂閱 |
+
+### 平台相容性
+
+| 平台 | 支援狀態 | 備註 |
+|------|---------|------|
+| Chrome / Edge (Desktop & Android) | 完整支援 | 關閉瀏覽器後仍可接收 |
+| Firefox (Desktop & Android) | 完整支援 | |
+| Safari (macOS 13+) | 完整支援 | 需允許通知權限 |
+| iOS Safari (16.4+) | PWA 模式支援 | 必須先加入主畫面（Add to Home Screen） |
+
+### 相關檔案
+
+| 檔案 | 說明 |
+|------|------|
+| `web/src/sw.js` | Service Worker — 推播接收、i18n、通知顯示 |
+| `data-worker/src/account-ws.js` | Durable Object — `_sendPushNotifications()` 推播發送 |
+| `data-worker/src/web-push.js` | VAPID JWT + AES-128-GCM 加密實作（RFC 8291/8292） |
+| `web/src/app/ui/mobile/modals/push-modal.js` | 前端推播設定 UI |
 
 ---
 
