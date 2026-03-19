@@ -1145,7 +1145,8 @@ export class AccountWebSocket {
     // Only send push for notification-worthy message types
     const pushTypes = new Set([
       'message-new', 'secure-message', 'notify',
-      'biz-conv-message', 'call-invite'
+      'biz-conv-message', 'call-invite',
+      'ephemeral-message'
     ]);
     if (!pushTypes.has(payload.type)) return;
 
