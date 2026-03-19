@@ -1173,10 +1173,11 @@ export class AccountWebSocket {
       vapidSubject: this.env.VAPID_SUBJECT || 'mailto:admin@sentry.red'
     });
 
-    // E2EE: never expose message content in push payload
+    // E2EE: never expose message content in push payload.
+    // Body is intentionally omitted — the Service Worker resolves the
+    // receiver's locale and supplies a translated notification body.
     const pushPayload = JSON.stringify({
-      title: 'SENTRY MESSENGER',
-      body: 'You have a new message'
+      title: 'SENTRY MESSENGER'
     });
 
     const staleEndpoints = [];
