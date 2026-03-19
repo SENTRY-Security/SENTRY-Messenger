@@ -408,7 +408,7 @@ export const onRequest: PagesFunction<{
       .transform(response);
   }
 
-  if (!url.pathname.startsWith('/api/')) {
+  if (!url.pathname.startsWith('/api/') && !url.pathname.startsWith('/d1/')) {
     return next();
   }
 
