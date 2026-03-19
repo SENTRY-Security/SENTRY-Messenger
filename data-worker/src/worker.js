@@ -8161,6 +8161,15 @@ async function handlePublicRoutes(req, env) {
     return result;
   }
 
+  // Helper: extract msgType from header_json for push notification filtering
+  function extractMsgTypeFromHeader(headerJson) {
+    if (!headerJson) return null;
+    try {
+      const header = typeof headerJson === 'string' ? JSON.parse(headerJson) : headerJson;
+      return header?.meta?.msgType || header?.meta?.msg_type || header?.type || null;
+    } catch { return null; }
+  }
+
   // ── Messages ──────────────────────────────────────────────────
   if (path === '/api/v1/messages/atomic-send' && method === 'POST') {
     const auth = await resolvePublicAuth(req, env, { body });
@@ -8181,6 +8190,7 @@ async function handlePublicRoutes(req, env) {
           || msg.receiver_account_digest || msg.receiverAccountDigest;
         const convId = body?.conversation_id || body?.conversationId;
         if (receiverDigest && convId) {
+          const atomicHeaderJson = msg.header_json || (msg.header ? JSON.stringify(msg.header) : body?.header_json || (body?.header ? JSON.stringify(body.header) : null));
           await notifyAccountDO(env, receiverDigest, {
             type: 'secure-message',
             conversationId: convId,
@@ -8193,7 +8203,8 @@ async function handlePublicRoutes(req, env) {
             senderDeviceId: deviceId,
             targetDeviceId: msg.receiver_device_id || msg.receiverDeviceId || body?.receiver_device_id || body?.receiverDeviceId || null,
             peerAccountDigest: auth.accountDigest,
-            targetAccountDigest: receiverDigest
+            targetAccountDigest: receiverDigest,
+            msgType: extractMsgTypeFromHeader(atomicHeaderJson)
           });
         }
       } catch { /* best-effort */ }
@@ -8246,7 +8257,8 @@ async function handlePublicRoutes(req, env) {
           senderDeviceId: deviceId,
           targetDeviceId: intBody.receiver_device_id || null,
           peerAccountDigest: auth.accountDigest,
-          targetAccountDigest: receiverDigest
+          targetAccountDigest: receiverDigest,
+          msgType: extractMsgTypeFromHeader(intBody.header_json)
         });
       }
     }
@@ -8295,7 +8307,8 @@ async function handlePublicRoutes(req, env) {
         senderDeviceId: deviceId,
         targetDeviceId: receiverDeviceId || null,
         peerAccountDigest: auth.accountDigest,
-        targetAccountDigest: receiverDigest
+        targetAccountDigest: receiverDigest,
+        msgType: extractMsgTypeFromHeader(intBody.header_json)
       });
     }
     return result;

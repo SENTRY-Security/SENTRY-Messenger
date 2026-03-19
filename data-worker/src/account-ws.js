@@ -1149,6 +1149,15 @@ export class AccountWebSocket {
     ]);
     if (!pushTypes.has(payload.type)) return;
 
+    // Skip push for control/internal message subtypes (not user-visible)
+    const controlMsgTypes = new Set([
+      'read-receipt', 'delivery-receipt',
+      'session-init', 'session-ack', 'session-error',
+      'profile-update', 'contact-share',
+      'conversation-deleted', 'placeholder'
+    ]);
+    if (payload.msgType && controlMsgTypes.has(payload.msgType)) return;
+
     const rows = await this.env.DB.prepare(
       `SELECT endpoint, keys_p256dh, keys_auth FROM push_subscriptions WHERE account_digest = ?1`
     ).bind(this.accountDigest).all();
