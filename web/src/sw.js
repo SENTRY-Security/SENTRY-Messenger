@@ -137,8 +137,20 @@ const PUSH_TYPE_ICONS = {
   'notify':             '/assets/images/push/system.png'        // 系統通知
 };
 
-// Read preview preference from IndexedDB (async, SW-compatible)
+// ─── Preview preference (in-memory + IndexedDB) ─────────────────
+// In-memory cache — updated instantly via postMessage from PWA page
+let _previewPref = null; // null = not yet loaded
+
+// Listen for preference updates from PWA page (instant, no IDB delay)
+self.addEventListener('message', (ev) => {
+  if (ev.data && ev.data.type === 'set-preview-pref') {
+    _previewPref = !!ev.data.value;
+  }
+});
+
+// Read preview preference: use in-memory cache if available, else fall back to IndexedDB
 function getPreviewPref() {
+  if (_previewPref !== null) return Promise.resolve(_previewPref);
   return new Promise((resolve) => {
     try {
       const req = indexedDB.open('sentry-push-prefs', 1);
@@ -151,7 +163,10 @@ function getPreviewPref() {
           const db = ev.target.result;
           const tx = db.transaction('prefs', 'readonly');
           const get = tx.objectStore('prefs').get('preview');
-          get.onsuccess = () => resolve(!!get.result);
+          get.onsuccess = () => {
+            _previewPref = !!get.result;
+            resolve(_previewPref);
+          };
           get.onerror = () => resolve(false);
         } catch { resolve(false); }
       };

@@ -390,8 +390,20 @@
         }
         function savePreviewPref(on) {
           try { localStorage.setItem(PREVIEW_PREF_KEY, on ? '1' : '0'); } catch {}
-          // Also persist to IndexedDB so Service Worker can read it
+          // Persist to IndexedDB (durable, for SW cold start)
           savePreviewPrefToIDB(on);
+          // Notify running SW immediately via postMessage (no IDB delay)
+          notifySW(on);
+        }
+
+        function notifySW(on) {
+          try {
+            navigator.serviceWorker.getRegistration('/sw.js').then(function(reg) {
+              if (reg && reg.active) {
+                reg.active.postMessage({ type: 'set-preview-pref', value: on });
+              }
+            });
+          } catch {}
         }
 
         // IndexedDB helper — SW cannot read localStorage
@@ -419,6 +431,8 @@
           var on = loadPreviewPref();
           previewToggle.checked = on;
           updatePreviewUI(on);
+          // Sync current value to SW immediately on load
+          notifySW(on);
           previewToggle.addEventListener('change', function() {
             var newVal = previewToggle.checked;
             savePreviewPref(newVal);
