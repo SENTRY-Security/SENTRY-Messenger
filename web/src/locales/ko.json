@@ -1154,7 +1154,9 @@
     "pinEnrollDesc": "앱에서 받은 6자리 PIN 코드를 입력하여 이 기기에서 푸시 알림을 활성화합니다.",
     "pinEnrollBtn": "확인 후 활성화",
     "pinInvalid": "유효한 6자리 PIN 코드를 입력해 주세요",
-    "pinVerifyFailed": "PIN 확인에 실패했습니다. 만료되었을 수 있습니다. 앱에서 다시 생성해 주세요."
+    "pinVerifyFailed": "PIN 확인에 실패했습니다. 만료되었을 수 있습니다. 앱에서 다시 생성해 주세요.",
+    "keepSessionAlive": "세션 유지",
+    "keepSessionAliveDesc": "홈 화면 앱으로 전환할 때 자동 로그아웃 방지"
   },
   "loginStages": {
     "authenticating": "인증 중...",

@@ -1156,7 +1156,9 @@
     "pinEnrollDesc": "輸入從 App 取得的 6 位數 PIN 碼，以在此裝置啟用推播通知。",
     "pinEnrollBtn": "驗證並啟用",
     "pinInvalid": "請輸入有效的 6 位數 PIN 碼",
-    "pinVerifyFailed": "PIN 碼驗證失敗，可能已過期 — 請從 App 重新產生。"
+    "pinVerifyFailed": "PIN 碼驗證失敗，可能已過期 — 請從 App 重新產生。",
+    "keepSessionAlive": "保持登入狀態",
+    "keepSessionAliveDesc": "切換到主畫面 App 時不自動登出"
   },
   "loginStages": {
     "authenticating": "驗證中...",

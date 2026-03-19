@@ -1154,7 +1154,9 @@
     "pinEnrollDesc": "アプリから取得した6桁のPINコードを入力して、このデバイスでプッシュ通知を有効にします。",
     "pinEnrollBtn": "確認して有効化",
     "pinInvalid": "有効な6桁のPINコードを入力してください",
-    "pinVerifyFailed": "PINの確認に失敗しました。有効期限が切れている可能性があります。アプリから再生成してください。"
+    "pinVerifyFailed": "PINの確認に失敗しました。有効期限が切れている可能性があります。アプリから再生成してください。",
+    "keepSessionAlive": "セッションを維持",
+    "keepSessionAliveDesc": "ホーム画面のアプリに切り替えるときに自動ログアウトしない"
   },
   "loginStages": {
     "authenticating": "認証中...",

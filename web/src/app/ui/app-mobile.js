@@ -1392,24 +1392,29 @@ const passwordModal = createPasswordModal({
 });
 const openChangePasswordModal = () => passwordModal.open();
 
-const pushModal = createPushModal({
-  deps: {
-    log, showToast, openModal, closeModal, resetModalVariants, showAlertModal,
-    getAccountDigest
-  }
-});
-const openPushModal = () => pushModal.open();
+// openPushModal is a lazy reference — pushModal created after settingsMod
+let openPushModal;
 
 const settingsMod = createSettingsModule({
   deps: {
     log, showToast, sessionStore, openModal, closeModal, resetModalVariants,
     DEFAULT_SETTINGS, saveSettings, loadSettings,
     getMkRaw, getAccountDigest,
-    openChangePasswordModal, openPushModal,
+    openChangePasswordModal, openPushModal: () => openPushModal?.(),
     showAlertModal
   }
 });
 const getEffectiveSettingsState = () => settingsMod.getEffective();
+
+const pushModal = createPushModal({
+  deps: {
+    log, showToast, openModal, closeModal, resetModalVariants, showAlertModal,
+    getAccountDigest,
+    getEffectiveSettings: () => settingsMod.getEffective(),
+    persistSettingsPatch: (patch) => settingsMod.persistPatch(patch)
+  }
+});
+openPushModal = () => pushModal.open();
 const bootLoadSettings = () => settingsMod.bootLoad();
 const isSettingsConversationId = (convId) => settingsMod.isSettingsConvId(convId);
 const handleSettingsSecureMessage = () => settingsMod.handleSecureMessage();

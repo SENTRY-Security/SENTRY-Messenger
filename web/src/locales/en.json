@@ -1156,7 +1156,9 @@
     "pinEnrollDesc": "Enter the 6-digit PIN from the app to activate push notifications on this device.",
     "pinEnrollBtn": "Verify and enable",
     "pinInvalid": "Please enter a valid 6-digit PIN",
-    "pinVerifyFailed": "PIN verification failed. It may have expired — generate a new one from the app."
+    "pinVerifyFailed": "PIN verification failed. It may have expired — generate a new one from the app.",
+    "keepSessionAlive": "Keep session active",
+    "keepSessionAliveDesc": "Prevent auto-logout while switching to the Home Screen app"
   },
   "loginStages": {
     "authenticating": "AUTHENTICATING...",
