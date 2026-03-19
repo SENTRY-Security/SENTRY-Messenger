@@ -1102,6 +1102,7 @@
     "enabledToast": "推送通知已启用",
     "disabledToast": "推送通知已关闭",
     "permissionDenied": "通知权限被拒绝，请在浏览器设置中允许通知。",
+    "deviceListTitle": "推送会话",
     "noDevices": "暂无已注册的推送设备",
     "thisDevice": "此设备",
     "revoke": "撤销",

@@ -1102,6 +1102,7 @@
     "enabledToast": "Push notifications enabled",
     "disabledToast": "Push notifications disabled",
     "permissionDenied": "Notification permission was denied. Please allow notifications in your browser settings.",
+    "deviceListTitle": "Push sessions",
     "noDevices": "No registered push devices",
     "thisDevice": "this device",
     "revoke": "Revoke",

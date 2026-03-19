@@ -1100,6 +1100,7 @@
     "enabledToast": "プッシュ通知が有効になりました",
     "disabledToast": "プッシュ通知が無効になりました",
     "permissionDenied": "通知の許可が拒否されました。ブラウザの設定から通知を許可してください。",
+    "deviceListTitle": "プッシュセッション",
     "noDevices": "登録済みのプッシュデバイスはありません",
     "thisDevice": "このデバイス",
     "revoke": "取り消し",

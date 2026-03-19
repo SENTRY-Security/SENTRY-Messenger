@@ -132,6 +132,7 @@ import { createConnectionIndicator } from './mobile/connection-indicator.js';
 import { createSubscriptionModule } from './mobile/modals/subscription-modal.js';
 import { createSettingsModule } from './mobile/modals/settings-modal.js';
 import { createPasswordModal } from './mobile/modals/password-modal.js';
+import { createPushModal } from './mobile/modals/push-modal.js';
 import { createWsIntegration } from './mobile/ws-integration.js';
 import { isIosWebKitLikeBrowser } from './mobile/browser-detection.js';
 import { initI18n, t, applyDOMTranslations, setLang, getCurrentLang, onLangChange } from '/locales/index.js';
@@ -214,7 +215,8 @@ const MODAL_VARIANTS = [
   'subscription-modal-shell',
   'change-password-modal',
   'biz-conv-create-modal',
-  'biz-conv-info-modal'
+  'biz-conv-info-modal',
+  'push-modal'
 ];
 
 let settingsInitPromise = null;
@@ -1390,12 +1392,20 @@ const passwordModal = createPasswordModal({
 });
 const openChangePasswordModal = () => passwordModal.open();
 
+const pushModal = createPushModal({
+  deps: {
+    log, showToast, openModal, closeModal, resetModalVariants, showAlertModal,
+    getAccountDigest
+  }
+});
+const openPushModal = () => pushModal.open();
+
 const settingsMod = createSettingsModule({
   deps: {
     log, showToast, sessionStore, openModal, closeModal, resetModalVariants,
     DEFAULT_SETTINGS, saveSettings, loadSettings,
     getMkRaw, getAccountDigest,
-    openChangePasswordModal,
+    openChangePasswordModal, openPushModal,
     showAlertModal
   }
 });

@@ -1102,6 +1102,7 @@
     "enabledToast": "推播通知已啟用",
     "disabledToast": "推播通知已關閉",
     "permissionDenied": "通知權限被拒絕，請在瀏覽器設定中允許通知。",
+    "deviceListTitle": "推播工作階段",
     "noDevices": "尚無已註冊的推播裝置",
     "thisDevice": "此裝置",
     "revoke": "撤銷",

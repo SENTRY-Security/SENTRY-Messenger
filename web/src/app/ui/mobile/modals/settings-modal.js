@@ -2,7 +2,7 @@
 
 import { escapeHtml } from '../ui-utils.js';
 import { t, getCurrentLang, setLang, applyDOMTranslations } from '/locales/index.js';
-import { isPushSupported, subscribePush, unsubscribePush, unsubscribeByEndpoint, listPushDevices, getPushSubscription } from '../../../features/push-subscription.js';
+import { isPushSupported } from '../../../features/push-subscription.js';
 
 const SUPPORTED_LANGUAGES = [
   { code: 'zh-Hant', label: '🇹🇼 繁體中文' },
@@ -28,7 +28,7 @@ export function createSettingsModule({ deps }) {
   const { log, showToast, sessionStore, openModal, closeModal, resetModalVariants,
     DEFAULT_SETTINGS, saveSettings, loadSettings,
     getMkRaw, getAccountDigest,
-    openChangePasswordModal, showAlertModal } = deps;
+    openChangePasswordModal, openPushModal, showAlertModal } = deps;
 
   let initPromise = null;
   let customLogoutCtx = null;
@@ -193,7 +193,7 @@ export function createSettingsModule({ deps }) {
   async function persistPatch(partial) {
     const previous = getEffective();
     const next = { ...previous, ...partial };
-    const trackedKeys = ['autoLogoutOnBackground', 'autoLogoutRedirectMode', 'autoLogoutCustomUrl', 'language', 'pushNotifications'];
+    const trackedKeys = ['autoLogoutOnBackground', 'autoLogoutRedirectMode', 'autoLogoutCustomUrl', 'language'];
     const noChange = trackedKeys.every((key) => previous[key] === next[key]);
     if (noChange) return previous;
     sessionStore.settingsState = next;
@@ -284,20 +284,12 @@ export function createSettingsModule({ deps }) {
           </select>
         </div>
         ${isPushSupported() ? `
-        <div class="settings-item">
+        <div class="settings-item" id="settingsPushRow" style="cursor:pointer;">
           <div class="settings-text">
             <strong>${escapeHtml(t('push.settingsTitle'))}</strong>
             <p>${escapeHtml(t('push.settingsDesc'))}</p>
           </div>
-          <label class="settings-switch">
-            <input type="checkbox" id="settingsPushToggle" ${current.pushNotifications ? 'checked' : ''} />
-            <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
-          </label>
-        </div>
-        <div id="settingsPushDevices" class="settings-nested ${current.pushNotifications ? '' : 'hidden'}" aria-hidden="${current.pushNotifications ? 'false' : 'true'}">
-          <div class="push-device-list" id="pushDeviceList">
-            <p style="font-size:13px;color:var(--muted);">${escapeHtml(t('common.loading'))}</p>
-          </div>
+          <span style="color:var(--muted);font-size:18px;">›</span>
         </div>
         ` : ''}
         <div class="settings-actions">
@@ -333,130 +325,10 @@ export function createSettingsModule({ deps }) {
       }
     });
 
-    // --- Push notification toggle ---
-    const pushToggle = body.querySelector('#settingsPushToggle');
-    const pushDevicesSection = body.querySelector('#settingsPushDevices');
-    const pushDeviceList = body.querySelector('#pushDeviceList');
-
-    async function refreshPushDeviceList() {
-      if (!pushDeviceList) return;
-      try {
-        const devices = await listPushDevices();
-        if (!devices.length) {
-          pushDeviceList.innerHTML = `<p style="font-size:13px;color:var(--muted);">${escapeHtml(t('push.noDevices'))}</p>`;
-          return;
-        }
-        pushDeviceList.innerHTML = devices.map(d => `
-          <div class="push-device-item" style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line);">
-            <div style="font-size:13px;">
-              <span>${d.isThisDevice ? '📱 ' : '🔔 '}${escapeHtml(d.displayName)}</span>
-              ${d.isThisDevice ? `<span style="color:var(--muted);font-size:11px;margin-left:4px;">(${escapeHtml(t('push.thisDevice'))})</span>` : ''}
-            </div>
-            <button type="button" class="settings-link subtle push-revoke-btn" data-endpoint="${escapeHtml(d.endpoint)}" style="font-size:12px;color:var(--danger,#ef4444);">${escapeHtml(t('push.revoke'))}</button>
-          </div>
-        `).join('');
-
-        // Bind revoke buttons
-        pushDeviceList.querySelectorAll('.push-revoke-btn').forEach(btn => {
-          btn.addEventListener('click', async (e) => {
-            e.preventDefault();
-            const endpoint = btn.dataset.endpoint;
-            if (!confirm(t('push.revokeConfirm'))) return;
-            btn.disabled = true;
-            btn.textContent = t('common.loading');
-            try {
-              await unsubscribeByEndpoint(endpoint);
-              showToast(t('push.revokedToast'));
-              // Check if any devices remain
-              const remaining = await listPushDevices();
-              if (!remaining.length) {
-                await persistPatch({ pushNotifications: false });
-                if (pushToggle) pushToggle.checked = false;
-                if (pushDevicesSection) {
-                  pushDevicesSection.classList.add('hidden');
-                  pushDevicesSection.setAttribute('aria-hidden', 'true');
-                }
-              }
-              refreshPushDeviceList();
-            } catch (err) {
-              log({ pushRevokeError: err?.message || err });
-              if (typeof showAlertModal === 'function') showAlertModal({ title: t('errors.operationFailed'), message: err?.message || t('errors.saveSettingsFailed') });
-              btn.disabled = false;
-              btn.textContent = t('push.revoke');
-            }
-          }, { once: true });
-        });
-      } catch (err) {
-        pushDeviceList.innerHTML = `<p style="font-size:13px;color:var(--muted);">${escapeHtml(t('push.loadDevicesFailed'))}</p>`;
-        log({ pushDeviceListError: err?.message || err });
-      }
-    }
-
-    if (pushToggle) {
-      // Load device list if push is enabled
-      if (current.pushNotifications && pushDevicesSection) {
-        refreshPushDeviceList();
-      }
-
-      pushToggle.addEventListener('change', async () => {
-        const wantEnable = pushToggle.checked;
-        pushToggle.disabled = true;
-
-        if (wantEnable) {
-          // Show explanation modal first
-          const confirmed = await new Promise((resolve) => {
-            if (typeof showAlertModal === 'function') {
-              showAlertModal({
-                title: t('push.explainTitle'),
-                message: t('push.explainBody'),
-                confirmText: t('common.confirm'),
-                cancelText: t('common.cancel'),
-                onConfirm: () => resolve(true),
-                onCancel: () => resolve(false)
-              });
-            } else {
-              resolve(confirm(t('push.explainBody')));
-            }
-          });
-
-          if (!confirmed) {
-            pushToggle.checked = false;
-            pushToggle.disabled = false;
-            return;
-          }
-
-          try {
-            await subscribePush();
-            await persistPatch({ pushNotifications: true });
-            showToast(t('push.enabledToast'));
-            if (pushDevicesSection) {
-              pushDevicesSection.classList.remove('hidden');
-              pushDevicesSection.setAttribute('aria-hidden', 'false');
-            }
-            refreshPushDeviceList();
-          } catch (err) {
-            log({ pushSubscribeError: err?.message || err });
-            pushToggle.checked = false;
-            const msg = err?.code === 'PERMISSION_DENIED' ? t('push.permissionDenied') : (err?.message || t('errors.saveSettingsFailed'));
-            if (typeof showAlertModal === 'function') showAlertModal({ title: t('errors.operationFailed'), message: msg });
-          }
-        } else {
-          // Disable push
-          try {
-            await unsubscribePush();
-            await persistPatch({ pushNotifications: false });
-            showToast(t('push.disabledToast'));
-            if (pushDevicesSection) {
-              pushDevicesSection.classList.add('hidden');
-              pushDevicesSection.setAttribute('aria-hidden', 'true');
-            }
-          } catch (err) {
-            log({ pushUnsubscribeError: err?.message || err });
-            pushToggle.checked = true;
-          }
-        }
-        pushToggle.disabled = false;
-      });
+    // --- Push notification row → opens push modal ---
+    const pushRow = body.querySelector('#settingsPushRow');
+    if (pushRow && typeof openPushModal === 'function') {
+      pushRow.addEventListener('click', () => openPushModal(), { once: true });
     }
 
     closeBtn?.addEventListener('click', () => closeModal(), { once: true });

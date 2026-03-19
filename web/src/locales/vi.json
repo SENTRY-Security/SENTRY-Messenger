@@ -1100,6 +1100,7 @@
     "enabledToast": "Đã bật thông báo đẩy",
     "disabledToast": "Đã tắt thông báo đẩy",
     "permissionDenied": "Quyền thông báo đã bị từ chối. Vui lòng cho phép thông báo trong cài đặt trình duyệt.",
+    "deviceListTitle": "Phiên đẩy",
     "noDevices": "Không có thiết bị đẩy nào được đăng ký",
     "thisDevice": "thiết bị này",
     "revoke": "Thu hồi",

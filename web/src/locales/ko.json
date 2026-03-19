@@ -1100,6 +1100,7 @@
     "enabledToast": "푸시 알림이 활성화되었습니다",
     "disabledToast": "푸시 알림이 비활성화되었습니다",
     "permissionDenied": "알림 권한이 거부되었습니다. 브라우저 설정에서 알림을 허용해 주세요.",
+    "deviceListTitle": "푸시 세션",
     "noDevices": "등록된 푸시 기기가 없습니다",
     "thisDevice": "이 기기",
     "revoke": "해제",
