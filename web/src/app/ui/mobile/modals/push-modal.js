@@ -41,7 +41,17 @@ export function createPushModal({ deps }) {
       container.querySelectorAll('.push-revoke-btn').forEach(btn => {
         btn.addEventListener('click', async () => {
           const endpoint = btn.dataset.endpoint;
-          if (!confirm(t('push.revokeConfirm'))) return;
+          const confirmed = await new Promise(resolve => {
+            showAlertModal({
+              title: t('push.revokeConfirmTitle'),
+              message: t('push.revokeConfirm'),
+              confirmText: t('push.revoke'),
+              cancelText: t('common.cancel'),
+              onConfirm: () => resolve(true),
+              onCancel: () => resolve(false)
+            });
+          });
+          if (!confirmed) return;
           btn.disabled = true;
           btn.textContent = t('common.loading');
           try {
@@ -252,7 +262,17 @@ export function createPushModal({ deps }) {
           container.querySelectorAll('.push-revoke-btn').forEach(btn => {
             btn.addEventListener('click', async () => {
               const endpoint = btn.dataset.endpoint;
-              if (!confirm(t('push.revokeConfirm'))) return;
+              const confirmed = await new Promise(resolve => {
+                showAlertModal({
+                  title: t('push.revokeConfirmTitle'),
+                  message: t('push.revokeConfirm'),
+                  confirmText: t('push.revoke'),
+                  cancelText: t('common.cancel'),
+                  onConfirm: () => resolve(true),
+                  onCancel: () => resolve(false)
+                });
+              });
+              if (!confirmed) return;
               btn.disabled = true;
               btn.textContent = t('common.loading');
               try {

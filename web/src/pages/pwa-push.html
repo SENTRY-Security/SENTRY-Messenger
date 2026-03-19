@@ -161,6 +161,30 @@
         background:rgba(56,189,248,0.06);
       }
 
+      /* Confirm modal overlay */
+      .confirm-overlay {
+        position:fixed; inset:0; z-index:200;
+        background:rgba(0,0,0,0.55); backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
+        display:flex; align-items:center; justify-content:center;
+        padding:24px;
+        opacity:0; transition:opacity .2s; pointer-events:none;
+      }
+      .confirm-overlay.show { opacity:1; pointer-events:auto; }
+      .confirm-dialog {
+        width:min(360px,100%); background:var(--card); border:1px solid var(--line);
+        border-radius:16px; padding:24px; text-align:center;
+        transform:scale(0.92); transition:transform .2s;
+      }
+      .confirm-overlay.show .confirm-dialog { transform:scale(1); }
+      .confirm-title { font-size:16px; font-weight:700; margin-bottom:8px; }
+      .confirm-message { font-size:13px; color:var(--muted); line-height:1.6; margin-bottom:20px; }
+      .confirm-actions { display:flex; gap:10px; }
+      .confirm-actions .btn { flex:1; }
+      .btn-cancel { background:rgba(148,163,184,0.15); color:var(--fg); }
+      .btn-cancel:hover { background:rgba(148,163,184,0.25); }
+      .btn-danger { background:var(--danger); color:#fff; }
+      .btn-danger:hover { opacity:0.85; }
+
       /* Toast */
       .toast {
         position:fixed; bottom:env(safe-area-inset-bottom,20px); left:50%; transform:translateX(-50%);
@@ -274,6 +298,18 @@
       </div>
     </div>
 
+    <!-- Confirm modal -->
+    <div class="confirm-overlay" id="confirmOverlay">
+      <div class="confirm-dialog">
+        <div class="confirm-title" id="confirmTitle"></div>
+        <div class="confirm-message" id="confirmMessage"></div>
+        <div class="confirm-actions">
+          <button class="btn btn-cancel" id="confirmCancel" type="button"></button>
+          <button class="btn btn-danger" id="confirmOk" type="button"></button>
+        </div>
+      </div>
+    </div>
+
     <div class="toast" id="toast"></div>
 
     <script>
@@ -336,6 +372,36 @@
           toastEl.textContent = msg;
           toastEl.classList.add('show');
           setTimeout(function () { toastEl.classList.remove('show'); }, 2500);
+        }
+
+        // Custom confirm modal (replaces native confirm())
+        var confirmOverlay = document.getElementById('confirmOverlay');
+        var confirmTitle = document.getElementById('confirmTitle');
+        var confirmMessage = document.getElementById('confirmMessage');
+        var confirmCancel = document.getElementById('confirmCancel');
+        var confirmOk = document.getElementById('confirmOk');
+
+        function showConfirm(opts) {
+          confirmTitle.textContent = opts.title || '';
+          confirmMessage.textContent = opts.message || '';
+          confirmCancel.textContent = opts.cancelText || t('common.cancel');
+          confirmOk.textContent = opts.confirmText || t('common.confirm');
+          confirmOverlay.classList.add('show');
+
+          return new Promise(function (resolve) {
+            function cleanup() {
+              confirmOverlay.classList.remove('show');
+              confirmCancel.removeEventListener('click', onCancel);
+              confirmOk.removeEventListener('click', onOk);
+              confirmOverlay.removeEventListener('click', onBackdrop);
+            }
+            function onCancel() { cleanup(); resolve(false); }
+            function onOk() { cleanup(); resolve(true); }
+            function onBackdrop(e) { if (e.target === confirmOverlay) { cleanup(); resolve(false); } }
+            confirmCancel.addEventListener('click', onCancel);
+            confirmOk.addEventListener('click', onOk);
+            confirmOverlay.addEventListener('click', onBackdrop);
+          });
         }
 
         function clearPinBoxes() {
@@ -410,9 +476,14 @@
               if (firstBox) firstBox.focus();
             }, 100);
           } else {
-            // User toggled OFF — disable push
-            if (!confirm(t('push.disableConfirm'))) {
-              // User cancelled — revert switch
+            // User toggled OFF — disable push with confirm modal
+            var confirmed = await showConfirm({
+              title: t('push.disableConfirmTitle'),
+              message: t('push.disableConfirm'),
+              confirmText: t('push.disableBtn'),
+              cancelText: t('common.cancel')
+            });
+            if (!confirmed) {
               masterSwitch.checked = true;
               return;
             }
