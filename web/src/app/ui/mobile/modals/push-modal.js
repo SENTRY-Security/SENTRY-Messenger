@@ -36,28 +36,49 @@ export function createPushModal({ deps }) {
     getAccountDigest, getEffectiveSettings, persistSettingsPatch } = deps;
 
   // Send test push notification via backend (UAT only)
+  // Debug overlay for mobile (no console available)
+  function dbg(msg) {
+    try {
+      let el = document.getElementById('__push-dbg');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = '__push-dbg';
+        el.style.cssText = 'position:fixed;bottom:0;left:0;right:0;max-height:40vh;overflow:auto;background:#000;color:#0f0;font:11px/1.4 monospace;padding:8px;z-index:999999;';
+        document.body.appendChild(el);
+      }
+      el.textContent += '\n' + new Date().toLocaleTimeString() + ' ' + msg;
+      el.scrollTop = el.scrollHeight;
+    } catch { /* ignore */ }
+  }
+
   async function sendTestPush(endpoint, previewPublicKey, btn) {
     const digest = getAccountDigest();
-    if (!digest) { alert('[push-debug] no accountDigest'); return; }
-    alert('[push-debug] sending test to: ' + endpoint.slice(0, 60));
+    if (!digest) { dbg('ERR: no accountDigest'); return; }
+    dbg('>>> test push to: ' + endpoint.slice(0, 60));
     const origText = btn.textContent;
     btn.disabled = true;
     btn.textContent = '...';
     try {
-      // E2E encrypt the preview if device has a preview public key
       let encrypted_preview = null;
       if (previewPublicKey) {
         try {
+          dbg('encrypting preview...');
           const encrypt = await loadEncryptPreview();
           if (encrypt) {
             encrypted_preview = await encrypt(previewPublicKey, 'SENTRY: Test notification 🔔');
+            dbg('preview encrypted OK');
+          } else {
+            dbg('encrypt module not loaded');
           }
         } catch (encErr) {
-          console.warn('[push-test] encrypt preview failed', encErr);
+          dbg('encrypt failed: ' + encErr?.message);
         }
+      } else {
+        dbg('no previewPublicKey, skipping encrypt');
       }
+      dbg('fetching /d1/push/test ...');
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
+      const timeout = setTimeout(() => { dbg('TIMEOUT 15s'); controller.abort(); }, 15000);
       let res;
       try {
         res = await fetch('/d1/push/test', {
@@ -69,9 +90,9 @@ export function createPushModal({ deps }) {
       } finally {
         clearTimeout(timeout);
       }
-      alert('[push-debug] HTTP ' + res.status);
+      dbg('HTTP ' + res.status + ' ' + res.statusText);
       const text = await res.text();
-      alert('[push-debug] body: ' + text.slice(0, 200));
+      dbg('body: ' + text.slice(0, 300));
       let data = {};
       try { data = JSON.parse(text); } catch { /* not json */ }
       if (data.gone) {
@@ -82,7 +103,7 @@ export function createPushModal({ deps }) {
         showToast('Push failed: ' + (data.message || data.error || 'HTTP ' + res.status));
       }
     } catch (err) {
-      alert('[push-debug] fetch error: ' + (err?.message || err));
+      dbg('CATCH: ' + (err?.message || err));
       log({ pushTestError: err?.message || err });
       showToast('Test error: ' + (err?.message || 'unknown'));
     } finally {
