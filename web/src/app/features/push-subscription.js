@@ -83,13 +83,17 @@ export async function subscribePush() {
     await navigator.serviceWorker.ready;
   }
 
+  const accountDigest = getAccountDigest();
+  if (!accountDigest) {
+    throw new Error('Not logged in — cannot register push subscription');
+  }
+
   const sub = await reg.pushManager.subscribe({
     userVisibleOnly: true,
     applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
   });
 
   const subJSON = sub.toJSON();
-  const accountDigest = getAccountDigest();
   const deviceId = ensureDeviceId();
 
   const res = await fetch('/d1/push/subscribe', {
@@ -104,6 +108,8 @@ export async function subscribePush() {
   });
 
   if (!res.ok) {
+    // Rollback browser subscription if server rejected
+    try { await sub.unsubscribe(); } catch { /* best-effort */ }
     const data = await res.json().catch(() => ({}));
     throw new Error(data.error || 'Subscribe failed');
   }
