@@ -188,10 +188,22 @@ export function createWebPush({ vapidPublicKey, vapidPrivateKey, vapidSubject })
       body: body
     });
 
+    // Read response body for diagnostics on failure
+    let responseBody = '';
+    if (!response.ok) {
+      try { responseBody = await response.text(); } catch { /* ignore */ }
+      console.warn('[web-push] push service error', {
+        status: response.status,
+        endpoint: endpoint.slice(0, 80),
+        body: responseBody.slice(0, 200)
+      });
+    }
+
     return {
       ok: response.ok,
       status: response.status,
-      gone: response.status === 404 || response.status === 410
+      gone: response.status === 404 || response.status === 410,
+      responseBody
     };
   }
 

@@ -294,6 +294,15 @@ export class AccountWebSocket {
 
     // Always send Web Push notification (even when WS is connected)
     const hasVapid = !!(this.env.VAPID_PUBLIC_KEY && this.env.VAPID_PRIVATE_KEY);
+    if (!hasVapid) {
+      console.warn('[ws-do] push skipped: VAPID keys not configured', {
+        hasPub: !!this.env.VAPID_PUBLIC_KEY,
+        hasPriv: !!this.env.VAPID_PRIVATE_KEY
+      });
+    }
+    if (!this.accountDigest) {
+      console.warn('[ws-do] push skipped: no accountDigest after notify');
+    }
     if (this.accountDigest && hasVapid) {
       try {
         await this._sendPushNotifications(payload);
