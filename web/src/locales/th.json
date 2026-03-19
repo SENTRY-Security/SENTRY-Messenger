@@ -9,6 +9,8 @@
     "save": "บันทึก",
     "send": "ส่ง",
     "close": "ปิด",
+    "prevStep": "ย้อนกลับ",
+    "nextStep": "ถัดไป",
     "ok": "ตกลง",
     "file": "ไฟล์",
     "attachment": "ไฟล์แนบ",

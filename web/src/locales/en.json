@@ -9,6 +9,8 @@
     "save": "Save",
     "send": "Send",
     "close": "Close",
+    "prevStep": "Back",
+    "nextStep": "Next",
     "ok": "OK",
     "file": "File",
     "attachment": "Attachment",

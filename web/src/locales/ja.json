@@ -9,6 +9,8 @@
     "save": "保存",
     "send": "送信",
     "close": "閉じる",
+    "prevStep": "戻る",
+    "nextStep": "次へ",
     "ok": "OK",
     "file": "ファイル",
     "attachment": "添付ファイル",

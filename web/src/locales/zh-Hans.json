@@ -9,6 +9,8 @@
     "save": "保存",
     "send": "发送",
     "close": "关闭",
+    "prevStep": "上一步",
+    "nextStep": "下一步",
     "ok": "确定",
     "file": "文件",
     "attachment": "附件",

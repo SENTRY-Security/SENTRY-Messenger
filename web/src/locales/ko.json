@@ -9,6 +9,8 @@
     "save": "저장",
     "send": "전송",
     "close": "닫기",
+    "prevStep": "이전",
+    "nextStep": "다음",
     "ok": "확인",
     "file": "파일",
     "attachment": "첨부파일",

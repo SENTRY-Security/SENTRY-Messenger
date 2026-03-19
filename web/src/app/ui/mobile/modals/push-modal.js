@@ -102,6 +102,7 @@ export function createPushModal({ deps }) {
         </div>`;
     } else if (iosNeedsPWA || iosNoPush) {
       // iOS browser mode — wizard-style step UI (one step at a time)
+      // If a push device already exists, hide wizard and only show device list
       const currentSettings = getEffectiveSettings ? getEffectiveSettings() : {};
       const autoLogoutOn = !!currentSettings.autoLogoutOnBackground;
       const stepLabels = [
@@ -110,12 +111,16 @@ export function createPushModal({ deps }) {
         escapeHtml(t('push.iosStep3')),
         escapeHtml(t('push.iosStep4'))
       ];
+      const numStyle = 'width:24px;height:24px;border-radius:50%;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;transition:all .2s;cursor:pointer;flex-shrink:0;';
+      const numActive = 'background:#38bdf8;color:#000;';
+      const numInactive = 'background:rgba(148,163,184,0.15);color:var(--muted);';
       const imgStyle = 'width:100%;border-radius:10px;margin-top:12px;border:1px solid rgba(148,163,184,0.12);';
       contentHTML = `
-        <div style="padding:12px 0;">
-          <!-- Step indicator dots -->
-          <div id="pushStepDots" style="display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:16px;">
-            ${[0,1,2,3].map(i => `<div data-dot="${i}" style="width:8px;height:8px;border-radius:50%;transition:all .2s;${i === 0 ? 'background:#38bdf8;transform:scale(1.2);' : 'background:rgba(148,163,184,0.3);'}"></div>`).join('')}
+        <!-- Wizard section (hidden when device exists) -->
+        <div id="pushWizard" style="padding:12px 0;">
+          <!-- Step indicator numbers -->
+          <div id="pushStepNums" style="display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:16px;">
+            ${[1,2,3,4].map((n, i) => `<div data-dot="${i}" style="${numStyle}${i === 0 ? numActive : numInactive}">${n}</div>`).join('')}
           </div>
           <!-- Step panels -->
           <div id="pushStepPanels" style="position:relative;overflow:hidden;">
@@ -154,11 +159,11 @@ export function createPushModal({ deps }) {
           </div>
           <!-- Nav buttons -->
           <div style="display:flex;gap:10px;margin-top:16px;">
-            <button type="button" id="pushStepPrev" style="flex:1;padding:10px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;background:rgba(148,163,184,0.15);color:var(--fg);display:none;">&larr;</button>
-            <button type="button" id="pushStepNext" style="flex:1;padding:10px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;background:rgba(56,189,248,0.15);color:#38bdf8;">&rarr;</button>
+            <button type="button" id="pushStepPrev" style="flex:1;padding:10px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;background:rgba(148,163,184,0.15);color:var(--fg);display:none;">${escapeHtml(t('common.prevStep'))}</button>
+            <button type="button" id="pushStepNext" style="flex:1;padding:10px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;background:rgba(56,189,248,0.15);color:#38bdf8;">${escapeHtml(t('common.nextStep'))}</button>
           </div>
         </div>
-        <div style="padding:14px 0;border-top:1px solid var(--line);">
+        <div id="pushDeviceSection" style="padding:14px 0;border-top:1px solid var(--line);">
           <div style="font-size:13px;font-weight:700;margin-bottom:10px;">${escapeHtml(t('push.deviceListTitle'))}</div>
           <div id="pushDeviceList">
             <p style="font-size:13px;color:var(--muted);">${escapeHtml(t('common.loading'))}</p>
@@ -212,23 +217,79 @@ export function createPushModal({ deps }) {
 
     // iOS browser mode: step wizard + generate PIN + manage existing devices
     if (iosNeedsPWA || iosNoPush) {
-      renderDeviceList(deviceList, null);
+      const wizardEl = body.querySelector('#pushWizard');
+      const deviceSection = body.querySelector('#pushDeviceSection');
+
+      // Toggle wizard vs device-only view based on existing devices
+      function updateWizardVisibility(devices) {
+        const hasDevices = devices && devices.length > 0;
+        if (wizardEl) wizardEl.style.display = hasDevices ? 'none' : '';
+        if (deviceSection) deviceSection.style.borderTop = hasDevices ? 'none' : '';
+      }
+
+      // Render device list with callback to show wizard when all devices revoked
+      async function renderDevicesWithVisibility() {
+        const container = body.querySelector('#pushDeviceList');
+        if (!container) return;
+        try {
+          const devices = await listPushDevices();
+          updateWizardVisibility(devices);
+          if (!devices.length) {
+            container.innerHTML = `<p style="font-size:13px;color:var(--muted);">${escapeHtml(t('push.noDevices'))}</p>`;
+            return;
+          }
+          container.innerHTML = devices.map(d => `
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--line);">
+              <div style="font-size:13px;flex:1;">
+                <span>${d.isThisDevice ? '📱 ' : '🔔 '}${escapeHtml(d.displayName)}</span>
+                ${d.isThisDevice ? `<span style="color:var(--accent);font-size:11px;margin-left:4px;">(${escapeHtml(t('push.thisDevice'))})</span>` : ''}
+                <div style="font-size:11px;color:var(--muted);margin-top:2px;">${d.createdAt ? new Date(Number(d.createdAt) * 1000).toLocaleDateString() : ''}</div>
+              </div>
+              <button type="button" class="push-revoke-btn" data-endpoint="${escapeHtml(d.endpoint)}" style="padding:4px 10px;border-radius:6px;border:1px solid rgba(239,68,68,0.3);background:transparent;color:#ef4444;font-size:12px;cursor:pointer;">${escapeHtml(t('push.revoke'))}</button>
+            </div>
+          `).join('');
+          container.querySelectorAll('.push-revoke-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+              const endpoint = btn.dataset.endpoint;
+              if (!confirm(t('push.revokeConfirm'))) return;
+              btn.disabled = true;
+              btn.textContent = t('common.loading');
+              try {
+                await unsubscribeByEndpoint(endpoint);
+                showToast(t('push.revokedToast'));
+                renderDevicesWithVisibility();
+              } catch (err) {
+                log({ pushRevokeError: err?.message || err });
+                showAlertModal({ title: t('errors.operationFailed'), message: err?.message || '' });
+                btn.disabled = false;
+                btn.textContent = t('push.revoke');
+              }
+            }, { once: true });
+          });
+        } catch (err) {
+          container.innerHTML = `<p style="font-size:13px;color:var(--muted);">${escapeHtml(t('push.loadDevicesFailed'))}</p>`;
+          log({ pushDeviceListError: err?.message || err });
+          updateWizardVisibility(null);
+        }
+      }
+
+      renderDevicesWithVisibility();
 
       // Step wizard navigation
       const TOTAL_STEPS = 4;
       let currentStep = 0;
       const panels = body.querySelectorAll('[data-step]');
-      const dots = body.querySelectorAll('[data-dot]');
+      const nums = body.querySelectorAll('[data-dot]');
       const prevBtn = body.querySelector('#pushStepPrev');
       const nextBtn = body.querySelector('#pushStepNext');
 
       function goToStep(idx) {
         currentStep = idx;
         panels.forEach(p => { p.style.display = Number(p.dataset.step) === idx ? '' : 'none'; });
-        dots.forEach(d => {
+        nums.forEach(d => {
           const active = Number(d.dataset.dot) === idx;
-          d.style.background = active ? '#38bdf8' : 'rgba(148,163,184,0.3)';
-          d.style.transform = active ? 'scale(1.2)' : 'scale(1)';
+          d.style.background = active ? '#38bdf8' : 'rgba(148,163,184,0.15)';
+          d.style.color = active ? '#000' : 'var(--muted)';
         });
         if (prevBtn) prevBtn.style.display = idx > 0 ? '' : 'none';
         if (nextBtn) nextBtn.style.display = idx < TOTAL_STEPS - 1 ? '' : 'none';
@@ -237,9 +298,8 @@ export function createPushModal({ deps }) {
       prevBtn?.addEventListener('click', () => { if (currentStep > 0) goToStep(currentStep - 1); });
       nextBtn?.addEventListener('click', () => { if (currentStep < TOTAL_STEPS - 1) goToStep(currentStep + 1); });
 
-      // Allow tapping dots to jump to step
-      dots.forEach(d => {
-        d.style.cursor = 'pointer';
+      // Allow tapping number indicators to jump to step
+      nums.forEach(d => {
         d.addEventListener('click', () => goToStep(Number(d.dataset.dot)));
       });
 
