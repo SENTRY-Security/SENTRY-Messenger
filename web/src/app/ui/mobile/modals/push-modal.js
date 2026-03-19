@@ -224,7 +224,9 @@ export function createPushModal({ deps }) {
       function updateWizardVisibility(devices) {
         const hasDevices = devices && devices.length > 0;
         if (wizardEl) wizardEl.style.display = hasDevices ? 'none' : '';
-        if (deviceSection) deviceSection.style.borderTop = hasDevices ? 'none' : '';
+        if (deviceSection) {
+          deviceSection.style.display = hasDevices ? '' : 'none';
+        }
       }
 
       // Render device list with callback to show wizard when all devices revoked
@@ -235,7 +237,6 @@ export function createPushModal({ deps }) {
           const devices = await listPushDevices();
           updateWizardVisibility(devices);
           if (!devices.length) {
-            container.innerHTML = `<p style="font-size:13px;color:var(--muted);">${escapeHtml(t('push.noDevices'))}</p>`;
             return;
           }
           container.innerHTML = devices.map(d => `
