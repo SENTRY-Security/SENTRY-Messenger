@@ -38,9 +38,7 @@ function concat(...arrays) {
   const result = new Uint8Array(total);
   let offset = 0;
   for (const a of arrays) {
-    result.set(new Uint8Array(a instanceof ArrayBuffer ? a : a.buffer ? a : []), offset);
-    if (a instanceof Uint8Array) result.set(a, offset);
-    else if (a instanceof ArrayBuffer) result.set(new Uint8Array(a), offset);
+    result.set(a instanceof Uint8Array ? a : new Uint8Array(a), offset);
     offset += a.byteLength;
   }
   return result;

@@ -7133,7 +7133,7 @@ async function notifyAccountDO(env, accountDigest, payload) {
     const stub = env.ACCOUNT_WS.get(doId);
     const res = await stub.fetch('https://do/notify', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-account-digest': digest },
       body: JSON.stringify(payload)
     });
     if (!res.ok) {

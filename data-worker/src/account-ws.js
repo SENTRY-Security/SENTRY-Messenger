@@ -254,6 +254,12 @@ export class AccountWebSocket {
   // ── Internal notification broadcast ─────────────────────────────
 
   async _handleNotify(request) {
+    // Recover accountDigest from header if not yet set (e.g. after hibernation wake)
+    if (!this.accountDigest) {
+      const hdr = request.headers.get('x-account-digest') || '';
+      this.accountDigest = canonicalAccountDigest(hdr);
+    }
+
     const payload = await request.json();
     if (!payload || !payload.type) {
       return Response.json({ error: 'type required' }, { status: 400 });
@@ -287,11 +293,19 @@ export class AccountWebSocket {
     }
 
     // Send Web Push notification when no active socket is connected
-    if (sent === 0 && this.accountDigest && this.env.VAPID_PUBLIC_KEY && this.env.VAPID_PRIVATE_KEY) {
-      try {
-        await this._sendPushNotifications(payload);
-      } catch (pushErr) {
-        console.warn('[ws-do] push notification failed', pushErr?.message || pushErr);
+    if (sent === 0) {
+      const hasVapid = !!(this.env.VAPID_PUBLIC_KEY && this.env.VAPID_PRIVATE_KEY);
+      console.log('[ws-do] no active sockets, push path', {
+        type: payload.type,
+        accountDigest: this.accountDigest?.slice(0, 16) || 'null',
+        hasVapid
+      });
+      if (this.accountDigest && hasVapid) {
+        try {
+          await this._sendPushNotifications(payload);
+        } catch (pushErr) {
+          console.warn('[ws-do] push notification failed', pushErr?.message || pushErr);
+        }
       }
     }
 
@@ -1113,7 +1127,10 @@ export class AccountWebSocket {
   }
 
   async _sendPushNotifications(payload) {
-    if (!this.accountDigest || !this.env.DB) return;
+    if (!this.accountDigest || !this.env.DB) {
+      console.warn('[ws-do] push skipped: no accountDigest or DB', { digest: !!this.accountDigest, db: !!this.env.DB });
+      return;
+    }
     // Only send push for message-type notifications
     const pushTypes = new Set(['message-new', 'secure-message', 'notify']);
     if (!pushTypes.has(payload.type)) return;
@@ -1122,7 +1139,10 @@ export class AccountWebSocket {
       `SELECT endpoint, keys_p256dh, keys_auth FROM push_subscriptions WHERE account_digest = ?1`
     ).bind(this.accountDigest).all();
     const subs = rows?.results || [];
-    if (!subs.length) return;
+    if (!subs.length) {
+      console.log('[ws-do] push: no subscriptions for', this.accountDigest?.slice(0, 16));
+      return;
+    }
 
     const { sendPushNotification } = createWebPush({
       vapidPublicKey: this.env.VAPID_PUBLIC_KEY,
@@ -1143,11 +1163,12 @@ export class AccountWebSocket {
           endpoint: sub.endpoint,
           keys: { p256dh: sub.keys_p256dh, auth: sub.keys_auth }
         }, pushPayload);
+        console.log('[ws-do] push result', { endpoint: sub.endpoint.slice(0, 60), status: result.status, ok: result.ok });
         if (result.gone) {
           staleEndpoints.push(sub.endpoint);
         }
       } catch (err) {
-        console.warn('[ws-do] push send error', err?.message || err);
+        console.warn('[ws-do] push send error', { endpoint: sub.endpoint?.slice(0, 60), error: err?.message || err });
       }
     }));
 
