@@ -122,17 +122,17 @@ async function encryptPayload(clientPublicKeyBytes, authSecret, payload) {
   // IKM from auth secret
   const ikm = await hkdfSha256(authSecret, sharedSecret, authInfo, 32);
 
-  // Content encryption key
-  const cekInfo = createInfo('aes128gcm', clientPublicKeyBytes, serverPublicKeyRaw);
+  // Content encryption key — RFC 8291 §3.4: info is just the content-encoding string
+  const cekInfo = encoder.encode('Content-Encoding: aes128gcm\0');
   const cek = await hkdfSha256(salt, ikm, cekInfo, 16);
 
-  // Nonce
-  const nonceInfo = createInfo('nonce', clientPublicKeyBytes, serverPublicKeyRaw);
+  // Nonce — RFC 8291 §3.4: info is just the content-encoding string
+  const nonceInfo = encoder.encode('Content-Encoding: nonce\0');
   const nonce = await hkdfSha256(salt, ikm, nonceInfo, 12);
 
-  // Pad payload — append delimiter byte per RFC 8188 §2 (0x01 = final record, 0x02 = non-final)
+  // Pad payload — append delimiter byte per RFC 8188 §2 (0x02 = final record, 0x01 = non-final)
   const payloadBytes = encoder.encode(typeof payload === 'string' ? payload : JSON.stringify(payload));
-  const paddedPayload = concat(payloadBytes, new Uint8Array([1])); // 0x01 = last record
+  const paddedPayload = concat(payloadBytes, new Uint8Array([2])); // 0x02 = final record
 
   // AES-128-GCM encrypt
   const aesKey = await crypto.subtle.importKey('raw', cek, 'AES-GCM', false, ['encrypt']);
@@ -141,7 +141,7 @@ async function encryptPayload(clientPublicKeyBytes, authSecret, payload) {
   // Build aes128gcm content coding header:
   // salt (16) + record_size (4) + keyid_len (1) + keyid (65 = uncompressed P-256 point)
   const recordSize = new Uint8Array(4);
-  const rs = encrypted.length; // record size = ciphertext + AES-GCM tag (per RFC 8188)
+  const rs = 4096; // standard record size for web push (per RFC 8188)
   recordSize[0] = (rs >> 24) & 0xff;
   recordSize[1] = (rs >> 16) & 0xff;
   recordSize[2] = (rs >> 8) & 0xff;

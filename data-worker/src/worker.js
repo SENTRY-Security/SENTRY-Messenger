@@ -4629,7 +4629,7 @@ async function broadcastBizConvWS(env, conversationId, event, excludeDigest = nu
         const stub = env.ACCOUNT_WS.get(doId);
         await stub.fetch('https://do/notify', {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: { 'content-type': 'application/json', 'x-account-digest': member.account_digest },
           body: JSON.stringify(event)
         });
       } catch (err) {
@@ -4651,7 +4651,7 @@ async function notifyBizConvWS(env, accountDigest, event) {
     const stub = env.ACCOUNT_WS.get(doId);
     await stub.fetch('https://do/notify', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', 'x-account-digest': accountDigest },
       body: JSON.stringify(event)
     });
   } catch (err) {
