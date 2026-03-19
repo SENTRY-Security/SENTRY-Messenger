@@ -3440,6 +3440,60 @@ async function handleMessagesRoutes(req, env) {
     return json({ counts: result });
   }
 
+  // [PERF] Batch Latest Messages — fetch the newest visible message per conversation in one request.
+  // Used by refreshConversationPreviews to avoid N individual listSecureMessages calls.
+  if (req.method === 'POST' && (url.pathname === '/d1/messages/batch-latest' || url.pathname === '/api/v1/messages/batch-latest')) {
+    let body = {};
+    try { body = await req.json(); } catch { }
+    const conversationIds = Array.isArray(body?.conversationIds) ? body.conversationIds : [];
+    const limit = Math.min(Math.max(Number(body?.limit) || 20, 1), 50);
+
+    if (!conversationIds.length) {
+      return json({ conversations: {} });
+    }
+    // Cap at 50 conversations per batch to limit query cost
+    const cappedIds = conversationIds.slice(0, 50);
+    await ensureDataTables(env);
+
+    const conversations = {};
+    for (const rawConvId of cappedIds) {
+      const conversationId = normalizeConversationId(rawConvId);
+      if (!conversationId) continue;
+      try {
+        const rows = await env.DB.prepare(`
+          SELECT id, conversation_id, sender_account_digest, sender_device_id,
+                 receiver_account_digest, receiver_device_id,
+                 header_json, ciphertext_b64, counter, created_at
+            FROM messages_secure
+           WHERE conversation_id = ?1
+           ORDER BY counter DESC, created_at DESC
+           LIMIT ?2
+        `).bind(conversationId, limit).all();
+        const items = (rows?.results || []).map(row => {
+          let payload = {};
+          try { payload = JSON.parse(row.header_json || '{}'); } catch { }
+          return {
+            id: row.id,
+            conversation_id: row.conversation_id,
+            sender_account_digest: row.sender_account_digest,
+            sender_device_id: row.sender_device_id,
+            receiver_account_digest: row.receiver_account_digest,
+            receiver_device_id: row.receiver_device_id,
+            payload,
+            ciphertext_b64: row.ciphertext_b64 || null,
+            counter: row.counter,
+            created_at: row.created_at
+          };
+        });
+        conversations[conversationId] = { items };
+      } catch (err) {
+        console.warn(`batch-latest failed for ${conversationId}`, err);
+        conversations[conversationId] = { items: [], error: true };
+      }
+    }
+    return json({ conversations });
+  }
+
   if (req.method === 'GET' && (url.pathname === '/d1/messages/by-counter' || url.pathname === '/api/v1/messages/by-counter')) {
     const conversationIdRaw = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
     const counterRaw = url.searchParams.get('counter');
@@ -8317,6 +8371,13 @@ async function handlePublicRoutes(req, env) {
     intBody.sender_account_digest = intBody.sender_account_digest || auth.accountDigest;
     delete intBody.account_token; delete intBody.accountToken;
     return handleMessagesRoutes(internalRequest('/d1/messages/outgoing-status', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/messages/batch-latest' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = { conversationIds: body?.conversationIds, limit: body?.limit };
+    return handleMessagesRoutes(internalRequest('/d1/messages/batch-latest', 'POST', intBody, baseUrl), env);
   }
 
   if (path === '/api/v1/messages/delete' && method === 'POST') {

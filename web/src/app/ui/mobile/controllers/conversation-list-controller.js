@@ -10,7 +10,7 @@ import { restorePendingInvites } from '../session-store.js';
 import { escapeHtml, resolveMessagePreview, updateThreadPreview, formatThreadPreview } from '../ui-utils.js';
 import { normalizeTimelineMessageId, extractMessageTimestampMs, normalizeMsgTypeValue, deriveMessageDirectionFromEnvelopeMeta } from '../../../features/messages/parser.js';
 import { getLocalProcessedCounter } from '../../../features/messages-flow/local-counter.js'; // [FIX] Import unread counter logic
-import { listSecureMessages as apiListSecureMessages } from '../../../api/messages.js';
+import { listSecureMessages as apiListSecureMessages, batchLatestMessages } from '../../../api/messages.js';
 import { getMessagesUnreadCount } from '../../../features/messages-flow/server-api.js'; // [FIX] Backend Unread API
 import { t } from '/locales/index.js';
 
@@ -283,20 +283,86 @@ export class ConversationListController extends BaseController {
         const threadsMap = this.getThreads();
         const threads = Array.from(threadsMap.values());
 
-        // [FIX] Parallel Fetch Config (Batch size 5)
-        const CHUNK_SIZE = 5;
-        const threadChunks = [];
-        for (let i = 0; i < threads.length; i += CHUNK_SIZE) {
-            threadChunks.push(threads.slice(i, i + CHUNK_SIZE));
-        }
+        // Filter eligible threads
+        const eligible = threads.filter(thread => {
+            const peerDigest = this._threadPeer(thread);
+            if (!thread?.conversationId || !thread?.conversationToken || !peerDigest || !thread?.peerDeviceId) {
+                if (!thread?.peerDeviceId) {
+                    try { this.deps.log?.({ previewSkipMissingPeerDevice: thread?.conversationId || null }); } catch { }
+                }
+                return false;
+            }
+            if (!force && thread.previewLoaded && !thread.needsRefresh) return false;
+            return true;
+        });
+
+        if (!eligible.length) return;
 
         if (this.deps.contactCoreVerbose) {
-            console.log(`[ConvList] refreshPreviews starting. Threads: ${threads.length}, Chunks: ${threadChunks.length}`);
+            console.log(`[ConvList] refreshPreviews starting. Threads: ${eligible.length}`);
         }
         console.time('[ConvList] refreshPreviews duration');
 
-        for (const [chunkIdx, chunk] of threadChunks.entries()) {
-            // [FIX] Batch Fetch Unread Counts from Backend
+        const allConvIds = eligible.map(t => t.conversationId).filter(Boolean);
+        const selfDigest = this.deps.sessionStore?.accountDigest;
+
+        // [PERF] Single batch fetch: messages + unread counts in parallel
+        let batchMessages = {};
+        let unreadCountsMap = {};
+        try {
+            const [batchResult, unreadResult] = await Promise.all([
+                batchLatestMessages({ conversationIds: allConvIds, limit: 20 }),
+                selfDigest
+                    ? getMessagesUnreadCount({ conversationIds: allConvIds, selfAccountDigest: selfDigest })
+                    : Promise.resolve({ counts: {} })
+            ]);
+            batchMessages = batchResult?.data?.conversations || {};
+            unreadCountsMap = unreadResult?.counts || {};
+        } catch (err) {
+            console.warn('[ConvList] Batch preview fetch failed, falling back to individual', err);
+            // Fallback: fetch individually in chunks (original behavior)
+            await this._refreshPreviewsFallback(eligible, threadsMap, force);
+            console.timeEnd('[ConvList] refreshPreviews duration');
+            return;
+        }
+
+        // Process all results locally
+        for (const thread of eligible) {
+            try {
+                const convData = batchMessages[thread.conversationId];
+                const messages = convData?.items || [];
+
+                // Apply unread count
+                const backendCount = unreadCountsMap[thread.conversationId] || 0;
+                const currentThreadVal = threadsMap.get(thread.conversationId);
+                if (currentThreadVal) {
+                    currentThreadVal.unreadCount = backendCount;
+                    currentThreadVal.offlineUnreadCount = 0;
+                }
+
+                if (!messages.length) continue;
+
+                this._applyPreviewFromMessages(thread, messages, threadsMap);
+            } catch (err) {
+                console.error('Preview processing failed', err);
+            }
+        }
+
+        this.renderConversationList();
+        console.timeEnd('[ConvList] refreshPreviews duration');
+    }
+
+    /**
+     * Fallback: fetch previews individually in chunks (used when batch API fails).
+     */
+    async _refreshPreviewsFallback(eligible, threadsMap, force) {
+        const CHUNK_SIZE = 5;
+        const threadChunks = [];
+        for (let i = 0; i < eligible.length; i += CHUNK_SIZE) {
+            threadChunks.push(eligible.slice(i, i + CHUNK_SIZE));
+        }
+
+        for (const chunk of threadChunks) {
             let unreadCountsMap = {};
             try {
                 const chunkIds = chunk.map(t => t.conversationId).filter(Boolean);
@@ -310,199 +376,140 @@ export class ConversationListController extends BaseController {
             }
 
             await Promise.all(chunk.map(async (thread) => {
-                const peerDigest = this._threadPeer(thread);
-                if (!thread?.conversationId || !thread?.conversationToken || !peerDigest || !thread?.peerDeviceId) {
-                    if (!thread?.peerDeviceId) {
-                        try { this.deps.log?.({ previewSkipMissingPeerDevice: thread?.conversationId || null }); } catch { }
-                    }
-                    return;
-                }
-                if (!force && thread.previewLoaded && !thread.needsRefresh) return;
-
                 try {
-                    // Assuming apiListSecureMessages is available (need to verify import)
-                    if (typeof apiListSecureMessages !== 'function') {
-                        console.warn('apiListSecureMessages not available');
-                        return;
-                    }
-
+                    if (typeof apiListSecureMessages !== 'function') return;
                     const result = await apiListSecureMessages({
                         conversationId: thread.conversationId,
-                        limit: 20 // [FIX] Fetch more to find last valid content
+                        limit: 20
                     });
-
                     const messages = result?.data?.items || [];
-                    if (!messages.length) return;
 
-                    // [FIX] Backend Unread Count (The "Vault Missing" Logic)
-                    // We now use the backend API to count messages that are:
-                    // 1. Incoming (Not me)
-                    // 2. Control/Hidden types excluded
-                    // 3. NO Key in Vault (Offline/Unread)
-                    // This accurately reflects the "Red Dot" count requested by user.
-                    // We assume the backend count is the "Total Unread".
-
-                    // Note: We fetch this per chunk/batch in parallel with listSecureMessages?
-                    // Ideally we should batch it. But here we are inside the per-thread map.
-                    // For now, to keep structure simple, we update it if we have the data.
-                    // Wait, we can't call this API 20 times in parallel efficienty.
-                    // Better approach: Fetch counts for the WHOLE CHUNK before this map loop.
-
-                    // See above loop change.
-                    // Access pre-fetched count:
-                    // See above loop change.
-                    // Access pre-fetched count:
                     const backendCount = (unreadCountsMap && unreadCountsMap[thread.conversationId]) || 0;
                     const currentThreadVal = threadsMap.get(thread.conversationId);
                     if (currentThreadVal) {
                         currentThreadVal.unreadCount = backendCount;
-                        // Clear offline count as it is subsumed by the main count or not applicable
                         currentThreadVal.offlineUnreadCount = 0;
                     }
 
-                    // [FIX] Deletion-Aware Preview Logic
-                    // API provides DESC (newest first). First pass: find the newest
-                    // conversation-deleted tombstone so we only consider messages after it.
-
-                    let tombstoneIndex = -1;
-                    for (let i = 0; i < messages.length; i++) {
-                        const payload = messages[i].payload || {};
-                        let type = normalizeMsgTypeValue(payload.type);
-                        if (!type) {
-                            const header = resolveHeader(messages[i]);
-                            type = normalizeMsgTypeValue(header?.meta?.msgType || header?.meta?.msg_type);
-                        }
-                        if (type === 'conversation-deleted') {
-                            tombstoneIndex = i;
-                            break; // newest tombstone (DESC order) → everything after this index is older
-                        }
-                    }
-
-                    // Only consider messages BEFORE the tombstone in DESC order
-                    // (i.e. messages newer than the tombstone).
-                    const candidates = tombstoneIndex >= 0
-                        ? messages.slice(0, tombstoneIndex)
-                        : messages;
-                    const isDeleted = tombstoneIndex >= 0 && candidates.length === 0;
-
-                    let previewMsg = null;
-                    let skippedCount = 0;
-
-                    for (const msg of candidates) {
-                        const payload = msg.payload || {};
-                        let type = normalizeMsgTypeValue(payload.type);
-                        if (!type) {
-                            const header = resolveHeader(msg);
-                            type = normalizeMsgTypeValue(header?.meta?.msgType || header?.meta?.msg_type);
-                        }
-
-                        // Skip conversation-deleted (shouldn't appear but be safe)
-                        if (type === 'conversation-deleted') continue;
-
-                        // Skip control / transient / internal messages
-                        const isControl = type === 'sys' || type === 'system' || type === 'control' ||
-                            (type && ['profile-update', 'session-init', 'session-ack',
-                                'session-error', 'read-receipt', 'delivery-receipt', 'placeholder'].includes(type));
-
-                        if (isControl) {
-                            skippedCount++;
-                            continue;
-                        }
-
-                        // Ensure it's content
-                        if (type && ['text', 'media', 'call-log', 'call_log', 'contact-share'].includes(type)) {
-                            previewMsg = msg;
-                            break; // Found newest valid content
-                        } else {
-                            if (!type && msg.ciphertext_b64) {
-                                previewMsg = msg;
-                                break;
-                            }
-                            skippedCount++;
-                        }
-                    }
-
-                    let text = t('messages.noMessages');
-                    let type = null;
-                    let ts = null;
-                    let direction = null;
-
-                    if (isDeleted) {
-                        text = t('messages.noMessages');
-                        type = 'conversation-deleted';
-                        // Use the tombstone's own timestamp (not messages[0] which may not exist after slicing)
-                        ts = tombstoneIndex >= 0 ? extractMessageTimestampMs(messages[tombstoneIndex]) : extractMessageTimestampMs(messages[0] || {});
-                        // No visible messages after tombstone → unread must be 0
-                        const ct = threadsMap.get(thread.conversationId);
-                        if (ct) { ct.unreadCount = 0; ct.offlineUnreadCount = 0; }
-                    } else if (previewMsg) {
-                        const payload = previewMsg.payload || {};
-                        const meta = previewMsg.meta || {};
-                        const header = resolveHeader(previewMsg);
-
-                        const effectiveMeta = meta.sender ? meta : (header?.meta || {});
-
-                        // Resolve type again
-                        type = normalizeMsgTypeValue(payload.type || effectiveMeta.msgType || effectiveMeta.msg_type || 'text'); // Default to text if encrypted
-                        ts = extractMessageTimestampMs(previewMsg);
-
-                        const sender = normalizePeerKey(effectiveMeta.sender || previewMsg.sender_device_id); // Fallback to device ID if sender missing? No, sender_account_digest usually available in row.
-                        // Actually row has sender_account_digest.
-                        const senderDigest = previewMsg.sender_account_digest;
-
-                        direction = senderDigest === this.deps.sessionStore.activePeerDigest ? 'incoming' : 'outgoing';
-                        // Wait, activePeerDigest is the OTHER person.
-                        // sending to me -> Incoming.
-                        // senderDigest == activePeerDigest -> Incoming.
-                        // senderDigest == MY_DIGEST -> Outgoing.
-
-                        if (type === 'text') {
-                            text = payload.text || (previewMsg.ciphertext_b64 ? t('messages.encryptedMessage') : t('messages.textMessage'));
-                        } else if (type === 'media') {
-                            const mime = (payload.contentType || payload.mimeType || '').toLowerCase();
-                            if (mime.startsWith('image/')) {
-                                text = t('messages.imagePreview');
-                            } else if (mime.startsWith('video/')) {
-                                text = t('messages.videoPreview');
-                            } else {
-                                text = t('messages.filePreview', { name: payload.filename || payload.name || t('common.attachment') });
-                            }
-                        } else if (type === 'call_log' || type === 'call-log') {
-                            const clKind = payload?.kind || previewMsg?.callLog?.kind || effectiveMeta?.call_kind || '';
-                            text = clKind === 'video' ? t('calls.videoCallPreview') : t('calls.voiceCallPreview');
-                        } else if (type === 'contact-share' || type === 'contact_share') {
-                            const csReason = payload?.reason;
-                            if (csReason === 'nickname') text = t('profile.updatedNickname');
-                            else if (csReason === 'avatar') text = t('profile.updatedAvatar');
-                            else if (csReason === 'profile' || csReason === 'update' || csReason === 'manual') text = t('profile.updatedProfile');
-                            else text = t('messages.secureConnectionEstablished');
-                        } else {
-                            text = previewMsg.ciphertext_b64 ? t('messages.encryptedMessage') : t('messages.newMessage');
-                        }
-                    } else {
-                        // Fallback logging
-                    }
-
-                    const currentThread = threadsMap.get(thread.conversationId);
-                    if (!currentThread) return;
-
-                    updateThreadPreview(currentThread, {
-                        text,
-                        ts,
-                        messageId: previewMsg ? normalizeTimelineMessageId(previewMsg) : null,
-                        direction,
-                        msgType: type
-                    });
+                    if (!messages.length) return;
+                    this._applyPreviewFromMessages(thread, messages, threadsMap);
                 } catch (err) {
                     console.error('Preview refresh failed', err);
                 }
             }));
-
-            // [FIX] Progressive Render: Update UI after each chunk so user sees progress
             this.renderConversationList();
         }
+    }
 
-        console.timeEnd('[ConvList] refreshPreviews duration');
+    /**
+     * Extract preview text/metadata from a list of messages (DESC order) and apply to thread.
+     */
+    _applyPreviewFromMessages(thread, messages, threadsMap) {
+        // Deletion-Aware Preview Logic
+        // Messages are DESC (newest first). Find the newest conversation-deleted tombstone.
+        let tombstoneIndex = -1;
+        for (let i = 0; i < messages.length; i++) {
+            const payload = messages[i].payload || {};
+            let type = normalizeMsgTypeValue(payload.type);
+            if (!type) {
+                const header = resolveHeader(messages[i]);
+                type = normalizeMsgTypeValue(header?.meta?.msgType || header?.meta?.msg_type);
+            }
+            if (type === 'conversation-deleted') {
+                tombstoneIndex = i;
+                break;
+            }
+        }
+
+        const candidates = tombstoneIndex >= 0
+            ? messages.slice(0, tombstoneIndex)
+            : messages;
+        const isDeleted = tombstoneIndex >= 0 && candidates.length === 0;
+
+        let previewMsg = null;
+
+        for (const msg of candidates) {
+            const payload = msg.payload || {};
+            let type = normalizeMsgTypeValue(payload.type);
+            if (!type) {
+                const header = resolveHeader(msg);
+                type = normalizeMsgTypeValue(header?.meta?.msgType || header?.meta?.msg_type);
+            }
+
+            if (type === 'conversation-deleted') continue;
+
+            const isControl = type === 'sys' || type === 'system' || type === 'control' ||
+                (type && ['profile-update', 'session-init', 'session-ack',
+                    'session-error', 'read-receipt', 'delivery-receipt', 'placeholder'].includes(type));
+            if (isControl) continue;
+
+            if (type && ['text', 'media', 'call-log', 'call_log', 'contact-share'].includes(type)) {
+                previewMsg = msg;
+                break;
+            } else if (!type && msg.ciphertext_b64) {
+                previewMsg = msg;
+                break;
+            }
+        }
+
+        let text = t('messages.noMessages');
+        let type = null;
+        let ts = null;
+        let direction = null;
+
+        if (isDeleted) {
+            text = t('messages.noMessages');
+            type = 'conversation-deleted';
+            ts = tombstoneIndex >= 0 ? extractMessageTimestampMs(messages[tombstoneIndex]) : extractMessageTimestampMs(messages[0] || {});
+            const ct = threadsMap.get(thread.conversationId);
+            if (ct) { ct.unreadCount = 0; ct.offlineUnreadCount = 0; }
+        } else if (previewMsg) {
+            const payload = previewMsg.payload || {};
+            const meta = previewMsg.meta || {};
+            const header = resolveHeader(previewMsg);
+            const effectiveMeta = meta.sender ? meta : (header?.meta || {});
+
+            type = normalizeMsgTypeValue(payload.type || effectiveMeta.msgType || effectiveMeta.msg_type || 'text');
+            ts = extractMessageTimestampMs(previewMsg);
+
+            const senderDigest = previewMsg.sender_account_digest;
+            direction = senderDigest === this.deps.sessionStore.activePeerDigest ? 'incoming' : 'outgoing';
+
+            if (type === 'text') {
+                text = payload.text || (previewMsg.ciphertext_b64 ? t('messages.encryptedMessage') : t('messages.textMessage'));
+            } else if (type === 'media') {
+                const mime = (payload.contentType || payload.mimeType || '').toLowerCase();
+                if (mime.startsWith('image/')) {
+                    text = t('messages.imagePreview');
+                } else if (mime.startsWith('video/')) {
+                    text = t('messages.videoPreview');
+                } else {
+                    text = t('messages.filePreview', { name: payload.filename || payload.name || t('common.attachment') });
+                }
+            } else if (type === 'call_log' || type === 'call-log') {
+                const clKind = payload?.kind || previewMsg?.callLog?.kind || effectiveMeta?.call_kind || '';
+                text = clKind === 'video' ? t('calls.videoCallPreview') : t('calls.voiceCallPreview');
+            } else if (type === 'contact-share' || type === 'contact_share') {
+                const csReason = payload?.reason;
+                if (csReason === 'nickname') text = t('profile.updatedNickname');
+                else if (csReason === 'avatar') text = t('profile.updatedAvatar');
+                else if (csReason === 'profile' || csReason === 'update' || csReason === 'manual') text = t('profile.updatedProfile');
+                else text = t('messages.secureConnectionEstablished');
+            } else {
+                text = previewMsg.ciphertext_b64 ? t('messages.encryptedMessage') : t('messages.newMessage');
+            }
+        }
+
+        const currentThread = threadsMap.get(thread.conversationId);
+        if (!currentThread) return;
+
+        updateThreadPreview(currentThread, {
+            text,
+            ts,
+            messageId: previewMsg ? normalizeTimelineMessageId(previewMsg) : null,
+            direction,
+            msgType: type
+        });
     }
 
     /**
