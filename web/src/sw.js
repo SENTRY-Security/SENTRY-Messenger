@@ -290,6 +290,17 @@ self.addEventListener('push', (e) => {
       renotify: true,
       data: { url: '/pages/app.html' }
     });
+  }).catch((err) => {
+    // Last-resort fallback: ensure notification always shows even if preview logic fails
+    console.error('[sw] push handler error, showing fallback notification', err);
+    return self.registration.showNotification(title, {
+      body: localizedBody,
+      icon: icon,
+      badge: '/assets/images/logo.svg',
+      tag: 'sentry-push',
+      renotify: true,
+      data: { url: '/pages/app.html' }
+    });
   });
 
   e.waitUntil(notifyPromise);
