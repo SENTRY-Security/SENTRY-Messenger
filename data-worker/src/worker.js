@@ -9232,8 +9232,8 @@ export default {
         return withCORS(json({ error: 'not_found', message: 'no matching route' }, { status: 404 }), req, env);
       }
 
-      // ── Push PIN verify + unsubscribe (no HMAC — authenticated by PIN / endpoint) ──
-      if (req.method === 'POST' && (url.pathname === '/d1/push/pin/verify' || url.pathname === '/d1/push/unsubscribe')) {
+      // ── Push routes (no HMAC — authenticated by PIN / endpoint / accountDigest) ──
+      if (req.method === 'POST' && url.pathname.startsWith('/d1/push/')) {
         const result = await handlePushRoutes(req, env);
         if (result) return result;
       }

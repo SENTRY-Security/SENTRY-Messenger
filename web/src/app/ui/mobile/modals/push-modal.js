@@ -194,13 +194,15 @@ export function createPushModal({ deps }) {
         generatePinBtn.disabled = true;
         generatePinBtn.textContent = t('common.loading');
         try {
+          const digest = getAccountDigest();
+          if (!digest) throw new Error('Account not ready');
           const res = await fetch('/d1/push/pin/generate', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ accountDigest: getAccountDigest() })
+            body: JSON.stringify({ accountDigest: digest })
           });
-          const data = await res.json();
-          if (!res.ok || !data.pin) throw new Error(data.error || 'Failed');
+          const data = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+          if (!res.ok || !data.pin) throw new Error(data.error || data.message || 'Failed');
           if (pinCode) pinCode.textContent = data.pin;
           if (pinDisplay) pinDisplay.style.display = 'block';
           generatePinBtn.textContent = t('push.regeneratePin');
