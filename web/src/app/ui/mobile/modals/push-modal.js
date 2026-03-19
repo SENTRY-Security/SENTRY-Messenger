@@ -56,20 +56,29 @@ export function createPushModal({ deps }) {
           console.warn('[push-test] encrypt preview failed', encErr);
         }
       }
-      const res = await fetch('/d1/push/test', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ accountDigest: digest, endpoint, encrypted_preview })
-      });
-      const data = await res.json().catch(() => ({}));
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
+      let res;
+      try {
+        res = await fetch('/d1/push/test', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ accountDigest: digest, endpoint, encrypted_preview }),
+          signal: controller.signal
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
+      alert('[push-debug] HTTP ' + res.status);
+      const text = await res.text();
+      alert('[push-debug] body: ' + text.slice(0, 200));
+      let data = {};
+      try { data = JSON.parse(text); } catch { /* not json */ }
       if (data.gone) {
-        alert('[push-debug] subscription GONE (expired)');
         showToast(t('push.testGone'));
       } else if (data.ok) {
-        alert('[push-debug] server OK, HTTP ' + res.status + '. Notification should arrive.');
         showToast(t('push.testSent'));
       } else {
-        alert('[push-debug] server error: ' + JSON.stringify(data).slice(0, 200));
         showToast('Push failed: ' + (data.message || data.error || 'HTTP ' + res.status));
       }
     } catch (err) {
