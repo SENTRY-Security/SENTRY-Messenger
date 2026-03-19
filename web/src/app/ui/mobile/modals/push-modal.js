@@ -4,12 +4,64 @@
 import { escapeHtml } from '../ui-utils.js';
 import { t } from '/locales/index.js';
 import {
-  isPushSupported, subscribePush, unsubscribePush,
+  isPushSupported, isPWAMode, subscribePush, unsubscribePush,
   unsubscribeByEndpoint, listPushDevices, getPushSubscription
 } from '../../../features/push-subscription.js';
 
+function isIOS() {
+  return /iPhone|iPad|iPod/.test(navigator.userAgent);
+}
+
 export function createPushModal({ deps }) {
-  const { log, showToast, openModal, closeModal, resetModalVariants, showAlertModal, getAccountDigest } = deps;
+  const { log, showToast, openModal, closeModal, resetModalVariants, showAlertModal } = deps;
+
+  // Shared device list renderer
+  async function renderDeviceList(container, onStatusChange) {
+    if (!container) return;
+    try {
+      const devices = await listPushDevices();
+      if (!devices.length) {
+        container.innerHTML = `<p style="font-size:13px;color:var(--muted);">${escapeHtml(t('push.noDevices'))}</p>`;
+        return;
+      }
+      container.innerHTML = devices.map(d => `
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--line);">
+          <div style="font-size:13px;flex:1;">
+            <span>${d.isThisDevice ? '📱 ' : '🔔 '}${escapeHtml(d.displayName)}</span>
+            ${d.isThisDevice ? `<span style="color:var(--accent);font-size:11px;margin-left:4px;">(${escapeHtml(t('push.thisDevice'))})</span>` : ''}
+            <div style="font-size:11px;color:var(--muted);margin-top:2px;">${d.createdAt ? new Date(Number(d.createdAt) * 1000).toLocaleDateString() : ''}</div>
+          </div>
+          <button type="button" class="push-revoke-btn" data-endpoint="${escapeHtml(d.endpoint)}" style="padding:4px 10px;border-radius:6px;border:1px solid rgba(239,68,68,0.3);background:transparent;color:#ef4444;font-size:12px;cursor:pointer;">${escapeHtml(t('push.revoke'))}</button>
+        </div>
+      `).join('');
+
+      container.querySelectorAll('.push-revoke-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const endpoint = btn.dataset.endpoint;
+          if (!confirm(t('push.revokeConfirm'))) return;
+          btn.disabled = true;
+          btn.textContent = t('common.loading');
+          try {
+            await unsubscribeByEndpoint(endpoint);
+            showToast(t('push.revokedToast'));
+            if (onStatusChange) {
+              const sub = await getPushSubscription().catch(() => null);
+              onStatusChange(!!sub);
+            }
+            renderDeviceList(container, onStatusChange);
+          } catch (err) {
+            log({ pushRevokeError: err?.message || err });
+            showAlertModal({ title: t('errors.operationFailed'), message: err?.message || '' });
+            btn.disabled = false;
+            btn.textContent = t('push.revoke');
+          }
+        }, { once: true });
+      });
+    } catch (err) {
+      container.innerHTML = `<p style="font-size:13px;color:var(--muted);">${escapeHtml(t('push.loadDevicesFailed'))}</p>`;
+      log({ pushDeviceListError: err?.message || err });
+    }
+  }
 
   async function open() {
     const modalElement = document.getElementById('modal');
@@ -22,56 +74,74 @@ export function createPushModal({ deps }) {
     if (title) title.textContent = t('push.settingsTitle');
 
     const supported = isPushSupported();
-    const accountDigest = getAccountDigest();
+    const ios = isIOS();
+    const pwa = isPWAMode();
+    // iOS Safari browser mode: API exists but subscribe fails — must use PWA
+    const iosNeedsPWA = ios && supported && !pwa;
 
     // Check current subscription state
     let currentSub = null;
     try { currentSub = await getPushSubscription(); } catch {}
-
     const isActive = !!currentSub;
+
+    // Determine which view to show
+    let contentHTML;
+
+    if (!supported) {
+      // Browser doesn't support push at all
+      contentHTML = `
+        <div style="padding:16px 0;text-align:center;color:var(--muted);font-size:14px;">
+          ${escapeHtml(t('push.statusUnsupported'))}<br>
+          <span style="font-size:12px;">${escapeHtml(t('push.statusUnsupportedDetail'))}</span>
+        </div>`;
+    } else if (iosNeedsPWA) {
+      // iOS browser mode — guide user to add to Home Screen
+      contentHTML = `
+        <div style="padding:16px 0;font-size:14px;">
+          <div style="font-weight:600;margin-bottom:10px;">${escapeHtml(t('push.iosRequiresPWA'))}</div>
+          <div style="font-size:13px;color:var(--muted);line-height:1.7;">
+            ${escapeHtml(t('push.iosRequiresPWADetail'))}
+          </div>
+        </div>
+        <div style="padding:14px 0;border-top:1px solid var(--line);">
+          <div style="font-size:13px;font-weight:700;margin-bottom:10px;">${escapeHtml(t('push.deviceListTitle'))}</div>
+          <div id="pushDeviceList">
+            <p style="font-size:13px;color:var(--muted);">${escapeHtml(t('common.loading'))}</p>
+          </div>
+        </div>`;
+    } else {
+      // Full push support
+      contentHTML = `
+        <div style="display:flex;align-items:center;gap:10px;padding:12px 0;border-bottom:1px solid var(--line);">
+          <span id="pushStatusDot" style="width:10px;height:10px;border-radius:50%;flex-shrink:0;${isActive ? 'background:#22c55e;box-shadow:0 0 6px rgba(34,197,94,0.4);' : 'background:var(--muted);'}"></span>
+          <div style="flex:1;">
+            <div id="pushStatusLabel" style="font-size:14px;font-weight:600;">${escapeHtml(isActive ? t('push.statusActive') : t('push.statusInactive'))}</div>
+            <div id="pushStatusDetail" style="font-size:12px;color:var(--muted);margin-top:2px;">${escapeHtml(isActive ? t('push.statusActiveDetail') : t('push.statusInactiveDetail'))}</div>
+          </div>
+        </div>
+        <div style="padding:14px 0;border-bottom:1px solid var(--line);">
+          <button type="button" id="pushActionBtn" style="width:100%;padding:10px 16px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;${isActive ? 'background:rgba(239,68,68,0.15);color:#ef4444;' : 'background:rgba(56,189,248,0.15);color:#38bdf8;'}">
+            ${escapeHtml(isActive ? t('push.disableBtn') : t('push.explainTitle'))}
+          </button>
+        </div>
+        <div style="padding:14px 0;">
+          <div style="font-size:13px;font-weight:700;margin-bottom:10px;">${escapeHtml(t('push.deviceListTitle'))}</div>
+          <div id="pushDeviceList">
+            <p style="font-size:13px;color:var(--muted);">${escapeHtml(t('common.loading'))}</p>
+          </div>
+        </div>
+        <div style="padding:10px 0;border-top:1px solid var(--line);">
+          <div style="font-size:12px;color:var(--muted);line-height:1.6;">
+            ${escapeHtml(t('push.infoBasic1'))}<br>
+            ${escapeHtml(t('push.infoBasic2'))}<br>
+            ${escapeHtml(t('push.infoBasic3'))}
+          </div>
+        </div>`;
+    }
 
     body.innerHTML = `
       <div class="push-modal-content" style="padding:4px 0;">
-        ${!supported ? `
-          <div style="padding:16px 0;text-align:center;color:var(--muted);font-size:14px;">
-            ${escapeHtml(t('push.statusUnsupported'))}<br>
-            <span style="font-size:12px;">${escapeHtml(t('push.statusUnsupportedDetail'))}</span>
-          </div>
-        ` : `
-          <!-- Status -->
-          <div style="display:flex;align-items:center;gap:10px;padding:12px 0;border-bottom:1px solid var(--line);">
-            <span id="pushStatusDot" style="width:10px;height:10px;border-radius:50%;flex-shrink:0;${isActive ? 'background:#22c55e;box-shadow:0 0 6px rgba(34,197,94,0.4);' : 'background:var(--muted);'}"></span>
-            <div style="flex:1;">
-              <div id="pushStatusLabel" style="font-size:14px;font-weight:600;">${escapeHtml(isActive ? t('push.statusActive') : t('push.statusInactive'))}</div>
-              <div id="pushStatusDetail" style="font-size:12px;color:var(--muted);margin-top:2px;">${escapeHtml(isActive ? t('push.statusActiveDetail') : t('push.statusInactiveDetail'))}</div>
-            </div>
-          </div>
-
-          <!-- Action button -->
-          <div style="padding:14px 0;border-bottom:1px solid var(--line);">
-            <button type="button" id="pushActionBtn" class="settings-link" style="width:100%;padding:10px 16px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;${isActive ? 'background:rgba(239,68,68,0.15);color:#ef4444;' : 'background:rgba(56,189,248,0.15);color:#38bdf8;'}">
-              ${escapeHtml(isActive ? t('push.disableBtn') : t('push.explainTitle'))}
-            </button>
-          </div>
-
-          <!-- Device list section -->
-          <div style="padding:14px 0;">
-            <div style="font-size:13px;font-weight:700;margin-bottom:10px;">${escapeHtml(t('push.deviceListTitle'))}</div>
-            <div id="pushDeviceList">
-              <p style="font-size:13px;color:var(--muted);">${escapeHtml(t('common.loading'))}</p>
-            </div>
-          </div>
-
-          <!-- Info -->
-          <div style="padding:10px 0;border-top:1px solid var(--line);">
-            <div style="font-size:12px;color:var(--muted);line-height:1.6;">
-              ${escapeHtml(t('push.infoBasic1'))}<br>
-              ${escapeHtml(t('push.infoBasic2'))}<br>
-              ${escapeHtml(t('push.infoBasic3'))}
-            </div>
-          </div>
-        `}
-
+        ${contentHTML}
         <div style="padding:12px 0 4px;">
           <button type="button" class="secondary" id="pushCloseBtn" style="width:100%;">${escapeHtml(t('common.close'))}</button>
         </div>
@@ -79,16 +149,23 @@ export function createPushModal({ deps }) {
 
     openModal();
 
-    // Close button
     body.querySelector('#pushCloseBtn')?.addEventListener('click', () => closeModal(), { once: true });
 
     if (!supported) return;
 
+    const deviceList = body.querySelector('#pushDeviceList');
+
+    // iOS browser mode — only show device list, no subscribe
+    if (iosNeedsPWA) {
+      renderDeviceList(deviceList, null);
+      return;
+    }
+
+    // Full mode — status + action + device list
     const statusDot = body.querySelector('#pushStatusDot');
     const statusLabel = body.querySelector('#pushStatusLabel');
     const statusDetail = body.querySelector('#pushStatusDetail');
     const actionBtn = body.querySelector('#pushActionBtn');
-    const deviceList = body.querySelector('#pushDeviceList');
 
     function updateStatus(active) {
       if (statusDot) statusDot.style.cssText = `width:10px;height:10px;border-radius:50%;flex-shrink:0;${active ? 'background:#22c55e;box-shadow:0 0 6px rgba(34,197,94,0.4);' : 'background:var(--muted);'}`;
@@ -100,70 +177,20 @@ export function createPushModal({ deps }) {
       }
     }
 
-    // Refresh device list
-    async function refreshDevices() {
-      if (!deviceList) return;
-      try {
-        const devices = await listPushDevices();
-        if (!devices.length) {
-          deviceList.innerHTML = `<p style="font-size:13px;color:var(--muted);">${escapeHtml(t('push.noDevices'))}</p>`;
-          return;
-        }
-        deviceList.innerHTML = devices.map(d => `
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--line);">
-            <div style="font-size:13px;flex:1;">
-              <span>${d.isThisDevice ? '📱 ' : '🔔 '}${escapeHtml(d.displayName)}</span>
-              ${d.isThisDevice ? `<span style="color:var(--accent);font-size:11px;margin-left:4px;">(${escapeHtml(t('push.thisDevice'))})</span>` : ''}
-              <div style="font-size:11px;color:var(--muted);margin-top:2px;">${d.createdAt ? new Date(Number(d.createdAt) * 1000).toLocaleDateString() : ''}</div>
-            </div>
-            <button type="button" class="push-revoke-btn" data-endpoint="${escapeHtml(d.endpoint)}" style="padding:4px 10px;border-radius:6px;border:1px solid rgba(239,68,68,0.3);background:transparent;color:#ef4444;font-size:12px;cursor:pointer;">${escapeHtml(t('push.revoke'))}</button>
-          </div>
-        `).join('');
-
-        deviceList.querySelectorAll('.push-revoke-btn').forEach(btn => {
-          btn.addEventListener('click', async () => {
-            const endpoint = btn.dataset.endpoint;
-            if (!confirm(t('push.revokeConfirm'))) return;
-            btn.disabled = true;
-            btn.textContent = t('common.loading');
-            try {
-              await unsubscribeByEndpoint(endpoint);
-              showToast(t('push.revokedToast'));
-              // Recheck status
-              const sub = await getPushSubscription();
-              updateStatus(!!sub);
-              refreshDevices();
-            } catch (err) {
-              log({ pushRevokeError: err?.message || err });
-              showAlertModal({ title: t('errors.operationFailed'), message: err?.message || '' });
-              btn.disabled = false;
-              btn.textContent = t('push.revoke');
-            }
-          }, { once: true });
-        });
-      } catch (err) {
-        deviceList.innerHTML = `<p style="font-size:13px;color:var(--muted);">${escapeHtml(t('push.loadDevicesFailed'))}</p>`;
-        log({ pushDeviceListError: err?.message || err });
-      }
-    }
-
-    // Action button (enable/disable)
     actionBtn?.addEventListener('click', async () => {
       const sub = await getPushSubscription().catch(() => null);
       actionBtn.disabled = true;
 
       if (sub) {
-        // Disable
         try {
           await unsubscribePush();
           showToast(t('push.disabledToast'));
           updateStatus(false);
-          refreshDevices();
+          renderDeviceList(deviceList, updateStatus);
         } catch (err) {
           log({ pushUnsubscribeError: err?.message || err });
         }
       } else {
-        // Enable — show explanation first
         const confirmed = await new Promise((resolve) => {
           showAlertModal({
             title: t('push.explainTitle'),
@@ -183,8 +210,7 @@ export function createPushModal({ deps }) {
         try {
           await subscribePush();
           showToast(t('push.enabledToast'));
-          // Reopen the modal to refresh everything
-          open();
+          open(); // reopen to refresh
           return;
         } catch (err) {
           log({ pushSubscribeError: err?.message || err });
@@ -197,8 +223,7 @@ export function createPushModal({ deps }) {
       actionBtn.disabled = false;
     });
 
-    // Load device list
-    refreshDevices();
+    renderDeviceList(deviceList, updateStatus);
   }
 
   return { open };

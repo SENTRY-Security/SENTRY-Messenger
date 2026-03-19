@@ -1102,6 +1102,8 @@
     "enabledToast": "Push notifications enabled",
     "disabledToast": "Push notifications disabled",
     "permissionDenied": "Notification permission was denied. Please allow notifications in your browser settings.",
+    "iosRequiresPWA": "Add to Home Screen required",
+    "iosRequiresPWADetail": "To enable push notifications on iOS, you must first add this app to the Home Screen:\n\n1. Tap the Share button (square with arrow) in Safari\n2. Scroll down and tap \"Add to Home Screen\"\n3. Open the app from the Home Screen\n4. Log in and enable push notifications from Settings\n\nThis is an iOS system requirement — Web Push only works in standalone (Home Screen) mode.",
     "deviceListTitle": "Push sessions",
     "noDevices": "No registered push devices",
     "thisDevice": "this device",
