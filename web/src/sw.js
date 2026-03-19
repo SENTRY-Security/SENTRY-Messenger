@@ -1,6 +1,26 @@
 // Service Worker — push notification only (no offline cache)
 // Scope: / (root)
 
+// ─── Push notification type taxonomy ───────────────────────────────────────
+//
+//  message-new / secure-message
+//    私人訊息 — 與聯絡人之間的 1:1 對話，可傳送文字、圖片、影片及檔案。
+//
+//  biz-conv-message
+//    群組訊息 — 多人群組中的對話訊息，可傳送文字、圖片、影片及檔案。
+//
+//  ephemeral-message
+//    臨時訊息 — 限時自動銷毀的臨時對話，可傳送文字及圖片（圖片限 5 MB）。
+//
+//  call-invite
+//    來電通知 — 來自私人對話或臨時對話的語音／視訊通話邀請（群組目前不支援通話）。
+//
+//  notify
+//    系統通知 — 好友邀請、群組成員異動（加入／移除／解散）、已讀回條、
+//    送達回條、加密會話建立、對話刪除等系統自動產生的通知。
+//
+// ───────────────────────────────────────────────────────────────────────────
+
 // i18n: push notification translations keyed by locale, then by message type
 const PUSH_I18N = {
   en: {
@@ -109,12 +129,12 @@ self.addEventListener('activate', (e) => {
 
 // Map server payload.type to notification icon
 const PUSH_TYPE_ICONS = {
-  'message-new':        '/assets/images/push/message.png',
-  'secure-message':     '/assets/images/push/message.png',
-  'biz-conv-message':   '/assets/images/push/group-chat.png',
-  'ephemeral-message':  '/assets/images/push/ephemeral.png',
-  'call-invite':        '/assets/images/push/incoming-call.png',
-  'notify':             '/assets/images/push/system.png'
+  'message-new':        '/assets/images/push/message.png',      // 私人訊息
+  'secure-message':     '/assets/images/push/message.png',      // 私人訊息（加密）
+  'biz-conv-message':   '/assets/images/push/group-chat.png',   // 群組訊息
+  'ephemeral-message':  '/assets/images/push/ephemeral.png',    // 臨時訊息（文字＋圖片）
+  'call-invite':        '/assets/images/push/incoming-call.png', // 來電（語音／視訊）
+  'notify':             '/assets/images/push/system.png'        // 系統通知
 };
 
 self.addEventListener('push', (e) => {
