@@ -1150,14 +1150,15 @@ export class AccountWebSocket {
     ]);
     if (!pushTypes.has(payload.type)) return;
 
-    // Skip push for control/internal message subtypes (not user-visible)
+    // Reclassify control/internal message subtypes as system notifications
     const controlMsgTypes = new Set([
       'read-receipt', 'delivery-receipt',
       'session-init', 'session-ack', 'session-error',
       'profile-update', 'contact-share',
       'conversation-deleted', 'placeholder'
     ]);
-    if (payload.msgType && controlMsgTypes.has(payload.msgType)) return;
+    const effectiveType = (payload.msgType && controlMsgTypes.has(payload.msgType))
+      ? 'notify' : payload.type;
 
     const rows = await this.env.DB.prepare(
       `SELECT endpoint, keys_p256dh, keys_auth FROM push_subscriptions WHERE account_digest = ?1`
@@ -1180,7 +1181,7 @@ export class AccountWebSocket {
     // `type` is included so the Service Worker can display a type-specific icon.
     const pushPayload = JSON.stringify({
       title: 'SENTRY MESSENGER',
-      type: payload.type || undefined
+      type: effectiveType || undefined
     });
 
     const staleEndpoints = [];
