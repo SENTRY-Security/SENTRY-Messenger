@@ -19,6 +19,10 @@ S3_REGION = "auto"
 S3_BUCKET = "message-media"
 SIGNED_PUT_TTL = "900"
 SIGNED_GET_TTL = "900"
+# Web Push (VAPID) — public key is safe to expose; private key set via wrangler secret
+VAPID_PUBLIC_KEY = "BGNlllC_H-lqHnnKrxT2IhF_5_xei3is_loJHesBmzjhfgmGMwq_nwlVVaKkrOhTnCO9_DeFtlotIl3Oug3eI2k"
+VAPID_SUBJECT = "mailto:admin@sentry.red"
+# VAPID_PRIVATE_KEY → set via: wrangler secret put VAPID_PRIVATE_KEY
 # Comma-separated origins allowed for CORS (M-11 fix)
 CORS_ORIGINS = "https://message.sentry.red"
 
@@ -65,6 +69,9 @@ S3_REGION = "auto"
 S3_BUCKET = "message-media-uat"
 SIGNED_PUT_TTL = "900"
 SIGNED_GET_TTL = "900"
+VAPID_PUBLIC_KEY = "BGNlllC_H-lqHnnKrxT2IhF_5_xei3is_loJHesBmzjhfgmGMwq_nwlVVaKkrOhTnCO9_DeFtlotIl3Oug3eI2k"
+VAPID_SUBJECT = "mailto:admin@sentry.red"
+# VAPID_PRIVATE_KEY → set via: wrangler secret put VAPID_PRIVATE_KEY --env uat
 [[env.uat.d1_databases]]
 binding = "DB"
 database_name = "message_db_uat"

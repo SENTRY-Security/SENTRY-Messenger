@@ -1522,6 +1522,10 @@ settingsInitPromise = bootLoadSettings()
   });
 settingsMod.initPromise = settingsInitPromise;
 
+// Register Service Worker for push notifications (registration only, no auto-subscribe)
+import { registerServiceWorker } from '../features/push-subscription.js';
+registerServiceWorker();
+
 initVersionInfoButton({
   buttonId: 'userMenuVersionBtn',
   popupId: 'versionInfoPopupAppMenu',

@@ -118,7 +118,7 @@ for (const dir of staticDirs) {
 }
 
 // Copy top-level files
-const staticFiles = ['index.html', '_headers'];
+const staticFiles = ['index.html', '_headers', 'sw.js', 'manifest.json'];
 for (const file of staticFiles) {
   try {
     cpSync(resolve(src, file), resolve(dist, file));

@@ -1497,6 +1497,24 @@ async function ensureDataTables(env) {
         console.log('ensureDataTables: created ephemeral_sessions table');
       } catch (e) { console.warn('ensureDataTables: ephemeral_sessions create failed', e?.message); }
     }
+    // Auto-create push_subscriptions table (Web Push)
+    if (!tableNames.has('push_subscriptions')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS push_subscriptions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_digest TEXT NOT NULL,
+          device_id TEXT,
+          endpoint TEXT NOT NULL UNIQUE,
+          keys_p256dh TEXT NOT NULL,
+          keys_auth TEXT NOT NULL,
+          user_agent TEXT,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+        )`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_push_subs_account ON push_subscriptions(account_digest)`).run();
+        await env.DB.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_push_subs_endpoint ON push_subscriptions(endpoint)`).run();
+        console.log('ensureDataTables: created push_subscriptions table');
+      } catch (e) { console.warn('ensureDataTables: push_subscriptions create failed', e?.message); }
+    }
     // Auto-add reason column to contact_secret_backups (migration 0014)
     try {
       await env.DB.prepare(`SELECT reason FROM contact_secret_backups LIMIT 0`).all();
@@ -9010,6 +9028,94 @@ async function handlePublicRoutes(req, env) {
   return null;
 }
 
+// ── Push subscription routes ────────────────────────────────────
+
+async function handlePushRoutes(req, env) {
+  const url = new URL(req.url);
+
+  // POST /d1/push/subscribe — register a push subscription
+  if (req.method === 'POST' && url.pathname === '/d1/push/subscribe') {
+    await ensureDataTables(env);
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const deviceId = normalizeDeviceId(body?.deviceId || body?.device_id);
+    const sub = body?.subscription;
+    if (!accountDigest || !sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth) {
+      return json({ error: 'BadRequest', message: 'accountDigest and subscription (endpoint, keys.p256dh, keys.auth) required' }, { status: 400 });
+    }
+    try {
+      await env.DB.prepare(
+        `INSERT INTO push_subscriptions (account_digest, device_id, endpoint, keys_p256dh, keys_auth, user_agent, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, strftime('%s','now'))
+         ON CONFLICT(endpoint) DO UPDATE SET
+           account_digest=excluded.account_digest,
+           device_id=excluded.device_id,
+           keys_p256dh=excluded.keys_p256dh,
+           keys_auth=excluded.keys_auth,
+           user_agent=excluded.user_agent`
+      ).bind(
+        accountDigest,
+        deviceId || null,
+        sub.endpoint,
+        sub.keys.p256dh,
+        sub.keys.auth,
+        body?.userAgent || body?.user_agent || null
+      ).run();
+      return json({ ok: true });
+    } catch (err) {
+      console.error('push_subscribe_failed', err?.message || err);
+      return json({ error: 'PushSubscribeFailed', message: err?.message || 'subscribe failed' }, { status: 500 });
+    }
+  }
+
+  // POST /d1/push/unsubscribe — remove a push subscription
+  if (req.method === 'POST' && url.pathname === '/d1/push/unsubscribe') {
+    await ensureDataTables(env);
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const endpoint = body?.endpoint;
+    if (!endpoint) {
+      return json({ error: 'BadRequest', message: 'endpoint required' }, { status: 400 });
+    }
+    try {
+      await env.DB.prepare(`DELETE FROM push_subscriptions WHERE endpoint = ?1`).bind(endpoint).run();
+      return json({ ok: true });
+    } catch (err) {
+      console.error('push_unsubscribe_failed', err?.message || err);
+      return json({ error: 'PushUnsubscribeFailed', message: err?.message || 'unsubscribe failed' }, { status: 500 });
+    }
+  }
+
+  // POST /d1/push/list — list push subscriptions for an account
+  if (req.method === 'POST' && url.pathname === '/d1/push/list') {
+    await ensureDataTables(env);
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    if (!accountDigest) {
+      return json({ error: 'BadRequest', message: 'accountDigest required' }, { status: 400 });
+    }
+    try {
+      const rows = await env.DB.prepare(
+        `SELECT device_id, endpoint, user_agent, created_at FROM push_subscriptions WHERE account_digest = ?1 ORDER BY created_at DESC`
+      ).bind(accountDigest).all();
+      return json({ ok: true, items: rows?.results || [] });
+    } catch (err) {
+      console.error('push_list_failed', err?.message || err);
+      return json({ error: 'PushListFailed', message: err?.message || 'list failed' }, { status: 500 });
+    }
+  }
+
+  return null;
+}
+
 // ── Main fetch handler ──────────────────────────────────────────
 export default {
   async fetch(req, env) {
@@ -9103,6 +9209,9 @@ export default {
 
       const contactsResult = await handleContactsRoutes(req, env);
       if (contactsResult) return contactsResult;
+
+      const pushResult = await handlePushRoutes(req, env);
+      if (pushResult) return pushResult;
 
       // No matching internal route
       return json({ error: 'not_found', message: 'no matching internal route' }, { status: 404 });

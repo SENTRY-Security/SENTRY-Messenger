@@ -20,6 +20,7 @@
  */
 
 import { verifyJwt } from './jwt.js';
+import { createWebPush } from './web-push.js';
 
 // ── Constants ────────────────────────────────────────────────────
 const CALL_LOCK_TTL_MS = 120_000;
@@ -282,6 +283,15 @@ export class AccountWebSocket {
       if (convId) {
         await this._bufferEphemeralMessage(convId, payload);
         console.log('[ws-do] ephemeral msg buffered', { type: payload.type, convId: convId.slice(0, 16) });
+      }
+    }
+
+    // Send Web Push notification when no active socket is connected
+    if (sent === 0 && this.accountDigest && this.env.VAPID_PUBLIC_KEY && this.env.VAPID_PRIVATE_KEY) {
+      try {
+        await this._sendPushNotifications(payload);
+      } catch (pushErr) {
+        console.warn('[ws-do] push notification failed', pushErr?.message || pushErr);
       }
     }
 
@@ -1100,6 +1110,58 @@ export class AccountWebSocket {
     // FIFO eviction if over limit
     while (buf.length > EPH_BUFFER_MAX_PER_CONV) buf.shift();
     await this.state.storage.put(key, buf);
+  }
+
+  async _sendPushNotifications(payload) {
+    if (!this.accountDigest || !this.env.DB) return;
+    // Only send push for message-type notifications
+    const pushTypes = new Set(['message-new', 'secure-message', 'notify']);
+    if (!pushTypes.has(payload.type)) return;
+
+    const rows = await this.env.DB.prepare(
+      `SELECT endpoint, keys_p256dh, keys_auth FROM push_subscriptions WHERE account_digest = ?1`
+    ).bind(this.accountDigest).all();
+    const subs = rows?.results || [];
+    if (!subs.length) return;
+
+    const { sendPushNotification } = createWebPush({
+      vapidPublicKey: this.env.VAPID_PUBLIC_KEY,
+      vapidPrivateKey: this.env.VAPID_PRIVATE_KEY,
+      vapidSubject: this.env.VAPID_SUBJECT || 'mailto:admin@sentry.red'
+    });
+
+    // E2EE: never expose message content in push payload
+    const pushPayload = JSON.stringify({
+      title: 'SENTRY MESSENGER',
+      body: 'You have a new message'
+    });
+
+    const staleEndpoints = [];
+    await Promise.allSettled(subs.map(async (sub) => {
+      try {
+        const result = await sendPushNotification({
+          endpoint: sub.endpoint,
+          keys: { p256dh: sub.keys_p256dh, auth: sub.keys_auth }
+        }, pushPayload);
+        if (result.gone) {
+          staleEndpoints.push(sub.endpoint);
+        }
+      } catch (err) {
+        console.warn('[ws-do] push send error', err?.message || err);
+      }
+    }));
+
+    // Clean up stale subscriptions (404/410)
+    for (const ep of staleEndpoints) {
+      try {
+        await this.env.DB.prepare(`DELETE FROM push_subscriptions WHERE endpoint = ?1`).bind(ep).run();
+        console.log('[ws-do] removed stale push subscription', ep.slice(0, 40));
+      } catch {}
+    }
+
+    if (subs.length > 0) {
+      console.log('[ws-do] push notifications sent', { account: this.accountDigest?.slice(0, 16), total: subs.length, stale: staleEndpoints.length });
+    }
   }
 
   async _flushEphemeralBuffers(ws) {

@@ -21,7 +21,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   autoLogoutOnBackground: true,
   autoLogoutRedirectMode: 'default',
   autoLogoutCustomUrl: '',
-  language: null   // null = follow browser; 'en' | 'zh-Hant' = forced
+  language: null,   // null = follow browser; 'en' | 'zh-Hant' = forced
+  pushNotifications: false
 });
 
 function sanitizeLogoutUrl(input) {
@@ -47,7 +48,8 @@ function normalizeSettings(input = {}) {
     autoLogoutOnBackground: typeof input.autoLogoutOnBackground === 'boolean' ? input.autoLogoutOnBackground : DEFAULT_SETTINGS.autoLogoutOnBackground,
     autoLogoutRedirectMode: wantsCustomRedirect && hasUrl ? 'custom' : DEFAULT_SETTINGS.autoLogoutRedirectMode,
     autoLogoutCustomUrl: sanitizedUrl || null,
-    language: lang
+    language: lang,
+    pushNotifications: typeof input.pushNotifications === 'boolean' ? input.pushNotifications : DEFAULT_SETTINGS.pushNotifications
   };
   return normalized;
 }

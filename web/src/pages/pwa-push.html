@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>SENTRY MESSENGER — Push Notifications</title>
+    <link rel="icon" href="/assets/favicon.ico" type="image/x-icon" />
+    <link rel="manifest" href="/manifest.json" />
+    <script>
+      // Inline i18n bootstrap (same as login.html)
+      (function(){
+        var lang = 'en';
+        try { lang = navigator.language || 'en'; } catch {}
+        var tag = lang.toLowerCase();
+        if (tag==='zh-hant'||tag==='zh-tw'||tag==='zh-hk'||tag.indexOf('zh-hant')===0) tag='zh-Hant';
+        else if (tag==='zh-hans'||tag==='zh-cn'||tag==='zh-sg'||tag.indexOf('zh-hans')===0||tag==='zh') tag='zh-Hans';
+        else tag = tag.split('-')[0];
+        var supported = {en:1,'zh-Hant':1,'zh-Hans':1,ja:1,ko:1,th:1,vi:1};
+        if (!supported[tag]) tag = 'en';
+        var msgs = {}, fb = {};
+        function loadSync(url) {
+          try { var x = new XMLHttpRequest(); x.open('GET', url, false); x.send(); return x.status===200 ? JSON.parse(x.responseText) : {}; } catch { return {}; }
+        }
+        fb = loadSync('/locales/en.json');
+        if (tag !== 'en') msgs = loadSync('/locales/' + tag + '.json');
+        function resolve(o, p) { return p.split('.').reduce(function(a,k){ return a&&a[k]; }, o); }
+        window.__t = function(key, params) {
+          var val = resolve(msgs, key) || resolve(fb, key) || key;
+          if (!params || typeof val !== 'string') return val;
+          return val.replace(/\{(\w+)\}/g, function(_, k) { return params[k] != null ? params[k] : '{'+k+'}'; });
+        };
+        document.documentElement.lang = tag;
+      })();
+    </script>
+    <style>
+      :root { color-scheme: dark; --bg:#0f172a; --fg:#e2e8f0; --muted:#94a3b8; --line:rgba(148,163,184,0.18); --accent:#38bdf8; --danger:#ef4444; --card:rgba(15,23,42,0.65); --gradient:linear-gradient(160deg,#0f172a,#1e293b 65%,#020617); }
+      * { box-sizing:border-box; margin:0; padding:0; }
+      html, body { height:100%; }
+      body {
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, 'Noto Sans TC', sans-serif;
+        background:var(--gradient); background-color:var(--bg); background-attachment:fixed;
+        color:var(--fg);
+        display:flex; justify-content:center;
+        padding:calc(24px + env(safe-area-inset-top,0px)) 16px calc(24px + env(safe-area-inset-bottom,0px));
+        overscroll-behavior:contain;
+        -webkit-text-size-adjust:100%;
+      }
+      .pwa-shell {
+        width:min(480px,100%); max-height:100%; overflow-y:auto;
+        -webkit-overflow-scrolling:touch;
+      }
+
+      /* Header */
+      .pwa-header { text-align:center; padding:32px 0 24px; }
+      .pwa-logo { width:56px; height:56px; margin-bottom:12px; }
+      .pwa-title { font-size:18px; font-weight:700; letter-spacing:1.5px; margin-bottom:4px; }
+      .pwa-subtitle { font-size:13px; color:var(--muted); }
+
+      /* Status card */
+      .status-card {
+        background:var(--card); border:1px solid var(--line); border-radius:14px;
+        padding:20px; margin-bottom:16px; backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+      }
+      .status-row { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
+      .status-dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
+      .status-dot.active { background:#22c55e; box-shadow:0 0 6px rgba(34,197,94,0.4); }
+      .status-dot.inactive { background:var(--muted); }
+      .status-label { font-size:15px; font-weight:600; }
+      .status-detail { font-size:13px; color:var(--muted); line-height:1.5; }
+
+      /* Buttons */
+      .btn-row { display:flex; gap:10px; margin-top:16px; }
+      .btn {
+        flex:1; padding:12px 16px; border-radius:10px; border:none;
+        font-size:14px; font-weight:600; cursor:pointer;
+        display:inline-flex; align-items:center; justify-content:center; gap:6px;
+        transition:opacity .15s;
+      }
+      .btn:disabled { opacity:0.5; cursor:not-allowed; }
+      .btn-danger { background:var(--danger); color:#fff; }
+      .btn-danger:hover:not(:disabled) { opacity:0.85; }
+      .btn-secondary { background:rgba(148,163,184,0.15); color:var(--fg); }
+      .btn-secondary:hover:not(:disabled) { background:rgba(148,163,184,0.25); }
+
+      /* Info sections */
+      .info-section {
+        background:var(--card); border:1px solid var(--line); border-radius:14px;
+        padding:18px; margin-bottom:14px; backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+      }
+      .info-title { font-size:14px; font-weight:700; margin-bottom:10px; display:flex; align-items:center; gap:6px; }
+      .info-body { font-size:13px; color:var(--muted); line-height:1.7; }
+      .info-body strong { color:var(--fg); font-weight:600; }
+      .info-body ul { padding-left:18px; margin:6px 0; }
+      .info-body li { margin-bottom:4px; }
+      .info-body .platform-label { color:var(--accent); font-weight:600; font-size:13px; margin-top:10px; display:block; }
+
+      /* Footer */
+      .pwa-footer { text-align:center; padding:20px 0; }
+      .pwa-footer a { color:var(--accent); font-size:13px; text-decoration:none; }
+      .pwa-footer a:hover { text-decoration:underline; }
+
+      /* Toast */
+      .toast {
+        position:fixed; bottom:env(safe-area-inset-bottom,20px); left:50%; transform:translateX(-50%);
+        background:rgba(30,41,59,0.95); color:#fff; padding:10px 20px; border-radius:10px;
+        font-size:13px; opacity:0; transition:opacity .25s; pointer-events:none; z-index:100;
+        backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+      }
+      .toast.show { opacity:1; }
+    </style>
+  </head>
+  <body>
+    <div class="pwa-shell">
+      <div class="pwa-header">
+        <img src="/assets/images/logo.svg" alt="SENTRY" class="pwa-logo" />
+        <div class="pwa-title">SENTRY MESSENGER</div>
+        <div class="pwa-subtitle" data-i18n="push.pwaSubtitle"></div>
+      </div>
+
+      <!-- Push status card -->
+      <div class="status-card">
+        <div class="status-row">
+          <span class="status-dot inactive" id="statusDot"></span>
+          <span class="status-label" id="statusLabel"></span>
+        </div>
+        <div class="status-detail" id="statusDetail"></div>
+        <div class="btn-row" id="actionRow" style="display:none">
+          <button class="btn btn-danger" id="btnDisable" type="button"></button>
+        </div>
+      </div>
+
+      <!-- Push limitations: Basic info -->
+      <div class="info-section">
+        <div class="info-title" data-i18n="push.infoBasicTitle"></div>
+        <div class="info-body">
+          <ul>
+            <li data-i18n="push.infoBasic1"></li>
+            <li data-i18n="push.infoBasic2"></li>
+            <li data-i18n="push.infoBasic3"></li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- Push limitations: iOS -->
+      <div class="info-section">
+        <div class="info-title">iOS (iPhone / iPad)</div>
+        <div class="info-body">
+          <ul>
+            <li data-i18n="push.infoIOS1"></li>
+            <li data-i18n="push.infoIOS2"></li>
+            <li data-i18n="push.infoIOS3"></li>
+            <li data-i18n="push.infoIOS4"></li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- Push limitations: Android -->
+      <div class="info-section">
+        <div class="info-title">Android (Chrome)</div>
+        <div class="info-body">
+          <ul>
+            <li data-i18n="push.infoAndroid1"></li>
+            <li data-i18n="push.infoAndroid2"></li>
+            <li data-i18n="push.infoAndroid3"></li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- Push limitations: Desktop -->
+      <div class="info-section">
+        <div class="info-title" data-i18n="push.infoDesktopTitle"></div>
+        <div class="info-body">
+          <ul>
+            <li data-i18n="push.infoDesktop1"></li>
+            <li data-i18n="push.infoDesktop2"></li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- Push limitations: Unsupported -->
+      <div class="info-section">
+        <div class="info-title" data-i18n="push.infoUnsupportedTitle"></div>
+        <div class="info-body">
+          <ul>
+            <li data-i18n="push.infoUnsupported1"></li>
+            <li data-i18n="push.infoUnsupported2"></li>
+            <li data-i18n="push.infoUnsupported3"></li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- Push limitations: Reliability -->
+      <div class="info-section">
+        <div class="info-title" data-i18n="push.infoReliabilityTitle"></div>
+        <div class="info-body">
+          <ul>
+            <li data-i18n="push.infoReliability1"></li>
+            <li data-i18n="push.infoReliability2"></li>
+            <li data-i18n="push.infoReliability3"></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="pwa-footer">
+        <a href="/pages/app.html" target="_blank" data-i18n="push.openInBrowser"></a>
+      </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+      (function () {
+        var t = window.__t;
+        var statusDot = document.getElementById('statusDot');
+        var statusLabel = document.getElementById('statusLabel');
+        var statusDetail = document.getElementById('statusDetail');
+        var actionRow = document.getElementById('actionRow');
+        var btnDisable = document.getElementById('btnDisable');
+        var toastEl = document.getElementById('toast');
+
+        // Apply i18n to data-i18n elements
+        document.querySelectorAll('[data-i18n]').forEach(function (el) {
+          var k = el.getAttribute('data-i18n');
+          if (k) el.textContent = t(k);
+        });
+
+        btnDisable.textContent = t('push.disableBtn');
+
+        function showToast(msg) {
+          toastEl.textContent = msg;
+          toastEl.classList.add('show');
+          setTimeout(function () { toastEl.classList.remove('show'); }, 2500);
+        }
+
+        function setStatus(active, label, detail) {
+          statusDot.className = 'status-dot ' + (active ? 'active' : 'inactive');
+          statusLabel.textContent = label;
+          statusDetail.textContent = detail;
+          actionRow.style.display = active ? 'flex' : 'none';
+        }
+
+        // Check push subscription status
+        async function checkStatus() {
+          if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+            setStatus(false, t('push.statusUnsupported'), t('push.statusUnsupportedDetail'));
+            return;
+          }
+
+          if (Notification.permission === 'denied') {
+            setStatus(false, t('push.statusDenied'), t('push.statusDeniedDetail'));
+            return;
+          }
+
+          try {
+            var reg = await navigator.serviceWorker.getRegistration('/sw.js');
+            if (!reg) {
+              setStatus(false, t('push.statusInactive'), t('push.statusInactiveDetail'));
+              return;
+            }
+            var sub = await reg.pushManager.getSubscription();
+            if (sub) {
+              setStatus(true, t('push.statusActive'), t('push.statusActiveDetail'));
+            } else {
+              setStatus(false, t('push.statusInactive'), t('push.statusInactiveDetail'));
+            }
+          } catch (err) {
+            console.warn('[pwa-push] check failed', err);
+            setStatus(false, t('push.statusError'), err.message || String(err));
+          }
+        }
+
+        // Disable push
+        btnDisable.addEventListener('click', async function () {
+          if (!confirm(t('push.disableConfirm'))) return;
+          btnDisable.disabled = true;
+          btnDisable.textContent = t('common.loading');
+          try {
+            var reg = await navigator.serviceWorker.getRegistration('/sw.js');
+            if (reg) {
+              var sub = await reg.pushManager.getSubscription();
+              if (sub) {
+                var endpoint = sub.endpoint;
+                await sub.unsubscribe();
+                // Notify backend (best-effort, no auth needed for unsubscribe-by-endpoint)
+                try {
+                  await fetch('/d1/push/unsubscribe', {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ endpoint: endpoint })
+                  });
+                } catch (e) { console.warn('[pwa-push] backend unsubscribe failed', e); }
+              }
+            }
+            showToast(t('push.disabledToast'));
+          } catch (err) {
+            console.error('[pwa-push] disable failed', err);
+            showToast(t('push.disableError'));
+          } finally {
+            btnDisable.disabled = false;
+            btnDisable.textContent = t('push.disableBtn');
+            checkStatus();
+          }
+        });
+
+        checkStatus();
+      })();
+    </script>
+  </body>
+</html>

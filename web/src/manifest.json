@@ -1,0 +1,17 @@
+{
+  "name": "SENTRY MESSENGER",
+  "short_name": "SENTRY",
+  "description": "End-to-end encrypted messaging",
+  "start_url": "/pages/app.html?source=pwa",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "icons": [
+    {
+      "src": "/assets/images/logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
