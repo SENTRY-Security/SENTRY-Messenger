@@ -14,9 +14,43 @@ function isIOS() {
     || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 }
 
+function isUAT() {
+  return window.APP_ENV && window.APP_ENV !== 'production';
+}
+
 export function createPushModal({ deps }) {
   const { log, showToast, openModal, closeModal, resetModalVariants, showAlertModal,
     getAccountDigest, getEffectiveSettings, persistSettingsPatch } = deps;
+
+  // Send test push notification via backend (UAT only)
+  async function sendTestPush(endpoint, btn) {
+    const digest = getAccountDigest();
+    if (!digest) return;
+    const origText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '...';
+    try {
+      const res = await fetch('/d1/push/test', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ accountDigest: digest, endpoint })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.gone) {
+        showToast(t('push.testGone'));
+      } else if (data.ok) {
+        showToast(t('push.testSent'));
+      } else {
+        showToast(data.message || 'Failed');
+      }
+    } catch (err) {
+      log({ pushTestError: err?.message || err });
+      showToast(err?.message || 'Test failed');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = origText;
+    }
+  }
 
   // Shared device list renderer
   async function renderDeviceList(container, onStatusChange) {
@@ -34,9 +68,15 @@ export function createPushModal({ deps }) {
             ${d.isThisDevice ? `<span style="color:var(--accent);font-size:11px;margin-left:4px;">(${escapeHtml(t('push.thisDevice'))})</span>` : ''}
             <div style="font-size:11px;color:var(--muted);margin-top:2px;">${d.createdAt ? new Date(Number(d.createdAt) * 1000).toLocaleDateString() : ''}</div>
           </div>
+          ${isUAT() ? `<button type="button" class="push-test-btn" data-endpoint="${escapeHtml(d.endpoint)}" style="padding:4px 10px;border-radius:6px;border:1px solid rgba(250,204,21,0.4);background:transparent;color:#facc15;font-size:12px;cursor:pointer;margin-right:6px;">${escapeHtml(t('push.testBtn'))}</button>` : ''}
           <button type="button" class="push-revoke-btn" data-endpoint="${escapeHtml(d.endpoint)}" style="padding:4px 10px;border-radius:6px;border:1px solid rgba(239,68,68,0.3);background:transparent;color:#ef4444;font-size:12px;cursor:pointer;">${escapeHtml(t('push.revoke'))}</button>
         </div>
       `).join('');
+
+      // UAT: test push button
+      container.querySelectorAll('.push-test-btn').forEach(btn => {
+        btn.addEventListener('click', () => sendTestPush(btn.dataset.endpoint, btn));
+      });
 
       container.querySelectorAll('.push-revoke-btn').forEach(btn => {
         btn.addEventListener('click', async () => {
@@ -256,9 +296,14 @@ export function createPushModal({ deps }) {
                 ${d.isThisDevice ? `<span style="color:var(--accent);font-size:11px;margin-left:4px;">(${escapeHtml(t('push.thisDevice'))})</span>` : ''}
                 <div style="font-size:11px;color:var(--muted);margin-top:2px;">${d.createdAt ? new Date(Number(d.createdAt) * 1000).toLocaleDateString() : ''}</div>
               </div>
+              ${isUAT() ? `<button type="button" class="push-test-btn" data-endpoint="${escapeHtml(d.endpoint)}" style="padding:4px 10px;border-radius:6px;border:1px solid rgba(250,204,21,0.4);background:transparent;color:#facc15;font-size:12px;cursor:pointer;margin-right:6px;">${escapeHtml(t('push.testBtn'))}</button>` : ''}
               <button type="button" class="push-revoke-btn" data-endpoint="${escapeHtml(d.endpoint)}" style="padding:4px 10px;border-radius:6px;border:1px solid rgba(239,68,68,0.3);background:transparent;color:#ef4444;font-size:12px;cursor:pointer;">${escapeHtml(t('push.revoke'))}</button>
             </div>
           `).join('');
+          // UAT: test push button
+          container.querySelectorAll('.push-test-btn').forEach(btn => {
+            btn.addEventListener('click', () => sendTestPush(btn.dataset.endpoint, btn));
+          });
           container.querySelectorAll('.push-revoke-btn').forEach(btn => {
             btn.addEventListener('click', async () => {
               const endpoint = btn.dataset.endpoint;

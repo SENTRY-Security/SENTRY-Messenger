@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { toU8Strict } from './u8-strict.js';
 import { createJwt, verifyJwt } from './jwt.js';
+import { createWebPush } from './web-push.js';
 import { getOpaqueConfig, OpaqueID, OpaqueServer, KE1, KE3, RegistrationRequest, RegistrationRecord, ExpectedAuthResult } from '@cloudflare/opaque-ts';
 
 // Re-export Durable Object classes so Cloudflare runtime can find them
@@ -9282,6 +9283,51 @@ async function handlePushRoutes(req, env) {
     } catch (err) {
       console.error('push_list_failed', err?.message || err);
       return json({ error: 'PushListFailed', message: err?.message || 'list failed' }, { status: 500 });
+    }
+  }
+
+  // POST /d1/push/test — send a test push notification to a specific endpoint (UAT only)
+  if (req.method === 'POST' && url.pathname === '/d1/push/test') {
+    await ensureDataTables(env);
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const endpoint = body?.endpoint;
+    if (!accountDigest || !endpoint) {
+      return json({ error: 'BadRequest', message: 'accountDigest and endpoint required' }, { status: 400 });
+    }
+    try {
+      const row = await env.DB.prepare(
+        `SELECT endpoint, keys_p256dh, keys_auth FROM push_subscriptions WHERE account_digest = ?1 AND endpoint = ?2`
+      ).bind(accountDigest, endpoint).first();
+      if (!row) {
+        return json({ error: 'NotFound', message: 'subscription not found' }, { status: 404 });
+      }
+      const { sendPushNotification } = createWebPush({
+        vapidPublicKey: env.VAPID_PUBLIC_KEY,
+        vapidPrivateKey: env.VAPID_PRIVATE_KEY,
+        vapidSubject: env.VAPID_SUBJECT || 'mailto:admin@sentry.red'
+      });
+      const testType = body?.type || 'message-new';
+      const pushPayload = JSON.stringify({
+        title: 'SENTRY MESSENGER',
+        type: testType
+      });
+      const result = await sendPushNotification({
+        endpoint: row.endpoint,
+        keys: { p256dh: row.keys_p256dh, auth: row.keys_auth }
+      }, pushPayload);
+      console.log('[push-test] sent', { endpoint: endpoint.slice(0, 60), status: result.status, ok: result.ok });
+      if (result.gone) {
+        await env.DB.prepare(`DELETE FROM push_subscriptions WHERE endpoint = ?1`).bind(endpoint).run();
+        return json({ ok: false, gone: true, message: 'subscription expired' }, { status: 410 });
+      }
+      return json({ ok: true, status: result.status });
+    } catch (err) {
+      console.error('push_test_failed', err?.message || err);
+      return json({ error: 'PushTestFailed', message: err?.message || 'test failed' }, { status: 500 });
     }
   }
 
