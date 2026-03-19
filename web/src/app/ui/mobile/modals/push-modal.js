@@ -8,6 +8,7 @@ import {
   unsubscribeByEndpoint, listPushDevices, getPushSubscription
 } from '../../../features/push-subscription.js';
 import { ensureDeviceId } from '../../../core/store.js';
+import { encryptPreview } from '../../../crypto/push-preview.js';
 
 function isIOS() {
   return /iPhone|iPad|iPod/.test(navigator.userAgent)
@@ -23,17 +24,26 @@ export function createPushModal({ deps }) {
     getAccountDigest, getEffectiveSettings, persistSettingsPatch } = deps;
 
   // Send test push notification via backend (UAT only)
-  async function sendTestPush(endpoint, btn) {
+  async function sendTestPush(endpoint, previewPublicKey, btn) {
     const digest = getAccountDigest();
     if (!digest) return;
     const origText = btn.textContent;
     btn.disabled = true;
     btn.textContent = '...';
     try {
+      // E2E encrypt the preview if device has a preview public key
+      let encrypted_preview = null;
+      if (previewPublicKey) {
+        try {
+          encrypted_preview = await encryptPreview(previewPublicKey, 'SENTRY: Test notification 🔔');
+        } catch (encErr) {
+          console.warn('[push-test] encrypt preview failed', encErr);
+        }
+      }
       const res = await fetch('/d1/push/test', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ accountDigest: digest, endpoint })
+        body: JSON.stringify({ accountDigest: digest, endpoint, encrypted_preview })
       });
       const data = await res.json().catch(() => ({}));
       if (data.gone) {
@@ -68,14 +78,14 @@ export function createPushModal({ deps }) {
             ${d.isThisDevice ? `<span style="color:var(--accent);font-size:11px;margin-left:4px;">(${escapeHtml(t('push.thisDevice'))})</span>` : ''}
             <div style="font-size:11px;color:var(--muted);margin-top:2px;">${d.createdAt ? new Date(Number(d.createdAt) * 1000).toLocaleDateString() : ''}</div>
           </div>
-          ${isUAT() ? `<button type="button" class="push-test-btn" data-endpoint="${escapeHtml(d.endpoint)}" style="padding:4px 10px;border-radius:6px;border:1px solid rgba(250,204,21,0.4);background:transparent;color:#facc15;font-size:12px;cursor:pointer;margin-right:6px;">${escapeHtml(t('push.testBtn'))}</button>` : ''}
+          ${isUAT() ? `<button type="button" class="push-test-btn" data-endpoint="${escapeHtml(d.endpoint)}" data-preview-key="${escapeHtml(d.previewPublicKey || '')}" style="padding:4px 10px;border-radius:6px;border:1px solid rgba(250,204,21,0.4);background:transparent;color:#facc15;font-size:12px;cursor:pointer;margin-right:6px;">${escapeHtml(t('push.testBtn'))}</button>` : ''}
           <button type="button" class="push-revoke-btn" data-endpoint="${escapeHtml(d.endpoint)}" style="padding:4px 10px;border-radius:6px;border:1px solid rgba(239,68,68,0.3);background:transparent;color:#ef4444;font-size:12px;cursor:pointer;">${escapeHtml(t('push.revoke'))}</button>
         </div>
       `).join('');
 
       // UAT: test push button
       container.querySelectorAll('.push-test-btn').forEach(btn => {
-        btn.addEventListener('click', () => sendTestPush(btn.dataset.endpoint, btn));
+        btn.addEventListener('click', () => sendTestPush(btn.dataset.endpoint, btn.dataset.previewKey || null, btn));
       });
 
       container.querySelectorAll('.push-revoke-btn').forEach(btn => {
@@ -296,7 +306,7 @@ export function createPushModal({ deps }) {
                 ${d.isThisDevice ? `<span style="color:var(--accent);font-size:11px;margin-left:4px;">(${escapeHtml(t('push.thisDevice'))})</span>` : ''}
                 <div style="font-size:11px;color:var(--muted);margin-top:2px;">${d.createdAt ? new Date(Number(d.createdAt) * 1000).toLocaleDateString() : ''}</div>
               </div>
-              ${isUAT() ? `<button type="button" class="push-test-btn" data-endpoint="${escapeHtml(d.endpoint)}" style="padding:4px 10px;border-radius:6px;border:1px solid rgba(250,204,21,0.4);background:transparent;color:#facc15;font-size:12px;cursor:pointer;margin-right:6px;">${escapeHtml(t('push.testBtn'))}</button>` : ''}
+              ${isUAT() ? `<button type="button" class="push-test-btn" data-endpoint="${escapeHtml(d.endpoint)}" data-preview-key="${escapeHtml(d.previewPublicKey || '')}" style="padding:4px 10px;border-radius:6px;border:1px solid rgba(250,204,21,0.4);background:transparent;color:#facc15;font-size:12px;cursor:pointer;margin-right:6px;">${escapeHtml(t('push.testBtn'))}</button>` : ''}
               <button type="button" class="push-revoke-btn" data-endpoint="${escapeHtml(d.endpoint)}" style="padding:4px 10px;border-radius:6px;border:1px solid rgba(239,68,68,0.3);background:transparent;color:#ef4444;font-size:12px;cursor:pointer;">${escapeHtml(t('push.revoke'))}</button>
             </div>
           `).join('');

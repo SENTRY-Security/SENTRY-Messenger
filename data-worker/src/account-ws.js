@@ -1179,20 +1179,29 @@ export class AccountWebSocket {
       vapidSubject: this.env.VAPID_SUBJECT || 'mailto:admin@sentry.red'
     });
 
-    // E2EE: never expose message content in push payload.
-    // Body is intentionally omitted — the Service Worker resolves the
-    // receiver's locale and supplies a translated notification body.
+    // E2EE: never expose plaintext message content in push payload.
+    // `encrypted_preview` is an opaque ciphertext blob encrypted by the sender
+    // with the recipient device's preview public key — server cannot read it.
     // `type` is included so the Service Worker can display a type-specific icon.
-    const pushPayload = JSON.stringify({
+    const basePush = {
       title: 'SENTRY MESSENGER',
       type: effectiveType || undefined
-    });
+    };
+    // Forward per-device encrypted preview if sender included it
+    const encryptedPreviews = payload.encrypted_previews || {};
 
     const staleEndpoints = [];
     await Promise.allSettled(subs.map(async (sub) => {
       try {
+        // Build per-device push payload, including encrypted_preview if sender provided one
+        const devicePush = { ...basePush };
+        const ep = sub.endpoint;
+        if (encryptedPreviews[ep]) {
+          devicePush.encrypted_preview = encryptedPreviews[ep];
+        }
+        const pushPayload = JSON.stringify(devicePush);
         const result = await sendPushNotification({
-          endpoint: sub.endpoint,
+          endpoint: ep,
           keys: { p256dh: sub.keys_p256dh, auth: sub.keys_auth }
         }, pushPayload);
         console.log('[ws-do] push result', { endpoint: sub.endpoint.slice(0, 60), status: result.status, ok: result.ok });

@@ -378,6 +378,49 @@
           });
         }
 
+        // ── E2E push preview keypair (ECDH P-256) ──
+        // Generate keypair for encrypting notification preview content.
+        // Public key → sent to backend; Private key → stored in IndexedDB for SW to decrypt.
+        function b64uEncode(buf) {
+          var bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+          var s = '';
+          for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+          return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+        }
+
+        async function generatePreviewKeypair() {
+          var kp = await crypto.subtle.generateKey(
+            { name: 'ECDH', namedCurve: 'P-256' },
+            true, ['deriveBits']
+          );
+          var pubRaw = await crypto.subtle.exportKey('raw', kp.publicKey);
+          var privPkcs8 = await crypto.subtle.exportKey('pkcs8', kp.privateKey);
+          return {
+            publicKeyB64: b64uEncode(pubRaw),
+            privateKeyB64: b64uEncode(privPkcs8)
+          };
+        }
+
+        function storePreviewPrivateKey(privateKeyB64) {
+          return new Promise(function(resolve) {
+            try {
+              var req = indexedDB.open('sentry-push-prefs', 1);
+              req.onupgradeneeded = function(e) {
+                var db = e.target.result;
+                if (!db.objectStoreNames.contains('prefs')) db.createObjectStore('prefs');
+              };
+              req.onsuccess = function(e) {
+                var db = e.target.result;
+                var tx = db.transaction('prefs', 'readwrite');
+                tx.objectStore('prefs').put(privateKeyB64, 'preview-private-key');
+                tx.oncomplete = function() { resolve(true); };
+                tx.onerror = function() { resolve(false); };
+              };
+              req.onerror = function() { resolve(false); };
+            } catch(ex) { resolve(false); }
+          });
+        }
+
         // ── Preview toggle (E2E encrypted notification content) ──
         var PREVIEW_PREF_KEY = 'sentry:push-preview';
         var previewCard = document.getElementById('previewCard');
@@ -634,6 +677,15 @@
             });
             var subJSON = sub.toJSON();
 
+            // 2b. Generate E2E preview keypair (ECDH P-256)
+            var previewKeypair = null;
+            try {
+              previewKeypair = await generatePreviewKeypair();
+              await storePreviewPrivateKey(previewKeypair.privateKeyB64);
+            } catch (kpErr) {
+              console.warn('[pwa-push] preview keypair generation failed', kpErr);
+            }
+
             // 3. Verify PIN + register subscription on backend
             var res = await fetch('/d1/push/pin/verify', {
               method: 'POST',
@@ -641,7 +693,8 @@
               body: JSON.stringify({
                 pin: pin,
                 subscription: subJSON,
-                userAgent: navigator.userAgent
+                userAgent: navigator.userAgent,
+                previewPublicKey: previewKeypair ? previewKeypair.publicKeyB64 : null
               })
             });
             var data = await res.json();

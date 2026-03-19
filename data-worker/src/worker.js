@@ -1516,6 +1516,17 @@ async function ensureDataTables(env) {
         console.log('ensureDataTables: created push_subscriptions table (migration 0015 fallback)');
       } catch (e) { console.warn('ensureDataTables: push_subscriptions create failed', e?.message); }
     }
+    // Auto-add preview_public_key column to push_subscriptions (E2E push preview)
+    try {
+      await env.DB.prepare(`SELECT preview_public_key FROM push_subscriptions LIMIT 0`).all();
+    } catch {
+      try {
+        await env.DB.prepare(`ALTER TABLE push_subscriptions ADD COLUMN preview_public_key TEXT`).run();
+        console.log('ensureDataTables: added preview_public_key column to push_subscriptions');
+      } catch (alterErr) {
+        console.warn('ensureDataTables: preview_public_key column add failed (may already exist)', alterErr?.message);
+      }
+    }
     // Auto-add reason column to contact_secret_backups (migration 0014)
     try {
       await env.DB.prepare(`SELECT reason FROM contact_secret_backups LIMIT 0`).all();
@@ -9123,21 +9134,23 @@ async function handlePushRoutes(req, env) {
     }
     try {
       await env.DB.prepare(
-        `INSERT INTO push_subscriptions (account_digest, device_id, endpoint, keys_p256dh, keys_auth, user_agent, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, strftime('%s','now'))
+        `INSERT INTO push_subscriptions (account_digest, device_id, endpoint, keys_p256dh, keys_auth, user_agent, preview_public_key, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%s','now'))
          ON CONFLICT(endpoint) DO UPDATE SET
            account_digest=excluded.account_digest,
            device_id=excluded.device_id,
            keys_p256dh=excluded.keys_p256dh,
            keys_auth=excluded.keys_auth,
-           user_agent=excluded.user_agent`
+           user_agent=excluded.user_agent,
+           preview_public_key=excluded.preview_public_key`
       ).bind(
         accountDigest,
         deviceId || null,
         sub.endpoint,
         sub.keys.p256dh,
         sub.keys.auth,
-        body?.userAgent || body?.user_agent || null
+        body?.userAgent || body?.user_agent || null,
+        body?.previewPublicKey || null
       ).run();
       return json({ ok: true });
     } catch (err) {
@@ -9230,21 +9243,23 @@ async function handlePushRoutes(req, env) {
       // Register push subscription
       await ensureDataTables(env);
       await env.DB.prepare(
-        `INSERT INTO push_subscriptions (account_digest, device_id, endpoint, keys_p256dh, keys_auth, user_agent, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, strftime('%s','now'))
+        `INSERT INTO push_subscriptions (account_digest, device_id, endpoint, keys_p256dh, keys_auth, user_agent, preview_public_key, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%s','now'))
          ON CONFLICT(endpoint) DO UPDATE SET
            account_digest=excluded.account_digest,
            device_id=excluded.device_id,
            keys_p256dh=excluded.keys_p256dh,
            keys_auth=excluded.keys_auth,
-           user_agent=excluded.user_agent`
+           user_agent=excluded.user_agent,
+           preview_public_key=excluded.preview_public_key`
       ).bind(
         accountDigest,
         deviceId || null,
         sub.endpoint,
         sub.keys.p256dh,
         sub.keys.auth,
-        body?.userAgent || null
+        body?.userAgent || null,
+        body?.previewPublicKey || null
       ).run();
       // Notify the PIN-generating device via WebSocket so it can close the modal
       try {
@@ -9277,7 +9292,7 @@ async function handlePushRoutes(req, env) {
     }
     try {
       const rows = await env.DB.prepare(
-        `SELECT device_id, endpoint, user_agent, created_at FROM push_subscriptions WHERE account_digest = ?1 ORDER BY created_at DESC`
+        `SELECT device_id, endpoint, user_agent, created_at, preview_public_key FROM push_subscriptions WHERE account_digest = ?1 ORDER BY created_at DESC`
       ).bind(accountDigest).all();
       return json({ ok: true, items: rows?.results || [] });
     } catch (err) {
@@ -9314,7 +9329,8 @@ async function handlePushRoutes(req, env) {
       const pushPayload = JSON.stringify({
         title: 'SENTRY MESSENGER',
         type: testType,
-        body: 'SENTRY: Test push notification 🔔'
+        // E2E: encrypted_preview is opaque ciphertext — server cannot read it
+        ...(body?.encrypted_preview ? { encrypted_preview: body.encrypted_preview } : {})
       });
       const result = await sendPushNotification({
         endpoint: row.endpoint,

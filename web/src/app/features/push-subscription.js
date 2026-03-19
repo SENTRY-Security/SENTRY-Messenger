@@ -184,7 +184,8 @@ export async function listPushDevices() {
     createdAt: item.created_at,
     userAgent: item.user_agent || '',
     displayName: parseUA(item.user_agent),
-    isThisDevice: item.endpoint === localEndpoint
+    isThisDevice: item.endpoint === localEndpoint,
+    previewPublicKey: item.preview_public_key || null
   }));
 }
 

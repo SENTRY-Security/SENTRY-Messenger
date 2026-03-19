@@ -137,6 +137,77 @@ const PUSH_TYPE_ICONS = {
   'notify':             '/assets/images/push/system.png'        // 系統通知
 };
 
+// ─── E2E push preview decryption (ECDH P-256 + HKDF + AES-256-GCM) ──
+
+const HKDF_INFO = new TextEncoder().encode('sentry-push-preview-v1');
+
+function b64uDecode(str) {
+  const base64 = str.replace(/-/g, '+').replace(/_/g, '/');
+  const padding = '='.repeat((4 - base64.length % 4) % 4);
+  const raw = atob(base64 + padding);
+  const buf = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
+  return buf;
+}
+
+function getPreviewPrivateKey() {
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open('sentry-push-prefs', 1);
+      req.onupgradeneeded = (ev) => {
+        const db = ev.target.result;
+        if (!db.objectStoreNames.contains('prefs')) db.createObjectStore('prefs');
+      };
+      req.onsuccess = (ev) => {
+        try {
+          const db = ev.target.result;
+          const tx = db.transaction('prefs', 'readonly');
+          const get = tx.objectStore('prefs').get('preview-private-key');
+          get.onsuccess = () => resolve(get.result || null);
+          get.onerror = () => resolve(null);
+        } catch { resolve(null); }
+      };
+      req.onerror = () => resolve(null);
+    } catch { resolve(null); }
+  });
+}
+
+async function decryptPreview(privateKeyB64, blobB64) {
+  const privBytes = b64uDecode(privateKeyB64);
+  const blob = b64uDecode(blobB64);
+
+  const ephPubRaw = blob.slice(0, 65);
+  const iv = blob.slice(65, 77);
+  const ciphertext = blob.slice(77);
+
+  const privateKey = await crypto.subtle.importKey(
+    'pkcs8', privBytes,
+    { name: 'ECDH', namedCurve: 'P-256' },
+    false, ['deriveBits']
+  );
+  const ephPub = await crypto.subtle.importKey(
+    'raw', ephPubRaw,
+    { name: 'ECDH', namedCurve: 'P-256' },
+    false, []
+  );
+
+  const sharedBits = await crypto.subtle.deriveBits(
+    { name: 'ECDH', public: ephPub },
+    privateKey, 256
+  );
+
+  const hkdfKey = await crypto.subtle.importKey('raw', sharedBits, 'HKDF', false, ['deriveKey']);
+  const aesKey = await crypto.subtle.deriveKey(
+    { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: HKDF_INFO },
+    hkdfKey,
+    { name: 'AES-GCM', length: 256 },
+    false, ['decrypt']
+  );
+
+  const plainBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aesKey, ciphertext);
+  return new TextDecoder().decode(plainBuf);
+}
+
 // ─── Preview preference (in-memory + IndexedDB) ─────────────────
 // In-memory cache — updated instantly via postMessage from PWA page
 let _previewPref = null; // null = not yet loaded
@@ -193,18 +264,23 @@ self.addEventListener('push', (e) => {
 
   // Preview logic:
   //   OFF → always show generic localized body (no content leak)
-  //   ON  → show payload.body/message if available; later: decrypt encrypted_preview
-  const notifyPromise = getPreviewPref().then((previewOn) => {
+  //   ON  → decrypt encrypted_preview if available, else show generic text
+  const notifyPromise = getPreviewPref().then(async (previewOn) => {
     let body = localizedBody;
 
-    if (previewOn) {
-      // Preview enabled — show message content if server provided it
-      if (payload.body || payload.message) {
-        body = payload.body || payload.message;
+    if (previewOn && payload.encrypted_preview) {
+      // E2E decrypt: server never sees the plaintext
+      try {
+        const privKey = await getPreviewPrivateKey();
+        if (privKey) {
+          body = await decryptPreview(privKey, payload.encrypted_preview);
+        }
+      } catch (err) {
+        console.warn('[sw] preview decrypt failed', err);
+        // Fall back to generic text on decrypt failure
       }
-      // TODO: when E2E push encryption is implemented, decrypt payload.encrypted_preview here
     }
-    // Preview disabled — always use generic localized text (body stays as localizedBody)
+    // Preview disabled or no encrypted_preview → generic localized text
 
     return self.registration.showNotification(title, {
       body: body,
