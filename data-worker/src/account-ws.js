@@ -1150,6 +1150,10 @@ export class AccountWebSocket {
     ]);
     if (!pushTypes.has(payload.type)) return;
 
+    // Skip push for messages sent by self (e.g. own profile-update, own read-receipt)
+    const sender = (payload.senderAccountDigest || payload.sender_account_digest || '').toUpperCase();
+    if (sender && sender === this.accountDigest.toUpperCase()) return;
+
     // Reclassify control/internal message subtypes as system notifications
     const controlMsgTypes = new Set([
       'read-receipt', 'delivery-receipt',
