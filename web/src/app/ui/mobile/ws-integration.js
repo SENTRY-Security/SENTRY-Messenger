@@ -663,6 +663,10 @@ export function createWsIntegration({ deps }) {
       getMessagesPane()?.handleVaultAckEvent?.(msg);
       return;
     }
+    if (type === 'push-device-paired') {
+      document.dispatchEvent(new CustomEvent('sentry:push-device-paired', { detail: msg }));
+      return;
+    }
     // ── Buffered message markers (ephemeral DO buffer) ──
     if (type === 'buffered-messages-start') {
       log({ wsBufferedMessagesStart: true, ts: msg?.ts });

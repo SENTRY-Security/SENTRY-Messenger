@@ -9167,6 +9167,17 @@ async function handlePushRoutes(req, env) {
         sub.keys.auth,
         body?.userAgent || null
       ).run();
+      // Notify the PIN-generating device via WebSocket so it can close the modal
+      try {
+        await notifyAccountDO(env, accountDigest, {
+          type: 'push-device-paired',
+          deviceId: body?.deviceId || null,
+          userAgent: body?.userAgent || null,
+          ts: Date.now()
+        });
+      } catch (notifyErr) {
+        console.warn('push_pin_verify_notify_failed', notifyErr?.message || notifyErr);
+      }
       return json({ ok: true, accountDigest });
     } catch (err) {
       console.error('push_pin_verify_failed', err?.message || err);

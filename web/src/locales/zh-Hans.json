@@ -1158,7 +1158,8 @@
     "pinInvalid": "请输入有效的 6 位数 PIN 码",
     "pinVerifyFailed": "PIN 码验证失败，可能已过期 — 请从 App 重新生成。",
     "keepSessionAlive": "保持登录状态",
-    "keepSessionAliveDesc": "切换到主屏幕 App 时不自动登出"
+    "keepSessionAliveDesc": "切换到主屏幕 App 时不自动登出",
+    "devicePaired": "推送设备配对成功"
   },
   "loginStages": {
     "authenticating": "验证中...",

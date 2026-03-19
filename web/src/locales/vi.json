@@ -1156,7 +1156,8 @@
     "pinInvalid": "Vui lòng nhập mã PIN 6 chữ số hợp lệ",
     "pinVerifyFailed": "Xác minh PIN thất bại. Mã có thể đã hết hạn — vui lòng tạo mã mới từ ứng dụng.",
     "keepSessionAlive": "Duy trì phiên đăng nhập",
-    "keepSessionAliveDesc": "Không tự động đăng xuất khi chuyển sang ứng dụng trên Màn hình chính"
+    "keepSessionAliveDesc": "Không tự động đăng xuất khi chuyển sang ứng dụng trên Màn hình chính",
+    "devicePaired": "Ghép nối thiết bị đẩy thành công"
   },
   "loginStages": {
     "authenticating": "ĐANG XÁC THỰC...",

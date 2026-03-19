@@ -1158,7 +1158,8 @@
     "pinInvalid": "Please enter a valid 6-digit PIN",
     "pinVerifyFailed": "PIN verification failed. It may have expired — generate a new one from the app.",
     "keepSessionAlive": "Keep session active",
-    "keepSessionAliveDesc": "Prevent auto-logout while switching to the Home Screen app"
+    "keepSessionAliveDesc": "Prevent auto-logout while switching to the Home Screen app",
+    "devicePaired": "Push device paired successfully"
   },
   "loginStages": {
     "authenticating": "AUTHENTICATING...",

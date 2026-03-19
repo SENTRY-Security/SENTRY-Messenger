@@ -231,6 +231,19 @@ export function createPushModal({ deps }) {
           }
         });
       }
+
+      // Listen for push-device-paired WS event: close modal + refresh device list
+      const onPaired = () => {
+        document.removeEventListener('sentry:push-device-paired', onPaired);
+        showToast(t('push.devicePaired'));
+        closeModal();
+      };
+      document.addEventListener('sentry:push-device-paired', onPaired);
+      // Cleanup listener when modal is manually closed
+      body.querySelector('#pushCloseBtn')?.addEventListener('click', () => {
+        document.removeEventListener('sentry:push-device-paired', onPaired);
+      }, { once: true });
+
       return;
     }
 
