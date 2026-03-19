@@ -114,8 +114,6 @@
 
       /* Footer */
       .pwa-footer { text-align:center; padding:20px 0; }
-      .pwa-footer a { color:var(--accent); font-size:13px; text-decoration:none; }
-      .pwa-footer a:hover { text-decoration:underline; }
 
       /* PIN digit boxes */
       .pin-boxes { display:flex; gap:8px; justify-content:center; margin-bottom:14px; }
@@ -188,37 +186,11 @@
         <div id="pinError" style="font-size:12px;color:var(--danger);margin-top:8px;display:none;"></div>
       </div>
 
-      <!-- Push limitations: Basic info -->
-      <div class="info-section">
-        <div class="info-title" data-i18n="push.infoBasicTitle"></div>
-        <div class="info-body">
-          <ul>
-            <li data-i18n="push.infoBasic1"></li>
-            <li data-i18n="push.infoBasic2"></li>
-            <li data-i18n="push.infoBasic3"></li>
-          </ul>
-        </div>
-      </div>
-
-      <!-- Push limitations: iOS -->
-      <div class="info-section">
-        <div class="info-title">iOS (iPhone / iPad)</div>
-        <div class="info-body">
-          <ul>
-            <li data-i18n="push.infoIOS1"></li>
-            <li data-i18n="push.infoIOS2"></li>
-            <li data-i18n="push.infoIOS3"></li>
-            <li data-i18n="push.infoIOS4"></li>
-          </ul>
-        </div>
-      </div>
-
       <!-- Push limitations: Reliability -->
       <div class="info-section">
         <div class="info-title" data-i18n="push.infoReliabilityTitle"></div>
         <div class="info-body">
           <ul>
-            <li data-i18n="push.infoReliability1"></li>
             <li data-i18n="push.infoReliability2"></li>
             <li data-i18n="push.infoReliability3"></li>
           </ul>
@@ -226,7 +198,7 @@
       </div>
 
       <div class="pwa-footer">
-        <a href="/pages/app.html" target="_blank" data-i18n="push.openInBrowser"></a>
+        <span style="font-size:12px;color:var(--muted);">&copy; SENTRY MESSENGER</span>
       </div>
     </div>
 
