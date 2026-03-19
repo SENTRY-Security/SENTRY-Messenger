@@ -1,5 +1,6 @@
 // Service Worker — push notification only (no offline cache)
 // Scope: / (root)
+// SW_VERSION: 2026-03-19a (force update)
 
 // ─── Push notification type taxonomy ───────────────────────────────────────
 //
