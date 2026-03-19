@@ -1163,7 +1163,13 @@
     "pinVerifyFailed": "PINの確認に失敗しました。有効期限が切れている可能性があります。アプリから再生成してください。",
     "keepSessionAlive": "セッションを維持",
     "keepSessionAliveDesc": "ホーム画面のアプリに切り替えるときに自動ログアウトしない",
-    "devicePaired": "プッシュデバイスのペアリングが完了しました"
+    "devicePaired": "プッシュデバイスのペアリングが完了しました",
+    "notifyTypesTitle": "通知タイプ",
+    "notifyTypeMessage": "メッセージ",
+    "notifyTypeGroupChat": "グループチャット",
+    "notifyTypeEphemeral": "一時チャット",
+    "notifyTypeCall": "着信",
+    "notifyTypeSystem": "システム"
   },
   "loginStages": {
     "authenticating": "認証中...",

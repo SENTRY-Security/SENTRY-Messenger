@@ -30,6 +30,16 @@ self.addEventListener('activate', (e) => {
   e.waitUntil(self.clients.claim());
 });
 
+// Map server payload.type to notification icon
+const PUSH_TYPE_ICONS = {
+  'message-new':        '/assets/images/push/message.png',
+  'secure-message':     '/assets/images/push/message.png',
+  'biz-conv-message':   '/assets/images/push/group-chat.png',
+  'ephemeral-message':  '/assets/images/push/ephemeral.png',
+  'call-invite':        '/assets/images/push/incoming-call.png',
+  'notify':             '/assets/images/push/system.png'
+};
+
 self.addEventListener('push', (e) => {
   let payload = {};
   if (e.data) {
@@ -41,10 +51,11 @@ self.addEventListener('push', (e) => {
   const locale = resolvePushLocale();
   const i18n = PUSH_I18N[locale] || PUSH_I18N.en;
 
+  const icon = (payload.type && PUSH_TYPE_ICONS[payload.type]) || '/assets/images/push/message.png';
   const title = payload.title || i18n.title;
   const options = {
     body: payload.body || payload.message || i18n.body,
-    icon: '/assets/images/logo.svg',
+    icon: icon,
     badge: '/assets/images/logo.svg',
     tag: 'sentry-push',
     renotify: true,

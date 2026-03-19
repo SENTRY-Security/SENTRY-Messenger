@@ -1165,7 +1165,13 @@
     "pinVerifyFailed": "PIN verification failed. It may have expired — generate a new one from the app.",
     "keepSessionAlive": "Keep session active",
     "keepSessionAliveDesc": "Prevent auto-logout while switching to the Home Screen app",
-    "devicePaired": "Push device paired successfully"
+    "devicePaired": "Push device paired successfully",
+    "notifyTypesTitle": "Notification types",
+    "notifyTypeMessage": "Messages",
+    "notifyTypeGroupChat": "Group chats",
+    "notifyTypeEphemeral": "Ephemeral chats",
+    "notifyTypeCall": "Incoming calls",
+    "notifyTypeSystem": "System"
   },
   "loginStages": {
     "authenticating": "AUTHENTICATING...",

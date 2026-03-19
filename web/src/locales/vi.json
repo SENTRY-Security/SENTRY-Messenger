@@ -1163,7 +1163,13 @@
     "pinVerifyFailed": "Xác minh PIN thất bại. Mã có thể đã hết hạn — vui lòng tạo mã mới từ ứng dụng.",
     "keepSessionAlive": "Duy trì phiên đăng nhập",
     "keepSessionAliveDesc": "Không tự động đăng xuất khi chuyển sang ứng dụng trên Màn hình chính",
-    "devicePaired": "Ghép nối thiết bị đẩy thành công"
+    "devicePaired": "Ghép nối thiết bị đẩy thành công",
+    "notifyTypesTitle": "Loại thông báo",
+    "notifyTypeMessage": "Tin nhắn",
+    "notifyTypeGroupChat": "Nhóm chat",
+    "notifyTypeEphemeral": "Chat tạm thời",
+    "notifyTypeCall": "Cuộc gọi đến",
+    "notifyTypeSystem": "Hệ thống"
   },
   "loginStages": {
     "authenticating": "ĐANG XÁC THỰC...",

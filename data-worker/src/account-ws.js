@@ -1177,8 +1177,10 @@ export class AccountWebSocket {
     // E2EE: never expose message content in push payload.
     // Body is intentionally omitted — the Service Worker resolves the
     // receiver's locale and supplies a translated notification body.
+    // `type` is included so the Service Worker can display a type-specific icon.
     const pushPayload = JSON.stringify({
-      title: 'SENTRY MESSENGER'
+      title: 'SENTRY MESSENGER',
+      type: payload.type || undefined
     });
 
     const staleEndpoints = [];

@@ -1163,7 +1163,13 @@
     "pinVerifyFailed": "การยืนยัน PIN ล้มเหลว อาจหมดอายุแล้ว กรุณาสร้างใหม่จากแอป",
     "keepSessionAlive": "คงเซสชันไว้",
     "keepSessionAliveDesc": "ป้องกันการออกจากระบบอัตโนมัติขณะสลับไปยังแอปบนหน้าจอหลัก",
-    "devicePaired": "จับคู่อุปกรณ์พุชสำเร็จ"
+    "devicePaired": "จับคู่อุปกรณ์พุชสำเร็จ",
+    "notifyTypesTitle": "ประเภทการแจ้งเตือน",
+    "notifyTypeMessage": "ข้อความ",
+    "notifyTypeGroupChat": "แชทกลุ่ม",
+    "notifyTypeEphemeral": "แชทชั่วคราว",
+    "notifyTypeCall": "สายเรียกเข้า",
+    "notifyTypeSystem": "ระบบ"
   },
   "loginStages": {
     "authenticating": "กำลังยืนยันตัวตน...",

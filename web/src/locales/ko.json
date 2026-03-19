@@ -1163,7 +1163,13 @@
     "pinVerifyFailed": "PIN 확인에 실패했습니다. 만료되었을 수 있습니다. 앱에서 다시 생성해 주세요.",
     "keepSessionAlive": "세션 유지",
     "keepSessionAliveDesc": "홈 화면 앱으로 전환할 때 자동 로그아웃 방지",
-    "devicePaired": "푸시 디바이스 페어링 완료"
+    "devicePaired": "푸시 디바이스 페어링 완료",
+    "notifyTypesTitle": "알림 유형",
+    "notifyTypeMessage": "메시지",
+    "notifyTypeGroupChat": "그룹 채팅",
+    "notifyTypeEphemeral": "임시 채팅",
+    "notifyTypeCall": "수신 전화",
+    "notifyTypeSystem": "시스템"
   },
   "loginStages": {
     "authenticating": "인증 중...",

@@ -112,6 +112,34 @@
       .info-body li { margin-bottom:4px; }
       .info-body .platform-label { color:var(--accent); font-weight:600; font-size:13px; margin-top:10px; display:block; }
 
+      /* Notification type toggles */
+      .notify-types-card {
+        background:var(--card); border:1px solid var(--line); border-radius:14px;
+        padding:18px; margin-bottom:16px; backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+      }
+      .notify-types-title { font-size:14px; font-weight:700; margin-bottom:12px; }
+      .notify-type-row {
+        display:flex; align-items:center; gap:10px; padding:10px 0;
+        border-bottom:1px solid var(--line);
+      }
+      .notify-type-row:last-child { border-bottom:none; }
+      .notify-type-icon { width:28px; height:28px; flex-shrink:0; border-radius:6px; object-fit:contain; }
+      .notify-type-label { flex:1; font-size:14px; font-weight:500; }
+      .notify-switch {
+        position:relative; display:inline-block; width:42px; height:24px; flex-shrink:0;
+      }
+      .notify-switch input { opacity:0; width:0; height:0; }
+      .notify-track {
+        position:absolute; inset:0; border-radius:12px; cursor:pointer;
+        background:rgba(148,163,184,0.3); transition:background .2s;
+      }
+      .notify-track::after {
+        content:''; position:absolute; left:2px; top:2px; width:20px; height:20px;
+        border-radius:50%; background:#fff; transition:transform .2s;
+      }
+      .notify-switch input:checked + .notify-track { background:var(--accent); }
+      .notify-switch input:checked + .notify-track::after { transform:translateX(18px); }
+
       /* Footer */
       .pwa-footer { text-align:center; padding:20px 0; }
 
@@ -168,6 +196,36 @@
         </div>
       </div>
 
+      <!-- Notification type toggles (shown when push is active) -->
+      <div class="notify-types-card" id="notifyTypesCard" style="display:none">
+        <div class="notify-types-title" data-i18n="push.notifyTypesTitle"></div>
+        <div class="notify-type-row">
+          <img src="/assets/images/push/message.png" class="notify-type-icon" alt="" />
+          <span class="notify-type-label" data-i18n="push.notifyTypeMessage"></span>
+          <label class="notify-switch"><input type="checkbox" checked data-ntype="message" /><span class="notify-track"></span></label>
+        </div>
+        <div class="notify-type-row">
+          <img src="/assets/images/push/group-chat.png" class="notify-type-icon" alt="" />
+          <span class="notify-type-label" data-i18n="push.notifyTypeGroupChat"></span>
+          <label class="notify-switch"><input type="checkbox" checked data-ntype="group-chat" /><span class="notify-track"></span></label>
+        </div>
+        <div class="notify-type-row">
+          <img src="/assets/images/push/ephemeral.png" class="notify-type-icon" alt="" />
+          <span class="notify-type-label" data-i18n="push.notifyTypeEphemeral"></span>
+          <label class="notify-switch"><input type="checkbox" checked data-ntype="ephemeral" /><span class="notify-track"></span></label>
+        </div>
+        <div class="notify-type-row">
+          <img src="/assets/images/push/incoming-call.png" class="notify-type-icon" alt="" />
+          <span class="notify-type-label" data-i18n="push.notifyTypeCall"></span>
+          <label class="notify-switch"><input type="checkbox" checked data-ntype="call" /><span class="notify-track"></span></label>
+        </div>
+        <div class="notify-type-row">
+          <img src="/assets/images/push/system.png" class="notify-type-icon" alt="" />
+          <span class="notify-type-label" data-i18n="push.notifyTypeSystem"></span>
+          <label class="notify-switch"><input type="checkbox" checked data-ntype="system" /><span class="notify-track"></span></label>
+        </div>
+      </div>
+
       <!-- PIN enrollment card (shown when no active subscription) -->
       <div class="status-card" id="pinCard" style="display:none">
         <div style="font-weight:600;font-size:15px;margin-bottom:8px;" data-i18n="push.pinEnrollTitle"></div>
@@ -219,6 +277,29 @@
         var btnEnroll = document.getElementById('btnEnroll');
         var pinError = document.getElementById('pinError');
         var toastEl = document.getElementById('toast');
+        var notifyTypesCard = document.getElementById('notifyTypesCard');
+
+        // Persist per-type notification preferences in localStorage
+        var NOTIFY_PREFS_KEY = 'sentry:push-notify-types';
+        function loadNotifyPrefs() {
+          try { return JSON.parse(localStorage.getItem(NOTIFY_PREFS_KEY)) || {}; } catch { return {}; }
+        }
+        function saveNotifyPrefs(prefs) {
+          try { localStorage.setItem(NOTIFY_PREFS_KEY, JSON.stringify(prefs)); } catch {}
+        }
+        function initNotifyToggles() {
+          var prefs = loadNotifyPrefs();
+          document.querySelectorAll('[data-ntype]').forEach(function(input) {
+            var key = input.dataset.ntype;
+            // Default is ON (checked); only uncheck if explicitly set to false
+            if (prefs[key] === false) input.checked = false;
+            input.addEventListener('change', function() {
+              var p = loadNotifyPrefs();
+              p[key] = input.checked;
+              saveNotifyPrefs(p);
+            });
+          });
+        }
 
         // Apply i18n to data-i18n elements
         document.querySelectorAll('[data-i18n]').forEach(function (el) {
@@ -250,6 +331,11 @@
           actionRow.style.display = active ? 'flex' : 'none';
           // Show PIN card only when inactive and push is supported
           if (pinCard) pinCard.style.display = active ? 'none' : 'block';
+          // Show notification type toggles only when active
+          if (notifyTypesCard) {
+            notifyTypesCard.style.display = active ? '' : 'none';
+            if (active) initNotifyToggles();
+          }
         }
 
         // Check push subscription status

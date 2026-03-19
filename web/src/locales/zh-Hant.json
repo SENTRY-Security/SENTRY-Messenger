@@ -1165,7 +1165,13 @@
     "pinVerifyFailed": "PIN 碼驗證失敗，可能已過期 — 請從 App 重新產生。",
     "keepSessionAlive": "保持登入狀態",
     "keepSessionAliveDesc": "切換到主畫面 App 時不自動登出",
-    "devicePaired": "推播裝置配對成功"
+    "devicePaired": "推播裝置配對成功",
+    "notifyTypesTitle": "通知類型",
+    "notifyTypeMessage": "訊息",
+    "notifyTypeGroupChat": "群組聊天",
+    "notifyTypeEphemeral": "臨時聊天",
+    "notifyTypeCall": "來電",
+    "notifyTypeSystem": "系統"
   },
   "loginStages": {
     "authenticating": "驗證中...",
