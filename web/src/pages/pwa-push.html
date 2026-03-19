@@ -83,22 +83,18 @@
       .status-dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
       .status-dot.active { background:#22c55e; box-shadow:0 0 6px rgba(34,197,94,0.4); }
       .status-dot.inactive { background:var(--muted); }
-      .status-label { font-size:15px; font-weight:600; }
+      .status-label { font-size:15px; font-weight:600; flex:1; }
       .status-detail { font-size:13px; color:var(--muted); line-height:1.5; }
+      .master-switch { margin-left:auto; }
 
       /* Buttons */
-      .btn-row { display:flex; gap:10px; margin-top:16px; }
       .btn {
-        flex:1; padding:12px 16px; border-radius:10px; border:none;
+        padding:12px 16px; border-radius:10px; border:none;
         font-size:14px; font-weight:600; cursor:pointer;
         display:inline-flex; align-items:center; justify-content:center; gap:6px;
         transition:opacity .15s;
       }
       .btn:disabled { opacity:0.5; cursor:not-allowed; }
-      .btn-danger { background:var(--danger); color:#fff; }
-      .btn-danger:hover:not(:disabled) { opacity:0.85; }
-      .btn-secondary { background:rgba(148,163,184,0.15); color:var(--fg); }
-      .btn-secondary:hover:not(:disabled) { background:rgba(148,163,184,0.25); }
 
       /* Info sections */
       .info-section {
@@ -186,16 +182,35 @@
         <div class="pwa-subtitle" data-i18n="push.pwaSubtitle"></div>
       </div>
 
-      <!-- Push status card -->
+      <!-- Push status card with master switch -->
       <div class="status-card">
         <div class="status-row">
           <span class="status-dot inactive" id="statusDot"></span>
           <span class="status-label" id="statusLabel"></span>
+          <label class="notify-switch master-switch" id="masterSwitchWrap" style="display:none">
+            <input type="checkbox" id="masterSwitch" />
+            <span class="notify-track"></span>
+          </label>
         </div>
         <div class="status-detail" id="statusDetail"></div>
-        <div class="btn-row" id="actionRow" style="display:none">
-          <button class="btn btn-danger" id="btnDisable" type="button"></button>
+      </div>
+
+      <!-- PIN enrollment card (revealed when master switch turned ON while inactive) -->
+      <div class="status-card" id="pinCard" style="display:none">
+        <div style="font-weight:600;font-size:15px;margin-bottom:8px;" data-i18n="push.pinEnrollTitle"></div>
+        <div style="font-size:13px;color:var(--muted);line-height:1.5;margin-bottom:14px;" data-i18n="push.pinEnrollDesc"></div>
+        <div class="pin-boxes" id="pinBoxes">
+          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="0" autocomplete="off" />
+          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="1" autocomplete="off" />
+          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="2" autocomplete="off" />
+          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="3" autocomplete="off" />
+          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="4" autocomplete="off" />
+          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="5" autocomplete="off" />
         </div>
+        <!-- Hidden field to gather the full PIN value -->
+        <input type="hidden" id="pinInput" />
+        <button class="btn" id="btnEnroll" type="button" style="width:100%;background:var(--accent);color:#000;" data-i18n="push.pinEnrollBtn"></button>
+        <div id="pinError" style="font-size:12px;color:var(--danger);margin-top:8px;display:none;"></div>
       </div>
 
       <!-- Notification type toggles (shown when push is active) -->
@@ -243,24 +258,6 @@
         </div>
       </div>
 
-      <!-- PIN enrollment card (shown when no active subscription) -->
-      <div class="status-card" id="pinCard" style="display:none">
-        <div style="font-weight:600;font-size:15px;margin-bottom:8px;" data-i18n="push.pinEnrollTitle"></div>
-        <div style="font-size:13px;color:var(--muted);line-height:1.5;margin-bottom:14px;" data-i18n="push.pinEnrollDesc"></div>
-        <div class="pin-boxes" id="pinBoxes">
-          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="0" autocomplete="off" />
-          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="1" autocomplete="off" />
-          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="2" autocomplete="off" />
-          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="3" autocomplete="off" />
-          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="4" autocomplete="off" />
-          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="5" autocomplete="off" />
-        </div>
-        <!-- Hidden field to gather the full PIN value -->
-        <input type="hidden" id="pinInput" />
-        <button class="btn" id="btnEnroll" type="button" style="width:100%;background:var(--accent);color:#000;" data-i18n="push.pinEnrollBtn"></button>
-        <div id="pinError" style="font-size:12px;color:var(--danger);margin-top:8px;display:none;"></div>
-      </div>
-
       <!-- Push limitations: Reliability -->
       <div class="info-section">
         <div class="info-title" data-i18n="push.infoReliabilityTitle"></div>
@@ -287,14 +284,17 @@
         var statusDot = document.getElementById('statusDot');
         var statusLabel = document.getElementById('statusLabel');
         var statusDetail = document.getElementById('statusDetail');
-        var actionRow = document.getElementById('actionRow');
-        var btnDisable = document.getElementById('btnDisable');
+        var masterSwitchWrap = document.getElementById('masterSwitchWrap');
+        var masterSwitch = document.getElementById('masterSwitch');
         var pinCard = document.getElementById('pinCard');
         var pinInput = document.getElementById('pinInput');
         var btnEnroll = document.getElementById('btnEnroll');
         var pinError = document.getElementById('pinError');
         var toastEl = document.getElementById('toast');
         var notifyTypesCard = document.getElementById('notifyTypesCard');
+
+        // Track whether push is supported so the switch can be hidden when not
+        var pushSupported = true;
 
         // Persist per-type notification preferences in localStorage
         var NOTIFY_PREFS_KEY = 'sentry:push-notify-types';
@@ -308,7 +308,6 @@
           var prefs = loadNotifyPrefs();
           document.querySelectorAll('[data-ntype]').forEach(function(input) {
             var key = input.dataset.ntype;
-            // Default is ON (checked); only uncheck if explicitly set to false
             if (prefs[key] === false) input.checked = false;
             input.addEventListener('change', function() {
               var p = loadNotifyPrefs();
@@ -323,8 +322,6 @@
           var k = el.getAttribute('data-i18n');
           if (k) el.textContent = t(k);
         });
-
-        btnDisable.textContent = t('push.disableBtn');
 
         function urlBase64ToUint8Array(base64String) {
           var padding = '='.repeat((4 - base64String.length % 4) % 4);
@@ -341,13 +338,25 @@
           setTimeout(function () { toastEl.classList.remove('show'); }, 2500);
         }
 
+        function clearPinBoxes() {
+          document.querySelectorAll('.pin-box').forEach(function(b) {
+            b.value = ''; b.classList.remove('filled');
+          });
+          pinInput.value = '';
+          pinError.style.display = 'none';
+        }
+
         function setStatus(active, label, detail) {
           statusDot.className = 'status-dot ' + (active ? 'active' : 'inactive');
           statusLabel.textContent = label;
           statusDetail.textContent = detail;
-          actionRow.style.display = active ? 'flex' : 'none';
-          // Show PIN card only when inactive and push is supported
-          if (pinCard) pinCard.style.display = active ? 'none' : 'block';
+          // Sync master switch state (without triggering change event)
+          masterSwitch.checked = active;
+          // Show switch only when push is supported
+          masterSwitchWrap.style.display = pushSupported ? '' : 'none';
+          // Hide PIN card — only shown explicitly by switch toggle
+          pinCard.style.display = 'none';
+          clearPinBoxes();
           // Show notification type toggles only when active
           if (notifyTypesCard) {
             notifyTypesCard.style.display = active ? '' : 'none';
@@ -358,18 +367,19 @@
         // Check push subscription status
         async function checkStatus() {
           if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+            pushSupported = false;
             var isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
             setStatus(false, t('push.statusUnsupported'), isIOS ? t('push.iosRequiresPWA') : t('push.statusUnsupportedDetail'));
-            if (pinCard) pinCard.style.display = 'none';
             return;
           }
 
           if (Notification.permission === 'denied') {
+            pushSupported = false;
             setStatus(false, t('push.statusDenied'), t('push.statusDeniedDetail'));
-            if (pinCard) pinCard.style.display = 'none';
             return;
           }
 
+          pushSupported = true;
           try {
             var reg = await navigator.serviceWorker.getRegistration('/sw.js');
             if (!reg) {
@@ -388,13 +398,55 @@
           }
         }
 
+        // Master switch: OFF→ON shows PIN card, ON→OFF disables push
+        masterSwitch.addEventListener('change', async function () {
+          if (masterSwitch.checked) {
+            // User toggled ON — show PIN enrollment card
+            clearPinBoxes();
+            pinCard.style.display = 'block';
+            // Focus the first PIN box after a brief delay
+            setTimeout(function() {
+              var firstBox = document.querySelector('.pin-box[data-idx="0"]');
+              if (firstBox) firstBox.focus();
+            }, 100);
+          } else {
+            // User toggled OFF — disable push
+            if (!confirm(t('push.disableConfirm'))) {
+              // User cancelled — revert switch
+              masterSwitch.checked = true;
+              return;
+            }
+            try {
+              var reg = await navigator.serviceWorker.getRegistration('/sw.js');
+              if (reg) {
+                var sub = await reg.pushManager.getSubscription();
+                if (sub) {
+                  var endpoint = sub.endpoint;
+                  await sub.unsubscribe();
+                  try {
+                    await fetch('/d1/push/unsubscribe', {
+                      method: 'POST',
+                      headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({ endpoint: endpoint })
+                    });
+                  } catch (e) { console.warn('[pwa-push] backend unsubscribe failed', e); }
+                }
+              }
+              showToast(t('push.disabledToast'));
+            } catch (err) {
+              console.error('[pwa-push] disable failed', err);
+              showToast(t('push.disableError'));
+            }
+            checkStatus();
+          }
+        });
+
         // PIN enrollment: verify PIN → subscribe push
         btnEnroll.addEventListener('click', async function () {
           var pin = (pinInput.value || '').replace(/\D/g, '').trim();
           if (pin.length !== 6) {
             pinError.textContent = t('push.pinInvalid');
             pinError.style.display = 'block';
-            pinInput.focus();
             return;
           }
           pinError.style.display = 'none';
@@ -432,18 +484,18 @@
             });
             var data = await res.json();
             if (!res.ok) {
-              // If PIN invalid, unsubscribe the push we just created
               try { await sub.unsubscribe(); } catch {}
               throw new Error(data.message || data.error || 'Verification failed');
             }
 
             showToast(t('push.enabledToast'));
-            pinInput.value = '';
             checkStatus();
           } catch (err) {
             console.error('[pwa-push] enroll failed', err);
             pinError.textContent = err.message || t('push.pinVerifyFailed');
             pinError.style.display = 'block';
+            // Revert the master switch since enrollment failed
+            masterSwitch.checked = false;
           } finally {
             btnEnroll.disabled = false;
             btnEnroll.textContent = t('push.pinEnrollBtn');
@@ -464,7 +516,6 @@
             box.classList.toggle('filled', !!box.value);
             syncPinValue();
             if (box.value && i < 5) pinBoxes[i + 1].focus();
-            // If pasted multiple digits, fill remaining boxes
             if (v.length > 1) {
               var chars = v.split('');
               for (var j = 0; j < chars.length && (i + j) < 6; j++) {
@@ -486,7 +537,6 @@
             if (e.key === 'Enter') { e.preventDefault(); btnEnroll.click(); }
           });
           box.addEventListener('focus', function() { box.select(); });
-          // Handle paste on any box
           box.addEventListener('paste', function(e) {
             e.preventDefault();
             var paste = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '').slice(0, 6);
@@ -498,38 +548,6 @@
             pinBoxes[focusIdx].focus();
             syncPinValue();
           });
-        });
-
-        // Disable push
-        btnDisable.addEventListener('click', async function () {
-          if (!confirm(t('push.disableConfirm'))) return;
-          btnDisable.disabled = true;
-          btnDisable.textContent = t('common.loading');
-          try {
-            var reg = await navigator.serviceWorker.getRegistration('/sw.js');
-            if (reg) {
-              var sub = await reg.pushManager.getSubscription();
-              if (sub) {
-                var endpoint = sub.endpoint;
-                await sub.unsubscribe();
-                try {
-                  await fetch('/d1/push/unsubscribe', {
-                    method: 'POST',
-                    headers: { 'content-type': 'application/json' },
-                    body: JSON.stringify({ endpoint: endpoint })
-                  });
-                } catch (e) { console.warn('[pwa-push] backend unsubscribe failed', e); }
-              }
-            }
-            showToast(t('push.disabledToast'));
-          } catch (err) {
-            console.error('[pwa-push] disable failed', err);
-            showToast(t('push.disableError'));
-          } finally {
-            btnDisable.disabled = false;
-            btnDisable.textContent = t('push.disableBtn');
-            checkStatus();
-          }
         });
 
         checkStatus();
