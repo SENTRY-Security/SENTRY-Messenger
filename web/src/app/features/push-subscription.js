@@ -63,7 +63,7 @@ export async function getSwRegistration() {
 
 export async function getPushSubscription() {
   const reg = await getSwRegistration();
-  if (!reg) return null;
+  if (!reg?.pushManager) return null;
   return reg.pushManager.getSubscription();
 }
 
@@ -143,10 +143,12 @@ export async function unsubscribeByEndpoint(endpoint) {
   }
 
   // If this endpoint matches local subscription, unsubscribe locally too
-  const localSub = await getPushSubscription();
-  if (localSub && localSub.endpoint === endpoint) {
-    await localSub.unsubscribe();
-  }
+  try {
+    const localSub = await getPushSubscription();
+    if (localSub && localSub.endpoint === endpoint) {
+      await localSub.unsubscribe();
+    }
+  } catch { /* no local push support (e.g. Safari without PWA) */ }
 }
 
 export async function listPushDevices() {
