@@ -9099,6 +9099,7 @@ async function handlePushRoutes(req, env) {
       return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
     }
     const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const deviceId = normalizeDeviceId(body?.deviceId || body?.device_id);
     if (!accountDigest) {
       return json({ error: 'BadRequest', message: 'accountDigest required' }, { status: 400 });
     }
@@ -9111,6 +9112,7 @@ async function handlePushRoutes(req, env) {
     try {
       await env.AUTH_KV.put(kvKey, JSON.stringify({
         accountDigest,
+        deviceId: deviceId || null,
         createdAt: Date.now()
       }), { expirationTtl: 300 }); // 5 minutes
       return json({ ok: true, pin });
@@ -9146,6 +9148,8 @@ async function handlePushRoutes(req, env) {
       }
       const data = JSON.parse(raw);
       const accountDigest = data.accountDigest;
+      // Recover deviceId: prefer body, fallback to KV-stored value from pin/generate
+      const deviceId = normalizeDeviceId(body?.deviceId || body?.device_id || data.deviceId);
       // Consume PIN immediately (one-time use)
       await env.AUTH_KV.delete(kvKey);
       // Register push subscription
@@ -9161,7 +9165,7 @@ async function handlePushRoutes(req, env) {
            user_agent=excluded.user_agent`
       ).bind(
         accountDigest,
-        body?.deviceId || null,
+        deviceId || null,
         sub.endpoint,
         sub.keys.p256dh,
         sub.keys.auth,
@@ -9171,7 +9175,7 @@ async function handlePushRoutes(req, env) {
       try {
         await notifyAccountDO(env, accountDigest, {
           type: 'push-device-paired',
-          deviceId: body?.deviceId || null,
+          deviceId: deviceId || null,
           userAgent: body?.userAgent || null,
           ts: Date.now()
         });

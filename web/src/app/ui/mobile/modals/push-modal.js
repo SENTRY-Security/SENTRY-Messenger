@@ -7,6 +7,7 @@ import {
   isPushSupported, isPWAMode, subscribePush, unsubscribePush,
   unsubscribeByEndpoint, listPushDevices, getPushSubscription
 } from '../../../features/push-subscription.js';
+import { ensureDeviceId } from '../../../core/store.js';
 
 function isIOS() {
   return /iPhone|iPad|iPod/.test(navigator.userAgent)
@@ -199,7 +200,7 @@ export function createPushModal({ deps }) {
           const res = await fetch('/d1/push/pin/generate', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ accountDigest: digest })
+            body: JSON.stringify({ accountDigest: digest, deviceId: (() => { try { return ensureDeviceId(); } catch { return null; } })() })
           });
           const data = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
           if (!res.ok || !data.pin) throw new Error(data.error || data.message || 'Failed');
