@@ -229,12 +229,59 @@ function getSkinDetector() {
   return skinDetector;
 }
 
+// Extract landmarks from Native FaceDetector result.
+// Native returns: { landmarks: [{ type: 'eye'|'mouth'|'nose', locations: [{x,y}] }] }
+function _nativeLandmarks(face) {
+  if (!face.landmarks || !face.landmarks.length) return null;
+  const pts = {};
+  for (const lm of face.landmarks) {
+    if (lm.locations && lm.locations.length > 0) {
+      const loc = lm.locations[0];
+      if (lm.type === 'eye') {
+        if (!pts.eye1) pts.eye1 = loc; else pts.eye2 = loc;
+      } else if (lm.type === 'nose') {
+        pts.nose = loc;
+      } else if (lm.type === 'mouth') {
+        pts.mouth = loc;
+      }
+    }
+  }
+  if (!pts.eye1 || !pts.eye2) return null;
+  return {
+    leftEye:  { x: Math.min(pts.eye1.x, pts.eye2.x), y: (pts.eye1.x < pts.eye2.x ? pts.eye1 : pts.eye2).y },
+    rightEye: { x: Math.max(pts.eye1.x, pts.eye2.x), y: (pts.eye1.x > pts.eye2.x ? pts.eye1 : pts.eye2).y },
+    nose: pts.nose || null,
+    mouth: pts.mouth || null
+  };
+}
+
+// MediaPipe BlazeFace keypoints order: [rightEye, leftEye, noseTip, mouth, rightEar, leftEar]
+function _mpLandmarks(keypoints, imgW, imgH) {
+  if (!keypoints || keypoints.length < 6) return null;
+  return {
+    leftEye:   { x: keypoints[1].x * imgW, y: keypoints[1].y * imgH },
+    rightEye:  { x: keypoints[0].x * imgW, y: keypoints[0].y * imgH },
+    nose:      { x: keypoints[2].x * imgW, y: keypoints[2].y * imgH },
+    mouth:     { x: keypoints[3].x * imgW, y: keypoints[3].y * imgH },
+    rightEar:  { x: keypoints[4].x * imgW, y: keypoints[4].y * imgH },
+    leftEar:   { x: keypoints[5].x * imgW, y: keypoints[5].y * imgH }
+  };
+}
+
 function detectFaces(source, timestamp) {
+  const imgW = source.videoWidth || source.width || 640;
+  const imgH = source.videoHeight || source.height || 480;
+
   // Tier 1 — native
   const native = getNativeDetector();
   if (native) {
     try {
-      return native.detect(source);
+      return native.detect(source).then(faces =>
+        faces.map(f => ({
+          boundingBox: f.boundingBox,
+          landmarks: _nativeLandmarks(f)
+        }))
+      );
     } catch {
       // fall through
     }
@@ -251,7 +298,8 @@ function detectFaces(source, timestamp) {
             y: d.boundingBox.originY,
             width: d.boundingBox.width,
             height: d.boundingBox.height
-          }
+          },
+          landmarks: _mpLandmarks(d.keypoints, imgW, imgH)
         }))
       );
     } catch (err) {
@@ -260,7 +308,7 @@ function detectFaces(source, timestamp) {
     }
   }
 
-  // Tier 3 — skin-color
+  // Tier 3 — skin-color (no landmarks)
   return getSkinDetector().detect(source);
 }
 
@@ -311,6 +359,98 @@ function pixelateRegion(ctx, x, y, w, h, blockSize) {
       ctx.fillRect(x0 + bx, y0 + by, sw, sh);
     }
   }
+}
+
+// ──────────────────────────────────────
+// Ellipse from landmarks
+// ──────────────────────────────────────
+
+// Compute an ellipse that covers the face based on landmark positions.
+// Returns { cx, cy, rx, ry } in pixel coordinates.
+function landmarksToEllipse(lm, box) {
+  const eyeMidX = (lm.leftEye.x + lm.rightEye.x) / 2;
+  const eyeMidY = (lm.leftEye.y + lm.rightEye.y) / 2;
+  const eyeDist = Math.hypot(lm.rightEye.x - lm.leftEye.x, lm.rightEye.y - lm.leftEye.y);
+
+  // Use ear-to-ear distance if available (MediaPipe), otherwise estimate from eye distance
+  let faceWidth;
+  if (lm.leftEar && lm.rightEar) {
+    faceWidth = Math.hypot(lm.rightEar.x - lm.leftEar.x, lm.rightEar.y - lm.leftEar.y);
+  } else {
+    faceWidth = eyeDist * 2.4;  // empirical: face width ≈ 2.4× eye distance
+  }
+
+  // Vertical: from forehead (above eyes) to chin (below mouth)
+  let faceHeight;
+  if (lm.mouth) {
+    const eyeToMouth = Math.hypot(lm.mouth.x - eyeMidX, lm.mouth.y - eyeMidY);
+    faceHeight = eyeToMouth * 2.8;  // mouth is ~60% down from forehead to chin
+  } else {
+    faceHeight = faceWidth * 1.35;  // standard face aspect ratio
+  }
+
+  // Center: shift slightly below eye midpoint (eyes are in upper 1/3 of face)
+  const cy = lm.mouth
+    ? eyeMidY + (lm.mouth.y - eyeMidY) * 0.35
+    : eyeMidY + faceHeight * 0.1;
+
+  return {
+    cx: eyeMidX,
+    cy,
+    rx: faceWidth * 0.58,   // semi-axis X with slight padding
+    ry: faceHeight * 0.52   // semi-axis Y with slight padding
+  };
+}
+
+// Pixelate an elliptical region using canvas clip
+function pixelateEllipse(ctx, cx, cy, rx, ry, blockSize) {
+  if (rx <= 0 || ry <= 0) return;
+  const x0 = Math.max(0, Math.floor(cx - rx));
+  const y0 = Math.max(0, Math.floor(cy - ry));
+  const x1 = Math.min(ctx.canvas.width, Math.ceil(cx + rx));
+  const y1 = Math.min(ctx.canvas.height, Math.ceil(cy + ry));
+  const regionW = x1 - x0;
+  const regionH = y1 - y0;
+  if (regionW <= 0 || regionH <= 0) return;
+
+  let regionData;
+  try { regionData = ctx.getImageData(x0, y0, regionW, regionH); } catch { return; }
+  const data = regionData.data;
+  const bs = Math.max(4, blockSize);
+
+  // Precompute ellipse test: (px-cx)²/rx² + (py-cy)²/ry² <= 1
+  const rxSq = rx * rx;
+  const rySq = ry * ry;
+
+  _prngState = (x0 * 7 + y0 * 13 + regionW * 19 + 1) | 1;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+  ctx.clip();
+
+  for (let by = 0; by < regionH; by += bs) {
+    for (let bx = 0; bx < regionW; bx += bs) {
+      const sw = Math.min(bs, regionW - bx);
+      const sh = Math.min(bs, regionH - by);
+      // Block center in canvas coords
+      const bcx = x0 + bx + (sw >> 1);
+      const bcy = y0 + by + (sh >> 1);
+      // Skip blocks outside ellipse (clip handles edges, but this avoids unnecessary fillRect)
+      const dx = bcx - cx, dy = bcy - cy;
+      if ((dx * dx) / rxSq + (dy * dy) / rySq > 1.2) continue;
+
+      const sIdx = (by + (sh >> 1)) * regionW + bx + (sw >> 1);
+      const idx = sIdx * 4;
+      const nr = Math.max(0, Math.min(255, data[idx]     + ((_fastRand() * 2 - 1) * COLOR_NOISE) | 0));
+      const ng = Math.max(0, Math.min(255, data[idx + 1] + ((_fastRand() * 2 - 1) * COLOR_NOISE) | 0));
+      const nb = Math.max(0, Math.min(255, data[idx + 2] + ((_fastRand() * 2 - 1) * COLOR_NOISE) | 0));
+      ctx.fillStyle = `rgb(${nr},${ng},${nb})`;
+      ctx.fillRect(x0 + bx, y0 + by, sw, sh);
+    }
+  }
+
+  ctx.restore();
 }
 
 // ──────────────────────────
@@ -427,44 +567,62 @@ export function createFaceBlurPipeline(sourceTrack) {
     }
 
     if (mode === BLUR_MODE.FACE) {
-      // Pixelate detected face regions
-      if (cachedFaces.length > 0) {
-        for (const face of cachedFaces) {
-          const box = face.boundingBox;
-          if (!box) continue;
+      // Pixelate detected face regions — ellipse when landmarks available, rect fallback
+      for (const face of cachedFaces) {
+        const box = face.boundingBox;
+        if (!box) continue;
+        if (face.landmarks) {
+          const el = landmarksToEllipse(face.landmarks, box);
+          pixelateEllipse(ctx, el.cx, el.cy, el.rx, el.ry, PIXEL_BLOCK);
+        } else {
           const padX = box.width * 0.35;
           const padY = box.height * 0.35;
-          pixelateRegion(
-            ctx,
-            box.x - padX,
-            box.y - padY,
-            box.width  + padX * 2,
-            box.height + padY * 2,
-            PIXEL_BLOCK
-          );
+          pixelateRegion(ctx, box.x - padX, box.y - padY, box.width + padX * 2, box.height + padY * 2, PIXEL_BLOCK);
         }
       }
     } else if (mode === BLUR_MODE.BACKGROUND) {
-      // Save face regions, pixelate entire frame, then restore faces
+      // Save face regions (elliptical when possible), pixelate entire frame, then restore
       const savedRegions = [];
       for (const face of cachedFaces) {
         const box = face.boundingBox;
         if (!box) continue;
-        const padX = box.width * 0.25;
-        const padY = box.height * 0.25;
-        const rx = Math.max(0, Math.floor(box.x - padX));
-        const ry = Math.max(0, Math.floor(box.y - padY));
-        const rw = Math.min(canvas.width - rx, Math.ceil(box.width + padX * 2));
-        const rh = Math.min(canvas.height - ry, Math.ceil(box.height + padY * 2));
+        let rx, ry, rw, rh;
+        if (face.landmarks) {
+          const el = landmarksToEllipse(face.landmarks, box);
+          rx = Math.max(0, Math.floor(el.cx - el.rx));
+          ry = Math.max(0, Math.floor(el.cy - el.ry));
+          rw = Math.min(canvas.width - rx, Math.ceil(el.rx * 2));
+          rh = Math.min(canvas.height - ry, Math.ceil(el.ry * 2));
+        } else {
+          const padX = box.width * 0.25;
+          const padY = box.height * 0.25;
+          rx = Math.max(0, Math.floor(box.x - padX));
+          ry = Math.max(0, Math.floor(box.y - padY));
+          rw = Math.min(canvas.width - rx, Math.ceil(box.width + padX * 2));
+          rh = Math.min(canvas.height - ry, Math.ceil(box.height + padY * 2));
+        }
         if (rw > 0 && rh > 0) {
           try {
-            savedRegions.push({ data: ctx.getImageData(rx, ry, rw, rh), x: rx, y: ry });
+            savedRegions.push({ data: ctx.getImageData(rx, ry, rw, rh), x: rx, y: ry, face });
           } catch {}
         }
       }
       pixelateRegion(ctx, 0, 0, canvas.width, canvas.height, PIXEL_BLOCK);
       for (const region of savedRegions) {
-        try { ctx.putImageData(region.data, region.x, region.y); } catch {}
+        // Restore face region — use elliptical clip when landmarks available
+        if (region.face.landmarks) {
+          const el = landmarksToEllipse(region.face.landmarks, region.face.boundingBox);
+          ctx.save();
+          ctx.beginPath();
+          ctx.ellipse(el.cx, el.cy, el.rx, el.ry, 0, 0, Math.PI * 2);
+          ctx.clip();
+          try { ctx.putImageData(region.data, region.x, region.y); } catch {}
+          // putImageData ignores clip, so redraw the original region within clip
+          ctx.drawImage(srcVideo, region.x, region.y, region.data.width, region.data.height, region.x, region.y, region.data.width, region.data.height);
+          ctx.restore();
+        } else {
+          try { ctx.putImageData(region.data, region.x, region.y); } catch {}
+        }
       }
     }
   }
