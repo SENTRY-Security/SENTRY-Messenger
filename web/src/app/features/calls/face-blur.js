@@ -25,7 +25,7 @@ export const BLUR_MODE = { FACE: 'face', BACKGROUND: 'background', OFF: 'off' };
 
 const TARGET_FPS = 30;
 const DETECT_INTERVAL_MS = 200;
-const PIXEL_BLOCK = 14;
+const PIXEL_BLOCK = 28;
 
 // ──────────────────────────────────────────────────────────────
 // Tier 1: Native FaceDetector (Chrome / Edge)
@@ -268,6 +268,17 @@ function detectFaces(source, timestamp) {
 // Optimized pixelation
 // ──────────────────────────
 
+// Simple fast PRNG (xorshift32) to avoid Math.random() overhead per block
+let _prngState = 1;
+function _fastRand() {
+  _prngState ^= _prngState << 13;
+  _prngState ^= _prngState >> 17;
+  _prngState ^= _prngState << 5;
+  return (_prngState >>> 0) / 4294967296;
+}
+
+const COLOR_NOISE = 30; // ±30 per channel — enough to break skin-tone patterns
+
 function pixelateRegion(ctx, x, y, w, h, blockSize) {
   const bs = Math.max(4, blockSize);
   const x0 = Math.max(0, Math.floor(x));
@@ -282,6 +293,9 @@ function pixelateRegion(ctx, x, y, w, h, blockSize) {
   try { regionData = ctx.getImageData(x0, y0, regionW, regionH); } catch { return; }
   const data = regionData.data;
 
+  // Seed PRNG per frame region so noise is temporally stable within a detection cycle
+  _prngState = (x0 * 7 + y0 * 13 + regionW * 19 + 1) | 1;
+
   for (let by = 0; by < regionH; by += bs) {
     for (let bx = 0; bx < regionW; bx += bs) {
       const sw = Math.min(bs, regionW - bx);
@@ -289,7 +303,11 @@ function pixelateRegion(ctx, x, y, w, h, blockSize) {
       const cx = bx + (sw >> 1);
       const cy = by + (sh >> 1);
       const idx = (cy * regionW + cx) * 4;
-      ctx.fillStyle = `rgb(${data[idx]},${data[idx + 1]},${data[idx + 2]})`;
+      // Add per-block color noise to prevent skin-tone pattern recognition
+      const nr = Math.max(0, Math.min(255, data[idx]     + ((_fastRand() * 2 - 1) * COLOR_NOISE) | 0));
+      const ng = Math.max(0, Math.min(255, data[idx + 1] + ((_fastRand() * 2 - 1) * COLOR_NOISE) | 0));
+      const nb = Math.max(0, Math.min(255, data[idx + 2] + ((_fastRand() * 2 - 1) * COLOR_NOISE) | 0));
+      ctx.fillStyle = `rgb(${nr},${ng},${nb})`;
       ctx.fillRect(x0 + bx, y0 + by, sw, sh);
     }
   }
@@ -414,8 +432,8 @@ export function createFaceBlurPipeline(sourceTrack) {
         for (const face of cachedFaces) {
           const box = face.boundingBox;
           if (!box) continue;
-          const padX = box.width * 0.2;
-          const padY = box.height * 0.2;
+          const padX = box.width * 0.35;
+          const padY = box.height * 0.35;
           pixelateRegion(
             ctx,
             box.x - padX,
