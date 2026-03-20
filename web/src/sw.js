@@ -1,6 +1,6 @@
 // Service Worker — push notification only (no offline cache)
 // Scope: / (root)
-// SW_VERSION: 2026-03-19a (force update)
+// SW_VERSION: 2026-03-20a (IDB timeout fix + preview relay)
 
 // ─── Push notification type taxonomy ───────────────────────────────────────
 //
@@ -153,6 +153,7 @@ function b64uDecode(str) {
 
 function getPreviewPrivateKey() {
   return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), 3000); // 3s safety timeout
     try {
       const req = indexedDB.open('sentry-push-prefs', 1);
       req.onupgradeneeded = (ev) => {
@@ -164,12 +165,13 @@ function getPreviewPrivateKey() {
           const db = ev.target.result;
           const tx = db.transaction('prefs', 'readonly');
           const get = tx.objectStore('prefs').get('preview-private-key');
-          get.onsuccess = () => resolve(get.result || null);
-          get.onerror = () => resolve(null);
-        } catch { resolve(null); }
+          get.onsuccess = () => { clearTimeout(timer); resolve(get.result || null); };
+          get.onerror = () => { clearTimeout(timer); resolve(null); };
+        } catch { clearTimeout(timer); resolve(null); }
       };
-      req.onerror = () => resolve(null);
-    } catch { resolve(null); }
+      req.onerror = () => { clearTimeout(timer); resolve(null); };
+      req.onblocked = () => { clearTimeout(timer); resolve(null); };
+    } catch { clearTimeout(timer); resolve(null); }
   });
 }
 
@@ -224,6 +226,7 @@ self.addEventListener('message', (ev) => {
 function getPreviewPref() {
   if (_previewPref !== null) return Promise.resolve(_previewPref);
   return new Promise((resolve) => {
+    const timer = setTimeout(() => { _previewPref = false; resolve(false); }, 3000); // 3s safety timeout
     try {
       const req = indexedDB.open('sentry-push-prefs', 1);
       req.onupgradeneeded = (ev) => {
@@ -236,14 +239,16 @@ function getPreviewPref() {
           const tx = db.transaction('prefs', 'readonly');
           const get = tx.objectStore('prefs').get('preview');
           get.onsuccess = () => {
+            clearTimeout(timer);
             _previewPref = !!get.result;
             resolve(_previewPref);
           };
-          get.onerror = () => resolve(false);
-        } catch { resolve(false); }
+          get.onerror = () => { clearTimeout(timer); resolve(false); };
+        } catch { clearTimeout(timer); resolve(false); }
       };
-      req.onerror = () => resolve(false);
-    } catch { resolve(false); }
+      req.onerror = () => { clearTimeout(timer); resolve(false); };
+      req.onblocked = () => { clearTimeout(timer); resolve(false); };
+    } catch { clearTimeout(timer); resolve(false); }
   });
 }
 

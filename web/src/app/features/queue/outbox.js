@@ -1,6 +1,7 @@
 // Outbox queue for secure messages: per-conversation single-worker with transient retry (network/5xx only).
 
 import { createSecureMessage, atomicSend } from '../../api/messages.js';
+import { getPreviewKeys } from '../push-preview-keys.js';
 import {
   deleteOutboxRecord,
   getOutboxRecord,
@@ -195,6 +196,8 @@ function normalizeJob(input = {}) {
     receiverDeviceId: input.receiverDeviceId || null,
     peerAccountDigest: input.peerAccountDigest || null,
     peerDeviceId: input.peerDeviceId || null,
+    // E2E push preview: short plaintext snippet for encrypted push notification
+    previewText: typeof input.previewText === 'string' ? input.previewText.slice(0, 140) : null,
     // Legacy fields kept for compatibility (media-upload no-op)
     payloadEnvelope: input.payloadEnvelope || null,
     createdAt: ts,
@@ -420,9 +423,53 @@ async function collectOutboxState() {
   return computeOutboxState(sanitized);
 }
 
+// Lazy-loaded push preview encryptor
+let _encryptPreview = null;
+async function loadEncryptPreview() {
+  if (!_encryptPreview) {
+    try {
+      const mod = await import('../../crypto/push-preview.js');
+      _encryptPreview = mod.encryptPreview;
+    } catch { /* crypto module unavailable */ }
+  }
+  return _encryptPreview;
+}
+
+/**
+ * Build encrypted_previews map (keyed by device_id) for push E2E preview.
+ * Best-effort: returns {} on any failure so sending is never blocked.
+ */
+async function buildEncryptedPreviews(recipientDigest, previewText) {
+  if (!recipientDigest || !previewText) return {};
+  try {
+    const keys = await getPreviewKeys(recipientDigest);
+    if (!keys.length) return {};
+    const encrypt = await loadEncryptPreview();
+    if (!encrypt) return {};
+    const map = {};
+    await Promise.all(keys.map(async ({ deviceId, previewPublicKey }) => {
+      if (!deviceId || !previewPublicKey) return;
+      try {
+        map[deviceId] = await encrypt(previewPublicKey, previewText);
+      } catch { /* skip this device */ }
+    }));
+    return map;
+  } catch {
+    return {};
+  }
+}
+
 async function attemptSend(job) {
   // If job has 'vault' or 'backup' payload, use Atomic Send API
   if (job.vault) {
+    // E2E push preview: encrypt preview text for recipient's devices (best-effort, non-blocking)
+    let encrypted_previews = {};
+    if (job.previewText && job.receiverAccountDigest) {
+      try {
+        encrypted_previews = await buildEncryptedPreviews(job.receiverAccountDigest, job.previewText);
+      } catch { /* never block send */ }
+    }
+
     const payload = {
       conversationId: job.conversationId,
       senderDeviceId: job.senderDeviceId,
@@ -439,7 +486,9 @@ async function attemptSend(job) {
         created_at: job.createdAt
       },
       vault: job.vault,
-      backup: job.backup || null
+      backup: job.backup || null,
+      // E2E encrypted push preview map (keyed by device_id)
+      ...(Object.keys(encrypted_previews).length ? { encrypted_previews } : {})
     };
 
     const { r, data } = await atomicSend(payload);

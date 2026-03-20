@@ -1165,7 +1165,7 @@ export class AccountWebSocket {
       ? 'notify' : payload.type;
 
     const rows = await this.env.DB.prepare(
-      `SELECT endpoint, keys_p256dh, keys_auth FROM push_subscriptions WHERE account_digest = ?1`
+      `SELECT endpoint, keys_p256dh, keys_auth, device_id FROM push_subscriptions WHERE account_digest = ?1`
     ).bind(this.accountDigest).all();
     const subs = rows?.results || [];
     if (!subs.length) {
@@ -1188,6 +1188,7 @@ export class AccountWebSocket {
       type: effectiveType || undefined
     };
     // Forward per-device encrypted preview if sender included it
+    // Supports keying by device_id (preferred) or by endpoint (legacy)
     const encryptedPreviews = payload.encrypted_previews || {};
 
     const staleEndpoints = [];
@@ -1196,8 +1197,10 @@ export class AccountWebSocket {
         // Build per-device push payload, including encrypted_preview if sender provided one
         const devicePush = { ...basePush };
         const ep = sub.endpoint;
-        if (encryptedPreviews[ep]) {
-          devicePush.encrypted_preview = encryptedPreviews[ep];
+        // Look up encrypted preview by device_id first, then by endpoint
+        const preview = (sub.device_id && encryptedPreviews[sub.device_id]) || encryptedPreviews[ep];
+        if (preview) {
+          devicePush.encrypted_preview = preview;
         }
         const pushPayload = JSON.stringify(devicePush);
         const result = await sendPushNotification({

@@ -8216,7 +8216,9 @@ async function handlePublicRoutes(req, env) {
             targetDeviceId: msg.receiver_device_id || msg.receiverDeviceId || body?.receiver_device_id || body?.receiverDeviceId || null,
             peerAccountDigest: auth.accountDigest,
             targetAccountDigest: receiverDigest,
-            msgType: extractMsgTypeFromHeader(atomicHeaderJson)
+            msgType: extractMsgTypeFromHeader(atomicHeaderJson),
+            // E2E: forward per-device encrypted previews from sender (keyed by device_id)
+            ...(body?.encrypted_previews ? { encrypted_previews: body.encrypted_previews } : {})
           });
         }
       } catch { /* best-effort */ }
@@ -8270,7 +8272,8 @@ async function handlePublicRoutes(req, env) {
           targetDeviceId: intBody.receiver_device_id || null,
           peerAccountDigest: auth.accountDigest,
           targetAccountDigest: receiverDigest,
-          msgType: extractMsgTypeFromHeader(intBody.header_json)
+          msgType: extractMsgTypeFromHeader(intBody.header_json),
+          ...(body?.encrypted_previews ? { encrypted_previews: body.encrypted_previews } : {})
         });
       }
     }
@@ -8320,7 +8323,8 @@ async function handlePublicRoutes(req, env) {
         targetDeviceId: receiverDeviceId || null,
         peerAccountDigest: auth.accountDigest,
         targetAccountDigest: receiverDigest,
-        msgType: extractMsgTypeFromHeader(intBody.header_json)
+        msgType: extractMsgTypeFromHeader(intBody.header_json),
+        ...(body?.encrypted_previews ? { encrypted_previews: body.encrypted_previews } : {})
       });
     }
     return result;
@@ -9298,6 +9302,29 @@ async function handlePushRoutes(req, env) {
     } catch (err) {
       console.error('push_list_failed', err?.message || err);
       return json({ error: 'PushListFailed', message: err?.message || 'list failed' }, { status: 500 });
+    }
+  }
+
+  // POST /d1/push/preview-keys — return preview public keys for a recipient account
+  // Used by sender to encrypt push preview content (E2E: server never sees plaintext)
+  if (req.method === 'POST' && url.pathname === '/d1/push/preview-keys') {
+    await ensureDataTables(env);
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    if (!accountDigest) {
+      return json({ error: 'BadRequest', message: 'accountDigest required' }, { status: 400 });
+    }
+    try {
+      const rows = await env.DB.prepare(
+        `SELECT device_id, preview_public_key FROM push_subscriptions WHERE account_digest = ?1 AND preview_public_key IS NOT NULL`
+      ).bind(accountDigest).all();
+      return json({ ok: true, keys: (rows?.results || []).map(r => ({ deviceId: r.device_id, previewPublicKey: r.preview_public_key })) });
+    } catch (err) {
+      console.error('push_preview_keys_failed', err?.message || err);
+      return json({ error: 'PreviewKeysFailed', message: err?.message || 'fetch failed' }, { status: 500 });
     }
   }
 

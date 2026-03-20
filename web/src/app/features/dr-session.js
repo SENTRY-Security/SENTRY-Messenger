@@ -2092,6 +2092,11 @@ export async function sendDrPlaintextCore(params = {}) {
 
     let job;
     try {
+      // Build short preview for E2E push notification (truncated, never persisted on server)
+      const _previewText = (msgType === 'text' && typeof text === 'string' && text.length > 0)
+        ? text.slice(0, 140)
+        : null;
+
       job = await enqueueOutboxJob({
         conversationId: finalConversationId,
         messageId,
@@ -2105,6 +2110,7 @@ export async function sendDrPlaintextCore(params = {}) {
         createdAt: now,
         peerAccountDigest: peer,
         peerDeviceId: peerDeviceId || null,
+        previewText: _previewText,
         meta: { msgType },
         dr: preSnapshot
           ? {

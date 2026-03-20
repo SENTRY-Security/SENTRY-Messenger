@@ -256,19 +256,22 @@ export async function fetchOutgoingStatus({ conversationId, senderDeviceId, rece
   return { r, data };
 }
 
-export async function atomicSend({ conversationId, senderDeviceId, message, vault, backup } = {}) {
+export async function atomicSend({ conversationId, senderDeviceId, message, vault, backup, encrypted_previews } = {}) {
   if (!conversationId) throw new Error('conversationId required');
   const endpoint = '/api/v1/messages/atomic-send';
   const { headers, senderDeviceId: resolvedDeviceId } = buildMessageAuthHeaders({ endpoint, deviceId: senderDeviceId });
-  const payload = buildAccountPayload({
-    overrides: {
-      conversation_id: conversationId,
-      sender_device_id: resolvedDeviceId,
-      message,
-      vault,
-      backup
-    }
-  });
+  const overrides = {
+    conversation_id: conversationId,
+    sender_device_id: resolvedDeviceId,
+    message,
+    vault,
+    backup
+  };
+  // E2E push preview: forward per-device encrypted previews to server
+  if (encrypted_previews && Object.keys(encrypted_previews).length) {
+    overrides.encrypted_previews = encrypted_previews;
+  }
+  const payload = buildAccountPayload({ overrides });
   const r = await fetchWithTimeout(endpoint, jsonReq(payload, headers), 20000); // Higher timeout for transaction
   const text = await r.text();
   let data; try { data = JSON.parse(text); } catch { data = text; }
