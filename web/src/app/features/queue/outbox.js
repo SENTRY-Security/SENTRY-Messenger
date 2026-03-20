@@ -196,8 +196,9 @@ function normalizeJob(input = {}) {
     receiverDeviceId: input.receiverDeviceId || null,
     peerAccountDigest: input.peerAccountDigest || null,
     peerDeviceId: input.peerDeviceId || null,
-    // E2E push preview: short plaintext snippet + sender name for encrypted push notification
+    // E2E push preview: short plaintext snippet + sender name + msg type for encrypted push notification
     previewText: typeof input.previewText === 'string' ? input.previewText.slice(0, 140) : null,
+    previewMsgType: typeof input.previewMsgType === 'string' ? input.previewMsgType : null,
     senderDisplayName: typeof input.senderDisplayName === 'string' ? input.senderDisplayName.slice(0, 60) : null,
     // Legacy fields kept for compatibility (media-upload no-op)
     payloadEnvelope: input.payloadEnvelope || null,
@@ -438,21 +439,24 @@ async function loadEncryptPreview() {
 
 /**
  * Build encrypted_previews map (keyed by device_id) for push E2E preview.
- * Encrypts JSON {title: senderName, body: previewText} so the recipient SW
- * can show both sender nickname and message preview — fully E2E encrypted.
+ * Encrypts JSON {title, body, msgType} so the recipient SW can show
+ * sender nickname, message preview, and media type — fully E2E encrypted.
  * Best-effort: returns {} on any failure so sending is never blocked.
  */
-async function buildEncryptedPreviews(recipientDigest, previewText, senderDisplayName) {
-  if (!recipientDigest || !previewText) return {};
+async function buildEncryptedPreviews(recipientDigest, { previewText, senderDisplayName, previewMsgType }) {
+  if (!recipientDigest) return {};
+  // Need at least a text preview or a msgType to be useful
+  if (!previewText && !previewMsgType) return {};
   try {
     const keys = await getPreviewKeys(recipientDigest);
     if (!keys.length) return {};
     const encrypt = await loadEncryptPreview();
     if (!encrypt) return {};
-    // Encrypt a JSON payload so SW can parse title + body separately
+    // Encrypt a JSON payload so SW can parse title + body + msgType
     const plaintext = JSON.stringify({
       title: senderDisplayName || null,
-      body: previewText
+      body: previewText || null,
+      msgType: previewMsgType || null
     });
     const map = {};
     await Promise.all(keys.map(async ({ deviceId, previewPublicKey }) => {
@@ -470,11 +474,15 @@ async function buildEncryptedPreviews(recipientDigest, previewText, senderDispla
 async function attemptSend(job) {
   // If job has 'vault' or 'backup' payload, use Atomic Send API
   if (job.vault) {
-    // E2E push preview: encrypt preview text + sender name for recipient's devices (best-effort)
+    // E2E push preview: encrypt preview text + sender name + msgType for recipient's devices
     let encrypted_previews = {};
-    if (job.previewText && job.receiverAccountDigest) {
+    if (job.receiverAccountDigest && (job.previewText || job.previewMsgType)) {
       try {
-        encrypted_previews = await buildEncryptedPreviews(job.receiverAccountDigest, job.previewText, job.senderDisplayName);
+        encrypted_previews = await buildEncryptedPreviews(job.receiverAccountDigest, {
+          previewText: job.previewText,
+          senderDisplayName: job.senderDisplayName,
+          previewMsgType: job.previewMsgType
+        });
       } catch { /* never block send */ }
     }
 

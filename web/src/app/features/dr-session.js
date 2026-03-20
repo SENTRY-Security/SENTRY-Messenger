@@ -2113,6 +2113,7 @@ export async function sendDrPlaintextCore(params = {}) {
         peerAccountDigest: peer,
         peerDeviceId: peerDeviceId || null,
         previewText: _previewText,
+        previewMsgType: msgType || 'text',
         senderDisplayName: _senderName,
         meta: { msgType },
         dr: preSnapshot
@@ -3379,6 +3380,13 @@ export async function sendDrMediaCore(params = {}) {
     }
   }
 
+  // Resolve media content type to push preview msgType
+  const _mediaContentType = (metadata?.contentType || '').toLowerCase();
+  const _mediaMsgType = _mediaContentType.startsWith('image/') ? 'image'
+    : _mediaContentType.startsWith('video/') ? 'video'
+    : _mediaContentType.startsWith('audio/') ? 'audio'
+    : 'file';
+
   const job = await enqueueMediaMetaJob({
     conversationId,
     messageId,
@@ -3392,6 +3400,9 @@ export async function sendDrMediaCore(params = {}) {
     createdAt: now,
     meta: { msgType: msgType, media: metadata },
     peerAccountDigest: peer,
+    // E2E push preview for media messages
+    previewMsgType: _mediaMsgType,
+    senderDisplayName: sessionStore?.profileState?.nickname || null,
     dr: preSnapshot
       ? {
         snapshotBefore: preSnapshot,

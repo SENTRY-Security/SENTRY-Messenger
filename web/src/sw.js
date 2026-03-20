@@ -1,6 +1,6 @@
 // Service Worker — push notification only (no offline cache)
 // Scope: / (root)
-// SW_VERSION: 2026-03-20c (per-type notify filter)
+// SW_VERSION: 2026-03-20d (media preview i18n)
 
 // ─── Push notification type taxonomy ───────────────────────────────────────
 //
@@ -34,6 +34,13 @@ const PUSH_I18N = {
       'call-invite':       'You have an incoming call',
       'notify':            'You have a system notification',
       _default:            'You have a new message'
+    },
+    // E2E preview: media subtype descriptions (msgType from encrypted payload)
+    media: {
+      image: 'Sent a photo',
+      video: 'Sent a video',
+      audio: 'Sent a voice message',
+      file:  'Sent a file'
     }
   },
   'zh-Hant': {
@@ -46,6 +53,12 @@ const PUSH_I18N = {
       'call-invite':       '你有一通來電',
       'notify':            '你有一則系統通知',
       _default:            '你有一則新訊息'
+    },
+    media: {
+      image: '傳送了一張圖片',
+      video: '傳送了一段影片',
+      audio: '傳送了一則語音訊息',
+      file:  '傳送了一個檔案'
     }
   },
   'zh-Hans': {
@@ -58,6 +71,12 @@ const PUSH_I18N = {
       'call-invite':       '你有一通来电',
       'notify':            '你有一条系统通知',
       _default:            '你有一条新消息'
+    },
+    media: {
+      image: '发送了一张图片',
+      video: '发送了一段视频',
+      audio: '发送了一条语音消息',
+      file:  '发送了一个文件'
     }
   },
   ja: {
@@ -70,6 +89,12 @@ const PUSH_I18N = {
       'call-invite':       '着信があります',
       'notify':            'システム通知があります',
       _default:            '新しいメッセージがあります'
+    },
+    media: {
+      image: '写真を送信しました',
+      video: '動画を送信しました',
+      audio: 'ボイスメッセージを送信しました',
+      file:  'ファイルを送信しました'
     }
   },
   ko: {
@@ -82,6 +107,12 @@ const PUSH_I18N = {
       'call-invite':       '수신 전화가 있습니다',
       'notify':            '시스템 알림이 있습니다',
       _default:            '새 메시지가 있습니다'
+    },
+    media: {
+      image: '사진을 보냈습니다',
+      video: '동영상을 보냈습니다',
+      audio: '음성 메시지를 보냈습니다',
+      file:  '파일을 보냈습니다'
     }
   },
   th: {
@@ -94,6 +125,12 @@ const PUSH_I18N = {
       'call-invite':       'คุณมีสายเรียกเข้า',
       'notify':            'คุณมีการแจ้งเตือนระบบ',
       _default:            'คุณมีข้อความใหม่'
+    },
+    media: {
+      image: 'ส่งรูปภาพ',
+      video: 'ส่งวิดีโอ',
+      audio: 'ส่งข้อความเสียง',
+      file:  'ส่งไฟล์'
     }
   },
   vi: {
@@ -106,6 +143,12 @@ const PUSH_I18N = {
       'call-invite':       'Bạn có cuộc gọi đến',
       'notify':            'Bạn có thông báo hệ thống',
       _default:            'Bạn có tin nhắn mới'
+    },
+    media: {
+      image: 'Đã gửi ảnh',
+      video: 'Đã gửi video',
+      audio: 'Đã gửi tin nhắn thoại',
+      file:  'Đã gửi tệp'
     }
   }
 };
@@ -339,11 +382,19 @@ self.addEventListener('push', (e) => {
           const privKey = await getPreviewPrivateKey();
           if (privKey) {
             const decrypted = await decryptPreview(privKey, payload.encrypted_preview);
-            // Parse JSON {title, body} — fallback to plain string for backward compat
+            // Parse JSON {title, body, msgType} — fallback to plain string for backward compat
             try {
               const parsed = JSON.parse(decrypted);
               if (parsed.title) notifTitle = parsed.title;
-              if (parsed.body) notifBody = parsed.body;
+              if (parsed.body) {
+                // Text message → show actual message text
+                notifBody = parsed.body;
+              } else if (parsed.msgType) {
+                // Media/non-text → show localized media description
+                const mediaMap = i18n.media || PUSH_I18N.en.media || {};
+                const mediaDesc = mediaMap[parsed.msgType];
+                if (mediaDesc) notifBody = mediaDesc;
+              }
             } catch {
               // Legacy plain-string format
               notifBody = decrypted;
