@@ -1,6 +1,6 @@
 // Service Worker — push notification only (no offline cache)
 // Scope: / (root)
-// SW_VERSION: 2026-03-20a (IDB timeout fix + preview relay)
+// SW_VERSION: 2026-03-20b (E2E title+body preview)
 
 // ─── Push notification type taxonomy ───────────────────────────────────────
 //
@@ -274,15 +274,26 @@ self.addEventListener('push', (e) => {
     // Preview logic:
     //   OFF → always show generic localized body (no content leak)
     //   ON  → decrypt encrypted_preview if available, else show generic text
+    //   encrypted_preview decrypts to JSON: {title: "sender name", body: "message text"}
     const notifyPromise = getPreviewPref().then(async (previewOn) => {
-      let body = localizedBody;
+      let notifTitle = title;
+      let notifBody = localizedBody;
 
       if (previewOn && payload.encrypted_preview) {
         // E2E decrypt: server never sees the plaintext
         try {
           const privKey = await getPreviewPrivateKey();
           if (privKey) {
-            body = await decryptPreview(privKey, payload.encrypted_preview);
+            const decrypted = await decryptPreview(privKey, payload.encrypted_preview);
+            // Parse JSON {title, body} — fallback to plain string for backward compat
+            try {
+              const parsed = JSON.parse(decrypted);
+              if (parsed.title) notifTitle = parsed.title;
+              if (parsed.body) notifBody = parsed.body;
+            } catch {
+              // Legacy plain-string format
+              notifBody = decrypted;
+            }
           }
         } catch (err) {
           console.warn('[sw] preview decrypt failed', err);
@@ -291,8 +302,8 @@ self.addEventListener('push', (e) => {
       }
       // Preview disabled or no encrypted_preview → generic localized text
 
-      return self.registration.showNotification(title, {
-        body: body,
+      return self.registration.showNotification(notifTitle, {
+        body: notifBody,
         icon: icon,
         badge: '/assets/images/logo.svg',
         tag: 'sentry-push',

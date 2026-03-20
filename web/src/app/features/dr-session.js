@@ -2096,6 +2096,8 @@ export async function sendDrPlaintextCore(params = {}) {
       const _previewText = (msgType === 'text' && typeof text === 'string' && text.length > 0)
         ? text.slice(0, 140)
         : null;
+      // Sender's display name for push notification title (E2E encrypted alongside body)
+      const _senderName = sessionStore?.profileState?.nickname || null;
 
       job = await enqueueOutboxJob({
         conversationId: finalConversationId,
@@ -2111,6 +2113,7 @@ export async function sendDrPlaintextCore(params = {}) {
         peerAccountDigest: peer,
         peerDeviceId: peerDeviceId || null,
         previewText: _previewText,
+        senderDisplayName: _senderName,
         meta: { msgType },
         dr: preSnapshot
           ? {

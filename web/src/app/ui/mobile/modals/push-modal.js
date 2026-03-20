@@ -3,6 +3,7 @@
 
 import { escapeHtml } from '../ui-utils.js';
 import { t } from '/locales/index.js';
+import { sessionStore } from '../session-store.js';
 import {
   isPushSupported, isPWAMode, subscribePush, unsubscribePush,
   unsubscribeByEndpoint, listPushDevices, getPushSubscription
@@ -65,7 +66,11 @@ export function createPushModal({ deps }) {
           dbg('encrypting preview...');
           const encrypt = await loadEncryptPreview();
           if (encrypt) {
-            encrypted_preview = await encrypt(previewPublicKey, 'SENTRY: Test notification 🔔');
+            const testPayload = JSON.stringify({
+              title: sessionStore?.profileState?.nickname || 'Test User',
+              body: 'SENTRY: Test notification 🔔'
+            });
+            encrypted_preview = await encrypt(previewPublicKey, testPayload);
             dbg('preview encrypted OK');
           } else {
             dbg('encrypt module not loaded');
