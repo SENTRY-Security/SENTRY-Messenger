@@ -639,6 +639,10 @@ export class ConversationListController extends BaseController {
         if (this.elements.conversationRefreshEl) {
             this.elements.conversationRefreshEl.style.transition = enable ? 'transform 120ms ease-out, opacity 120ms ease-out' : 'none';
         }
+        const toggleEl = document.getElementById('quickActionsToggle');
+        if (toggleEl) {
+            toggleEl.style.transition = enable ? 'transform 120ms ease-out' : '';
+        }
         if (this.elements.conversationQuickActions) {
             this.elements.conversationQuickActions.style.transition = enable ? 'transform 120ms ease-out' : '';
         }
@@ -673,6 +677,10 @@ export class ConversationListController extends BaseController {
                     labelEl.textContent = clamped >= CONV_PULL_THRESHOLD ? t('messages.releaseToRefreshConversations') : t('messages.pullToRefreshConversations');
                 }
             }
+        }
+        const toggleEl = document.getElementById('quickActionsToggle');
+        if (toggleEl) {
+            toggleEl.style.transform = clamped > 0 ? `translateY(${clamped}px)` : '';
         }
         if (this.elements.conversationQuickActions) {
             this.elements.conversationQuickActions.style.transform = clamped > 0 ? `translateY(${clamped}px)` : '';
@@ -1041,6 +1049,33 @@ export class ConversationListController extends BaseController {
                     }
                 }
             }, { passive: true });
+        }
+
+        // Quick-actions toggle (chevron tap or pull-down)
+        this._quickActionsExpanded = false;
+        const toggleEl = document.getElementById('quickActionsToggle');
+        const qaEl = this.elements.conversationQuickActions || document.getElementById('conversationQuickActions');
+        if (toggleEl && qaEl) {
+            const expand = () => {
+                this._quickActionsExpanded = true;
+                qaEl.classList.remove('collapsed');
+                toggleEl.classList.add('expanded');
+            };
+            const collapse = () => {
+                this._quickActionsExpanded = false;
+                qaEl.classList.add('collapsed');
+                toggleEl.classList.remove('expanded');
+            };
+            // Tap chevron to toggle
+            toggleEl.addEventListener('click', () => {
+                if (this._quickActionsExpanded) collapse(); else expand();
+            });
+            // Auto-collapse after a button inside is clicked
+            qaEl.addEventListener('click', (e) => {
+                if (e.target.closest('.quick-action-btn')) {
+                    setTimeout(() => collapse(), 300);
+                }
+            });
         }
     }
 }

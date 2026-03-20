@@ -1570,11 +1570,49 @@
 }
 
 /* ── Ephemeral Chat ── */
+/* Quick-actions pull-down toggle */
+.quick-actions-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 0 0;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+.quick-actions-chevron {
+  color: rgba(148,163,184,0.55);
+  animation: qaChevronBounce 2.4s ease-in-out infinite;
+  transition: transform 0.3s ease, color 0.2s;
+}
+.quick-actions-toggle.expanded .quick-actions-chevron {
+  transform: rotate(180deg);
+  animation: none;
+  color: rgba(148,163,184,0.8);
+}
+@keyframes qaChevronBounce {
+  0%, 100% { transform: translateY(0); }
+  40% { transform: translateY(3px); }
+  60% { transform: translateY(-1px); }
+  80% { transform: translateY(2px); }
+}
+
 /* Quick action toolbar */
 .conversation-quick-actions {
   display: flex;
   gap: 8px;
   padding: 10px 14px 6px;
+  overflow: hidden;
+  transition: max-height 0.3s ease, opacity 0.25s ease, padding 0.3s ease;
+  max-height: 80px;
+  opacity: 1;
+}
+.conversation-quick-actions.collapsed {
+  max-height: 0;
+  opacity: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  pointer-events: none;
 }
 
 .quick-action-btn {
