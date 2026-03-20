@@ -364,9 +364,39 @@
         }
         function saveNotifyPrefs(prefs) {
           try { localStorage.setItem(NOTIFY_PREFS_KEY, JSON.stringify(prefs)); } catch {}
+          // Persist to IndexedDB (SW cannot read localStorage)
+          saveNotifyPrefsToIDB(prefs);
+          // Notify running SW immediately
+          notifySwNotifyTypes(prefs);
+        }
+        function saveNotifyPrefsToIDB(prefs) {
+          try {
+            var req = indexedDB.open('sentry-push-prefs', 1);
+            req.onupgradeneeded = function(e) {
+              var db = e.target.result;
+              if (!db.objectStoreNames.contains('prefs')) db.createObjectStore('prefs');
+            };
+            req.onsuccess = function(e) {
+              var db = e.target.result;
+              var tx = db.transaction('prefs', 'readwrite');
+              tx.objectStore('prefs').put(prefs, 'notify-types');
+            };
+          } catch {}
+        }
+        function notifySwNotifyTypes(prefs) {
+          try {
+            navigator.serviceWorker.getRegistration('/sw.js').then(function(reg) {
+              if (reg && reg.active) {
+                reg.active.postMessage({ type: 'set-notify-types', value: prefs });
+              }
+            });
+          } catch {}
         }
         function initNotifyToggles() {
           var prefs = loadNotifyPrefs();
+          // Sync current values to IDB + SW on page load
+          saveNotifyPrefsToIDB(prefs);
+          notifySwNotifyTypes(prefs);
           document.querySelectorAll('[data-ntype]').forEach(function(input) {
             var key = input.dataset.ntype;
             if (prefs[key] === false) input.checked = false;

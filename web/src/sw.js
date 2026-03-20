@@ -1,6 +1,6 @@
 // Service Worker — push notification only (no offline cache)
 // Scope: / (root)
-// SW_VERSION: 2026-03-20b (E2E title+body preview)
+// SW_VERSION: 2026-03-20c (per-type notify filter)
 
 // ─── Push notification type taxonomy ───────────────────────────────────────
 //
@@ -211,6 +211,48 @@ async function decryptPreview(privateKeyB64, blobB64) {
   return new TextDecoder().decode(plainBuf);
 }
 
+// ─── Notify-type filter (in-memory + IndexedDB) ─────────────────
+// Map server payload.type → user-facing ntype category
+const PUSH_TYPE_TO_NTYPE = {
+  'message-new':        'message',
+  'secure-message':     'message',
+  'biz-conv-message':   'group-chat',
+  'ephemeral-message':  'ephemeral',
+  'call-invite':        'call',
+  'notify':             'system'
+};
+
+let _notifyTypes = null; // null = not yet loaded; object = {message:bool, ...}
+
+function getNotifyTypes() {
+  if (_notifyTypes !== null) return Promise.resolve(_notifyTypes);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { _notifyTypes = {}; resolve({}); }, 3000);
+    try {
+      const req = indexedDB.open('sentry-push-prefs', 1);
+      req.onupgradeneeded = (ev) => {
+        const db = ev.target.result;
+        if (!db.objectStoreNames.contains('prefs')) db.createObjectStore('prefs');
+      };
+      req.onsuccess = (ev) => {
+        try {
+          const db = ev.target.result;
+          const tx = db.transaction('prefs', 'readonly');
+          const get = tx.objectStore('prefs').get('notify-types');
+          get.onsuccess = () => {
+            clearTimeout(timer);
+            _notifyTypes = (get.result && typeof get.result === 'object') ? get.result : {};
+            resolve(_notifyTypes);
+          };
+          get.onerror = () => { clearTimeout(timer); resolve({}); };
+        } catch { clearTimeout(timer); resolve({}); }
+      };
+      req.onerror = () => { clearTimeout(timer); resolve({}); };
+      req.onblocked = () => { clearTimeout(timer); resolve({}); };
+    } catch { clearTimeout(timer); resolve({}); }
+  });
+}
+
 // ─── Preview preference (in-memory + IndexedDB) ─────────────────
 // In-memory cache — updated instantly via postMessage from PWA page
 let _previewPref = null; // null = not yet loaded
@@ -219,6 +261,9 @@ let _previewPref = null; // null = not yet loaded
 self.addEventListener('message', (ev) => {
   if (ev.data && ev.data.type === 'set-preview-pref') {
     _previewPref = !!ev.data.value;
+  }
+  if (ev.data && ev.data.type === 'set-notify-types' && ev.data.value && typeof ev.data.value === 'object') {
+    _notifyTypes = ev.data.value;
   }
 });
 
@@ -271,11 +316,20 @@ self.addEventListener('push', (e) => {
     const title = payload.title || i18n.title;
     const localizedBody = (payload.type && bodyMap[payload.type]) || bodyMap._default;
 
-    // Preview logic:
-    //   OFF → always show generic localized body (no content leak)
-    //   ON  → decrypt encrypted_preview if available, else show generic text
-    //   encrypted_preview decrypts to JSON: {title: "sender name", body: "message text"}
-    const notifyPromise = getPreviewPref().then(async (previewOn) => {
+    // ── Per-type filter + preview logic ──
+    //   1. Check notify-type prefs — if user disabled this category, suppress
+    //   2. Preview OFF → generic localized body (no content leak)
+    //   3. Preview ON  → decrypt encrypted_preview {title, body} if available
+    const ntype = payload.type ? PUSH_TYPE_TO_NTYPE[payload.type] : null;
+
+    const notifyPromise = getNotifyTypes().then(async (typePrefs) => {
+      // Check per-type filter: false = explicitly disabled
+      if (ntype && typePrefs[ntype] === false) {
+        console.log('[sw] push suppressed:', payload.type, '→', ntype);
+        return; // Don't show notification
+      }
+
+      const previewOn = await getPreviewPref();
       let notifTitle = title;
       let notifBody = localizedBody;
 
