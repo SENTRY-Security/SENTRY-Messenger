@@ -380,10 +380,18 @@
 }
 
 /* PDF viewer */
-.modal.pdf-modal {
-  padding: 0;
+.modal.pdf-modal,
+.modal.excel-modal,
+.modal.word-modal,
+.modal.pptx-modal,
+.modal.zip-modal {
+  padding: 0 !important;
+  padding-top: 0 !important;
   align-items: stretch;
   overflow: hidden;
+}
+
+.modal.pdf-modal {
   touch-action: none;
 }
 
@@ -693,11 +701,7 @@
 }
 
 /* ── Excel viewer ── */
-.modal.excel-modal {
-  padding: 0;
-  align-items: stretch;
-  overflow: hidden;
-}
+.modal.excel-modal {}
 
 .modal.excel-modal .modal-backdrop { background: #000; opacity: 0.5; }
 
@@ -854,11 +858,7 @@
 }
 
 /* ── Word viewer ── */
-.modal.word-modal {
-  padding: 0;
-  align-items: stretch;
-  overflow: hidden;
-}
+.modal.word-modal {}
 
 .modal.word-modal .modal-backdrop { background: #000; opacity: 0.5; }
 
@@ -975,7 +975,7 @@
 }
 
 /* ── PPTX viewer ── */
-.modal.pptx-modal { padding: 0; align-items: stretch; overflow: hidden; }
+.modal.pptx-modal {}
 .modal.pptx-modal .modal-backdrop { background: #000; opacity: 0.6; }
 .modal.pptx-modal .modal-panel {
   width: 100%; height: 100%; max-height: none; border-radius: 0;
@@ -1030,7 +1030,7 @@
 }
 
 /* ── ZIP viewer ── */
-.modal.zip-modal { padding: 0; align-items: stretch; overflow: hidden; }
+.modal.zip-modal {}
 .modal.zip-modal .modal-backdrop { background: #000; opacity: 0.5; }
 .modal.zip-modal .modal-panel {
   width: 100%; height: 100%; max-height: none; border-radius: 0;

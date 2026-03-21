@@ -65,6 +65,10 @@ export function setupModalController({ shareButtonProvider } = {}) {
       'avatar-preview-modal',
       'settings-modal',
       'pdf-modal',
+      'excel-modal',
+      'word-modal',
+      'pptx-modal',
+      'zip-modal',
       'safe-modal',
       'subscription-modal-shell'
     );

@@ -1106,7 +1106,8 @@ export class MediaHandlingController extends BaseController {
         const classesToRemove = [
             'loading-modal', 'progress-modal', 'folder-modal', 'upload-modal',
             'confirm-modal', 'nickname-modal', 'avatar-modal',
-            'avatar-preview-modal', 'settings-modal'
+            'avatar-preview-modal', 'settings-modal',
+            'pdf-modal', 'excel-modal', 'word-modal', 'pptx-modal', 'zip-modal'
         ];
         modalEl.classList.remove(...classesToRemove);
 
