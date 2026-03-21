@@ -27,7 +27,10 @@ import {
   getFaceBlurMode,
   createFaceBlurPipeline,
   isFaceBlurSupported,
-  BLUR_MODE
+  BLUR_MODE,
+  isKeyDerivationPending,
+  retryDeriveKeys,
+  getCallKeyContext
 } from '../../features/calls/index.js';
 import { sessionStore } from './session-store.js';
 import { CALL_MEDIA_STATE_STATUS } from '../../../shared/calls/schemas.js';
@@ -68,6 +71,10 @@ const MIN_DRAG_DISTANCE = 6;
 
 function describeStatus(session) {
   if (!session) return t('status.connecting');
+  // Show encryption status for incoming calls when key derivation is pending
+  if (session.status === CALL_SESSION_STATUS.INCOMING && isKeyDerivationPending()) {
+    return t('callEncryption.e2eePending');
+  }
   const mediaStatus = session.mediaState?.status || null;
   const mediaLabels = getMediaStatusLabel();
   if (mediaStatus && mediaLabels[mediaStatus]) {
@@ -1272,10 +1279,18 @@ export function initCallOverlay({ showToast }) {
     if (ui.acceptBtn) ui.acceptBtn.style.display = incoming ? 'flex' : 'none';
     if (ui.rejectBtn) ui.rejectBtn.style.display = incoming ? 'flex' : 'none';
     if (ui.cancelBtn) ui.cancelBtn.style.display = outgoing ? 'flex' : 'none';
-    const disable = state.actionBusy;
+    // E2EE gate: disable accept button until key derivation succeeds
+    const e2eePending = incoming && isKeyDerivationPending();
+    const disable = state.actionBusy || (incoming && e2eePending);
     [ui.acceptBtn, ui.rejectBtn, ui.cancelBtn, ui.hangupBtn].forEach((btn) => {
-      if (btn) btn.disabled = disable;
+      if (btn) btn.disabled = (btn === ui.acceptBtn) ? disable : state.actionBusy;
     });
+    // Show E2EE status hint on accept button
+    if (ui.acceptBtn && incoming && e2eePending) {
+      ui.acceptBtn.classList.add('e2ee-pending');
+    } else if (ui.acceptBtn) {
+      ui.acceptBtn.classList.remove('e2ee-pending');
+    }
     const togglesDisabled = disable || !showControlsRow;
     [ui.muteBtn].forEach((btn) => {
       if (btn) btn.disabled = togglesDisabled;
@@ -1695,11 +1710,78 @@ export function initCallOverlay({ showToast }) {
     }
   }
 
+  // ── E2EE key derivation retry for incoming calls ──
+  // When the callee receives an invite but the conversation token hasn't
+  // arrived yet (ephemeral key-exchange timing), retry every 500ms.
+  // After 10s, auto-reject the call.
+  const E2EE_RETRY_INTERVAL = 500;
+  const E2EE_TIMEOUT = 10_000;
+  let e2eeRetryTimer = null;
+  let e2eeTimeoutTimer = null;
+
+  function startE2eeRetry() {
+    stopE2eeRetry();
+    const startedAt = Date.now();
+    e2eeRetryTimer = setInterval(async () => {
+      const session = getCallSessionSnapshot();
+      if (!session || session.status !== CALL_SESSION_STATUS.INCOMING) {
+        stopE2eeRetry();
+        return;
+      }
+      if (!isKeyDerivationPending()) {
+        // Keys derived (or no envelope) — stop retrying, update UI
+        stopE2eeRetry();
+        render(session);
+        return;
+      }
+      const ok = await retryDeriveKeys();
+      if (ok) {
+        stopE2eeRetry();
+        render(session);
+        log({ e2eeRetrySuccess: true, callId: session.callId, elapsedMs: Date.now() - startedAt });
+      }
+    }, E2EE_RETRY_INTERVAL);
+
+    e2eeTimeoutTimer = setTimeout(() => {
+      const session = getCallSessionSnapshot();
+      if (!session || session.status !== CALL_SESSION_STATUS.INCOMING) {
+        stopE2eeRetry();
+        return;
+      }
+      if (isKeyDerivationPending()) {
+        log({ e2eeRetryTimeout: true, callId: session.callId });
+        showToast?.(t('callEncryption.e2eeTimedOut'), { variant: 'error' });
+        // Auto-reject: cannot establish encrypted channel
+        try {
+          sendCallSignal('call-reject', {
+            callId: session.callId,
+            targetAccountDigest: session.peerAccountDigest || null,
+            reason: 'e2ee_unavailable'
+          });
+          endCallMediaSession('e2ee-timeout');
+          completeCallSession({ reason: 'e2ee-timeout' });
+        } catch { }
+      }
+      stopE2eeRetry();
+    }, E2EE_TIMEOUT);
+  }
+
+  function stopE2eeRetry() {
+    if (e2eeRetryTimer) { clearInterval(e2eeRetryTimer); e2eeRetryTimer = null; }
+    if (e2eeTimeoutTimer) { clearTimeout(e2eeTimeoutTimer); e2eeTimeoutTimer = null; }
+  }
+
   const unsubscribers = [
     subscribeCallEvent(CALL_EVENT.STATE, ({ session }) => {
       render(session);
       if (session?.mediaState?.status === CALL_MEDIA_STATE_STATUS.FAILED) {
         showToast?.(t('calls.cannotCreateEncryptedChannel'), { variant: 'error' });
+      }
+      // Start E2EE retry when an incoming call has a pending envelope
+      if (session?.status === CALL_SESSION_STATUS.INCOMING && isKeyDerivationPending()) {
+        if (!e2eeRetryTimer) startE2eeRetry();
+      } else {
+        stopE2eeRetry();
       }
     }),
     subscribeCallEvent(CALL_EVENT.SIGNAL, ({ signal }) => {
@@ -1719,6 +1801,7 @@ export function initCallOverlay({ showToast }) {
       try { off?.(); } catch {}
     });
     stopTimer();
+    stopE2eeRetry();
     audio.dispose();
     ui.acceptBtn?.removeEventListener('click', handleAccept);
     ui.rejectBtn?.removeEventListener('click', handleReject);

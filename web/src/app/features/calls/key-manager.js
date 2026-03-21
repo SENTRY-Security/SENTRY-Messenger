@@ -116,6 +116,30 @@ export function getCallKeyContext() {
   };
 }
 
+/**
+ * Returns true when a pendingEnvelope exists but keys haven't been derived yet.
+ * Used by call-overlay to show "establishing encryption…" status.
+ */
+export function isKeyDerivationPending() {
+  if (keyContext) return false;
+  const mediaState = getCallMediaState();
+  return !!mediaState?.pendingEnvelope;
+}
+
+/**
+ * Explicitly retry key derivation.  Called by the incoming call overlay
+ * when the conversation token may have arrived after the initial attempt
+ * failed (e.g. ephemeral key-exchange-ack received while ringing).
+ * @returns {Promise<boolean>} true if keys were successfully derived
+ */
+export async function retryDeriveKeys() {
+  if (keyContext) return true; // already derived
+  try {
+    await maybeDeriveKeys('retry');
+  } catch { /* logged inside maybeDeriveKeys */ }
+  return !!keyContext;
+}
+
 export function supportsInsertableStreams() {
   const senderProto = typeof RTCRtpSender !== 'undefined' ? RTCRtpSender.prototype : null;
   if (!senderProto) return false;
@@ -210,27 +234,6 @@ async function maybeDeriveKeys(trigger = 'auto') {
   deriveTask = deriveKeysFromEnvelope({ session, envelope: mediaState.pendingEnvelope, trigger })
     .catch((err) => {
       log({ callKeyDeriveError: err?.message || err, trigger });
-      // Key derivation failed (e.g. conversation token not yet available for
-      // ephemeral calls).  Update capabilities to insertableStreams: false so
-      // that:
-      // 1. The callee's receiver/sender transforms are correctly skipped
-      // 2. The capabilities are carried in outgoing signals (accept/answer)
-      //    via the ephemeral adapter, telling the caller to stop encrypting
-      // Without this, the caller encrypts audio while the callee can't
-      // decrypt → noise on the callee side.
-      try {
-        // Clear pendingEnvelope to prevent infinite re-derive attempts
-        // (STATE events from updateCallMedia trigger handleCallStateEvent
-        // which calls maybeDeriveKeys again).
-        updateCallMedia({
-          pendingEnvelope: null,
-          capabilities: { insertableStreams: false }
-        });
-        setCallMediaStatus(CALL_MEDIA_STATE_STATUS.SKIPPED);
-        log({ callKeyDeriveFailFallback: true, trigger });
-      } catch (fallbackErr) {
-        log({ callKeyDeriveFailFallbackError: fallbackErr?.message });
-      }
     })
     .finally(() => {
       deriveTask = null;

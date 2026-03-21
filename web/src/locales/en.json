@@ -390,7 +390,8 @@
     "e2eeRotating": "Encryption key rotating…",
     "cannotProtectCall": "Cannot protect this call",
     "callUnencrypted": "Call is unencrypted",
-    "preparingE2ee": "Preparing end-to-end encryption…"
+    "preparingE2ee": "Preparing end-to-end encryption…",
+    "e2eeTimedOut": "Cannot establish encrypted connection. Call cancelled."
   },
   "callKeys": {
     "webCryptoNotSupported": "This browser does not support WebCrypto",

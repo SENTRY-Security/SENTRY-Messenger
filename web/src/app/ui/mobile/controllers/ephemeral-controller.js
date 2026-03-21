@@ -1463,6 +1463,14 @@ export class EphemeralController extends BaseController {
     const session = this.ephemeralSessions.get(sessionId);
     if (!session) return;
 
+    // Guard: DR key exchange must be complete before calling.
+    // Without this, the Owner can call before the Guest has the call token,
+    // causing E2EE to succeed on Owner but fail on Guest → noise.
+    if (!this._drStates.has(sessionId)) {
+      console.warn('[EphCall] cannot call — DR key exchange not complete for session', sessionId);
+      return;
+    }
+
     // Activate ephemeral call adapter for this session
     this._activateCallAdapter(session);
 

@@ -390,7 +390,8 @@
     "e2eeRotating": "加密金鑰輪換中…",
     "cannotProtectCall": "無法保護此通話",
     "callUnencrypted": "通話未加密",
-    "preparingE2ee": "準備端到端加密…"
+    "preparingE2ee": "準備端到端加密…",
+    "e2eeTimedOut": "無法建立加密連線，通話已取消"
   },
   "callKeys": {
     "webCryptoNotSupported": "此瀏覽器不支援 WebCrypto",
