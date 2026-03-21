@@ -29,6 +29,15 @@ import { toU8Strict } from '/shared/utils/u8-strict.js';
 import { buildCallPeerIdentity } from './identity.js';
 import { t } from '/locales/index.js';
 
+// Flag set by ephemeral-call-adapter when ephemeral mode is active.
+// Avoids circular import (media-session ↔ ephemeral-call-adapter).
+let _ephemeralModeActive = false;
+
+/** Called by ephemeral-call-adapter to toggle ephemeral mode awareness. */
+export function setMediaSessionEphemeralMode(active) {
+  _ephemeralModeActive = !!active;
+}
+
 let sendSignal = null;
 let showToast = () => { };
 let remoteAudioEl = null;
@@ -284,7 +293,12 @@ export function initCallMediaSession({ sendSignalFn, showToastFn }) {
     subscribeCallEvent(CALL_EVENT.SIGNAL, ({ signal }) => handleSignal(signal)),
     subscribeCallEvent(CALL_EVENT.STATE, ({ session }) => handleSessionState(session)),
     // Rekey ScriptTransform workers when call key context changes (key rotation)
-    onKeyContextUpdate(() => { rekeyScriptTransformWorkers(); })
+    // Also retroactively apply transforms for receivers/senders that were skipped
+    // because keyContext wasn't ready at ontrack time (race condition fix).
+    onKeyContextUpdate((ctx) => {
+      rekeyScriptTransformWorkers();
+      if (ctx) applyDeferredTransforms();
+    })
   ];
 }
 
@@ -296,7 +310,7 @@ export function disposeCallMediaSession() {
 }
 
 export async function startOutgoingCallMedia({ callId } = {}) {
-  if (!supportsInsertableStreams()) {
+  if (!supportsInsertableStreams() && !_ephemeralModeActive) {
     failCall('e2ee-not-supported', new Error(t('callKeys.e2eeNotSupported')));
     return;
   }
@@ -316,7 +330,7 @@ export async function startOutgoingCallMedia({ callId } = {}) {
 }
 
 export async function acceptIncomingCallMedia({ callId } = {}) {
-  if (!supportsInsertableStreams()) {
+  if (!supportsInsertableStreams() && !_ephemeralModeActive) {
     failCall('e2ee-not-supported', new Error(t('callKeys.e2eeNotSupported')));
     return;
   }
@@ -1538,7 +1552,10 @@ function setupInsertableStreamsForSender(sender, track) {
     return;
   }
   if (!peerSupportsInsertableStreams()) {
-    failCall('peer-e2ee-not-supported', new Error(t('callKeys.peerE2eeNotSupported')));
+    // Peer advertised insertableStreams: false (e.g. ephemeral call where
+    // E2EE key exchange failed).  Skip encryption — do NOT fail the call.
+    // Unencrypted audio/video will flow normally.
+    log({ e2eeSenderSkip: 'peer-not-supported', kind: track?.kind, callId: activeCallId });
     return;
   }
   if (!e2eeReceiverConfirmed) {
@@ -1590,8 +1607,16 @@ function setupInsertableStreamsForReceiver(receiver, track) {
     return;
   }
   if (!peerSupportsInsertableStreams()) {
+    // Peer advertised insertableStreams: false (e.g. ephemeral call where
+    // E2EE key exchange failed).  Skip decryption — do NOT fail the call.
+    // Unencrypted audio/video will flow normally.
     log({ e2eeReceiverSkip: 'peer-not-supported', kind: track?.kind, callId: activeCallId });
-    failCall('peer-e2ee-not-supported', new Error(t('callKeys.peerE2eeNotSupported')));
+    // Still confirm receiver so sender transforms aren't blocked.
+    if (!e2eeReceiverConfirmed) {
+      e2eeReceiverConfirmed = true;
+      log({ e2eeReceiverConfirmed: true, triggeredBy: 'peer-not-supported', callId: activeCallId });
+      applySenderTransformsDeferred();
+    }
     return;
   }
   const keyContext = getCallKeyContext();
@@ -1633,6 +1658,29 @@ function applySenderTransformsDeferred() {
       setupInsertableStreamsForSender(sender, sender.track);
     }
   }
+}
+
+/**
+ * Retroactively apply receiver + sender transforms when keyContext arrives
+ * after ontrack already fired.  Without this, the receiver transform is
+ * never set up (ontrack checked keyContext → null → skipped), and later
+ * when keys are derived, only rekeyScriptTransformWorkers runs but there
+ * are no workers to update.  This causes one side to encrypt audio while
+ * the other can't decrypt — resulting in noise or silence.
+ */
+function applyDeferredTransforms() {
+  if (!peerConnection || !peerSupportsInsertableStreams()) return;
+  const ctx = getCallKeyContext();
+  if (!ctx) return;
+  // Apply receiver transforms for tracks that were skipped
+  for (const receiver of peerConnection.getReceivers()) {
+    if (!receiver.track) continue;
+    // Skip if this receiver already has a worker (transform already applied)
+    if (scriptTransformWorkers.has(receiver)) continue;
+    setupInsertableStreamsForReceiver(receiver, receiver.track);
+  }
+  // Sender transforms may also need applying if receiver was just confirmed
+  applySenderTransformsDeferred();
 }
 
 /**

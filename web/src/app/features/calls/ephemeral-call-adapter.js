@@ -11,7 +11,8 @@ import {
   canStartCall,
   requestOutgoingCall,
   completeCallSession,
-  updateCallMedia
+  updateCallMedia,
+  getCallMediaState as _getCallMediaState
 } from './state.js';
 import {
   handleCallSignalMessage,
@@ -19,7 +20,7 @@ import {
   setCallSignalSender,
   sendCallInviteSignal
 } from './signaling.js';
-import { startOutgoingCallMedia } from './media-session.js';
+import { startOutgoingCallMedia, setMediaSessionEphemeralMode } from './media-session.js';
 import { prepareCallKeyEnvelope } from './key-manager.js';
 
 // ── Ephemeral context ──
@@ -49,6 +50,7 @@ export function activateEphemeralCallMode(ctx) {
   };
 
   setCallSignalSender(_ephemeralSignalSender);
+  setMediaSessionEphemeralMode(true);
   log({ ephCallAdapterActivated: true, side: _ephCtx.side });
 }
 
@@ -56,6 +58,7 @@ export function activateEphemeralCallMode(ctx) {
 export function deactivateEphemeralCallMode() {
   if (!_ephCtx) return;
   _ephCtx = null;
+  setMediaSessionEphemeralMode(false);
   // Restore previous signal sender so regular calls continue working
   if (_prevSignalSender) {
     setCallSignalSender(_prevSignalSender);
@@ -107,6 +110,16 @@ function _ephemeralSignalSender(payload) {
   // This mismatch led to one side encrypting audio while the other couldn't
   // decrypt — resulting in noise or silent audio.
   delete msg.traceId;
+
+  // Always inject local capabilities into outgoing signals so the peer knows
+  // our E2EE status.  Standard call signals (accept, offer, answer) don't
+  // carry capabilities, but ephemeral calls need both sides to agree.
+  if (!msg.capabilities) {
+    const mediaState = _getCallMediaState?.();
+    if (mediaState?.capabilities) {
+      msg.capabilities = mediaState.capabilities;
+    }
+  }
 
   try {
     _ephCtx.wsSend(msg);
@@ -175,10 +188,13 @@ export function handleEphemeralCallMessage(msg) {
   // field is the only source.  Without this, mediaState.capabilities stays
   // at local default (insertableStreams: true), causing one side to encrypt
   // audio while the other can't decrypt — resulting in noise or no audio.
-  if (callType === 'call-invite' && msg.capabilities && !msg.envelope) {
+  //
+  // Apply on ALL signal types (invite, accept, offer, answer) — both sides
+  // need to know the peer's E2EE capability as early as possible.
+  if (msg.capabilities && !msg.envelope) {
     try {
       updateCallMedia({ capabilities: msg.capabilities });
-      log({ ephCallCapabilitiesApplied: true, caps: msg.capabilities });
+      log({ ephCallCapabilitiesApplied: true, callType, caps: msg.capabilities });
     } catch (err) {
       log({ ephCallCapabilitiesError: err?.message });
     }
