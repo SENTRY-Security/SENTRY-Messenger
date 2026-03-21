@@ -397,10 +397,11 @@ export function createPushModal({ deps }) {
         const cleanup = () => { overlay.remove(); };
 
         overlay.querySelector('#tutorialClose')?.addEventListener('click', cleanup, { once: true });
-        overlay.querySelector('#tutorialUnderstood')?.addEventListener('click', () => {
+        overlay.querySelector('#tutorialUnderstood')?.addEventListener('click', async () => {
           cleanup();
-          // Show PIN section
+          // Directly generate PIN and show result
           if (pinSection) pinSection.style.display = '';
+          await generatePin();
         }, { once: true });
 
         overlay.addEventListener('click', (e) => {
@@ -408,15 +409,15 @@ export function createPushModal({ deps }) {
         });
       }
 
-      renderDevicesWithVisibility();
-
       const generatePinBtn = body.querySelector('#pushGeneratePin');
       const pinDisplay = body.querySelector('#pushPinDisplay');
       const pinCode = body.querySelector('#pushPinCode');
 
-      generatePinBtn?.addEventListener('click', async () => {
-        generatePinBtn.disabled = true;
-        generatePinBtn.textContent = t('common.loading');
+      async function generatePin() {
+        if (generatePinBtn) {
+          generatePinBtn.disabled = true;
+          generatePinBtn.textContent = t('common.loading');
+        }
         try {
           const digest = getAccountDigest();
           if (!digest) throw new Error('Account not ready');
@@ -429,15 +430,23 @@ export function createPushModal({ deps }) {
           if (!res.ok || !data.pin) throw new Error(data.error || data.message || 'Failed');
           if (pinCode) pinCode.textContent = data.pin;
           if (pinDisplay) pinDisplay.style.display = 'block';
-          generatePinBtn.textContent = t('push.regeneratePin');
-          generatePinBtn.disabled = false;
+          if (generatePinBtn) {
+            generatePinBtn.textContent = t('push.regeneratePin');
+            generatePinBtn.disabled = false;
+          }
         } catch (err) {
           log({ pushPinGenerateError: err?.message || err });
           showAlertModal({ title: t('errors.operationFailed'), message: err?.message || '' });
-          generatePinBtn.textContent = t('push.generatePin');
-          generatePinBtn.disabled = false;
+          if (generatePinBtn) {
+            generatePinBtn.textContent = t('push.generatePin');
+            generatePinBtn.disabled = false;
+          }
         }
-      });
+      }
+
+      generatePinBtn?.addEventListener('click', () => generatePin());
+
+      renderDevicesWithVisibility();
 
       // Keep session alive toggle (inverted: checked = keep alive = autoLogoutOnBackground OFF)
       const keepAliveToggle = body.querySelector('#pushKeepAliveToggle');
