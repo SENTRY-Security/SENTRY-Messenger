@@ -43,8 +43,10 @@
 /* Side-by-side: circle left, details right */
 .sec-body {
   display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
   align-items: flex-start;
-  gap: 16px;
+  gap: 14px;
   margin-bottom: 16px;
 }
 
@@ -242,23 +244,24 @@
   height: 18px;
 }
 
-/* Mobile: stack vertically on very narrow screens */
+/* Compact on narrower phones */
 @media (max-width: 400px) {
-  .sec-body {
-    flex-direction: column;
-    align-items: center;
-  }
-
-  .sec-circle-wrap {
-    flex: 0 0 auto;
-  }
-
-  .sec-details {
-    width: 100%;
-  }
-
   .security-panel {
     padding: 14px;
     border-radius: 14px;
+  }
+
+  .sec-circle-wrap {
+    width: 90px;
+    height: 90px;
+    flex: 0 0 90px;
+  }
+
+  .sec-score-num {
+    font-size: 24px;
+  }
+
+  .sec-body {
+    gap: 10px;
   }
 }
