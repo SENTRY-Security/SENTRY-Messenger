@@ -87,6 +87,7 @@ import { clearContactCore, contactCoreCounts, listContactCoreEntries, listReadyC
 import { setupModalController } from './mobile/modal-utils.js';
 import { createSwipeManager } from './mobile/swipe-utils.js';
 import { initProfileCard } from './mobile/profile-card.js';
+import { initSecurityPanel } from './mobile/security-panel.js';
 import { escapeHtml, b64u8 } from './mobile/ui-utils.js';
 import { initContactsView } from './mobile/contacts-view.js';
 import { createPresenceManager } from './mobile/presence-manager.js';
@@ -2333,6 +2334,9 @@ const profileInitPromise = loadProfile().catch((err) => {
   log({ profileInitError: err?.message || err });
   throw err;
 });
+
+// Security panel — device security assessment below profile card
+initSecurityPanel(document.getElementById('securityPanel'));
 
 shareController = setupShareController({
   dom: {

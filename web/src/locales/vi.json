@@ -1241,5 +1241,25 @@
     "fetchingDeviceKeys": "ĐANG TẢI KHÓA THIẾT BỊ...",
     "syncingCipherKeys": "ĐANG ĐỒNG BỘ KHÓA MÃ HÓA...",
     "restoringContacts": "ĐANG KHÔI PHỤC DANH BẠ..."
+  },
+  "security": {
+    "title": "Đánh giá bảo mật",
+    "osType": "Hệ điều hành",
+    "osVersion": "Phiên bản OS",
+    "browserVersion": "Trình duyệt",
+    "https": "Kết nối",
+    "vpn": "VPN",
+    "httpsOn": "Kết nối HTTPS mã hóa",
+    "httpsOff": "Kết nối không mã hóa",
+    "vpnOn": "Đã kết nối VPN",
+    "vpnOff": "Không dùng VPN",
+    "vpnChecking": "Đang kiểm tra…",
+    "suggestions": "Đề xuất cải thiện",
+    "allGood": "Tất cả kiểm tra bảo mật đều đạt!",
+    "suggestIos": "Nên sử dụng thiết bị iOS để có sandbox và cập nhật bảo mật mạnh hơn.",
+    "suggestUpdateOs": "Cập nhật hệ điều hành lên phiên bản mới nhất để nhận các bản vá bảo mật.",
+    "suggestUpdateBrowser": "Cập nhật trình duyệt lên phiên bản mới nhất để khắc phục lỗ hổng đã biết.",
+    "suggestHttps": "Sử dụng kết nối HTTPS để bảo vệ dữ liệu khi truyền tải.",
+    "suggestVpn": "Nên sử dụng VPN để mã hóa lưu lượng mạng và bảo vệ địa chỉ IP của bạn."
   }
 }

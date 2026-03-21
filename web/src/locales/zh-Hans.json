@@ -1243,5 +1243,25 @@
     "fetchingDeviceKeys": "获取设备密钥中...",
     "syncingCipherKeys": "同步加密密钥中...",
     "restoringContacts": "恢复联系人中..."
+  },
+  "security": {
+    "title": "安全评估",
+    "osType": "操作系统",
+    "osVersion": "系统版本",
+    "browserVersion": "浏览器",
+    "https": "连接方式",
+    "vpn": "VPN",
+    "httpsOn": "HTTPS 加密连接",
+    "httpsOff": "未加密连接",
+    "vpnOn": "VPN 已连接",
+    "vpnOff": "未使用 VPN",
+    "vpnChecking": "检测中…",
+    "suggestions": "改善建议",
+    "allGood": "所有安全检查均已通过！",
+    "suggestIos": "建议使用 iOS 设备，拥有更强的沙盒隔离与安全更新机制。",
+    "suggestUpdateOs": "请将操作系统升级至最新版本，以获取最新安全补丁。",
+    "suggestUpdateBrowser": "请将浏览器更新至最新版本，以修复已知漏洞。",
+    "suggestHttps": "请使用 HTTPS 连接以保护传输中的数据。",
+    "suggestVpn": "建议使用 VPN 加密网络流量，保护你的 IP 地址。"
   }
 }

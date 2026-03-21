@@ -1241,5 +1241,25 @@
     "fetchingDeviceKeys": "디바이스 키 가져오는 중...",
     "syncingCipherKeys": "암호 키 동기화 중...",
     "restoringContacts": "연락처 복원 중..."
+  },
+  "security": {
+    "title": "보안 평가",
+    "osType": "운영 체제",
+    "osVersion": "OS 버전",
+    "browserVersion": "브라우저",
+    "https": "연결 방식",
+    "vpn": "VPN",
+    "httpsOn": "HTTPS 암호화 연결",
+    "httpsOff": "암호화되지 않은 연결",
+    "vpnOn": "VPN 연결됨",
+    "vpnOff": "VPN 미사용",
+    "vpnChecking": "확인 중…",
+    "suggestions": "개선 제안",
+    "allGood": "모든 보안 점검을 통과했습니다!",
+    "suggestIos": "더 강력한 샌드박스와 보안 업데이트를 위해 iOS 기기 사용을 권장합니다.",
+    "suggestUpdateOs": "최신 보안 패치를 받으려면 운영 체제를 최신 버전으로 업데이트하세요.",
+    "suggestUpdateBrowser": "알려진 취약점을 수정하려면 브라우저를 최신 버전으로 업데이트하세요.",
+    "suggestHttps": "데이터를 보호하려면 HTTPS 연결을 사용하세요.",
+    "suggestVpn": "네트워크 트래픽을 암호화하고 IP 주소를 보호하려면 VPN 사용을 권장합니다."
   }
 }

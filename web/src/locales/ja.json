@@ -1241,5 +1241,25 @@
     "fetchingDeviceKeys": "デバイス鍵を取得中...",
     "syncingCipherKeys": "暗号鍵を同期中...",
     "restoringContacts": "連絡先を復元中..."
+  },
+  "security": {
+    "title": "セキュリティ評価",
+    "osType": "OS",
+    "osVersion": "OSバージョン",
+    "browserVersion": "ブラウザ",
+    "https": "接続方式",
+    "vpn": "VPN",
+    "httpsOn": "HTTPS暗号化接続",
+    "httpsOff": "暗号化されていない接続",
+    "vpnOn": "VPN接続中",
+    "vpnOff": "VPN未使用",
+    "vpnChecking": "確認中…",
+    "suggestions": "改善提案",
+    "allGood": "すべてのセキュリティチェックに合格しました！",
+    "suggestIos": "より強力なサンドボックスとセキュリティアップデートのため、iOSデバイスの使用をお勧めします。",
+    "suggestUpdateOs": "最新のセキュリティパッチを入手するため、OSを最新バージョンに更新してください。",
+    "suggestUpdateBrowser": "既知の脆弱性を修正するため、ブラウザを最新バージョンに更新してください。",
+    "suggestHttps": "データを保護するため、HTTPS接続を使用してください。",
+    "suggestVpn": "ネットワークトラフィックを暗号化しIPアドレスを保護するため、VPNの使用をお勧めします。"
   }
 }

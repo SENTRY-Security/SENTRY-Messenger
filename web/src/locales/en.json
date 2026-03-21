@@ -1244,5 +1244,25 @@
     "fetchingDeviceKeys": "FETCHING DEVICE KEYS...",
     "syncingCipherKeys": "SYNCING CIPHER KEYS...",
     "restoringContacts": "RESTORING CONTACTS..."
+  },
+  "security": {
+    "title": "Security Assessment",
+    "osType": "Operating System",
+    "osVersion": "OS Version",
+    "browserVersion": "Browser",
+    "https": "Connection",
+    "vpn": "VPN",
+    "httpsOn": "HTTPS Encrypted",
+    "httpsOff": "Not Encrypted",
+    "vpnOn": "VPN Connected",
+    "vpnOff": "No VPN",
+    "vpnChecking": "Checking…",
+    "suggestions": "Recommended Improvements",
+    "allGood": "All security checks passed!",
+    "suggestIos": "Consider using an iOS device for stronger sandboxing and security updates.",
+    "suggestUpdateOs": "Update your operating system to the latest version for security patches.",
+    "suggestUpdateBrowser": "Update your browser to the latest version to fix known vulnerabilities.",
+    "suggestHttps": "Use HTTPS connections to protect your data in transit.",
+    "suggestVpn": "Use a VPN to encrypt your network traffic and protect your IP address."
   }
 }

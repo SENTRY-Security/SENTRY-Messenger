@@ -1244,5 +1244,25 @@
     "fetchingDeviceKeys": "取得裝置金鑰中...",
     "syncingCipherKeys": "同步加密金鑰中...",
     "restoringContacts": "復原聯絡人中..."
+  },
+  "security": {
+    "title": "資安評估",
+    "osType": "作業系統",
+    "osVersion": "系統版本",
+    "browserVersion": "瀏覽器",
+    "https": "連線方式",
+    "vpn": "VPN",
+    "httpsOn": "HTTPS 加密連線",
+    "httpsOff": "未加密連線",
+    "vpnOn": "VPN 已連線",
+    "vpnOff": "未使用 VPN",
+    "vpnChecking": "偵測中…",
+    "suggestions": "改善建議",
+    "allGood": "所有安全檢查皆通過！",
+    "suggestIos": "建議使用 iOS 裝置，擁有更強的沙盒隔離與安全更新機制。",
+    "suggestUpdateOs": "請將作業系統升級至最新版本，以取得最新安全修補。",
+    "suggestUpdateBrowser": "請將瀏覽器更新至最新版本，以修復已知漏洞。",
+    "suggestHttps": "請使用 HTTPS 連線以保護傳輸中的資料。",
+    "suggestVpn": "建議使用 VPN 加密網路流量，保護你的 IP 位址。"
   }
 }
