@@ -857,7 +857,10 @@
     "saveEditedImage": "儲存編輯後的圖片",
     "sentryStreamPlayer": "SENTRY 串流播放器",
     "pdfLoadFailed": "PDF 載入失敗：{{error}}",
-    "loadingPage": "載入第 {{num}} 頁…"
+    "loadingPage": "載入第 {{num}} 頁…",
+    "downloadExcel": "下載 Excel",
+    "excelEmpty": "此工作表無內容",
+    "excelLoadFailed": "Excel 載入失敗：{{error}}"
   },
   "mediaHandling": {
     "videoDataIncomplete": "影片資料不完整，無法播放",

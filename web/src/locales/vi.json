@@ -854,7 +854,10 @@
     "saveEditedImage": "Lưu hình ảnh đã chỉnh sửa",
     "sentryStreamPlayer": "SENTRY Stream Player",
     "pdfLoadFailed": "Tải PDF thất bại: {{error}}",
-    "loadingPage": "Đang tải trang {{num}}…"
+    "loadingPage": "Đang tải trang {{num}}…",
+    "downloadExcel": "Tải Excel",
+    "excelEmpty": "Trang tính này trống",
+    "excelLoadFailed": "Tải Excel thất bại: {{error}}"
   },
   "mediaHandling": {
     "videoDataIncomplete": "Dữ liệu video không đầy đủ, không thể phát",

@@ -11,6 +11,7 @@ import { downloadChunkedManifest, streamChunks, downloadAllChunks, getChunkUrls 
 import { isMseSupported, detectCodecFromInitSegment, buildMimeFromCodecString, createMsePlayer, isValidMseInitSegment, parseInitTimescales, parseMoofTiming } from '../../../features/mse-player.js';
 import { mergeInitSegments } from '../../../features/mp4-remuxer.js';
 import { renderPdfViewer, cleanupPdfViewer } from '../viewers/pdf-viewer.js';
+import { renderExcelViewer, cleanupExcelViewer, isExcelMime, isExcelFilename } from '../viewers/excel-viewer.js';
 import { openImageViewer, cleanupImageViewer } from '../viewers/image-viewer.js';
 import { openVideoViewer, cleanupVideoViewer } from '../viewers/video-viewer.js';
 import { escapeHtml, fmtSize, escapeSelector } from '../ui-utils.js';
@@ -1093,6 +1094,7 @@ export class MediaHandlingController extends BaseController {
         }
 
         cleanupPdfViewer();
+        cleanupExcelViewer();
 
         // Clear all modal classes
         const classesToRemove = [
@@ -1143,6 +1145,17 @@ export class MediaHandlingController extends BaseController {
             msg.className = 'preview-message';
             msg.innerHTML = `${t('mediaHandling.pdfCannotEmbed')}<br/><br/><a class="primary" href="${url}" download="${escapeHtml(resolvedName)}">${t('drive.downloadFile')}</a>`;
             wrap.appendChild(msg);
+        } else if (isExcelMime(ct) || isExcelFilename(resolvedName)) {
+            const handled = await renderExcelViewer({
+                url,
+                blob,
+                name: resolvedName,
+                modalApi: { openModal, closeModal, showConfirmModal: showConfirm }
+            });
+            if (handled) {
+                this.deps.openPreviewModal?.();
+                return;
+            }
         } else if (ct.startsWith('image/')) {
             // Use full-screen image viewer instead of basic modal
             closeModal?.();

@@ -856,7 +856,10 @@
     "saveEditedImage": "保存编辑后的图片",
     "sentryStreamPlayer": "SENTRY 串流播放器",
     "pdfLoadFailed": "PDF 加载失败：{{error}}",
-    "loadingPage": "正在加载第 {{num}} 页…"
+    "loadingPage": "正在加载第 {{num}} 页…",
+    "downloadExcel": "下载 Excel",
+    "excelEmpty": "此工作表无内容",
+    "excelLoadFailed": "Excel 加载失败：{{error}}"
   },
   "mediaHandling": {
     "videoDataIncomplete": "视频数据不完整，无法播放",

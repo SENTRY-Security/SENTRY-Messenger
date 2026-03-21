@@ -6,6 +6,7 @@ import { sessionStore } from './session-store.js';
 import { escapeHtml, fmtSize, safeJSON } from './ui-utils.js';
 import { b64 } from '../../crypto/aead.js';
 import { openImageViewer } from './viewers/image-viewer.js';
+import { renderExcelViewer, cleanupExcelViewer, isExcelMime, isExcelFilename } from './viewers/excel-viewer.js';
 import { t } from '/locales/index.js';
 
 const DEFAULT_DRIVE_QUOTA_BYTES = 3 * 1024 * 1024 * 1024; // 3GB
@@ -1519,6 +1520,21 @@ export function initDrivePane({
         iframe.className = 'viewer';
         iframe.title = resolvedName;
         wrap.appendChild(iframe);
+        openModal?.();
+      });
+      return;
+    } else if (isExcelMime(ct) || isExcelFilename(resolvedName)) {
+      renderExcelViewer({
+        url,
+        blob,
+        name: resolvedName,
+        modalApi: { openModal, closeModal, showConfirmModal }
+      }).then((handled) => {
+        if (handled) return;
+        const msg = document.createElement('div');
+        msg.className = 'preview-message';
+        msg.textContent = t('drive.cannotPreviewType', { type: ct });
+        wrap.appendChild(msg);
         openModal?.();
       });
       return;

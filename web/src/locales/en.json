@@ -857,7 +857,10 @@
     "saveEditedImage": "Save edited image",
     "sentryStreamPlayer": "SENTRY Stream Player",
     "pdfLoadFailed": "PDF load failed: {{error}}",
-    "loadingPage": "Loading page {{num}}…"
+    "loadingPage": "Loading page {{num}}…",
+    "downloadExcel": "Download Excel",
+    "excelEmpty": "This sheet is empty",
+    "excelLoadFailed": "Excel load failed: {{error}}"
   },
   "mediaHandling": {
     "videoDataIncomplete": "Video data incomplete, cannot play",
