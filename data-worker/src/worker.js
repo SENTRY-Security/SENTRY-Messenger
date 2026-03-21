@@ -7529,11 +7529,16 @@ async function handlePublicRoutes(req, env) {
     if (!env.BROWSER_SESSION) {
       return json({ error: 'NotConfigured', message: 'SAFE browser not available' }, { status: 503 });
     }
-    // Auth: Bearer header first, then ?token= query param (iframe can't set headers)
+    // Auth: Bearer header first, then ?token= query param, then cookie (iframe sub-resources)
     const auth = req.headers.get('Authorization') || '';
     let token = auth.replace(/^Bearer\s+/i, '').trim();
     if (!token && path.startsWith('/api/safe/browser')) {
-      token = new URL(req.url).searchParams.get('token') || '';
+      const reqUrl = new URL(req.url);
+      token = reqUrl.searchParams.get('token') || '';
+      if (!token) {
+        const m = (req.headers.get('Cookie') || '').match(/(?:^|;\s*)safe_token=([^;]+)/);
+        if (m) token = decodeURIComponent(m[1]);
+      }
     }
     if (!token) {
       return json({ error: 'Unauthorized', message: 'Authorization required' }, { status: 401 });
@@ -7541,7 +7546,16 @@ async function handlePublicRoutes(req, env) {
     // Each token maps to a unique Container instance (1 user = 1 browser)
     const id = env.BROWSER_SESSION.idFromName(token);
     const stub = env.BROWSER_SESSION.get(id);
-    return stub.fetch(req);
+    const safeResp = await stub.fetch(req);
+
+    // Set auth cookie on initial browser page load so sub-resources can authenticate
+    if (path.startsWith('/api/safe/browser') && new URL(req.url).searchParams.has('token')) {
+      const resp = new Response(safeResp.body, safeResp);
+      resp.headers.append('Set-Cookie',
+        `safe_token=${encodeURIComponent(token)}; Path=/api/safe/browser; SameSite=Strict; Secure; HttpOnly; Max-Age=3600`);
+      return resp;
+    }
+    return safeResp;
   }
 
   // ── Parse body for POST requests ─────────────────────────────

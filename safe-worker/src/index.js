@@ -67,11 +67,15 @@ export default {
       return json({ error: 'Not found' }, 404, request, env);
     }
 
-    // Auth: Bearer header first, then ?token= query param (iframe can't set headers)
+    // Auth: Bearer header first, then ?token= query param, then cookie (iframe sub-resources)
     const auth = request.headers.get('Authorization') || '';
     let token = auth.replace(/^Bearer\s+/i, '').trim();
     if (!token && url.pathname.startsWith('/api/safe/browser')) {
       token = url.searchParams.get('token') || '';
+      if (!token) {
+        const m = (request.headers.get('Cookie') || '').match(/(?:^|;\s*)safe_token=([^;]+)/);
+        if (m) token = decodeURIComponent(m[1]);
+      }
     }
     if (!token) {
       return json({ error: 'Authorization required' }, 401, request, env);
@@ -82,7 +86,17 @@ export default {
     const stub = env.BROWSER_SESSION.get(id);
 
     // Forward the request to the Durable Object
-    return stub.fetch(request);
+    const response = await stub.fetch(request);
+
+    // Set auth cookie on initial browser page load (token in URL) so that
+    // sub-resource requests (JS/CSS/images) from the VNC page can authenticate
+    if (url.pathname.startsWith('/api/safe/browser') && url.searchParams.has('token')) {
+      const resp = new Response(response.body, response);
+      resp.headers.append('Set-Cookie',
+        `safe_token=${encodeURIComponent(token)}; Path=/api/safe/browser; SameSite=Strict; Secure; HttpOnly; Max-Age=3600`);
+      return resp;
+    }
+    return response;
   }
 };
 
