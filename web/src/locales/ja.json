@@ -862,7 +862,13 @@
     "wordLoadFailed": "Word の読み込みに失敗しました：{{error}}",
     "downloadZip": "アーカイブをダウンロード",
     "zipFiles": "ファイル",
-    "zipLoadFailed": "アーカイブの読み込みに失敗しました：{{error}}"
+    "zipLoadFailed": "アーカイブの読み込みに失敗しました：{{error}}",
+    "pdfPasswordRequired": "この PDF にはパスワードが必要です",
+    "pdfPasswordPlaceholder": "パスワードを入力",
+    "pdfUnlock": "ロック解除",
+    "pdfPasswordEmpty": "パスワードを入力してください",
+    "pdfPasswordWrong": "パスワードが間違っています",
+    "togglePassword": "パスワードの表示/非表示"
   },
   "mediaHandling": {
     "videoDataIncomplete": "動画データが不完全なため再生できません",

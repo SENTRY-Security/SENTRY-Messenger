@@ -862,7 +862,13 @@
     "wordLoadFailed": "Word 로드 실패: {{error}}",
     "downloadZip": "압축 파일 다운로드",
     "zipFiles": "개 파일",
-    "zipLoadFailed": "압축 파일 로드 실패: {{error}}"
+    "zipLoadFailed": "압축 파일 로드 실패: {{error}}",
+    "pdfPasswordRequired": "이 PDF에는 비밀번호가 필요합니다",
+    "pdfPasswordPlaceholder": "비밀번호 입력",
+    "pdfUnlock": "잠금 해제",
+    "pdfPasswordEmpty": "비밀번호를 입력하세요",
+    "pdfPasswordWrong": "비밀번호가 틀렸습니다. 다시 시도하세요",
+    "togglePassword": "비밀번호 표시/숨기기"
   },
   "mediaHandling": {
     "videoDataIncomplete": "동영상 데이터가 불완전하여 재생할 수 없습니다",

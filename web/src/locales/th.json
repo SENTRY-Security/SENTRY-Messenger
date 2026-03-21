@@ -862,7 +862,13 @@
     "wordLoadFailed": "โหลด Word ล้มเหลว: {{error}}",
     "downloadZip": "ดาวน์โหลดไฟล์บีบอัด",
     "zipFiles": "ไฟล์",
-    "zipLoadFailed": "โหลดไฟล์บีบอัดล้มเหลว: {{error}}"
+    "zipLoadFailed": "โหลดไฟล์บีบอัดล้มเหลว: {{error}}",
+    "pdfPasswordRequired": "PDF นี้ต้องใช้รหัสผ่าน",
+    "pdfPasswordPlaceholder": "ใส่รหัสผ่าน",
+    "pdfUnlock": "ปลดล็อก",
+    "pdfPasswordEmpty": "กรุณาใส่รหัสผ่าน",
+    "pdfPasswordWrong": "รหัสผ่านไม่ถูกต้อง โปรดลองอีกครั้ง",
+    "togglePassword": "แสดง/ซ่อนรหัสผ่าน"
   },
   "mediaHandling": {
     "videoDataIncomplete": "ข้อมูลวิดีโอไม่สมบูรณ์ ไม่สามารถเล่นได้",

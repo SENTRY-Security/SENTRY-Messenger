@@ -864,7 +864,13 @@
     "wordLoadFailed": "Word 加载失败：{{error}}",
     "downloadZip": "下载压缩档",
     "zipFiles": "个文件",
-    "zipLoadFailed": "压缩档加载失败：{{error}}"
+    "zipLoadFailed": "压缩档加载失败：{{error}}",
+    "pdfPasswordRequired": "此 PDF 需要密码",
+    "pdfPasswordPlaceholder": "输入密码",
+    "pdfUnlock": "解锁",
+    "pdfPasswordEmpty": "请输入密码",
+    "pdfPasswordWrong": "密码错误，请重试",
+    "togglePassword": "显示/隐藏密码"
   },
   "mediaHandling": {
     "videoDataIncomplete": "视频数据不完整，无法播放",

@@ -862,7 +862,13 @@
     "wordLoadFailed": "Tải Word thất bại: {{error}}",
     "downloadZip": "Tải tệp nén",
     "zipFiles": "tệp",
-    "zipLoadFailed": "Tải tệp nén thất bại: {{error}}"
+    "zipLoadFailed": "Tải tệp nén thất bại: {{error}}",
+    "pdfPasswordRequired": "PDF này yêu cầu mật khẩu",
+    "pdfPasswordPlaceholder": "Nhập mật khẩu",
+    "pdfUnlock": "Mở khóa",
+    "pdfPasswordEmpty": "Vui lòng nhập mật khẩu",
+    "pdfPasswordWrong": "Sai mật khẩu, vui lòng thử lại",
+    "togglePassword": "Hiện/ẩn mật khẩu"
   },
   "mediaHandling": {
     "videoDataIncomplete": "Dữ liệu video không đầy đủ, không thể phát",
