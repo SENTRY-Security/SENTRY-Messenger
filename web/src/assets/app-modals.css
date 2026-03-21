@@ -506,11 +506,11 @@
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
   touch-action: pan-y;
-  padding: 52px 0 16px;
+  padding: 52px 0 8px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   background: #1a1a2e;
 }
 
@@ -519,11 +519,16 @@
   background: #111827;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
   min-height: 200px;
+  overflow: hidden;
+  position: relative;
+  touch-action: pan-y;
 }
 
 .pdf-canvas {
   display: block;
   background: #fff;
+  transform-origin: 0 0;
+  will-change: transform;
 }
 
 .pdf-loading {
@@ -611,7 +616,8 @@
   }
 
   .pdf-stage {
-    padding: 12px;
+    padding: 48px 0 6px;
+    gap: 3px;
   }
 
   .pdf-btn {

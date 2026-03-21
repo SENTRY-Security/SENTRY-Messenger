@@ -89,19 +89,25 @@ export async function renderPdfViewer({ url, name, modalApi }) {
   const stage = body.querySelector('#pdfStage');
 
   let pdfDoc = null;
-  let scale = 1;
-  const pageCanvases = []; // { canvas, rendered, pageNum }
+  let fitScale = 1;
+  const pageCanvases = []; // { canvas, wrap, rendered, rendering, pageNum, zoom }
+  const gestureCleanups = [];
 
   const cleanupCore = () => {
+    for (const fn of gestureCleanups) { try { fn(); } catch {} }
+    gestureCleanups.length = 0;
     try { pdfDoc?.cleanup?.(); pdfDoc?.destroy?.(); } catch {}
     modalEl.classList.remove('pdf-modal');
   };
 
-  // Compute scale to fit stage width
-  const computeScale = (viewport) => {
+  // Compute base scale to auto-fit stage width (edge-to-edge minus stage padding)
+  const computeFitScale = (viewport) => {
     if (!stage?.clientWidth) return 1;
-    const maxWidth = Math.max(stage.clientWidth - 16, 320); // 8px padding each side
-    return Math.min(3, Math.max(0.6, maxWidth / viewport.width));
+    const cs = getComputedStyle(stage);
+    const padL = parseFloat(cs.paddingLeft) || 0;
+    const padR = parseFloat(cs.paddingRight) || 0;
+    const available = Math.max(stage.clientWidth - padL - padR, 320);
+    return Math.min(3, Math.max(0.6, available / viewport.width));
   };
 
   // Render a single page into its canvas
@@ -112,21 +118,170 @@ export async function renderPdfViewer({ url, name, modalApi }) {
       const page = await pdfDoc.getPage(entry.pageNum);
       const baseViewport = page.getViewport({ scale: 1 });
       if (entry.pageNum === 1) {
-        scale = computeScale(baseViewport);
+        fitScale = computeFitScale(baseViewport);
       }
-      const viewport = page.getViewport({ scale });
+      const viewport = page.getViewport({ scale: fitScale });
       const canvas = entry.canvas;
       const ctx = canvas.getContext('2d');
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       canvas.style.width = `${viewport.width}px`;
       canvas.style.height = `${viewport.height}px`;
+      // Size wrap to exact content dimensions — no whitespace
+      entry.wrap.style.width = `${viewport.width}px`;
+      entry.wrap.style.height = `${viewport.height}px`;
+      entry.wrap.style.minHeight = '0';
       await page.render({ canvasContext: ctx, viewport }).promise;
       entry.rendered = true;
     } catch (err) {
       log({ pdfPageRenderError: err?.message, page: entry.pageNum });
     }
     entry.rendering = false;
+  };
+
+  // ── Per-page pinch-zoom + pan ──
+  const attachPageGesture = (entry) => {
+    const wrap = entry.wrap;
+    const canvas = entry.canvas;
+    let zoom = 1, tx = 0, ty = 0;
+    const activePointers = new Map();
+    let pinchStartDist = null, pinchStartZoom = 1;
+    let pinchStartMid = null, pinchStartTx = 0, pinchStartTy = 0;
+    let panStart = null;
+    let lastTapTime = 0;
+
+    const applyTransform = () => {
+      canvas.style.transform = `translate(${tx}px, ${ty}px) scale(${zoom})`;
+      canvas.style.transformOrigin = '0 0';
+      // Allow stage scroll when page is at 1x; lock when zoomed
+      wrap.style.touchAction = zoom > 1.01 ? 'none' : 'pan-y';
+    };
+
+    const clampPan = () => {
+      if (zoom <= 1) { tx = 0; ty = 0; return; }
+      const w = canvas.offsetWidth * zoom;
+      const h = canvas.offsetHeight * zoom;
+      const ww = wrap.clientWidth;
+      const wh = wrap.clientHeight;
+      const maxTx = 0;
+      const minTx = Math.min(0, ww - w);
+      const maxTy = 0;
+      const minTy = Math.min(0, wh - h);
+      tx = Math.max(minTx, Math.min(maxTx, tx));
+      ty = Math.max(minTy, Math.min(maxTy, ty));
+    };
+
+    const resetZoom = () => {
+      zoom = 1; tx = 0; ty = 0;
+      applyTransform();
+    };
+
+    const pDist = () => {
+      if (activePointers.size < 2) return 0;
+      const pts = Array.from(activePointers.values());
+      const dx = pts[0].x - pts[1].x;
+      const dy = pts[0].y - pts[1].y;
+      return Math.sqrt(dx * dx + dy * dy);
+    };
+
+    const pMid = () => {
+      const pts = Array.from(activePointers.values());
+      if (pts.length < 2) return { x: pts[0]?.x || 0, y: pts[0]?.y || 0 };
+      return { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+    };
+
+    const onDown = (e) => {
+      wrap.setPointerCapture(e.pointerId);
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (activePointers.size === 2) {
+        pinchStartDist = pDist();
+        pinchStartZoom = zoom;
+        pinchStartMid = pMid();
+        pinchStartTx = tx;
+        pinchStartTy = ty;
+        panStart = null;
+      } else if (activePointers.size === 1) {
+        const now = Date.now();
+        if (now - lastTapTime < 300) {
+          // Double-tap toggle
+          if (zoom > 1.2) {
+            zoom = 1; tx = 0; ty = 0;
+          } else {
+            const rect = wrap.getBoundingClientRect();
+            const tapX = e.clientX - rect.left;
+            const tapY = e.clientY - rect.top;
+            zoom = 2.5;
+            tx = wrap.clientWidth / 2 - tapX * zoom;
+            ty = wrap.clientHeight / 2 - tapY * zoom;
+            clampPan();
+          }
+          applyTransform();
+          lastTapTime = 0;
+          return;
+        }
+        lastTapTime = now;
+        if (zoom > 1.01) {
+          panStart = { x: e.clientX, y: e.clientY, tx, ty };
+        }
+      }
+    };
+
+    const onMove = (e) => {
+      if (!activePointers.has(e.pointerId)) return;
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (activePointers.size >= 2 && pinchStartDist) {
+        e.preventDefault();
+        const dist = pDist();
+        const newZoom = Math.min(5, Math.max(1, pinchStartZoom * (dist / pinchStartDist)));
+        // Pinch towards midpoint
+        const mid = pMid();
+        const rect = wrap.getBoundingClientRect();
+        const focusX = pinchStartMid.x - rect.left;
+        const focusY = pinchStartMid.y - rect.top;
+        tx = pinchStartTx + (mid.x - pinchStartMid.x) - (focusX - pinchStartTx) * (newZoom / pinchStartZoom - 1);
+        ty = pinchStartTy + (mid.y - pinchStartMid.y) - (focusY - pinchStartTy) * (newZoom / pinchStartZoom - 1);
+        zoom = newZoom;
+        clampPan();
+        applyTransform();
+      } else if (panStart && activePointers.size === 1) {
+        e.preventDefault();
+        const p = activePointers.get(e.pointerId);
+        tx = panStart.tx + (p.x - panStart.x);
+        ty = panStart.ty + (p.y - panStart.y);
+        clampPan();
+        applyTransform();
+      }
+    };
+
+    const onUp = (e) => {
+      wrap.releasePointerCapture?.(e.pointerId);
+      activePointers.delete(e.pointerId);
+      if (activePointers.size < 2) {
+        pinchStartDist = null;
+        if (activePointers.size === 1 && zoom > 1.01) {
+          const remaining = activePointers.values().next().value;
+          panStart = { x: remaining.x, y: remaining.y, tx, ty };
+        }
+      }
+      if (activePointers.size === 0) {
+        panStart = null;
+        // Snap back if barely zoomed
+        if (zoom < 1.05) resetZoom();
+      }
+    };
+
+    wrap.addEventListener('pointerdown', onDown);
+    wrap.addEventListener('pointermove', onMove);
+    wrap.addEventListener('pointerup', onUp);
+    wrap.addEventListener('pointercancel', onUp);
+
+    entry.zoom = { reset: resetZoom, getZoom: () => zoom };
+    gestureCleanups.push(() => {
+      wrap.removeEventListener('pointerdown', onDown);
+      wrap.removeEventListener('pointermove', onMove);
+      wrap.removeEventListener('pointerup', onUp);
+      wrap.removeEventListener('pointercancel', onUp);
+    });
   };
 
   // Update the page label based on scroll position
@@ -160,7 +315,9 @@ export async function renderPdfViewer({ url, name, modalApi }) {
       canvas.className = 'pdf-canvas';
       wrap.appendChild(canvas);
       stage.appendChild(wrap);
-      pageCanvases.push({ canvas, wrap, rendered: false, rendering: false, pageNum: i });
+      const entry = { canvas, wrap, rendered: false, rendering: false, pageNum: i, zoom: null };
+      pageCanvases.push(entry);
+      attachPageGesture(entry);
     }
 
     // Lazy-render pages as they scroll into view
@@ -199,18 +356,16 @@ export async function renderPdfViewer({ url, name, modalApi }) {
       if (!pdfDoc || pageCanvases.length === 0) return;
       const first = pageCanvases[0];
       if (!first.rendered) return;
-      // Recompute scale from first page
       pdfDoc.getPage(1).then(page => {
         const baseViewport = page.getViewport({ scale: 1 });
-        scale = computeScale(baseViewport);
-        // Re-render all already-rendered pages
+        fitScale = computeFitScale(baseViewport);
         for (const pc of pageCanvases) {
           if (pc.rendered) {
             pc.rendered = false;
             pc.rendering = false;
           }
+          pc.zoom?.reset();
         }
-        // Re-trigger observer checks
         for (const pc of pageCanvases) {
           observer.unobserve(pc.wrap);
           observer.observe(pc.wrap);
