@@ -1008,12 +1008,21 @@
   background: #1a1a1a; padding: 16px;
 }
 
-.pptx-render-container {
-  width: 100%; max-width: 960px; margin: 0 auto;
-  background: #fff; border-radius: 4px;
+.pptx-slide {
+  width: 100%; max-width: 720px; margin: 0 auto; min-height: 300px;
+  background: #fff; border-radius: 8px; color: #1e293b;
   box-shadow: 0 4px 24px rgba(0,0,0,0.5);
-  overflow: hidden;
+  overflow: hidden; padding: 24px 28px;
+  display: flex; flex-direction: column; gap: 16px;
 }
+
+.pptx-slide-images { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.pptx-slide-img { max-width: 100%; max-height: 400px; border-radius: 4px; object-fit: contain; }
+
+.pptx-slide-text { font-size: 16px; line-height: 1.6; }
+.pptx-slide-text p { margin: 0 0 8px; }
+
+.pptx-slide-empty { color: #94a3b8; font-size: 14px; text-align: center; padding: 60px 0; }
 
 .pptx-loading, .pptx-error { color: #cbd5e1; font-size: 13px; padding: 32px; text-align: center; }
 .pptx-error { color: #f87171; }

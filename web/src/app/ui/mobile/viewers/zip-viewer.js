@@ -367,10 +367,43 @@ export async function renderZipViewer({ url, blob, name, modalApi }) {
     };
   } catch (err) {
     log({ zipViewerError: err?.message || err });
-    if (loadingEl) {
-      loadingEl.textContent = t('viewer.zipLoadFailed', { error: err?.message || err });
-      loadingEl.classList.add('zip-error');
+    const isEnc = /[Ee]ncrypted/.test(err?.message);
+    if (loadingEl) loadingEl.remove();
+    if (isEnc) {
+      stageEl.innerHTML = `
+        <div class="zip-encrypted">
+          <div class="zip-encrypted-icon">
+            <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+          </div>
+          <div class="zip-encrypted-title">${t('viewer.zipEncrypted')}</div>
+          <div class="zip-encrypted-hint">${t('viewer.zipEncryptedHint')}</div>
+          <button type="button" class="zip-encrypted-download" id="zipEncryptedDownload2">
+            <svg viewBox="0 0 16 16" width="16" height="16" fill="none"><path d="M8 2v8m0 0l-3-3m3 3l3-3M3 11v2h10v-2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            ${t('viewer.downloadZip')}
+          </button>
+        </div>`;
+      stageEl.querySelector('#zipEncryptedDownload2')?.addEventListener('click', () => {
+        if (blob) triggerBlobDownload(blob, name || 'archive.zip');
+        else if (url) { const a = document.createElement('a'); a.href = url; a.download = name || 'archive.zip'; document.body.appendChild(a); a.click(); a.remove(); }
+      });
+    } else {
+      stageEl.innerHTML = `<div class="zip-error" style="padding:32px;text-align:center">${escapeHtml(t('viewer.zipLoadFailed', { error: err?.message || err }))}</div>`;
     }
+    // Always set up close handlers even on error
+    const doClose = () => activeZipCleanup?.();
+    body.querySelector('#zipCloseBtn')?.addEventListener('click', doClose);
+    closeBtn?.addEventListener('click', doClose, { once: true });
+    closeArea?.addEventListener('click', doClose, { once: true });
+    const prevCleanup = activeZipCleanup;
+    activeZipCleanup = () => {
+      if (typeof prevCleanup === 'function') prevCleanup();
+      cleanup();
+      modalEl.classList.remove('zip-modal');
+      closeModal?.();
+      activeZipCleanup = null;
+    };
     return true;
   }
 
