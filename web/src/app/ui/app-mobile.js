@@ -111,7 +111,9 @@ import {
   sendCallSignal,
   initCallKeyManager,
   initCallMediaSession,
-  disposeCallMediaSession
+  disposeCallMediaSession,
+  isCallActive,
+  recoverCallMediaOnResume
 } from '../features/calls/index.js';
 import { initCallOverlay } from './mobile/call-overlay.js';
 import {
@@ -2455,6 +2457,12 @@ function handleBackgroundAutoLogout(reason = t('auth.backgroundAutoLogout'), { s
     log({ autoLogoutSkip: 'logout-in-progress', logoutInProgress, _autoLoggedOut });
     return;
   }
+  // Never auto-logout while a call is active (incoming/outgoing/connecting/in-call).
+  // Backgrounding the tab during a call must not destroy the session.
+  if (isCallActive()) {
+    log({ autoLogoutSkip: 'call-active' });
+    return;
+  }
   if (isReloadNavigation()) {
     forceReloadLogout();
     return;
@@ -2920,10 +2928,19 @@ if (typeof document !== 'undefined') {
           reconcileOutgoingStatusNow: messagesPane?.reconcileOutgoingStatusNow
         })
       });
+      // Recover call media if a call is active — re-attempt audio/video
+      // playback and ICE restart if the connection degraded while hidden.
+      if (isCallActive()) {
+        try { recoverCallMediaOnResume(); } catch (err) {
+          log({ callMediaResumeError: err?.message || err });
+        }
+      }
     }
     if (document.hidden) {
-      // Pause WebSocket timers to save battery while backgrounded
-      wsIntegration.pause();
+      // Pause WebSocket timers to save battery while backgrounded,
+      // but keep the heartbeat alive during active calls so that
+      // ICE candidates and call signals continue to flow.
+      if (!isCallActive()) wsIntegration.pause();
       flushDrSnapshotsBeforeLogout('visibilitychange');
       flushContactSecretsLocal('visibilitychange');
       triggerBizConvBackupIfDirty().catch(err => log({ bizConvBackupFlushError: err?.message }));
@@ -2946,6 +2963,12 @@ if (typeof window !== 'undefined') {
           reconcileOutgoingStatusNow: messagesPane?.reconcileOutgoingStatusNow
         })
       });
+      // Recover call media on bfcache restore (same logic as visibilitychange)
+      if (isCallActive()) {
+        try { recoverCallMediaOnResume(); } catch (err) {
+          log({ callMediaResumeError: err?.message || err });
+        }
+      }
     }
   });
   window.addEventListener('pagehide', (event) => {

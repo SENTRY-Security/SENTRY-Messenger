@@ -343,6 +343,43 @@ export function endCallMediaSession(reason = 'hangup') {
   cleanupPeerConnection(reason);
 }
 
+/**
+ * Called when the page returns to the foreground during an active call.
+ * Re-attempts audio/video playback (browsers may suspend playback when
+ * backgrounded) and triggers an ICE restart if the connection dropped.
+ */
+export function recoverCallMediaOnResume() {
+  if (!peerConnection) return;
+  const iceState = peerConnection.iceConnectionState;
+  log({ callMediaResume: true, iceState, callId: activeCallId });
+
+  // Re-attempt audio/video playback — browsers suspend media elements
+  // when the tab is hidden and play() may have been rejected.
+  if (remoteAudioEl?.srcObject) attemptRemoteAudioPlayback();
+  if (remoteVideoEl?.srcObject) attemptRemoteVideoPlayback();
+
+  // ICE restart if the connection degraded while backgrounded
+  if (iceState === 'disconnected' || iceState === 'failed') {
+    log({ callIceRestart: true, iceState, callId: activeCallId });
+    peerConnection.createOffer({ iceRestart: true })
+      .then((offer) => peerConnection.setLocalDescription(offer))
+      .then(() => {
+        if (!peerConnection || !sendSignal) return;
+        const identity = requirePeerIdentitySnapshot();
+        sendSignal('call-offer', {
+          callId: activeCallId,
+          targetAccountDigest: identity.digest,
+          senderDeviceId: requireLocalDeviceId(),
+          targetDeviceId: identity.deviceId,
+          description: peerConnection.localDescription
+        });
+      })
+      .catch((err) => {
+        log({ callIceRestartError: err?.message || err, callId: activeCallId });
+      });
+  }
+}
+
 export function isLocalAudioMuted() {
   return localAudioMuted;
 }

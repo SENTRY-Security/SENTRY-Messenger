@@ -49,6 +49,7 @@ export {
   startOutgoingCallMedia,
   acceptIncomingCallMedia,
   endCallMediaSession,
+  recoverCallMediaOnResume,
   isLocalAudioMuted,
   setLocalAudioMuted,
   isRemoteAudioMuted,
