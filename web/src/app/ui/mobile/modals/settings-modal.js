@@ -282,13 +282,19 @@ export function createSettingsModule({ deps }) {
             ${SUPPORTED_LANGUAGES.map(l => `<option value="${l.code}" ${l.code === getCurrentLang() ? 'selected' : ''}>${escapeHtml(l.label)}</option>`).join('')}
           </select>
         </div>
+        <div class="settings-item" id="settingsPushRow" style="cursor:pointer;">
+          <div class="settings-text">
+            <strong>${escapeHtml(t('push.settingsTitle'))}</strong>
+            <p>${escapeHtml(t('push.settingsDesc'))}</p>
+          </div>
+          <span style="color:var(--muted);font-size:18px;">›</span>
+        </div>
         <div class="settings-item">
           <div class="settings-text" style="display:flex;align-items:center;gap:8px;">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">
-              <path d="M9 3h6v2H9z"/>
-              <path d="M7 5h10l1 11H6L7 5z"/>
-              <path d="M10 16v4M14 16v4M8 20h8"/>
-              <circle cx="12" cy="10" r="1" fill="currentColor" stroke="none"/>
+              <path d="M10 2v6L4.5 18.5A1.5 1.5 0 0 0 6 21h12a1.5 1.5 0 0 0 1.5-2.5L14 8V2"/>
+              <path d="M8.5 2h7"/>
+              <path d="M7 16h10"/>
             </svg>
             <div>
               <strong>${escapeHtml(t('settings.sentryLab'))}</strong>
@@ -299,13 +305,6 @@ export function createSettingsModule({ deps }) {
             <input type="checkbox" id="settingsSentryLab" ${current.sentryLab ? 'checked' : ''} />
             <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
           </label>
-        </div>
-        <div class="settings-item" id="settingsPushRow" style="cursor:pointer;">
-          <div class="settings-text">
-            <strong>${escapeHtml(t('push.settingsTitle'))}</strong>
-            <p>${escapeHtml(t('push.settingsDesc'))}</p>
-          </div>
-          <span style="color:var(--muted);font-size:18px;">›</span>
         </div>
         <div class="settings-actions">
           <button type="button" class="secondary" id="settingsClose">${escapeHtml(t('common.close'))}</button>
