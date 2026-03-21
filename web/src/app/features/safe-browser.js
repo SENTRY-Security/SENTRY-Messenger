@@ -119,6 +119,8 @@ function buildIframeUrl(password) {
   const url = new URL(base + '/api/safe/browser/vnc.html');
   url.searchParams.set('autoconnect', 'true');
   url.searchParams.set('resize', 'scale');
+  // Tell noVNC the correct WebSocket path (proxied through /api/safe/browser/)
+  url.searchParams.set('path', 'api/safe/browser/websockify');
   if (password) url.searchParams.set('password', password);
   return url.toString();
 }
