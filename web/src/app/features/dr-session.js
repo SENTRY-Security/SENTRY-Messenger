@@ -2795,6 +2795,16 @@ function isWordFile(file) {
 async function buildWordPreviewBlob(file) {
   if (!file) return null;
   try {
+    // Ensure JSZip is loaded (docx-preview depends on window.JSZip)
+    if (typeof window.JSZip === 'undefined') {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = '/assets/libs/jszip.min.js';
+        s.onload = resolve;
+        s.onerror = () => reject(new Error('JSZip load failed'));
+        document.head.appendChild(s);
+      });
+    }
     const mod = await import(/* webpackIgnore: true */ '/assets/libs/docx-preview.min.mjs');
     const docxLib = mod.default || mod.docx || mod;
     if (!docxLib?.renderAsync) return null;

@@ -2,15 +2,30 @@ import { log } from '../../../core/log.js';
 import { escapeHtml } from '../ui-utils.js';
 import { t } from '/locales/index.js';
 
+const JSZIP_URL = '/assets/libs/jszip.min.js';
 const DOCX_LIB_URL = '/assets/libs/docx-preview.min.mjs';
 let docxLibPromise = null;
 let activeWordCleanup = null;
 
+async function ensureJSZip() {
+  if (typeof window.JSZip !== 'undefined') return;
+  // Load JSZip via script tag so it registers as window.JSZip
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = JSZIP_URL;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('JSZip load failed'));
+    document.head.appendChild(s);
+  });
+}
+
 async function getDocxPreview() {
   if (docxLibPromise) return docxLibPromise;
-  docxLibPromise = import(/* webpackIgnore: true */ DOCX_LIB_URL)
-    .then((mod) => mod.default || mod.docx || mod)
-    .catch((err) => { docxLibPromise = null; throw err; });
+  docxLibPromise = (async () => {
+    await ensureJSZip();
+    const mod = await import(/* webpackIgnore: true */ DOCX_LIB_URL);
+    return mod.default || mod.docx || mod;
+  })().catch((err) => { docxLibPromise = null; throw err; });
   return docxLibPromise;
 }
 
