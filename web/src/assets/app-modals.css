@@ -1917,12 +1917,16 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  margin: 14px 18px;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 10px;
   background: #000;
 }
 
 .push-tutorial-video {
   width: 100%;
   display: block;
+  border-radius: 9px;
 }
 
 .push-tutorial-actions {
