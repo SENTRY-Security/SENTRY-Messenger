@@ -2799,49 +2799,74 @@ async function buildWordPreviewBlob(file) {
     const docxLib = mod.default || mod.docx || mod;
     if (!docxLib?.renderAsync) return null;
     const data = await file.arrayBuffer();
-    // Render into a hidden container to capture as image
+
+    // Render docx into a hidden container
+    const RENDER_W = 680;
+    const CAPTURE_H = 900;
     const container = document.createElement('div');
-    container.style.cssText = 'position:fixed;left:-9999px;top:0;width:800px;background:#fff;';
+    container.style.cssText = `position:fixed;left:-9999px;top:0;width:${RENDER_W}px;background:#fff;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,sans-serif;`;
     document.body.appendChild(container);
     try {
       await docxLib.renderAsync(data, container, null, {
-        className: 'word-docx',
+        className: 'word-docx-preview',
         inWrapper: false,
         ignoreWidth: true,
         ignoreHeight: true,
         breakPages: false,
         experimental: true,
-        useBase64URL: true
+        useBase64URL: true,
+        ignoreFonts: false,
+        renderHeaders: false,
+        renderFooters: false,
+        renderFootnotes: false,
+        renderEndnotes: false
       });
-      // Draw visible portion to canvas
+
       const section = container.querySelector('section') || container;
-      const rect = { w: Math.min(section.scrollWidth, 800), h: Math.min(section.scrollHeight, 1100) };
-      if (!rect.w || !rect.h) return null;
-      const canvas = document.createElement('canvas');
-      canvas.width = rect.w;
-      canvas.height = rect.h;
-      const ctx = canvas.getContext('2d');
-      // White background
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, rect.w, rect.h);
-      // Draw text content as simplified preview
-      ctx.fillStyle = '#1e293b';
-      ctx.font = '14px -apple-system, sans-serif';
-      const textContent = section.innerText || '';
-      const lines = textContent.split('\n').slice(0, 40);
-      let y = 24;
-      for (const line of lines) {
-        if (y > rect.h - 10) break;
-        ctx.fillText(line.slice(0, 80), 16, y);
-        y += 20;
+      const contentW = Math.min(section.scrollWidth, RENDER_W);
+      const contentH = Math.min(section.scrollHeight, CAPTURE_H);
+      if (!contentW || !contentH) return null;
+
+      // Use SVG foreignObject to capture rendered HTML as image
+      // Serialize the rendered HTML
+      const clone = section.cloneNode(true);
+      // Remove scripts/iframes for safety
+      clone.querySelectorAll('script,iframe').forEach(el => el.remove());
+      const htmlStr = new XMLSerializer().serializeToString(clone);
+
+      const svgNS = 'http://www.w3.org/2000/svg';
+      const svg = `<svg xmlns="${svgNS}" width="${contentW}" height="${contentH}">
+        <foreignObject width="100%" height="100%">
+          <div xmlns="http://www.w3.org/1999/xhtml" style="width:${contentW}px;height:${contentH}px;overflow:hidden;background:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:14px;color:#1e293b;line-height:1.5;padding:16px;box-sizing:border-box;">
+            ${htmlStr}
+          </div>
+        </foreignObject>
+      </svg>`;
+
+      const svgBlob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+      const svgUrl = URL.createObjectURL(svgBlob);
+      try {
+        const img = new Image();
+        img.decoding = 'async';
+        await new Promise((resolve, reject) => {
+          img.onload = resolve;
+          img.onerror = reject;
+          img.src = svgUrl;
+        });
+
+        const target = scaleToPreviewSize(contentW, contentH);
+        const canvas = document.createElement('canvas');
+        canvas.width = target.width || contentW;
+        canvas.height = target.height || contentH;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const blob = await canvasToJpegBlob(canvas);
+        return { blob, width: canvas.width, height: canvas.height, contentType: 'image/jpeg' };
+      } finally {
+        URL.revokeObjectURL(svgUrl);
       }
-      const target = scaleToPreviewSize(rect.w, rect.h);
-      const scaled = document.createElement('canvas');
-      scaled.width = target.width || rect.w;
-      scaled.height = target.height || rect.h;
-      scaled.getContext('2d').drawImage(canvas, 0, 0, scaled.width, scaled.height);
-      const blob = await canvasToJpegBlob(scaled);
-      return { blob, width: scaled.width, height: scaled.height, contentType: 'image/jpeg' };
     } finally {
       container.remove();
     }
