@@ -126,12 +126,13 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
       throw new Error('No data source');
     }
 
-    // Create a container for docx-preview to render into
+    // Container must be in the DOM before renderAsync (it accesses childNodes)
     const docContainer = document.createElement('div');
     docContainer.className = 'word-doc-container';
-    // Style container — docx-preview injects <style> tags here
-    const styleContainer = document.createElement('div');
-    docContainer.appendChild(styleContainer);
+    const styleContainer = document.createElement('style');
+    document.head.appendChild(styleContainer);
+    stageEl.appendChild(docContainer);
+    if (loadingEl) loadingEl.remove();
 
     await docxLib.renderAsync(arrayBuffer, docContainer, styleContainer, {
       className: 'word-docx',
@@ -149,9 +150,6 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
       renderFootnotes: true,
       renderEndnotes: true
     });
-
-    if (loadingEl) loadingEl.remove();
-    stageEl.appendChild(docContainer);
 
     // Download
     const downloadBtn = body.querySelector('#wordDownload');
@@ -179,6 +177,7 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
     const prevCleanup = activeWordCleanup;
     activeWordCleanup = () => {
       if (typeof prevCleanup === 'function') prevCleanup();
+      try { styleContainer.remove(); } catch {}
       modalEl.classList.remove('word-modal');
       closeModal?.();
       activeWordCleanup = null;
