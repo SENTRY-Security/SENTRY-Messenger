@@ -32,131 +32,106 @@
   overflow: visible;
 }
 
-/* All child elements: default state */
-.nav-icon circle,
-.nav-icon path,
-.nav-icon rect,
-.nav-icon line {
-  transform-origin: center;
-  transform-box: fill-box;
-}
+/* All elements use pathLength="1" in HTML, so stroke-dasharray: 1
+   means "full path".  stroke-dashoffset: 1 hides it completely,
+   0 reveals it completely.  This makes draw animations trivial. */
 
 /* ═══════════════════════════════════════════════════════════════════
- * NAVBAR ICON ANIMATIONS — Per-icon, triggered by .active
+ * NAVBAR ICON ANIMATIONS — stroke draw + stagger
  *
- * Design: scale pop + opacity fade + stagger delays.
- * At 22px, stroke-draw is invisible — pure transform animations
- * look cleaner and match lucide-animated's actual behavior.
+ * Each child element has pathLength="1" in the SVG markup.
+ * Animation: dashoffset 1→0 (draw) + slight scale (spring feel).
+ * Stagger via animation-delay on each element.
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* ── Contacts (circle-user): staggered pop ─────────────────────── */
-/* Outer circle: pop in */
+/* ── Contacts (circle-user): outer → face → body ───────────────── */
 .navbtn.active .nav-icon .ni-head {
-  animation: ni-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation: ni-draw 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
-/* Inner face: pop with delay */
 .navbtn.active .nav-icon .ni-face {
-  animation: ni-pop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) 0.08s both;
+  animation: ni-draw-scale 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) 0.15s both;
 }
-/* Body arc: slide up + fade in with delay */
 .navbtn.active .nav-icon .ni-body {
-  animation: ni-body-rise 0.4s cubic-bezier(0.22, 1, 0.36, 1) 0.15s both;
+  animation: ni-draw 0.5s cubic-bezier(0.22, 1, 0.36, 1) 0.3s both;
 }
 
-@keyframes ni-pop {
+/* Draw: stroke from hidden → fully drawn */
+@keyframes ni-draw {
   0% {
-    transform: scale(0);
-    opacity: 0;
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
   }
   100% {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 0;
+  }
+}
+
+/* Draw + scale: stroke draw with a pop */
+@keyframes ni-draw-scale {
+  0% {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+    transform: scale(0.5);
+    transform-origin: center;
+  }
+  70% {
+    transform: scale(1.15);
+  }
+  100% {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 0;
     transform: scale(1);
-    opacity: 1;
   }
 }
 
-@keyframes ni-body-rise {
+/* ── Messages (message-circle): draw bubble + wobble ───────────── */
+.navbtn.active .nav-icon--msg .ni-bubble {
+  animation: ni-bubble-draw 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes ni-bubble-draw {
   0% {
-    transform: translateY(4px);
-    opacity: 0;
-  }
-  100% {
-    transform: translateY(0);
-    opacity: 1;
-  }
-}
-
-/* ── Messages (message-circle): wobble — matches lucide-animated ─ */
-.navbtn.active .nav-icon--msg {
-  animation: ni-msg-wobble 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
-}
-
-@keyframes ni-msg-wobble {
-  0% {
-    transform: scale(0.85);
-    opacity: 0.5;
-  }
-  25% {
-    transform: scale(1.05) rotate(-7deg);
-    opacity: 1;
-  }
-  50% {
-    transform: scale(1.02) rotate(7deg);
-  }
-  75% {
-    transform: scale(0.99) rotate(-2deg);
-  }
-  100% {
-    transform: scale(1) rotate(0deg);
-    opacity: 1;
-  }
-}
-
-/* ── Drive (cloud + lock): cloud float + lock pop ──────────────── */
-.navbtn.active .nav-icon--drive .ni-cloud {
-  animation: ni-cloud-float 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-.navbtn.active .nav-icon--drive .ni-lock-body {
-  animation: ni-pop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) 0.2s both;
-}
-.navbtn.active .nav-icon--drive .ni-lock-shackle {
-  animation: ni-pop 0.25s cubic-bezier(0.34, 1.56, 0.64, 1) 0.15s both;
-}
-
-@keyframes ni-cloud-float {
-  0% {
-    transform: translateY(3px) scale(0.9);
-    opacity: 0;
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+    transform: scale(0.92);
+    transform-origin: center;
   }
   60% {
-    transform: translateY(-1px) scale(1.02);
-    opacity: 1;
+    stroke-dasharray: 1;
+    stroke-dashoffset: 0;
+    transform: scale(1.05) rotate(-4deg);
+  }
+  80% {
+    transform: scale(0.98) rotate(3deg);
   }
   100% {
-    transform: translateY(0) scale(1);
-    opacity: 1;
+    stroke-dasharray: 1;
+    stroke-dashoffset: 0;
+    transform: scale(1) rotate(0deg);
   }
 }
 
-/* ── SAFE (globe): sphere pop + lines fade ─────────────────────── */
+/* ── Drive (cloud + lock): cloud draw → lock draw ──────────────── */
+.navbtn.active .nav-icon--drive .ni-cloud {
+  animation: ni-draw 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.navbtn.active .nav-icon--drive .ni-lock-shackle {
+  animation: ni-draw 0.4s cubic-bezier(0.22, 1, 0.36, 1) 0.3s both;
+}
+.navbtn.active .nav-icon--drive .ni-lock-body {
+  animation: ni-draw 0.35s cubic-bezier(0.22, 1, 0.36, 1) 0.4s both;
+}
+
+/* ── SAFE (globe): sphere → meridian → equator ─────────────────── */
 .navbtn.active .nav-icon--globe .ni-sphere {
-  animation: ni-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation: ni-draw 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 .navbtn.active .nav-icon--globe .ni-meridian {
-  animation: ni-pop 0.35s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both;
+  animation: ni-draw 0.5s cubic-bezier(0.22, 1, 0.36, 1) 0.2s both;
 }
 .navbtn.active .nav-icon--globe .ni-equator {
-  animation: ni-equator-wipe 0.35s cubic-bezier(0.22, 1, 0.36, 1) 0.18s both;
-}
-
-@keyframes ni-equator-wipe {
-  0% {
-    transform: scaleX(0);
-    opacity: 0;
-  }
-  100% {
-    transform: scaleX(1);
-    opacity: 1;
-  }
+  animation: ni-draw 0.4s cubic-bezier(0.22, 1, 0.36, 1) 0.35s both;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
