@@ -281,40 +281,40 @@ body.modal-open .profile-share-btn {
   }
 
   .profile-header {
-    flex-direction: column;
-    align-items: center;
-    gap: 16px;
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 14px;
   }
 
   .profile-avatar {
-    width: 88px;
-    height: 88px;
-    flex: 0 0 88px;
+    width: 72px;
+    height: 72px;
+    flex: 0 0 72px;
   }
 
   .profile-avatar .avatar-edit-btn {
     right: -4px;
     bottom: -4px;
-    width: 32px;
-    height: 32px;
+    width: 30px;
+    height: 30px;
   }
 
   .profile-main {
-    align-items: center;
-    gap: 14px;
-    text-align: center;
+    align-items: flex-start;
+    gap: 10px;
+    text-align: left;
   }
 
   .profile-nickname {
-    align-items: center;
+    align-items: flex-start;
   }
 
   .profile-nickname button {
-    align-self: center;
+    align-self: flex-start;
   }
 
   .profile-stats {
-    justify-content: center;
+    justify-content: flex-start;
     gap: 10px;
   }
 }
