@@ -1270,6 +1270,14 @@ export function initDrivePane({
       return;
     }
 
+    // Clear stale viewer modal classes before opening a new viewer
+    const modalEl = document.getElementById('modal');
+    if (modalEl) {
+      modalEl.classList.remove(
+        'pdf-modal', 'excel-modal', 'word-modal', 'pptx-modal', 'zip-modal'
+      );
+    }
+
     body.innerHTML = '';
     title.textContent = resolvedName;
     title.setAttribute('title', resolvedName);
