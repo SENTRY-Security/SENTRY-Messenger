@@ -26,37 +26,196 @@
 .icon-xl { width: 28px; height: 28px; }
 .icon-2x { width: 32px; height: 32px; }
 
-/* ── Navbar icon specifics ──────────────────────────────────────── */
-.navbtn .icon {
+/* ── Navbar icon base ───────────────────────────────────────────── */
+.navbtn .nav-icon {
   width: 22px;
   height: 22px;
-  transition: transform 0.2s ease, opacity 0.2s ease;
+  overflow: visible;
 }
 
-/* Navbar active animation — stroke draw + scale bounce */
-.navbtn.active .icon {
-  animation: icon-nav-active 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+/* All nav-icon child paths: default visible, ready for stroke-draw */
+.nav-icon circle,
+.nav-icon path,
+.nav-icon rect,
+.nav-icon line {
+  transition: stroke-dashoffset 0.4s ease, opacity 0.3s ease, transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform-origin: center;
 }
 
-@keyframes icon-nav-active {
+/* ═══════════════════════════════════════════════════════════════════
+ * PER-ICON NAVBAR ANIMATIONS
+ * Triggered when .navbtn gets .active class.
+ * Inspired by lucide-animated: path draw + staggered delays + spring scale
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Contacts / Profile: circle-user & user ────────────────────── */
+/* Head circle: stroke draw + scale pop */
+.navbtn.active .nav-icon .ni-head {
+  animation: ni-circle-draw 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+/* Face circle (circle-user only): draw with slight delay */
+.navbtn.active .nav-icon .ni-face {
+  animation: ni-circle-draw 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) 0.1s both;
+}
+/* Body path: draw from bottom with delay */
+.navbtn.active .nav-icon .ni-body {
+  animation: ni-path-draw 0.45s ease-out 0.2s both;
+}
+
+@keyframes ni-circle-draw {
   0% {
-    transform: scale(0.7);
-    opacity: 0.5;
-    stroke-dasharray: 100;
-    stroke-dashoffset: 100;
+    stroke-dasharray: 80;
+    stroke-dashoffset: 80;
+    transform: scale(0.5);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.1);
+    opacity: 1;
+  }
+  100% {
+    stroke-dasharray: 80;
+    stroke-dashoffset: 0;
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes ni-path-draw {
+  0% {
+    stroke-dasharray: 60;
+    stroke-dashoffset: 60;
+    opacity: 0;
+  }
+  100% {
+    stroke-dasharray: 60;
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+}
+
+/* ── Messages: message-circle ──────────────────────────────────── */
+/* Bubble: scale bounce + slight wobble (matches lucide-animated) */
+.navbtn.active .nav-icon--msg .ni-bubble {
+  animation: ni-msg-wobble 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes ni-msg-wobble {
+  0% {
+    stroke-dasharray: 120;
+    stroke-dashoffset: 120;
+    transform: scale(0.8) rotate(0deg);
+    opacity: 0;
+  }
+  30% {
+    opacity: 1;
+    stroke-dashoffset: 40;
   }
   50% {
-    transform: scale(1.15);
+    transform: scale(1.08) rotate(-5deg);
+  }
+  70% {
+    transform: scale(0.98) rotate(4deg);
+  }
+  100% {
+    stroke-dasharray: 120;
+    stroke-dashoffset: 0;
+    transform: scale(1) rotate(0deg);
     opacity: 1;
-    stroke-dashoffset: 20;
+  }
+}
+
+/* ── Drive: cloud + integrated lock ────────────────────────────── */
+/* Cloud outline: path draw */
+.navbtn.active .nav-icon--drive .ni-cloud {
+  animation: ni-cloud-draw 0.5s ease-out both;
+}
+/* Lock body: scale pop with delay */
+.navbtn.active .nav-icon--drive .ni-lock-body {
+  animation: ni-lock-pop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) 0.25s both;
+}
+/* Lock shackle: draw + slight lift */
+.navbtn.active .nav-icon--drive .ni-lock-shackle {
+  animation: ni-shackle-draw 0.3s ease-out 0.2s both;
+}
+
+@keyframes ni-cloud-draw {
+  0% {
+    stroke-dasharray: 100;
+    stroke-dashoffset: 100;
+    opacity: 0;
+  }
+  30% { opacity: 1; }
+  100% {
+    stroke-dasharray: 100;
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+}
+
+@keyframes ni-lock-pop {
+  0% {
+    transform: scale(0);
+    opacity: 0;
+  }
+  70% {
+    transform: scale(1.2);
+    opacity: 1;
   }
   100% {
     transform: scale(1);
     opacity: 1;
-    stroke-dasharray: 100;
-    stroke-dashoffset: 0;
   }
 }
+
+@keyframes ni-shackle-draw {
+  0% {
+    stroke-dasharray: 20;
+    stroke-dashoffset: 20;
+    opacity: 0;
+  }
+  100% {
+    stroke-dasharray: 20;
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+}
+
+/* ── SAFE: globe ───────────────────────────────────────────────── */
+/* Sphere outline: draw */
+.navbtn.active .nav-icon--globe .ni-sphere {
+  animation: ni-circle-draw 0.5s ease-out both;
+}
+/* Meridian: draw with delay */
+.navbtn.active .nav-icon--globe .ni-meridian {
+  animation: ni-path-draw 0.4s ease-out 0.15s both;
+}
+/* Equator: draw with delay + slight scale */
+.navbtn.active .nav-icon--globe .ni-equator {
+  animation: ni-equator-draw 0.35s ease-out 0.25s both;
+}
+
+@keyframes ni-equator-draw {
+  0% {
+    stroke-dasharray: 40;
+    stroke-dashoffset: 40;
+    opacity: 0;
+    transform: scaleX(0);
+  }
+  60% {
+    transform: scaleX(1.05);
+  }
+  100% {
+    stroke-dasharray: 40;
+    stroke-dashoffset: 0;
+    opacity: 1;
+    transform: scaleX(1);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * UTILITY ANIMATIONS
+ * ═══════════════════════════════════════════════════════════════════ */
 
 /* ── Click/tap feedback ─────────────────────────────────────────── */
 .icon-anim {
@@ -67,8 +226,6 @@
 button:active .icon-anim {
   transform: scale(0.85);
 }
-
-/* ── Specific icon animations ───────────────────────────────────── */
 
 /* Refresh / sync spin */
 .icon-spin {
@@ -112,27 +269,4 @@ button:active .icon-anim {
 @keyframes icon-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
-}
-
-/* ── Drive cloud+lock stack ─────────────────────────────────────── */
-.nav-icon-stack {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.nav-icon-stack .icon-base {
-  width: 22px;
-  height: 22px;
-}
-
-.nav-icon-stack .icon-lock {
-  position: absolute;
-  width: 10px;
-  height: 10px;
-  bottom: -1px;
-  right: -3px;
-  stroke-width: 2.5;
-  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.5));
 }

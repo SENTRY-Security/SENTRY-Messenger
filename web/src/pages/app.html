@@ -963,30 +963,44 @@
     <div class="navbar-pill">
       <button id="nav-contacts" class="navbtn" data-i18n-aria-label="nav.contacts">
         <span class="nav-badge" data-tab="contacts"></span>
-        <svg class="icon"><use href="#i-circle-user"/></svg>
+        <svg class="icon nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle class="ni-head" cx="12" cy="12" r="10"/>
+          <circle class="ni-face" cx="12" cy="10" r="3"/>
+          <path class="ni-body" d="M7 20.662V19a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v1.662"/>
+        </svg>
         <span data-i18n="nav.contacts"></span>
       </button>
       <button id="nav-messages" class="navbtn" data-i18n-aria-label="nav.messages">
         <span class="nav-badge" data-tab="messages"></span>
-        <svg class="icon"><use href="#i-message-circle"/></svg>
+        <svg class="icon nav-icon nav-icon--msg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path class="ni-bubble" d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719"/>
+        </svg>
         <span data-i18n="nav.messages"></span>
       </button>
       <button id="nav-drive" class="navbtn active" data-i18n-aria-label="nav.encryptedCloud">
         <span class="nav-badge" data-tab="drive"></span>
-        <span class="nav-icon-stack" aria-hidden="true">
-          <svg class="icon icon-base"><use href="#i-cloud"/></svg>
-          <svg class="icon icon-lock"><use href="#i-lock"/></svg>
-        </span>
+        <svg class="icon nav-icon nav-icon--drive" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path class="ni-cloud" d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
+          <rect class="ni-lock-body" width="8" height="5" x="8" y="13" rx="1" stroke-width="1.5"/>
+          <path class="ni-lock-shackle" d="M10 13v-1.5a2 2 0 0 1 4 0V13" stroke-width="1.5"/>
+        </svg>
         <span data-i18n="nav.encryptedCloud"></span>
       </button>
       <button id="nav-profile" class="navbtn" data-i18n-aria-label="nav.myFiles">
         <span class="nav-badge" data-tab="profile"></span>
-        <svg class="icon"><use href="#i-user"/></svg>
+        <svg class="icon nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle class="ni-head" cx="12" cy="7" r="4"/>
+          <path class="ni-body" d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/>
+        </svg>
         <span data-i18n="nav.myFiles"></span>
       </button>
       <button id="nav-safe" class="navbtn" style="display:none" aria-label="SAFE ™">
         <span class="nav-badge" data-tab="safe"></span>
-        <svg class="icon"><use href="#i-globe"/></svg>
+        <svg class="icon nav-icon nav-icon--globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle class="ni-sphere" cx="12" cy="12" r="10"/>
+          <path class="ni-meridian" d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/>
+          <path class="ni-equator" d="M2 12h20"/>
+        </svg>
         <span>SAFE ™</span>
       </button>
     </div>

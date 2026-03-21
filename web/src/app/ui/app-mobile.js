@@ -1377,7 +1377,25 @@ function switchTab(name, options = {}) {
     const page = document.getElementById(`tab-${t}`);
     const btn = document.getElementById(`nav-${t}`);
     if (page) page.style.display = t === name ? '' : 'none';
-    if (btn) btn.classList.toggle('active', t === name);
+    if (btn) {
+      const wasActive = btn.classList.contains('active');
+      btn.classList.toggle('active', t === name);
+      // Re-trigger nav icon animation by forcing reflow when becoming active
+      if (t === name && !wasActive) {
+        const navIcon = btn.querySelector('.nav-icon');
+        if (navIcon) {
+          navIcon.style.animation = 'none';
+          navIcon.offsetHeight; // force reflow
+          navIcon.style.animation = '';
+          // Also re-trigger child element animations
+          navIcon.querySelectorAll('circle, path, rect, line').forEach(el => {
+            el.style.animation = 'none';
+            el.offsetHeight;
+            el.style.animation = '';
+          });
+        }
+      }
+    }
   });
 
   if (name === 'drive') {
