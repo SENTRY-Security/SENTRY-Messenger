@@ -222,13 +222,28 @@ export class AccountWebSocket {
     this.state.acceptWebSocket(server, tags);
 
     // Store metadata as attachment
+    const effectiveSessionTs = normalizeSessionTs(sessionTs) || Math.floor(Date.now() / 1000);
     server.serializeAttachment({
       authenticated: true,
       accountDigest: this.accountDigest,
       deviceId: canonicalDeviceId(deviceId),
-      sessionTs: normalizeSessionTs(sessionTs) || Math.floor(Date.now() / 1000),
+      sessionTs: effectiveSessionTs,
       connectedAt: Date.now()
     });
+
+    // ── Single active connection policy ──
+    // Kick older sessions at upgrade time. Previously this only ran in
+    // _handleAuth, but since _handleWsUpgrade already sets authenticated=true,
+    // the auth handler's re-auth shortcut fires first and the kick logic
+    // was never reached — allowing stale sessions to persist indefinitely.
+    const existingSockets = this.state.getWebSockets();
+    for (const s of existingSockets) {
+      if (s === server) continue;
+      const a = s.deserializeAttachment();
+      if (a && a.authenticated && a.sessionTs && a.sessionTs < effectiveSessionTs) {
+        try { s.close(4409, 'replaced'); } catch {}
+      }
+    }
 
     // Send hello
     server.send(JSON.stringify({ type: 'hello', ts: Date.now() }));
