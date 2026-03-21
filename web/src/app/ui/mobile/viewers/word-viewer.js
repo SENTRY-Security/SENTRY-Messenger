@@ -144,13 +144,13 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
       ignoreFonts: false,
       breakPages: true,
       ignoreLastRenderedPageBreak: true,
-      experimental: true,
+      experimental: false,
       trimXmlDeclaration: true,
       useBase64URL: true,
-      renderHeaders: true,
-      renderFooters: true,
-      renderFootnotes: true,
-      renderEndnotes: true
+      renderHeaders: false,
+      renderFooters: false,
+      renderFootnotes: false,
+      renderEndnotes: false
     });
 
     // Download
