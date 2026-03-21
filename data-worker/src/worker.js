@@ -7,6 +7,7 @@ import { getOpaqueConfig, OpaqueID, OpaqueServer, KE1, KE3, RegistrationRequest,
 // Re-export Durable Object classes so Cloudflare runtime can find them
 export { AccountWebSocket } from './account-ws.js';
 export { RateLimiter } from './rate-limiter.js';
+export { BrowserSession } from './browser-session.js';
 
 // ---- 基本工具與正規化 ----
 const textEncoder = new TextEncoder();
@@ -7521,6 +7522,22 @@ async function handlePublicRoutes(req, env) {
   }
   if (path === '/api/v1/messages/probe') {
     return json({ probe: 'ok' });
+  }
+
+  // ── SAFE Browser — forward to BrowserSession Container DO ────
+  if (path.startsWith('/api/safe/')) {
+    if (!env.BROWSER_SESSION) {
+      return json({ error: 'NotConfigured', message: 'SAFE browser not available' }, { status: 503 });
+    }
+    const auth = req.headers.get('Authorization') || '';
+    const token = auth.replace(/^Bearer\s+/i, '').trim();
+    if (!token) {
+      return json({ error: 'Unauthorized', message: 'Authorization required' }, { status: 401 });
+    }
+    // Each token maps to a unique Container instance (1 user = 1 browser)
+    const id = env.BROWSER_SESSION.idFromName(token);
+    const stub = env.BROWSER_SESSION.get(id);
+    return stub.fetch(req);
   }
 
   // ── Parse body for POST requests ─────────────────────────────

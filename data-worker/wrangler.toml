@@ -41,7 +41,8 @@ id = "2ace4d55398742928e4b2ca79a371d0d"
 [durable_objects]
 bindings = [
   { name = "ACCOUNT_WS", class_name = "AccountWebSocket" },
-  { name = "RATE_LIMITER", class_name = "RateLimiter" }
+  { name = "RATE_LIMITER", class_name = "RateLimiter" },
+  { name = "BROWSER_SESSION", class_name = "BrowserSession" }
 ]
 
 [[migrations]]
@@ -51,6 +52,17 @@ new_classes = ["AccountWebSocket"]
 [[migrations]]
 tag = "v2"
 new_classes = ["RateLimiter"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["BrowserSession"]
+
+# ── SAFE Browser Container ────────────────────────────────────────
+# Each BrowserSession DO manages one KasmVNC Chromium container instance.
+[[containers]]
+class_name = "BrowserSession"
+image = "./Dockerfile.safe"
+max_instances = 10
 
 # ── UAT Environment ─────────────────────────────────────────────
 [env.uat]
@@ -84,5 +96,11 @@ id = "3d14a30fff6344c7bb300d175e84b38c"
 [env.uat.durable_objects]
 bindings = [
   { name = "ACCOUNT_WS", class_name = "AccountWebSocket" },
-  { name = "RATE_LIMITER", class_name = "RateLimiter" }
+  { name = "RATE_LIMITER", class_name = "RateLimiter" },
+  { name = "BROWSER_SESSION", class_name = "BrowserSession" }
 ]
+
+[[env.uat.containers]]
+class_name = "BrowserSession"
+image = "./Dockerfile.safe"
+max_instances = 5
