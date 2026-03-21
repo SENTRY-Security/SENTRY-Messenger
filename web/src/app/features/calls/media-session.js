@@ -1576,6 +1576,16 @@ function setupInsertableStreamsForSender(sender, track) {
   const keyContext = getCallKeyContext();
   if (!keyContext) {
     log({ e2eeSenderSkip: 'no-key-context', kind: track?.kind, callId: activeCallId });
+    // Retry shortly — key derivation may complete between ontrack events
+    const cid = activeCallId;
+    setTimeout(() => {
+      if (activeCallId !== cid || !peerConnection) return;
+      if (scriptTransformWorkers.has(sender)) return;
+      if (getCallKeyContext()) {
+        log({ e2eeSenderRetry: true, kind: track?.kind, callId: cid });
+        setupInsertableStreamsForSender(sender, track);
+      }
+    }, 500);
     return;
   }
   const keyName = track.kind === 'video' ? 'videoTx' : 'audioTx';
@@ -1633,6 +1643,19 @@ function setupInsertableStreamsForReceiver(receiver, track) {
   const keyContext = getCallKeyContext();
   if (!keyContext) {
     log({ e2eeReceiverSkip: 'no-key-context', kind: track?.kind, callId: activeCallId });
+    // Schedule a retry — keyContext may arrive shortly after ontrack.
+    // The onKeyContextUpdate callback is the primary fallback, but if it
+    // fired between the video and audio ontrack events, this receiver
+    // would be missed.  A brief delay covers that gap.
+    const cid = activeCallId;
+    setTimeout(() => {
+      if (activeCallId !== cid || !peerConnection) return;
+      if (scriptTransformWorkers.has(receiver)) return;
+      if (getCallKeyContext()) {
+        log({ e2eeReceiverRetry: true, kind: track?.kind, callId: cid });
+        setupInsertableStreamsForReceiver(receiver, track);
+      }
+    }, 500);
     return;
   }
   const keyName = track.kind === 'video' ? 'videoRx' : 'audioRx';
@@ -1649,7 +1672,13 @@ function setupInsertableStreamsForReceiver(receiver, track) {
   if (applied && !e2eeReceiverConfirmed) {
     e2eeReceiverConfirmed = true;
     log({ e2eeReceiverConfirmed: true, triggeredBy: keyName, callId: activeCallId });
-    // Receiver confirmed — now apply sender transforms for existing tracks.
+  }
+  // Always retry sender transforms after a receiver is applied — in video
+  // calls the first applySenderTransformsDeferred (triggered by video ontrack)
+  // may have skipped audio because keyContext wasn't ready yet.  When the
+  // audio receiver is applied later, we must retry so the audio sender
+  // encrypt transform is applied.
+  if (applied) {
     applySenderTransformsDeferred();
   }
   // After setting up a video receiver transform, request a keyframe from the
