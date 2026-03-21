@@ -1154,35 +1154,18 @@ function initSafeBrowser() {
   _safeInitialized = true;
 
   const startingEl = document.getElementById('safe-starting');
-  const browserEl = document.getElementById('safe-browser');
   const stoppedEl = document.getElementById('safe-stopped');
   const errorEl = document.getElementById('safe-error');
-  const iframe = document.getElementById('safe-iframe');
 
   const retryBtn = document.getElementById('safe-retry-btn');
   const resumeBtn = document.getElementById('safe-resume-btn');
   const errorMsg = document.getElementById('safe-error-msg');
-  const statusSpan = document.getElementById('safe-status');
   const startingDetail = document.getElementById('safe-starting-detail');
-
-  // Toolbar buttons
-  const btnStop = document.getElementById('safe-btn-stop');
-  const btnFullscreen = document.getElementById('safe-btn-fullscreen');
-  const btnRefresh = document.getElementById('safe-btn-refresh');
 
   function showPanel(name) {
     if (startingEl) startingEl.style.display = name === 'starting' ? '' : 'none';
-    if (browserEl) browserEl.style.display = name === 'browser' ? '' : 'none';
     if (stoppedEl) stoppedEl.style.display = name === 'stopped' ? '' : 'none';
     if (errorEl) errorEl.style.display = name === 'error' ? '' : 'none';
-  }
-
-  function resizeIframe() {
-    if (!iframe || !browserEl) return;
-    const toolbar = document.getElementById('safe-toolbar');
-    const toolbarH = toolbar ? toolbar.offsetHeight : 42;
-    const available = browserEl.offsetHeight || (window.innerHeight - 120);
-    iframe.style.height = (available - toolbarH) + 'px';
   }
 
   function formatContainerStatus(containerStatus, elapsed) {
@@ -1204,7 +1187,38 @@ function initSafeBrowser() {
     return sec ? `${msg} ${sec}` : msg;
   }
 
-  // State machine — react to safe-browser.js state changes
+  // ── Fullscreen overlay ──────────────────────────────────────────
+  const fsOverlay = document.getElementById('safe-fullscreen-overlay');
+  const fsIframe = document.getElementById('safe-fullscreen-iframe');
+  const btnExitFs = document.getElementById('safe-btn-exit-fullscreen');
+
+  function enterFullscreen(url) {
+    if (!fsOverlay || !fsIframe) return;
+    fsIframe.src = url;
+    fsOverlay.style.display = '';
+    document.body.style.overflow = 'hidden';
+  }
+
+  function exitFullscreen() {
+    if (!fsOverlay || !fsIframe) return;
+    fsOverlay.style.display = 'none';
+    fsIframe.src = 'about:blank';
+    document.body.style.overflow = '';
+  }
+
+  btnExitFs?.addEventListener('click', () => {
+    exitFullscreen();
+    safeBrowser.stop();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && fsOverlay && fsOverlay.style.display !== 'none') {
+      exitFullscreen();
+      safeBrowser.stop();
+    }
+  });
+
+  // ── State machine — react to safe-browser.js state changes ─────
   safeBrowser.onStateChange((state, detail) => {
     switch (state) {
       case 'idle':
@@ -1219,36 +1233,32 @@ function initSafeBrowser() {
           startingDetail.textContent = formatContainerStatus(detail.containerStatus, detail.elapsed);
         }
 
-        // When iframeUrl is ready, load it
-        if (iframe && detail?.iframeUrl) {
+        // When iframeUrl is ready → directly enter fullscreen
+        if (detail?.iframeUrl) {
           if (startingDetail) startingDetail.textContent = t('safe.statusHealthy');
-          iframe.src = detail.iframeUrl;
-          iframe.onload = () => safeBrowser.markConnected();
-          iframe.onerror = () => safeBrowser.markError('Failed to load browser');
-          // Cross-origin iframes may not fire load events reliably;
-          // CF Container cold start can be 5-10s + KasmVNC boot
+          enterFullscreen(detail.iframeUrl);
+          // Mark connected after a short delay (cross-origin onload unreliable)
           setTimeout(() => {
             if (safeBrowser.getState() === 'starting') safeBrowser.markConnected();
-          }, 30000);
+          }, 5000);
         }
         break;
       }
 
       case 'connected':
-        showPanel('browser');
-        if (statusSpan) statusSpan.textContent = 'SAFE Browser';
-        resizeIframe();
+        showPanel('starting');
+        if (startingDetail) startingDetail.textContent = t('safe.statusHealthy');
         break;
 
       case 'stopped':
+        exitFullscreen();
         showPanel('stopped');
-        if (iframe) iframe.src = 'about:blank';
         break;
 
       case 'error':
+        exitFullscreen();
         showPanel('error');
         if (errorMsg) errorMsg.textContent = detail?.error || 'Connection error';
-        if (iframe) iframe.src = 'about:blank';
         break;
     }
   });
@@ -1256,58 +1266,6 @@ function initSafeBrowser() {
   // Resume / Retry buttons
   resumeBtn?.addEventListener('click', () => safeBrowser.resume());
   retryBtn?.addEventListener('click', () => safeBrowser.retry());
-
-  // Stop button
-  btnStop?.addEventListener('click', () => {
-    log({ safeAction: 'stop' });
-    safeBrowser.stop();
-  });
-
-  // Fullscreen — independent overlay view
-  const fsOverlay = document.getElementById('safe-fullscreen-overlay');
-  const fsIframe = document.getElementById('safe-fullscreen-iframe');
-  const btnExitFs = document.getElementById('safe-btn-exit-fullscreen');
-
-  function enterFullscreen() {
-    if (!fsOverlay || !fsIframe || !iframe) return;
-    // Copy current iframe src to fullscreen iframe
-    fsIframe.src = iframe.src;
-    fsOverlay.style.display = '';
-    document.body.style.overflow = 'hidden';
-  }
-
-  function exitFullscreen() {
-    if (!fsOverlay || !fsIframe) return;
-    fsOverlay.style.display = 'none';
-    fsIframe.src = 'about:blank';
-    document.body.style.overflow = '';
-  }
-
-  btnFullscreen?.addEventListener('click', () => {
-    log({ safeAction: 'fullscreen' });
-    enterFullscreen();
-  });
-  btnExitFs?.addEventListener('click', exitFullscreen);
-
-  // Also exit on Escape key
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && fsOverlay && fsOverlay.style.display !== 'none') {
-      exitFullscreen();
-    }
-  });
-
-  // Refresh
-  btnRefresh?.addEventListener('click', () => {
-    log({ safeAction: 'refresh' });
-    if (iframe && iframe.src && iframe.src !== 'about:blank') {
-      const src = iframe.src;
-      iframe.src = 'about:blank';
-      setTimeout(() => { iframe.src = src; }, 100);
-    }
-  });
-
-  // Resize on window resize
-  window.addEventListener('resize', resizeIframe);
 
   showPanel('starting');
 }
@@ -1338,19 +1296,9 @@ function switchTab(name, options = {}) {
     drivePane.refreshDriveList().catch((err) => log({ driveListError: String(err?.message || err) }));
   }
 
-  // SAFE tab: auto-start browser + resize iframe
+  // SAFE tab: auto-start browser
   if (name === 'safe') {
     onSafeTabActivated();
-    const iframe = document.getElementById('safe-iframe');
-    const browserEl = document.getElementById('safe-browser');
-    if (iframe && browserEl && safeBrowser.getState() === 'connected') {
-      requestAnimationFrame(() => {
-        const toolbar = document.getElementById('safe-toolbar');
-        const toolbarH = toolbar ? toolbar.offsetHeight : 42;
-        const available = browserEl.offsetHeight || (window.innerHeight - 120);
-        iframe.style.height = (available - toolbarH) + 'px';
-      });
-    }
   }
 
   if (name === 'messages') {
