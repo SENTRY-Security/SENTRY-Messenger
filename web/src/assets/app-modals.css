@@ -453,10 +453,14 @@
   margin-left: auto;
 }
 
-.pdf-actions-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.pdf-page-label {
+  font-size: 12px;
+  color: rgba(226, 232, 240, 0.7);
+  white-space: nowrap;
+  margin-left: auto;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .pdf-btn {
@@ -488,54 +492,24 @@
   height: 16px;
 }
 
-.pdf-page-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  font-size: 13px;
-}
-
-.pdf-footer {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  width: 100%;
-  background: rgba(0, 0, 0, 0.266);
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  padding: 8px 14px;
-  box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.18);
-  backdrop-filter: blur(10px);
-  z-index: 5;
-}
-
-.pdf-footer .pdf-actions-row {
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
 .pdf-stage {
   flex: 1;
-  overflow: auto;
-  padding: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  padding: 52px 0 16px;
   display: flex;
-  justify-content: center;
-  align-items: flex-start;
-  background: #000;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  background: #1a1a2e;
 }
 
-.pdf-canvas-wrap {
-  position: relative;
-  box-shadow: none;
-  border-radius: 0;
-  overflow: hidden;
-  background: #111827;
+.pdf-page-wrap {
   flex: 0 0 auto;
+  background: #111827;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  min-height: 200px;
 }
 
 .pdf-canvas {
