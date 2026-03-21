@@ -615,6 +615,68 @@
   color: #0b1220;
 }
 
+/* PDF password modal overlay */
+.pdf-pw-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(4px);
+}
+
+.pdf-pw-modal {
+  background: #1e293b; border-radius: 16px; padding: 28px 24px;
+  width: min(340px, 88vw); text-align: center;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.pdf-pw-icon { color: #94a3b8; margin-bottom: 12px; }
+
+.pdf-pw-title {
+  font-size: 16px; font-weight: 700; color: #e2e8f0; margin-bottom: 16px;
+}
+
+.pdf-pw-error {
+  font-size: 13px; color: #f87171; margin-bottom: 12px; padding: 6px 10px;
+  background: rgba(248, 113, 113, 0.1); border-radius: 8px;
+}
+
+.pdf-pw-field {
+  position: relative; margin-bottom: 16px;
+}
+
+.pdf-pw-input {
+  width: 100%; box-sizing: border-box;
+  padding: 12px 44px 12px 14px; font-size: 15px;
+  border: 1.5px solid rgba(148, 163, 184, 0.2); border-radius: 10px;
+  background: #0f172a; color: #e2e8f0;
+  outline: none; transition: border-color 0.15s;
+}
+.pdf-pw-input:focus { border-color: #38bdf8; }
+.pdf-pw-input::placeholder { color: #475569; }
+
+.pdf-pw-eye {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  border: none; background: none; color: #64748b; cursor: pointer;
+  padding: 6px; border-radius: 8px; display: flex; align-items: center; justify-content: center;
+}
+.pdf-pw-eye:hover { color: #94a3b8; background: rgba(148, 163, 184, 0.1); }
+
+.pdf-pw-actions {
+  display: flex; gap: 10px; justify-content: center;
+}
+
+.pdf-pw-cancel, .pdf-pw-submit {
+  border: none; border-radius: 10px; padding: 10px 20px;
+  font-size: 14px; font-weight: 600; cursor: pointer;
+}
+.pdf-pw-cancel {
+  background: rgba(148, 163, 184, 0.12); color: #94a3b8;
+}
+.pdf-pw-cancel:active { opacity: 0.7; }
+.pdf-pw-submit {
+  background: linear-gradient(135deg, #38bdf8, #6366f1); color: #fff;
+}
+.pdf-pw-submit:active { opacity: 0.85; }
+
 @media (max-width: 640px) {
   .pdf-title {
     max-width: 30vw;

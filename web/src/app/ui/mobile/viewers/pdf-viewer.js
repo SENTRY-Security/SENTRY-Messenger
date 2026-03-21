@@ -416,9 +416,100 @@ export async function renderPdfViewer({ url, name, modalApi }) {
     if (pageLabel) pageLabel.textContent = `${current} / ${pdfDoc.numPages}`;
   };
 
-  // ── Main ──
+  // ── Password modal overlay ──
+  const showPasswordModal = (errorMsg) => new Promise((resolve, reject) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'pdf-pw-overlay';
+    overlay.innerHTML = `
+      <div class="pdf-pw-modal">
+        <div class="pdf-pw-icon">
+          <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+        </div>
+        <div class="pdf-pw-title">${t('viewer.pdfPasswordRequired')}</div>
+        <div class="pdf-pw-error" id="pdfPwError" style="display:${errorMsg ? 'block' : 'none'}">${errorMsg ? escapeHtml(errorMsg) : ''}</div>
+        <div class="pdf-pw-field">
+          <input type="password" class="pdf-pw-input" id="pdfPwInput" placeholder="${t('viewer.pdfPasswordPlaceholder')}" autocomplete="off" spellcheck="false" />
+          <button type="button" class="pdf-pw-eye" id="pdfPwEye" aria-label="${t('viewer.togglePassword')}">
+            <svg class="eye-open" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="eye-closed" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+          </button>
+        </div>
+        <div class="pdf-pw-actions">
+          <button type="button" class="pdf-pw-cancel" id="pdfPwCancel">${t('common.cancel')}</button>
+          <button type="button" class="pdf-pw-submit" id="pdfPwSubmit">${t('viewer.pdfUnlock')}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    const input = overlay.querySelector('#pdfPwInput');
+    const eyeBtn = overlay.querySelector('#pdfPwEye');
+    const submitBtn = overlay.querySelector('#pdfPwSubmit');
+    const cancelBtn = overlay.querySelector('#pdfPwCancel');
+    const errEl = overlay.querySelector('#pdfPwError');
+    let visible = false;
+
+    eyeBtn.addEventListener('click', () => {
+      visible = !visible;
+      input.type = visible ? 'text' : 'password';
+      eyeBtn.querySelector('.eye-open').style.display = visible ? 'none' : '';
+      eyeBtn.querySelector('.eye-closed').style.display = visible ? '' : 'none';
+    });
+
+    const doSubmit = () => {
+      const pw = input.value;
+      if (!pw) {
+        errEl.textContent = t('viewer.pdfPasswordEmpty');
+        errEl.style.display = 'block';
+        input.focus();
+        return;
+      }
+      overlay.remove();
+      resolve(pw);
+    };
+
+    submitBtn.addEventListener('click', doSubmit);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSubmit(); });
+    cancelBtn.addEventListener('click', () => { overlay.remove(); reject(new Error('cancelled')); });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) { overlay.remove(); reject(new Error('cancelled')); } });
+    setTimeout(() => input.focus(), 50);
+  });
+
+  // ── Load document (with password retry loop) ──
+  const loadDocument = async () => {
+    try {
+      return await pdfjsLib.getDocument({ url }).promise;
+    } catch (err) {
+      if (err?.name !== 'PasswordException') throw err;
+      // Password required — enter retry loop
+      let errorMsg = '';
+      while (true) {
+        let pw;
+        try {
+          pw = await showPasswordModal(errorMsg);
+        } catch { return null; } // user cancelled
+        try {
+          return await pdfjsLib.getDocument({ url, password: pw }).promise;
+        } catch (retryErr) {
+          if (retryErr?.name === 'PasswordException') {
+            errorMsg = t('viewer.pdfPasswordWrong');
+            continue;
+          }
+          throw retryErr;
+        }
+      }
+    }
+  };
+
   try {
-    pdfDoc = await pdfjsLib.getDocument({ url }).promise;
+    pdfDoc = await loadDocument();
+    if (!pdfDoc) {
+      // User cancelled password — close viewer
+      cleanupCore();
+      closeModal?.();
+      return true;
+    }
     if (loadingEl) loadingEl.remove();
 
     // Get first page to estimate aspect-ratio for placeholders

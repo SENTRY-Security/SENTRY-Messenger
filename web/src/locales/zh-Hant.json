@@ -865,7 +865,13 @@
     "wordLoadFailed": "Word 載入失敗：{{error}}",
     "downloadZip": "下載壓縮檔",
     "zipFiles": "個檔案",
-    "zipLoadFailed": "壓縮檔載入失敗：{{error}}"
+    "zipLoadFailed": "壓縮檔載入失敗：{{error}}",
+    "pdfPasswordRequired": "此 PDF 需要密碼",
+    "pdfPasswordPlaceholder": "輸入密碼",
+    "pdfUnlock": "解鎖",
+    "pdfPasswordEmpty": "請輸入密碼",
+    "pdfPasswordWrong": "密碼錯誤，請重試",
+    "togglePassword": "顯示/隱藏密碼"
   },
   "mediaHandling": {
     "videoDataIncomplete": "影片資料不完整，無法播放",

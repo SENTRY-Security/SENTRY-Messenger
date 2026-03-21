@@ -865,7 +865,13 @@
     "wordLoadFailed": "Word load failed: {{error}}",
     "downloadZip": "Download archive",
     "zipFiles": "files",
-    "zipLoadFailed": "Archive load failed: {{error}}"
+    "zipLoadFailed": "Archive load failed: {{error}}",
+    "pdfPasswordRequired": "This PDF is password protected",
+    "pdfPasswordPlaceholder": "Enter password",
+    "pdfUnlock": "Unlock",
+    "pdfPasswordEmpty": "Please enter a password",
+    "pdfPasswordWrong": "Wrong password, please try again",
+    "togglePassword": "Show/hide password"
   },
   "mediaHandling": {
     "videoDataIncomplete": "Video data incomplete, cannot play",
