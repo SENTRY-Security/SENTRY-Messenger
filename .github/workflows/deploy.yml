@@ -11,28 +11,41 @@ jobs:
     runs-on: ubuntu-latest
     name: Detect Changes
     outputs:
-      worker: ${{ steps.filter.outputs.worker }}
-      web: ${{ steps.filter.outputs.web }}
-      backend: ${{ steps.filter.outputs.backend }}
+      worker: ${{ steps.detect.outputs.worker }}
+      web: ${{ steps.detect.outputs.web }}
+      backend: ${{ steps.detect.outputs.backend }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 20
+          fetch-depth: 0
 
-      - name: Check changed paths
-        uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            worker:
-              - 'data-worker/**'
-            web:
-              - 'web/**'
-            backend:
-              - 'src/**'
-              - 'package.json'
-              - 'package-lock.json'
+      - name: Detect changed paths
+        id: detect
+        run: |
+          BASE="${{ github.event.before }}"
+          HEAD="${{ github.sha }}"
+          if [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            BASE="HEAD~1"
+          fi
+          CHANGED=$(git diff --name-only "$BASE" "$HEAD" 2>/dev/null || git diff --name-only HEAD~1 HEAD)
+          echo "Changed files:"
+          echo "$CHANGED"
+          echo "worker=false" >> "$GITHUB_OUTPUT"
+          echo "web=false" >> "$GITHUB_OUTPUT"
+          echo "backend=false" >> "$GITHUB_OUTPUT"
+          if echo "$CHANGED" | grep -q '^data-worker/'; then
+            echo "worker=true" >> "$GITHUB_OUTPUT"
+            echo "→ Worker changes detected"
+          fi
+          if echo "$CHANGED" | grep -q '^web/'; then
+            echo "web=true" >> "$GITHUB_OUTPUT"
+            echo "→ Web changes detected"
+          fi
+          if echo "$CHANGED" | grep -qE '^(src/|package\.json|package-lock\.json)'; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+            echo "→ Backend changes detected"
+          fi
 
   # ── Data Worker (Cloudflare Worker) ─────────────────────────────────
   deploy-worker:
