@@ -67,10 +67,12 @@ export function createSubscriptionModule({ deps }) {
         state.found = true;
         state.expiresAt = Number(data.expires_at);
         state.expired = !(state.expiresAt && state.expiresAt > Date.now());
+        state.tier = state.expired ? null : (data.tier || data.plan || 'basic');
       } else {
         state.found = false;
         state.expiresAt = null;
         state.expired = true;
+        state.tier = null;
         if (!state.logs.length) state.accountCreatedAt = state.accountCreatedAt || null;
       }
     } catch (err) {

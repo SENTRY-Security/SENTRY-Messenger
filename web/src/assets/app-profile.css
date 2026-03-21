@@ -6,7 +6,7 @@
 
 .profile-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 28px;
   position: relative;
 }
@@ -116,6 +116,74 @@
 
 .profile-nick-edit-icon:active {
   transform: translateY(1px);
+}
+
+/* ── Subscription Badge (3rd column) ── */
+.sub-badge {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 56px;
+}
+
+.sub-badge-icon {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sub-badge-icon .sub-icon {
+  width: 32px;
+  height: 32px;
+  display: none;
+}
+
+.sub-badge-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+
+/* Tier: none — iron gray */
+.sub-badge[data-tier="none"] .sub-icon--none { display: block; }
+.sub-badge[data-tier="none"] .sub-badge-icon { color: #6b7280; }
+.sub-badge[data-tier="none"] .sub-badge-label { color: #6b7280; }
+
+/* Tier: basic — green */
+.sub-badge[data-tier="basic"] .sub-icon--basic { display: block; }
+.sub-badge[data-tier="basic"] .sub-badge-icon { color: #22c55e; }
+.sub-badge[data-tier="basic"] .sub-badge-label { color: #22c55e; }
+
+/* Tier: pro — gold with breathing glow */
+.sub-badge[data-tier="pro"] .sub-icon--pro { display: block; }
+.sub-badge[data-tier="pro"] .sub-badge-icon {
+  color: #f59e0b;
+  animation: sub-breathe 2.4s ease-in-out infinite;
+}
+.sub-badge[data-tier="pro"] .sub-badge-label {
+  color: #f59e0b;
+  animation: sub-breathe-text 2.4s ease-in-out infinite;
+}
+
+@keyframes sub-breathe {
+  0%, 100% {
+    filter: drop-shadow(0 0 4px rgba(245, 158, 11, 0.3));
+    opacity: 0.85;
+  }
+  50% {
+    filter: drop-shadow(0 0 12px rgba(245, 158, 11, 0.7));
+    opacity: 1;
+  }
+}
+
+@keyframes sub-breathe-text {
+  0%, 100% { opacity: 0.75; }
+  50% { opacity: 1; }
 }
 
 .profile-stats {
@@ -297,8 +365,8 @@ body.modal-open .profile-share-btn {
 
   .profile-header {
     flex-direction: row;
-    align-items: flex-start;
-    gap: 20px;
+    align-items: center;
+    gap: 14px;
   }
 
   .profile-avatar {
@@ -329,6 +397,24 @@ body.modal-open .profile-share-btn {
   .profile-stats {
     justify-content: flex-end;
     gap: 10px;
+  }
+
+  .sub-badge {
+    min-width: 48px;
+  }
+
+  .sub-badge-icon {
+    width: 34px;
+    height: 34px;
+  }
+
+  .sub-badge-icon .sub-icon {
+    width: 26px;
+    height: 26px;
+  }
+
+  .sub-badge-label {
+    font-size: 10px;
   }
 }
 .modal.avatar-modal .modal-panel {

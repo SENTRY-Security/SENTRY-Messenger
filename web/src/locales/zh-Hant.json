@@ -532,7 +532,10 @@
     "chooseImage": "選擇圖片",
     "avatarCropHint": "拖曳或縮放裁切，支援雙指或滑鼠滾輪。",
     "imageReadFailed": "圖片讀取失敗：",
-    "uploadFailed": "上傳失敗："
+    "uploadFailed": "上傳失敗：",
+    "subNone": "未訂閱",
+    "subBasic": "基本方案",
+    "subPro": "進階方案"
   },
   "subscription": {
     "title": "訂閱 / 儲值",

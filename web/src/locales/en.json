@@ -532,7 +532,10 @@
     "chooseImage": "Choose image",
     "avatarCropHint": "Drag or zoom to crop; supports pinch or mouse wheel.",
     "imageReadFailed": "Image read failed: ",
-    "uploadFailed": "Upload failed: "
+    "uploadFailed": "Upload failed: ",
+    "subNone": "No Plan",
+    "subBasic": "Basic",
+    "subPro": "Pro"
   },
   "subscription": {
     "title": "Subscription / Top-up",

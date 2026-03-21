@@ -529,7 +529,10 @@
     "chooseImage": "이미지 선택",
     "avatarCropHint": "드래그 또는 확대/축소하여 자르기; 핀치 또는 마우스 휠을 지원합니다.",
     "imageReadFailed": "이미지 읽기 실패: ",
-    "uploadFailed": "업로드 실패: "
+    "uploadFailed": "업로드 실패: ",
+    "subNone": "미구독",
+    "subBasic": "기본",
+    "subPro": "프로"
   },
   "subscription": {
     "title": "구독 / 충전",

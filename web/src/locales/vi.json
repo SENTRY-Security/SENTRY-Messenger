@@ -529,7 +529,10 @@
     "chooseImage": "Chọn hình ảnh",
     "avatarCropHint": "Kéo hoặc thu phóng để cắt; hỗ trợ chụm hoặc cuộn chuột.",
     "imageReadFailed": "Đọc hình ảnh thất bại: ",
-    "uploadFailed": "Tải lên thất bại: "
+    "uploadFailed": "Tải lên thất bại: ",
+    "subNone": "Chưa đăng ký",
+    "subBasic": "Cơ bản",
+    "subPro": "Nâng cao"
   },
   "subscription": {
     "title": "Đăng ký / Nạp tiền",

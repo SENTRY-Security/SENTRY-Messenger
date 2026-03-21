@@ -1822,6 +1822,7 @@ if (userMenuVersionBtn) {
   });
 }
 
+updateSubscriptionBadge();
 setTimeout(() => {
   refreshSubscriptionStatus({ silent: true });
   if (drivePane?.showSubscriptionGateIfExpired) drivePane.showSubscriptionGateIfExpired();
@@ -1935,6 +1936,21 @@ document.addEventListener('biz-conv:add-friend', async (event) => {
     showToast?.(err?.message || 'Failed to add friend');
   }
 });
+function updateSubscriptionBadge() {
+  const badge = document.getElementById('subscriptionBadge');
+  const label = document.getElementById('subscriptionLabel');
+  if (!badge) return;
+  const state = sessionStore.subscriptionState;
+  let tier = 'none';
+  if (state.found && !state.expired && state.tier) {
+    tier = state.tier === 'pro' ? 'pro' : 'basic';
+  }
+  badge.dataset.tier = tier;
+  if (label) {
+    const key = tier === 'pro' ? 'profile.subPro' : tier === 'basic' ? 'profile.subBasic' : 'profile.subNone';
+    label.textContent = t(key);
+  }
+}
 document.addEventListener('subscription:state', () => {
   if (typeof messagesPane.updateComposerAvailability === 'function') {
     messagesPane.updateComposerAvailability();
@@ -1942,6 +1958,7 @@ document.addEventListener('subscription:state', () => {
   if (typeof drivePane.updateDriveActionAvailability === 'function') {
     drivePane.updateDriveActionAvailability();
   }
+  updateSubscriptionBadge();
 });
 document.addEventListener('contacts:broadcast-update', async (event) => {
   if (!shareController || typeof shareController.broadcastContactUpdate !== 'function') return;

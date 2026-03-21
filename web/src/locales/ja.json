@@ -529,7 +529,10 @@
     "chooseImage": "画像を選択",
     "avatarCropHint": "ドラッグまたはズームで切り抜き。ピンチやマウスホイールにも対応しています。",
     "imageReadFailed": "画像の読み取りに失敗: ",
-    "uploadFailed": "アップロードに失敗: "
+    "uploadFailed": "アップロードに失敗: ",
+    "subNone": "未登録",
+    "subBasic": "ベーシック",
+    "subPro": "プロ"
   },
   "subscription": {
     "title": "サブスクリプション / チャージ",
