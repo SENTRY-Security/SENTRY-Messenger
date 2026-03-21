@@ -67,9 +67,12 @@ export default {
       return json({ error: 'Not found' }, 404, request, env);
     }
 
-    // Auth: "Bearer <token>" — token identifies the user's browser session
+    // Auth: Bearer header first, then ?token= query param (iframe can't set headers)
     const auth = request.headers.get('Authorization') || '';
-    const token = auth.replace(/^Bearer\s+/i, '').trim();
+    let token = auth.replace(/^Bearer\s+/i, '').trim();
+    if (!token && url.pathname.startsWith('/api/safe/browser')) {
+      token = url.searchParams.get('token') || '';
+    }
     if (!token) {
       return json({ error: 'Authorization required' }, 401, request, env);
     }

@@ -132,9 +132,16 @@ function buildIframeUrl(password) {
   const url = new URL(base + '/api/safe/browser/vnc.html');
   url.searchParams.set('autoconnect', 'true');
   url.searchParams.set('resize', 'scale');
-  // Tell noVNC the correct WebSocket path (proxied through /api/safe/browser/)
-  url.searchParams.set('path', 'api/safe/browser/websockify');
+  // iframe can't set Authorization header — pass token via query param
+  const token = getAccountToken?.() || '';
+  // Include token in both the page URL and the WebSocket path
+  // so noVNC's WebSocket connection also passes auth
+  const wsPath = token
+    ? `api/safe/browser/websockify?token=${encodeURIComponent(token)}`
+    : 'api/safe/browser/websockify';
+  url.searchParams.set('path', wsPath);
   if (password) url.searchParams.set('password', password);
+  if (token) url.searchParams.set('token', token);
   return url.toString();
 }
 

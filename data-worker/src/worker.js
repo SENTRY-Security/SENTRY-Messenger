@@ -7529,8 +7529,12 @@ async function handlePublicRoutes(req, env) {
     if (!env.BROWSER_SESSION) {
       return json({ error: 'NotConfigured', message: 'SAFE browser not available' }, { status: 503 });
     }
+    // Auth: Bearer header first, then ?token= query param (iframe can't set headers)
     const auth = req.headers.get('Authorization') || '';
-    const token = auth.replace(/^Bearer\s+/i, '').trim();
+    let token = auth.replace(/^Bearer\s+/i, '').trim();
+    if (!token && path.startsWith('/api/safe/browser')) {
+      token = new URL(req.url).searchParams.get('token') || '';
+    }
     if (!token) {
       return json({ error: 'Unauthorized', message: 'Authorization required' }, { status: 401 });
     }
