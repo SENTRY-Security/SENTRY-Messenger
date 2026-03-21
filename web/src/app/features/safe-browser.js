@@ -1,17 +1,17 @@
 // /app/features/safe-browser.js
-// SAFE Browser — manages connection to a remote KasmVNC / noVNC browser instance.
+// SAFE Browser — manages connection to a KasmVNC browser instance.
 //
-// Supports two modes:
-//   1. Direct iframe embed — for KasmVNC standalone (wss://host:6901)
-//   2. Worker-proxied WebSocket — for CF Container deployment (future)
-//
-// The iframe approach is simplest and gives full KasmVNC client experience
-// (keyboard, mouse, clipboard, resize) without custom WebRTC/VNC code.
+// Two modes:
+//   1. CF Container mode — Worker at SAFE_WORKER_URL proxies to container
+//      iframe src = {SAFE_WORKER_URL}/api/safe/browser/?password=...
+//   2. Direct mode — connect to a self-hosted KasmVNC/noVNC instance
+//      iframe src = https://your-server:6901/?password=...
 
 import { log } from '../core/log.js';
 
 const STORAGE_KEY = 'safe_endpoint';
 const STORAGE_PW_KEY = 'safe_password';
+const STORAGE_MODE_KEY = 'safe_mode';
 
 let _state = 'disconnected'; // disconnected | connecting | connected | error
 let _listeners = [];
@@ -30,7 +30,7 @@ function setState(next, detail) {
   }
 }
 
-// ── Endpoint persistence (sessionStorage — cleared on logout) ────
+// ── Persistence (sessionStorage — cleared on logout) ─────────────
 
 export function getSavedEndpoint() {
   try { return sessionStorage.getItem(STORAGE_KEY) || ''; } catch { return ''; }
@@ -40,88 +40,160 @@ export function getSavedPassword() {
   try { return sessionStorage.getItem(STORAGE_PW_KEY) || ''; } catch { return ''; }
 }
 
-export function saveEndpoint(endpoint, password) {
+export function getSavedMode() {
+  try { return sessionStorage.getItem(STORAGE_MODE_KEY) || 'direct'; } catch { return 'direct'; }
+}
+
+export function saveConfig(endpoint, password, mode) {
   try {
     sessionStorage.setItem(STORAGE_KEY, endpoint || '');
     sessionStorage.setItem(STORAGE_PW_KEY, password || '');
+    sessionStorage.setItem(STORAGE_MODE_KEY, mode || 'direct');
   } catch { /* quota / security */ }
 }
 
-export function clearEndpoint() {
+export function clearConfig() {
   try {
     sessionStorage.removeItem(STORAGE_KEY);
     sessionStorage.removeItem(STORAGE_PW_KEY);
+    sessionStorage.removeItem(STORAGE_MODE_KEY);
   } catch { /* ignore */ }
 }
 
-// ── Connection ──────────────────────────────────────────────────
+// ── URL builders ─────────────────────────────────────────────────
 
 /**
- * Build the KasmVNC iframe URL from endpoint + password.
- *
- * KasmVNC serves its client at the root path on port 6901.
- * Query params: ?password=<pw> auto-connects without login prompt.
- *
- * For noVNC setups: /vnc.html?autoconnect=true&password=<pw>
+ * Build iframe URL for CF Container mode.
+ * The Worker proxies /api/safe/browser/* → KasmVNC port 6901.
  */
-export function buildIframeUrl(endpoint, password) {
-  if (!endpoint) return null;
-
+function buildContainerIframeUrl(workerUrl, password) {
   try {
-    // Normalize: accept wss://, https://, or bare host:port
-    let base = endpoint.trim();
-
-    // If user entered a WebSocket URL, convert to HTTPS for iframe
-    base = base.replace(/^wss:\/\//i, 'https://').replace(/^ws:\/\//i, 'http://');
-
-    // If no protocol, add https
-    if (!/^https?:\/\//i.test(base)) {
-      base = 'https://' + base;
-    }
-
-    const url = new URL(base);
-
-    // KasmVNC auto-login: append password hash
-    if (password) {
-      url.searchParams.set('password', password);
-    }
-
-    // Detect noVNC vs KasmVNC based on path or port
-    // KasmVNC: root path on 6901
-    // noVNC: /vnc.html
-    if (!url.pathname || url.pathname === '/') {
-      // Default KasmVNC — root is fine
-    }
-
+    const base = workerUrl.replace(/\/+$/, '');
+    const url = new URL(base + '/api/safe/browser/');
+    if (password) url.searchParams.set('password', password);
     return url.toString();
   } catch (err) {
-    log({ safeBuildUrlError: err?.message });
+    log({ safeBuildContainerUrlError: err?.message });
     return null;
   }
 }
 
 /**
- * Connect to a remote browser instance.
- * Sets up the iframe and monitors connectivity.
+ * Build iframe URL for direct KasmVNC/noVNC connection.
  */
-export function connect(endpoint, password) {
+function buildDirectIframeUrl(endpoint, password) {
+  if (!endpoint) return null;
+  try {
+    let base = endpoint.trim();
+    base = base.replace(/^wss:\/\//i, 'https://').replace(/^ws:\/\//i, 'http://');
+    if (!/^https?:\/\//i.test(base)) base = 'https://' + base;
+    const url = new URL(base);
+    if (password) url.searchParams.set('password', password);
+    return url.toString();
+  } catch (err) {
+    log({ safeBuildDirectUrlError: err?.message });
+    return null;
+  }
+}
+
+// ── CF Container API calls ───────────────────────────────────────
+
+/**
+ * Start the CF Container via Worker API.
+ * Returns { status, browserPath } on success.
+ */
+async function startContainer(workerUrl, authToken, password) {
+  const base = workerUrl.replace(/\/+$/, '');
+  const res = await fetch(base + '/api/safe/start', {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + authToken,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ password: password || 'sentry' }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.message || `Start failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+/**
+ * Check container status via Worker API.
+ */
+async function getContainerStatus(workerUrl, authToken) {
+  const base = workerUrl.replace(/\/+$/, '');
+  const res = await fetch(base + '/api/safe/status', {
+    headers: { 'Authorization': 'Bearer ' + authToken },
+  });
+  if (!res.ok) return { status: 'unknown' };
+  return res.json();
+}
+
+/**
+ * Stop the CF Container via Worker API.
+ */
+async function stopContainer(workerUrl, authToken) {
+  const base = workerUrl.replace(/\/+$/, '');
+  await fetch(base + '/api/safe/stop', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + authToken },
+  }).catch(() => {});
+}
+
+// ── Connection ───────────────────────────────────────────────────
+
+/**
+ * Connect in CF Container mode.
+ * Starts the container, then loads KasmVNC via Worker proxy.
+ */
+export async function connectContainer(workerUrl, password, authToken) {
+  if (!workerUrl) {
+    setState('error', { message: 'No Worker URL provided' });
+    return false;
+  }
+  if (!authToken) {
+    setState('error', { message: 'No auth token' });
+    return false;
+  }
+
+  saveConfig(workerUrl, password, 'container');
+  setState('connecting', { mode: 'container' });
+
+  try {
+    // Start the container (may take 2-10s for cold start)
+    await startContainer(workerUrl, authToken, password);
+
+    // Build iframe URL through the Worker proxy
+    const iframeUrl = buildContainerIframeUrl(workerUrl, password);
+    if (!iframeUrl) throw new Error('Failed to build browser URL');
+
+    setState('connecting', { mode: 'container', iframeUrl });
+    return true;
+  } catch (err) {
+    setState('error', { message: err?.message || 'Container start failed' });
+    return false;
+  }
+}
+
+/**
+ * Connect in direct mode (self-hosted KasmVNC/noVNC).
+ */
+export function connectDirect(endpoint, password) {
   if (!endpoint) {
     setState('error', { message: 'No endpoint provided' });
     return false;
   }
 
-  const iframeUrl = buildIframeUrl(endpoint, password);
+  const iframeUrl = buildDirectIframeUrl(endpoint, password);
   if (!iframeUrl) {
     setState('error', { message: 'Invalid endpoint URL' });
     return false;
   }
 
-  saveEndpoint(endpoint, password);
-  setState('connecting', { endpoint, iframeUrl });
-
-  // The actual iframe load is handled by the UI layer (app-mobile.js)
-  // We emit connecting state → UI sets iframe.src → iframe onload → connected
-
+  saveConfig(endpoint, password, 'direct');
+  setState('connecting', { mode: 'direct', iframeUrl });
   return true;
 }
 
@@ -147,14 +219,20 @@ export function disconnect() {
 }
 
 /**
- * Attempt to reconnect using saved credentials.
+ * Attempt to reconnect using saved config.
  */
 export function reconnect() {
   const endpoint = getSavedEndpoint();
   const password = getSavedPassword();
-  if (endpoint) {
-    connect(endpoint, password);
-  } else {
+  const mode = getSavedMode();
+  if (!endpoint) {
     setState('disconnected');
+    return;
+  }
+  if (mode === 'container') {
+    // Can't reconnect container mode without auth token — show setup
+    setState('disconnected');
+  } else {
+    connectDirect(endpoint, password);
   }
 }

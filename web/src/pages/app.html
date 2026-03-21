@@ -692,14 +692,39 @@
         <h2 style="margin:12px 0 8px;">SAFE</h2>
         <p style="color:var(--muted);font-size:13px;margin-bottom:16px;" data-i18n="safe.description">Secure Application Frontend Environment</p>
 
-        <div style="display:flex;flex-direction:column;gap:12px;max-width:360px;margin:0 auto;">
-          <label style="text-align:left;font-size:13px;color:var(--muted);" data-i18n="safe.serverUrl">Browser Server URL</label>
-          <input id="safe-endpoint" type="url" placeholder="wss://your-neko-server:6901/websockify"
-                 style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-input);color:var(--fg);font-size:14px;" />
+        <div style="display:flex;flex-direction:column;gap:12px;max-width:400px;margin:0 auto;">
+          <!-- Mode selector -->
+          <div id="safe-mode-tabs" style="display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+            <button type="button" class="safe-mode-tab active" data-mode="container"
+                    style="flex:1;padding:8px;font-size:13px;border:none;cursor:pointer;background:var(--accent);color:#fff;">
+              <i class='bx bx-cloud'></i> CF Container
+            </button>
+            <button type="button" class="safe-mode-tab" data-mode="direct"
+                    style="flex:1;padding:8px;font-size:13px;border:none;cursor:pointer;background:var(--bg-input);color:var(--fg);">
+              <i class='bx bx-server'></i> Self-hosted
+            </button>
+          </div>
 
-          <div style="display:flex;gap:8px;">
-            <input id="safe-password" type="password" placeholder="Password"
-                   style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-input);color:var(--fg);font-size:14px;" />
+          <!-- CF Container mode fields -->
+          <div id="safe-fields-container">
+            <div style="display:flex;flex-direction:column;gap:10px;">
+              <label style="text-align:left;font-size:13px;color:var(--muted);">SAFE Worker URL</label>
+              <input id="safe-worker-url" type="url" placeholder="https://safe-browser.your-account.workers.dev"
+                     style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-input);color:var(--fg);font-size:14px;box-sizing:border-box;" />
+              <input id="safe-password" type="password" placeholder="Password (default: sentry)"
+                     style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-input);color:var(--fg);font-size:14px;box-sizing:border-box;" />
+            </div>
+          </div>
+
+          <!-- Direct mode fields (hidden by default) -->
+          <div id="safe-fields-direct" style="display:none;">
+            <div style="display:flex;flex-direction:column;gap:10px;">
+              <label style="text-align:left;font-size:13px;color:var(--muted);" data-i18n="safe.serverUrl">Browser Server URL</label>
+              <input id="safe-endpoint" type="url" placeholder="https://your-server:6901"
+                     style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-input);color:var(--fg);font-size:14px;box-sizing:border-box;" />
+              <input id="safe-direct-password" type="password" placeholder="VNC Password"
+                     style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-input);color:var(--fg);font-size:14px;box-sizing:border-box;" />
+            </div>
           </div>
 
           <button id="safe-connect-btn" type="button" class="primary"
@@ -711,9 +736,10 @@
           <details style="text-align:left;margin-top:8px;">
             <summary style="font-size:12px;color:var(--muted);cursor:pointer;" data-i18n="safe.setupGuide">Setup Guide</summary>
             <div style="font-size:12px;color:var(--muted);margin-top:8px;line-height:1.6;">
-              <p><strong>Docker (local/VPS):</strong></p>
+              <p><strong>CF Container:</strong></p>
+              <code style="display:block;background:var(--bg-input);padding:8px;border-radius:4px;margin:4px 0;font-size:11px;word-break:break-all;white-space:pre-wrap;">cd safe-worker && npm i && npx wrangler deploy</code>
+              <p style="margin-top:8px;"><strong>Self-hosted (Docker):</strong></p>
               <code style="display:block;background:var(--bg-input);padding:8px;border-radius:4px;margin:4px 0;font-size:11px;word-break:break-all;white-space:pre-wrap;">docker run --rm --shm-size=512m -p 6901:6901 -e VNC_PW=password kasmweb/chromium:1.18.0</code>
-              <p style="margin-top:6px;" data-i18n="safe.setupEndpoint">Then enter: <code>wss://your-server:6901/websockify</code></p>
             </div>
           </details>
         </div>

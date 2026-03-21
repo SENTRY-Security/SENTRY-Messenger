@@ -1157,23 +1157,52 @@ function initSafeBrowser() {
   const errorEl = document.getElementById('safe-error');
   const iframe = document.getElementById('safe-iframe');
 
-  const endpointInput = document.getElementById('safe-endpoint');
+  // Mode-specific inputs
+  const workerUrlInput = document.getElementById('safe-worker-url');
   const passwordInput = document.getElementById('safe-password');
+  const endpointInput = document.getElementById('safe-endpoint');
+  const directPwInput = document.getElementById('safe-direct-password');
   const connectBtn = document.getElementById('safe-connect-btn');
   const retryBtn = document.getElementById('safe-retry-btn');
   const errorMsg = document.getElementById('safe-error-msg');
   const statusSpan = document.getElementById('safe-status');
+
+  const fieldsContainer = document.getElementById('safe-fields-container');
+  const fieldsDirect = document.getElementById('safe-fields-direct');
 
   // Toolbar buttons
   const btnDisconnect = document.getElementById('safe-btn-disconnect');
   const btnFullscreen = document.getElementById('safe-btn-fullscreen');
   const btnRefresh = document.getElementById('safe-btn-refresh');
 
-  // Restore saved endpoint
-  const saved = safeBrowser.getSavedEndpoint();
+  // Mode switching
+  let safeMode = safeBrowser.getSavedMode() || 'container';
+
+  function setSafeMode(mode) {
+    safeMode = mode;
+    if (fieldsContainer) fieldsContainer.style.display = mode === 'container' ? '' : 'none';
+    if (fieldsDirect) fieldsDirect.style.display = mode === 'direct' ? '' : 'none';
+    document.querySelectorAll('.safe-mode-tab').forEach(btn => {
+      const isActive = btn.dataset.mode === mode;
+      btn.classList.toggle('active', isActive);
+      btn.style.background = isActive ? 'var(--accent)' : 'var(--bg-input)';
+      btn.style.color = isActive ? '#fff' : 'var(--fg)';
+    });
+  }
+
+  document.querySelectorAll('.safe-mode-tab').forEach(btn => {
+    btn.addEventListener('click', () => setSafeMode(btn.dataset.mode));
+  });
+
+  // Restore saved config
+  const savedEndpoint = safeBrowser.getSavedEndpoint();
   const savedPw = safeBrowser.getSavedPassword();
-  if (saved && endpointInput) endpointInput.value = saved;
-  if (savedPw && passwordInput) passwordInput.value = savedPw;
+  const savedMode = safeBrowser.getSavedMode();
+  if (savedMode === 'container' && savedEndpoint && workerUrlInput) workerUrlInput.value = savedEndpoint;
+  if (savedMode === 'container' && savedPw && passwordInput) passwordInput.value = savedPw;
+  if (savedMode === 'direct' && savedEndpoint && endpointInput) endpointInput.value = savedEndpoint;
+  if (savedMode === 'direct' && savedPw && directPwInput) directPwInput.value = savedPw;
+  setSafeMode(savedMode || 'container');
 
   function showPanel(name) {
     if (setupEl) setupEl.style.display = name === 'setup' ? '' : 'none';
@@ -1208,13 +1237,12 @@ function initSafeBrowser() {
           iframe.onerror = () => {
             safeBrowser.markError('Failed to load browser');
           };
-          // Fallback: if iframe doesn't fire onload within 15s, mark connected anyway
-          // (cross-origin iframes may not fire load events reliably)
+          // Cross-origin iframes may not fire load events reliably
           setTimeout(() => {
             if (safeBrowser.getState() === 'connecting') {
               safeBrowser.markConnected();
             }
-          }, 15000);
+          }, 30000); // 30s — CF Container cold start can be 5-10s
         }
         break;
       }
@@ -1232,21 +1260,36 @@ function initSafeBrowser() {
     }
   });
 
-  // Connect button
+  // Connect button — dispatch based on mode
   connectBtn?.addEventListener('click', () => {
-    const ep = endpointInput?.value?.trim();
-    const pw = passwordInput?.value || '';
-    if (!ep) {
-      if (endpointInput) { endpointInput.focus(); endpointInput.style.borderColor = 'var(--danger)'; }
-      return;
+    if (safeMode === 'container') {
+      const url = workerUrlInput?.value?.trim();
+      const pw = passwordInput?.value || '';
+      if (!url) {
+        if (workerUrlInput) { workerUrlInput.focus(); workerUrlInput.style.borderColor = 'var(--danger)'; }
+        return;
+      }
+      if (workerUrlInput) workerUrlInput.style.borderColor = '';
+      // Use account token as auth for the container Worker
+      const authToken = getAccountToken?.() || 'anonymous';
+      safeBrowser.connectContainer(url, pw, authToken);
+    } else {
+      const ep = endpointInput?.value?.trim();
+      const pw = directPwInput?.value || '';
+      if (!ep) {
+        if (endpointInput) { endpointInput.focus(); endpointInput.style.borderColor = 'var(--danger)'; }
+        return;
+      }
+      if (endpointInput) endpointInput.style.borderColor = '';
+      safeBrowser.connectDirect(ep, pw);
     }
-    if (endpointInput) endpointInput.style.borderColor = '';
-    safeBrowser.connect(ep, pw);
   });
 
   // Enter key to connect
-  endpointInput?.addEventListener('keydown', (e) => { if (e.key === 'Enter') connectBtn?.click(); });
+  workerUrlInput?.addEventListener('keydown', (e) => { if (e.key === 'Enter') connectBtn?.click(); });
   passwordInput?.addEventListener('keydown', (e) => { if (e.key === 'Enter') connectBtn?.click(); });
+  endpointInput?.addEventListener('keydown', (e) => { if (e.key === 'Enter') connectBtn?.click(); });
+  directPwInput?.addEventListener('keydown', (e) => { if (e.key === 'Enter') connectBtn?.click(); });
 
   // Retry button
   retryBtn?.addEventListener('click', () => safeBrowser.reconnect());
