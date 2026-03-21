@@ -1188,10 +1188,17 @@ function initSafeBrowser() {
   function formatContainerStatus(containerStatus, elapsed) {
     const sec = elapsed != null ? `${elapsed}s` : '';
     switch (containerStatus) {
-      case 'starting': return `Container provisioning… ${sec}`;
-      case 'imageDownloading': return `Downloading image… ${sec}`;
-      case 'creating': return `Creating container… ${sec}`;
-      default: return containerStatus ? `${containerStatus}… ${sec}` : `Preparing… ${sec}`;
+      case 'stopped':
+      case 'stopped_with_code':
+        return `正在啟動容器… ${sec}`;
+      case 'running':
+        return `容器啟動中，等待服務就緒… ${sec}`;
+      case 'stopping':
+        return `容器停止中… ${sec}`;
+      case 'healthy':
+        return `容器就緒，載入瀏覽器…`;
+      default:
+        return `準備中… ${sec}`;
     }
   }
 

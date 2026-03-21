@@ -52,7 +52,7 @@ export class BrowserSession extends Container {
       const startedAt = await this.ctx.storage.get('started_at');
       const elapsed = startedAt ? Math.round((Date.now() - startedAt) / 1000) : null;
       return Response.json({
-        status: state,
+        status: state.status,
         port: this.defaultPort,
         elapsed,
       });
@@ -73,7 +73,7 @@ export class BrowserSession extends Container {
 
         // Check if already running
         const currentState = await this.getState();
-        if (currentState === 'running') {
+        if (currentState.status === 'running' || currentState.status === 'healthy') {
           return Response.json({
             status: 'running',
             password: vncPassword,
@@ -121,7 +121,7 @@ export class BrowserSession extends Container {
     // ── Proxy to noVNC ─────────────────────────────────────────
     if (path.startsWith('/api/safe/browser')) {
       const state = await this.getState();
-      if (state !== 'running') {
+      if (state.status !== 'running' && state.status !== 'healthy') {
         try {
           await this.startAndWaitForPorts();
         } catch (err) {

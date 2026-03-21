@@ -133,7 +133,7 @@ function startPolling(password) {
       }
 
       // Container is ready — load the iframe
-      if (data.status === 'running') {
+      if (data.status === 'running' || data.status === 'healthy') {
         stopPolling();
         const base = getWorkerUrl();
         const iframeUrl = new URL(base + '/api/safe/browser/');
