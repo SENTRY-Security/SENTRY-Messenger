@@ -1258,33 +1258,47 @@ function initSafeBrowser() {
   retryBtn?.addEventListener('click', () => safeBrowser.retry());
 
   // Stop button
-  btnStop?.addEventListener('click', () => safeBrowser.stop());
-
-  // Fullscreen — hide navigator & top bar, use entire screen
-  btnFullscreen?.addEventListener('click', () => {
-    const el = browserEl || iframe;
-    if (!el) return;
-    if (el.requestFullscreen) el.requestFullscreen();
-    else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+  btnStop?.addEventListener('click', () => {
+    log({ safeAction: 'stop' });
+    safeBrowser.stop();
   });
 
-  // When entering/exiting fullscreen, resize iframe to fill available space
-  document.addEventListener('fullscreenchange', () => {
-    if (document.fullscreenElement === browserEl) {
-      // Entered fullscreen — hide toolbar, maximize iframe
-      const toolbar = document.getElementById('safe-toolbar');
-      if (toolbar) toolbar.style.display = 'none';
-      if (iframe) iframe.style.height = '100vh';
-    } else {
-      // Exited fullscreen — restore toolbar
-      const toolbar = document.getElementById('safe-toolbar');
-      if (toolbar) toolbar.style.display = '';
-      resizeIframe();
+  // Fullscreen — independent overlay view
+  const fsOverlay = document.getElementById('safe-fullscreen-overlay');
+  const fsIframe = document.getElementById('safe-fullscreen-iframe');
+  const btnExitFs = document.getElementById('safe-btn-exit-fullscreen');
+
+  function enterFullscreen() {
+    if (!fsOverlay || !fsIframe || !iframe) return;
+    // Copy current iframe src to fullscreen iframe
+    fsIframe.src = iframe.src;
+    fsOverlay.style.display = '';
+    document.body.style.overflow = 'hidden';
+  }
+
+  function exitFullscreen() {
+    if (!fsOverlay || !fsIframe) return;
+    fsOverlay.style.display = 'none';
+    fsIframe.src = 'about:blank';
+    document.body.style.overflow = '';
+  }
+
+  btnFullscreen?.addEventListener('click', () => {
+    log({ safeAction: 'fullscreen' });
+    enterFullscreen();
+  });
+  btnExitFs?.addEventListener('click', exitFullscreen);
+
+  // Also exit on Escape key
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && fsOverlay && fsOverlay.style.display !== 'none') {
+      exitFullscreen();
     }
   });
 
   // Refresh
   btnRefresh?.addEventListener('click', () => {
+    log({ safeAction: 'refresh' });
     if (iframe && iframe.src && iframe.src !== 'about:blank') {
       const src = iframe.src;
       iframe.src = 'about:blank';
