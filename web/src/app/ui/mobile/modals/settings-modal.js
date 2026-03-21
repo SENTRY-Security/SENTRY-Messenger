@@ -289,7 +289,7 @@ export function createSettingsModule({ deps }) {
           </div>
           <span style="color:var(--muted);font-size:18px;">›</span>
         </div>
-        <div class="settings-item">
+        ${window.APP_ENV && window.APP_ENV !== 'production' ? `<div class="settings-item">
           <div class="settings-text" style="display:flex;align-items:center;gap:8px;">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">
               <path d="M10 2v6L4.5 18.5A1.5 1.5 0 0 0 6 21h12a1.5 1.5 0 0 0 1.5-2.5L14 8V2"/>
@@ -305,7 +305,7 @@ export function createSettingsModule({ deps }) {
             <input type="checkbox" id="settingsSentryLab" ${current.sentryLab ? 'checked' : ''} />
             <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
           </label>
-        </div>
+        </div>` : ''}
         <div class="settings-actions">
           <button type="button" class="secondary" id="settingsClose">${escapeHtml(t('common.close'))}</button>
         </div>
