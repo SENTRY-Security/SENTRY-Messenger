@@ -444,6 +444,12 @@
     "description": "セキュアアプリケーションフロントエンド環境",
     "starting": "ブラウザを起動中...",
     "startingHint": "初回起動には数秒かかる場合があります。",
+    "statusStopped": "コンテナを起動中…",
+    "statusRunning": "コンテナ起動済み、サービス準備中…",
+    "statusStopping": "コンテナ停止中…",
+    "statusHealthy": "コンテナ準備完了、ブラウザを読み込み中…",
+    "statusDefault": "準備中…",
+    "statusElapsed": "{seconds}秒",
     "stopped": "ブラウザが停止しました。",
     "resume": "再開",
     "retry": "再試行"

@@ -444,6 +444,12 @@
     "description": "Môi trường giao diện ứng dụng bảo mật",
     "starting": "Đang khởi động trình duyệt...",
     "startingHint": "Lần khởi động đầu tiên có thể mất vài giây.",
+    "statusStopped": "Đang khởi động container…",
+    "statusRunning": "Container đã khởi động, đang chờ dịch vụ…",
+    "statusStopping": "Đang dừng container…",
+    "statusHealthy": "Container sẵn sàng, đang tải trình duyệt…",
+    "statusDefault": "Đang chuẩn bị…",
+    "statusElapsed": "{seconds}giây",
     "stopped": "Trình duyệt đã dừng.",
     "resume": "Tiếp tục",
     "retry": "Thử lại"

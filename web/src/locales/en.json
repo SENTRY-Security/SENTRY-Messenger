@@ -446,6 +446,12 @@
     "description": "Secure Application Frontend Environment",
     "starting": "Starting browser...",
     "startingHint": "First launch may take a few seconds.",
+    "statusStopped": "Starting container…",
+    "statusRunning": "Container started, waiting for service…",
+    "statusStopping": "Container stopping…",
+    "statusHealthy": "Container ready, loading browser…",
+    "statusDefault": "Preparing…",
+    "statusElapsed": "{seconds}s",
     "stopped": "Browser stopped.",
     "resume": "Resume",
     "retry": "Retry"

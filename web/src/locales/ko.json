@@ -444,6 +444,12 @@
     "description": "보안 애플리케이션 프론트엔드 환경",
     "starting": "브라우저 시작 중...",
     "startingHint": "첫 실행은 몇 초 걸릴 수 있습니다.",
+    "statusStopped": "컨테이너 시작 중…",
+    "statusRunning": "컨테이너 시작됨, 서비스 대기 중…",
+    "statusStopping": "컨테이너 중지 중…",
+    "statusHealthy": "컨테이너 준비 완료, 브라우저 로딩 중…",
+    "statusDefault": "준비 중…",
+    "statusElapsed": "{seconds}초",
     "stopped": "브라우저가 중지되었습니다.",
     "resume": "재개",
     "retry": "재시도"

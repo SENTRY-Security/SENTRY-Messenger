@@ -446,6 +446,12 @@
     "description": "安全應用前端環境",
     "starting": "正在啟動瀏覽器...",
     "startingHint": "首次啟動可能需要幾秒鐘。",
+    "statusStopped": "正在啟動容器…",
+    "statusRunning": "容器已啟動，等待服務就緒…",
+    "statusStopping": "容器停止中…",
+    "statusHealthy": "容器就緒，載入瀏覽器…",
+    "statusDefault": "準備中…",
+    "statusElapsed": "{seconds}秒",
     "stopped": "瀏覽器已停止。",
     "resume": "繼續",
     "retry": "重試"

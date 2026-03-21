@@ -1186,20 +1186,22 @@ function initSafeBrowser() {
   }
 
   function formatContainerStatus(containerStatus, elapsed) {
-    const sec = elapsed != null ? `${elapsed}s` : '';
+    const sec = elapsed != null ? t('safe.statusElapsed', { seconds: elapsed }) : '';
+    let msg;
     switch (containerStatus) {
       case 'stopped':
       case 'stopped_with_code':
-        return `正在啟動容器… ${sec}`;
+        msg = t('safe.statusStopped'); break;
       case 'running':
-        return `容器啟動中，等待服務就緒… ${sec}`;
+        msg = t('safe.statusRunning'); break;
       case 'stopping':
-        return `容器停止中… ${sec}`;
+        msg = t('safe.statusStopping'); break;
       case 'healthy':
-        return `容器就緒，載入瀏覽器…`;
+        return t('safe.statusHealthy');
       default:
-        return `準備中… ${sec}`;
+        msg = t('safe.statusDefault'); break;
     }
+    return sec ? `${msg} ${sec}` : msg;
   }
 
   // State machine — react to safe-browser.js state changes
@@ -1219,7 +1221,7 @@ function initSafeBrowser() {
 
         // When iframeUrl is ready, load it
         if (iframe && detail?.iframeUrl) {
-          if (startingDetail) startingDetail.textContent = 'Loading browser…';
+          if (startingDetail) startingDetail.textContent = t('safe.statusHealthy');
           iframe.src = detail.iframeUrl;
           iframe.onload = () => safeBrowser.markConnected();
           iframe.onerror = () => safeBrowser.markError('Failed to load browser');
