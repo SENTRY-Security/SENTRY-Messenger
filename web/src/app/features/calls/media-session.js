@@ -1445,14 +1445,25 @@ function attachRemoteStream(stream) {
       // interrupts playback and causes audible glitches), reassigning
       // srcObject on a <video> element only causes an invisible re-load,
       // so it is safe to do unconditionally.
-      const hasLiveVideo = stream.getVideoTracks().some((t) => t.readyState === 'live');
-      if (hasLiveVideo || remoteVideoEl.srcObject !== stream) {
-        remoteVideoEl.srcObject = stream;
+      const videoTracks = stream.getVideoTracks();
+      const hasLiveVideo = videoTracks.some((t) => t.readyState === 'live');
+      if (hasLiveVideo) {
+        // Give the video element a video-only stream.  iOS Safari can
+        // garble / double-process audio when the same audio track appears
+        // in both the <audio> and <video> element's MediaStream (even when
+        // the <video> element is muted).  Stripping audio tracks here
+        // prevents the conflict entirely — the <audio> element already
+        // carries a dedicated audio-only stream.
+        const videoOnlyStream = new MediaStream(videoTracks);
+        remoteVideoEl.srcObject = videoOnlyStream;
         remoteVideoEl.muted = true;
+      } else if (remoteVideoEl.srcObject) {
+        // No live video → clear video element
+        remoteVideoEl.srcObject = null;
       }
       // Use the same retry mechanism as audio to avoid rapid play() calls
       // aborting each other ("The operation was aborted." on iOS Safari).
-      attemptRemoteVideoPlayback();
+      if (hasLiveVideo) attemptRemoteVideoPlayback();
     } catch (err) {
       log({ callMediaVideoAttachError: err?.message || err });
     }
@@ -1654,9 +1665,12 @@ function setupInsertableStreamsForReceiver(receiver, track) {
 function applySenderTransformsDeferred() {
   if (!peerConnection) return;
   for (const sender of peerConnection.getSenders()) {
-    if (sender.track) {
-      setupInsertableStreamsForSender(sender, sender.track);
-    }
+    if (!sender.track) continue;
+    // Skip senders that already have a ScriptTransform worker —
+    // re-applying would create a duplicate worker + reset the frame
+    // counter, risking a brief burst of noise.
+    if (scriptTransformWorkers.has(sender)) continue;
+    setupInsertableStreamsForSender(sender, sender.track);
   }
 }
 
