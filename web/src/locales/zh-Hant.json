@@ -457,7 +457,11 @@
     "statusStopping": "停止中",
     "statusHealthy": "運行中",
     "statusDefault": "準備中",
-    "statusElapsed": "{seconds}秒",
+    "statusElapsed": "{time}",
+    "unitDay": "天 ",
+    "unitHour": "時 ",
+    "unitMinute": "分 ",
+    "unitSecond": "秒",
     "stopped": "瀏覽器已停止。",
     "resume": "繼續",
     "retry": "重試",
@@ -466,7 +470,10 @@
     "openBrowser": "開啟瀏覽器",
     "enterSafe": "進入 SAFE™",
     "instanceId": "實例",
-    "port": "連接埠"
+    "port": "連接埠",
+    "deleteEnv": "刪除環境",
+    "deleteEnvConfirm": "確定要刪除此環境嗎？此操作無法復原。",
+    "statusReady": "就緒"
   },
   "password": {
     "title": "變更密碼",

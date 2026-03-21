@@ -457,7 +457,11 @@
     "statusStopping": "Stopping",
     "statusHealthy": "Running",
     "statusDefault": "Preparing",
-    "statusElapsed": "{seconds}s",
+    "statusElapsed": "{time}",
+    "unitDay": "d ",
+    "unitHour": "h ",
+    "unitMinute": "m ",
+    "unitSecond": "s",
     "stopped": "Browser stopped.",
     "resume": "Resume",
     "retry": "Retry",
@@ -466,7 +470,10 @@
     "openBrowser": "Open Browser",
     "enterSafe": "Enter SAFE™",
     "instanceId": "Instance",
-    "port": "Port"
+    "port": "Port",
+    "deleteEnv": "Delete Environment",
+    "deleteEnvConfirm": "Are you sure you want to delete this environment? This action cannot be undone.",
+    "statusReady": "Ready"
   },
   "password": {
     "title": "Change Password",

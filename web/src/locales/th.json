@@ -455,7 +455,11 @@
     "statusStopping": "กำลังหยุด",
     "statusHealthy": "ทำงานอยู่",
     "statusDefault": "กำลังเตรียม",
-    "statusElapsed": "{seconds}วินาที",
+    "statusElapsed": "{time}",
+    "unitDay": "วัน ",
+    "unitHour": "ชม. ",
+    "unitMinute": "นาที ",
+    "unitSecond": "วินาที",
     "stopped": "เบราว์เซอร์หยุดทำงานแล้ว",
     "resume": "ดำเนินการต่อ",
     "retry": "ลองอีกครั้ง",
@@ -464,7 +468,10 @@
     "openBrowser": "เปิดเบราว์เซอร์",
     "enterSafe": "เข้าสู่ SAFE™",
     "instanceId": "อินสแตนซ์",
-    "port": "พอร์ต"
+    "port": "พอร์ต",
+    "deleteEnv": "ลบสภาพแวดล้อม",
+    "deleteEnvConfirm": "คุณแน่ใจหรือไม่ว่าต้องการลบสภาพแวดล้อมนี้? การดำเนินการนี้ไม่สามารถย้อนกลับได้",
+    "statusReady": "พร้อมใช้งาน"
   },
   "password": {
     "title": "เปลี่ยนรหัสผ่าน",

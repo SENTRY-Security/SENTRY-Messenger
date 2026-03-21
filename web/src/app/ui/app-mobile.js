@@ -1162,6 +1162,7 @@ function initSafeBrowser() {
   const btnStart = document.getElementById('safe-btn-start');
   const btnStop = document.getElementById('safe-btn-stop');
   const btnOpen = document.getElementById('safe-btn-open');
+  const btnDeleteRef = document.getElementById('safe-btn-delete');
 
   // ── Status badge colors ────────────────────────────────────────
   const badgeStyles = {
@@ -1176,11 +1177,24 @@ function initSafeBrowser() {
     switch (s) {
       case 'stopped':          return 'safe.statusStopped';
       case 'stopped_with_code': return 'safe.statusStopped';
-      case 'running':          return 'safe.statusRunning';
+      case 'running':          return 'safe.statusReady';
       case 'stopping':         return 'safe.statusStopping';
       case 'healthy':          return 'safe.statusHealthy';
       default:                 return 'safe.statusDefault';
     }
+  }
+
+  function formatElapsed(totalSeconds) {
+    const d = Math.floor(totalSeconds / 86400);
+    const h = Math.floor((totalSeconds % 86400) / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = totalSeconds % 60;
+    const parts = [];
+    if (d > 0) parts.push(d + t('safe.unitDay'));
+    if (h > 0 || d > 0) parts.push(h + t('safe.unitHour'));
+    if (m > 0 || h > 0 || d > 0) parts.push(m + t('safe.unitMinute'));
+    parts.push(s + t('safe.unitSecond'));
+    return parts.join(' ');
   }
 
   function updatePanel(containerStatus, elapsed) {
@@ -1188,7 +1202,7 @@ function initSafeBrowser() {
     const label = t(statusI18nKey(s));
 
     if (statusText) statusText.textContent = label;
-    if (elapsedText) elapsedText.textContent = elapsed != null ? t('safe.statusElapsed', { seconds: elapsed }) : '--';
+    if (elapsedText) elapsedText.textContent = elapsed != null ? formatElapsed(elapsed) : '--';
 
     // Badge
     if (statusBadge) {
@@ -1203,7 +1217,8 @@ function initSafeBrowser() {
     const isStopped = s === 'stopped' || s === 'stopped_with_code';
     if (btnStart) btnStart.disabled = !isStopped;
     if (btnStop) btnStop.disabled = isStopped;
-    if (btnOpen) btnOpen.disabled = s !== 'healthy';
+    if (btnOpen) btnOpen.disabled = !(s === 'healthy' || s === 'running');
+    if (btnDeleteRef) btnDeleteRef.disabled = isStopped;
 
     // Error
     if (errorEl) errorEl.style.display = 'none';
@@ -1274,8 +1289,8 @@ function initSafeBrowser() {
           updatePanel('running', detail?.elapsed ?? null);
         }
 
-        // When iframeUrl is ready → enable "Open Browser" button (user clicks to open modal)
-        if (detail?.iframeUrl) {
+        // When container is healthy and iframeUrl is ready → auto-mark connected after delay
+        if (detail?.iframeUrl && detail?.containerStatus !== 'running') {
           updatePanel('healthy', detail?.elapsed);
           setTimeout(() => {
             if (safeBrowser.getState() === 'starting') safeBrowser.markConnected();
@@ -1307,6 +1322,19 @@ function initSafeBrowser() {
   btnOpen?.addEventListener('click', () => {
     const url = safeBrowser.getIframeUrl();
     if (url) openSafeModal(url);
+  });
+
+  const btnDelete = document.getElementById('safe-btn-delete');
+  btnDelete?.addEventListener('click', async () => {
+    if (!confirm(t('safe.deleteEnvConfirm'))) return;
+    btnDelete.disabled = true;
+    try {
+      await safeBrowser.destroy();
+    } catch (e) {
+      log({ safeDeleteError: e?.message });
+    } finally {
+      btnDelete.disabled = false;
+    }
   });
 
   // Initial state

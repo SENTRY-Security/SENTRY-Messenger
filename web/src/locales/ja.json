@@ -455,7 +455,11 @@
     "statusStopping": "停止処理中",
     "statusHealthy": "稼働中",
     "statusDefault": "準備中",
-    "statusElapsed": "{seconds}秒",
+    "statusElapsed": "{time}",
+    "unitDay": "日 ",
+    "unitHour": "時 ",
+    "unitMinute": "分 ",
+    "unitSecond": "秒",
     "stopped": "ブラウザが停止しました。",
     "resume": "再開",
     "retry": "再試行",
@@ -464,7 +468,10 @@
     "openBrowser": "ブラウザを開く",
     "enterSafe": "SAFE™ に入る",
     "instanceId": "インスタンス",
-    "port": "ポート"
+    "port": "ポート",
+    "deleteEnv": "環境を削除",
+    "deleteEnvConfirm": "この環境を削除しますか？この操作は元に戻せません。",
+    "statusReady": "準備完了"
   },
   "password": {
     "title": "パスワード変更",

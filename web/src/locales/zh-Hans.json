@@ -457,7 +457,11 @@
     "statusStopping": "停止中",
     "statusHealthy": "运行中",
     "statusDefault": "准备中",
-    "statusElapsed": "{seconds}秒",
+    "statusElapsed": "{time}",
+    "unitDay": "天 ",
+    "unitHour": "时 ",
+    "unitMinute": "分 ",
+    "unitSecond": "秒",
     "stopped": "浏览器已停止。",
     "resume": "继续",
     "retry": "重试",
@@ -466,7 +470,10 @@
     "openBrowser": "打开浏览器",
     "enterSafe": "进入 SAFE™",
     "instanceId": "实例",
-    "port": "端口"
+    "port": "端口",
+    "deleteEnv": "删除环境",
+    "deleteEnvConfirm": "确定要删除此环境吗？此操作无法撤销。",
+    "statusReady": "就绪"
   },
   "password": {
     "title": "更改密码",

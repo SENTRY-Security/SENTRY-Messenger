@@ -99,6 +99,19 @@ async function apiStop() {
 }
 
 /**
+ * Destroy the container and clear all session data.
+ */
+async function apiDestroy() {
+  const base = getWorkerUrl();
+  await fetch(base + '/api/safe/destroy', {
+    method: 'DELETE',
+    headers: {
+      'Authorization': authHeaders()['Authorization'],
+    },
+  }).catch(() => {});
+}
+
+/**
  * Get container status.
  */
 async function apiStatus() {
@@ -139,13 +152,18 @@ function startPolling(password) {
       _containerStatus = data.status;
       _elapsed = data.elapsed;
 
+      // Build iframeUrl as soon as container is running (ports may not be ready yet)
+      if ((data.status === 'running' || data.status === 'healthy') && !_iframeUrl) {
+        _iframeUrl = buildIframeUrl(password);
+      }
+
       // Notify listeners so UI can update the status text
       for (const fn of _listeners) {
-        try { fn(_state, { containerStatus: data.status, elapsed: data.elapsed }); }
+        try { fn(_state, { containerStatus: data.status, elapsed: data.elapsed, iframeUrl: _iframeUrl }); }
         catch (e) { /* ignore */ }
       }
 
-      // Container is ready — only 'healthy' means fully ready to serve
+      // Container is fully healthy — stop polling
       if (data.status === 'healthy') {
         stopPolling();
         setState('starting', { iframeUrl: buildIframeUrl(password) });
@@ -210,6 +228,16 @@ export async function stop() {
   setState('stopped');
   _iframeUrl = null;
   await apiStop();
+}
+
+/**
+ * Destroy the container — stops it and deletes all associated data.
+ */
+export async function destroy() {
+  stopPolling();
+  setState('stopped');
+  _iframeUrl = null;
+  await apiDestroy();
 }
 
 /**

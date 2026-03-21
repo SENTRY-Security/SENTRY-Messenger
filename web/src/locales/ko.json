@@ -455,7 +455,11 @@
     "statusStopping": "중지 중",
     "statusHealthy": "실행 중",
     "statusDefault": "준비 중",
-    "statusElapsed": "{seconds}초",
+    "statusElapsed": "{time}",
+    "unitDay": "일 ",
+    "unitHour": "시간 ",
+    "unitMinute": "분 ",
+    "unitSecond": "초",
     "stopped": "브라우저가 중지되었습니다.",
     "resume": "재개",
     "retry": "재시도",
@@ -464,7 +468,10 @@
     "openBrowser": "브라우저 열기",
     "enterSafe": "SAFE™ 진입",
     "instanceId": "인스턴스",
-    "port": "포트"
+    "port": "포트",
+    "deleteEnv": "환경 삭제",
+    "deleteEnvConfirm": "이 환경을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
+    "statusReady": "준비 완료"
   },
   "password": {
     "title": "비밀번호 변경",

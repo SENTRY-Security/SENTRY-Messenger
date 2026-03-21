@@ -455,7 +455,11 @@
     "statusStopping": "Đang dừng",
     "statusHealthy": "Đang chạy",
     "statusDefault": "Đang chuẩn bị",
-    "statusElapsed": "{seconds}giây",
+    "statusElapsed": "{time}",
+    "unitDay": "ngày ",
+    "unitHour": "giờ ",
+    "unitMinute": "phút ",
+    "unitSecond": "giây",
     "stopped": "Trình duyệt đã dừng.",
     "resume": "Tiếp tục",
     "retry": "Thử lại",
@@ -464,7 +468,10 @@
     "openBrowser": "Mở trình duyệt",
     "enterSafe": "Vào SAFE™",
     "instanceId": "Phiên",
-    "port": "Cổng"
+    "port": "Cổng",
+    "deleteEnv": "Xóa môi trường",
+    "deleteEnvConfirm": "Bạn có chắc chắn muốn xóa môi trường này không? Hành động này không thể hoàn tác.",
+    "statusReady": "Sẵn sàng"
   },
   "password": {
     "title": "Đổi mật khẩu",
