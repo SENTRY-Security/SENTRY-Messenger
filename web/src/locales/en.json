@@ -862,7 +862,10 @@
     "excelEmpty": "This sheet is empty",
     "excelLoadFailed": "Excel load failed: {{error}}",
     "downloadWord": "Download Word",
-    "wordLoadFailed": "Word load failed: {{error}}"
+    "wordLoadFailed": "Word load failed: {{error}}",
+    "downloadZip": "Download archive",
+    "zipFiles": "files",
+    "zipLoadFailed": "Archive load failed: {{error}}"
   },
   "mediaHandling": {
     "videoDataIncomplete": "Video data incomplete, cannot play",

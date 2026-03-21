@@ -862,7 +862,10 @@
     "excelEmpty": "此工作表無內容",
     "excelLoadFailed": "Excel 載入失敗：{{error}}",
     "downloadWord": "下載 Word",
-    "wordLoadFailed": "Word 載入失敗：{{error}}"
+    "wordLoadFailed": "Word 載入失敗：{{error}}",
+    "downloadZip": "下載壓縮檔",
+    "zipFiles": "個檔案",
+    "zipLoadFailed": "壓縮檔載入失敗：{{error}}"
   },
   "mediaHandling": {
     "videoDataIncomplete": "影片資料不完整，無法播放",

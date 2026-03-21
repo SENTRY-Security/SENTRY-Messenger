@@ -418,10 +418,13 @@ export class MessageRenderer {
             const xlsExts = ['xlsx', 'xls', 'xlsm', 'csv'];
             const docExts = ['docx', 'doc', 'docm', 'rtf'];
             const pptExts = ['pptx', 'ppt', 'pptm', 'odp', 'key'];
-            const txtExts = ['txt', 'md', 'log', 'rtf'];
+            const archiveExts = ['zip', 'rar', '7z', 'gz', 'tar', 'tgz', 'bz2'];
+            const txtExts = ['txt', 'md', 'log'];
             const codeExts = ['json', 'xml', 'yml', 'yaml', 'js', 'ts', 'css', 'html', 'py', 'sh', 'sql', 'ini', 'toml', 'conf', 'env'];
             const mediaType = (media?.contentType || '').toLowerCase();
-            if (xlsExts.includes(ext)) {
+            if (archiveExts.includes(ext)) {
+                generic.innerHTML = '<svg class="icon file-type-icon" style="color:#d97706"><use href="#i-archive"/></svg>';
+            } else if (xlsExts.includes(ext)) {
                 generic.innerHTML = '<svg class="icon file-type-icon" style="color:#16a34a"><use href="#i-file-spreadsheet"/></svg>';
             } else if (docExts.includes(ext)) {
                 generic.innerHTML = '<svg class="icon file-type-icon" style="color:#2563eb"><use href="#i-file-text"/></svg>';

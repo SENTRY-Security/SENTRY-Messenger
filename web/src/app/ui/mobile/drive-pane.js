@@ -9,6 +9,7 @@ import { openImageViewer } from './viewers/image-viewer.js';
 import { renderPdfViewer, cleanupPdfViewer } from './viewers/pdf-viewer.js';
 import { renderExcelViewer, cleanupExcelViewer, isExcelMime, isExcelFilename } from './viewers/excel-viewer.js';
 import { renderWordViewer, cleanupWordViewer, isWordMime, isWordFilename } from './viewers/word-viewer.js';
+import { renderZipViewer, cleanupZipViewer, isZipMime, isZipFilename } from './viewers/zip-viewer.js';
 import { t } from '/locales/index.js';
 
 const DEFAULT_DRIVE_QUOTA_BYTES = 3 * 1024 * 1024 * 1024; // 3GB
@@ -1316,6 +1317,21 @@ export function initDrivePane({
       return;
     } else if (isWordMime(ct) || isWordFilename(resolvedName)) {
       renderWordViewer({
+        url,
+        blob,
+        name: resolvedName,
+        modalApi: { openModal, closeModal, showConfirmModal }
+      }).then((handled) => {
+        if (handled) return;
+        const msg = document.createElement('div');
+        msg.className = 'preview-message';
+        msg.textContent = t('drive.cannotPreviewType', { type: ct });
+        wrap.appendChild(msg);
+        openModal?.();
+      });
+      return;
+    } else if (isZipMime(ct) || isZipFilename(resolvedName)) {
+      renderZipViewer({
         url,
         blob,
         name: resolvedName,

@@ -129,8 +129,11 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
     // Create a container for docx-preview to render into
     const docContainer = document.createElement('div');
     docContainer.className = 'word-doc-container';
+    // Style container — docx-preview injects <style> tags here
+    const styleContainer = document.createElement('div');
+    docContainer.appendChild(styleContainer);
 
-    await docxLib.renderAsync(arrayBuffer, docContainer, null, {
+    await docxLib.renderAsync(arrayBuffer, docContainer, styleContainer, {
       className: 'word-docx',
       inWrapper: true,
       ignoreWidth: false,
