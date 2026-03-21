@@ -52,7 +52,8 @@
   z-index: 3;
 }
 
-.profile-avatar .avatar-edit-btn i {
+.profile-avatar .avatar-edit-btn i,
+.profile-avatar .avatar-edit-btn .icon {
   font-size: 17px;
 }
 
@@ -93,7 +94,8 @@
   box-shadow: none;
 }
 
-.profile-nickname button i {
+.profile-nickname button i,
+.profile-nickname button .icon {
   font-size: 16px;
 }
 
@@ -143,7 +145,8 @@
   cursor: pointer;
 }
 
-.profile-share-btn i {
+.profile-share-btn i,
+.profile-share-btn .icon {
   font-size: 14px;
 }
 
@@ -252,7 +255,8 @@
   transition: background 0.15s ease, color 0.15s ease;
 }
 
-.contacts-add-btn i {
+.contacts-add-btn i,
+.contacts-add-btn .icon {
   font-size: 18px;
 }
 

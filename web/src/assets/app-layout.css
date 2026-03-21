@@ -398,6 +398,7 @@ body.messages-fullscreen .messages-scroll {
   touch-action: manipulation;
 }
 
+.navbtn .icon,
 .navbtn i {
   font-size: 22px;
   color: currentColor;
@@ -420,6 +421,11 @@ body.messages-fullscreen .messages-scroll {
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   color: transparent;
+}
+
+.navbtn.active .nav-icon {
+  stroke: #38bdf8;
+  color: #38bdf8;
 }
 
 .nav-badge {
@@ -453,7 +459,8 @@ body.messages-fullscreen .messages-scroll {
   justify-content: center;
 }
 
-.nav-icon-stack i {
+.nav-icon-stack i,
+.nav-icon-stack .icon {
   position: absolute;
   color: currentColor;
   line-height: 1;
@@ -469,6 +476,8 @@ body.messages-fullscreen .messages-scroll {
   right: -6px;
   color: #0ea5e9;
 }
+
+/* Drive now uses integrated cloud+lock SVG, no stack needed */
 
 .navbtn.active .nav-icon-stack .nav-icon-base {
   background: linear-gradient(135deg, #38bdf8, #6366f1);

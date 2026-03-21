@@ -148,7 +148,8 @@
   object-fit: cover;
   flex-shrink: 0;
 }
-.biz-conv-item .conversation-name i {
+.biz-conv-item .conversation-name i,
+.biz-conv-item .conversation-name .icon {
   font-size: 14px;
   opacity: 0.8;
 }
@@ -392,7 +393,8 @@
   white-space: nowrap;
 }
 
-.call-submenu-item i {
+.call-submenu-item i,
+.call-submenu-item .icon {
   font-size: 18px;
 }
 
@@ -430,7 +432,8 @@
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
-.messages-back i {
+.messages-back i,
+.messages-back .icon {
   font-size: 20px;
   line-height: 1;
 }
@@ -1326,7 +1329,8 @@
   text-align: center;
 }
 
-.messages-empty > i {
+.messages-empty > i,
+.messages-empty > .icon {
   font-size: 44px;
   color: #94a3b8;
   margin-bottom: 4px;
@@ -1378,7 +1382,8 @@
   box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
 }
 
-.composer-attach i {
+.composer-attach i,
+.composer-attach .icon {
   font-size: 20px;
 }
 
@@ -1410,7 +1415,8 @@
   box-shadow: 0 10px 24px rgba(99,102,241,0.25);
 }
 
-.composer-send i {
+.composer-send i,
+.composer-send .icon {
   font-size: 20px;
 }
 

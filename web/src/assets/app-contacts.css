@@ -162,10 +162,11 @@ html.no-anim .cover-spinner {
   border-color: rgba(148, 163, 184, 0.18);
 }
 
-.contacts-search-wrap > i {
+.contacts-search-wrap > .icon {
   position: absolute;
   left: 12px;
-  font-size: 18px;
+  width: 18px;
+  height: 18px;
   color: #94a3b8;
   pointer-events: none;
   z-index: 1;
