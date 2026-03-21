@@ -102,32 +102,77 @@ export async function renderPdfViewer({ url, name, modalApi }) {
   // Determine pixel render scale: enough resolution for crisp display
   const BASE_RENDER_SCALE = Math.max(2, window.devicePixelRatio || 2);
 
-  // Render a page; CSS width is always 100% (browser handles fit-width)
+  // Detect content bounding box by scanning pixels; skip near-white margins
+  const detectContentBounds = (canvas) => {
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width;
+    const h = canvas.height;
+    if (!w || !h) return null;
+    // Sample at reduced resolution for speed
+    const sample = Math.max(1, Math.floor(Math.min(w, h) / 400));
+    const data = ctx.getImageData(0, 0, w, h).data;
+    const THRESHOLD = 245; // pixels brighter than this are "white"
+    let top = h, bottom = 0, left = w, right = 0;
+    for (let y = 0; y < h; y += sample) {
+      for (let x = 0; x < w; x += sample) {
+        const i = (y * w + x) * 4;
+        if (data[i] < THRESHOLD || data[i + 1] < THRESHOLD || data[i + 2] < THRESHOLD) {
+          if (y < top) top = y;
+          if (y > bottom) bottom = y;
+          if (x < left) left = x;
+          if (x > right) right = x;
+        }
+      }
+    }
+    if (bottom <= top || right <= left) return null;
+    // Add small padding (1% of dimension)
+    const padX = Math.round(w * 0.01);
+    const padY = Math.round(h * 0.01);
+    return {
+      x: Math.max(0, left - padX),
+      y: Math.max(0, top - padY),
+      w: Math.min(w, right - left + 2 * padX),
+      h: Math.min(h, bottom - top + 2 * padY)
+    };
+  };
+
+  // Crop canvas to given bounds in-place
+  const cropCanvas = (canvas, bounds) => {
+    const ctx = canvas.getContext('2d');
+    const imageData = ctx.getImageData(bounds.x, bounds.y, bounds.w, bounds.h);
+    canvas.width = bounds.w;
+    canvas.height = bounds.h;
+    ctx.putImageData(imageData, 0, 0);
+  };
+
+  // Render a page; detect content bounds, crop whitespace, CSS 100% fit
   const renderPageAt = async (entry, renderScale) => {
     if (entry.rendering) return;
     entry.rendering = true;
     try {
       const page = await pdfDoc.getPage(entry.pageNum);
-      const baseViewport = page.getViewport({ scale: 1 });
       const hiresViewport = page.getViewport({ scale: renderScale });
       const canvas = entry.canvas;
       const ctx = canvas.getContext('2d');
-      // Pixel buffer at requested render scale
+      // Render full page to pixel buffer
       canvas.width = hiresViewport.width;
       canvas.height = hiresViewport.height;
-      // CSS: 100% width, auto height — browser fits to container, no measurement needed
+      await page.render({ canvasContext: ctx, viewport: hiresViewport }).promise;
+      // Detect and crop whitespace margins
+      const bounds = detectContentBounds(canvas);
+      if (bounds && (bounds.w < canvas.width * 0.95 || bounds.h < canvas.height * 0.95)) {
+        cropCanvas(canvas, bounds);
+      }
+      // CSS: 100% width, auto height — browser fits cropped content to container
       canvas.style.width = '100%';
       canvas.style.height = 'auto';
-      // Wrap: full width, aspect-ratio driven height — zero whitespace
-      const aspect = baseViewport.width / baseViewport.height;
+      const aspect = canvas.width / canvas.height;
       entry.wrap.style.width = '100%';
       entry.wrap.style.height = 'auto';
       entry.wrap.style.aspectRatio = `${aspect}`;
       entry.wrap.style.minHeight = '0';
-      await page.render({ canvasContext: ctx, viewport: hiresViewport }).promise;
       entry.rendered = true;
       entry.currentRenderScale = renderScale;
-      entry.baseViewport = baseViewport;
     } catch (err) {
       log({ pdfPageRenderError: err?.message, page: entry.pageNum });
     }
@@ -337,7 +382,7 @@ export async function renderPdfViewer({ url, name, modalApi }) {
       canvas.className = 'pdf-canvas';
       wrap.appendChild(canvas);
       stage.appendChild(wrap);
-      const entry = { canvas, wrap, rendered: false, rendering: false, pageNum: i, zoom: null, currentRenderScale: 0, baseViewport: null };
+      const entry = { canvas, wrap, rendered: false, rendering: false, pageNum: i, zoom: null, currentRenderScale: 0 };
       pageCanvases.push(entry);
       attachPageGesture(entry);
     }
