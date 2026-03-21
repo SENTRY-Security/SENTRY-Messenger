@@ -15,7 +15,8 @@ import {
   handleEphemeralCallMessage,
   initiateEphemeralCall,
   isEphemeralCallMode,
-  deriveCallTokenFromDR
+  deriveCallTokenFromDR,
+  setCallTokenGate
 } from '../features/calls/ephemeral-call-adapter.js';
 import { setContactSecret } from '../core/contact-secrets.js';
 import { bytesToB64Url } from '../../shared/utils/base64.js';
@@ -42,6 +43,7 @@ let peerPresent = true;        // whether the remote peer is in foreground
 // ── E2EE State (memory-only) ──
 let ephDrState = null;         // Double Ratchet session state
 let keyExchangeComplete = false; // true after owner sends ack
+let _callTokenPromise = null;  // resolves when call token is stored
 
 // ── Pre-cached media stream from gesture unlock ──
 let _cachedMediaStream = null;
@@ -510,9 +512,12 @@ function handleWsMessage(msg) {
         cancelKeyExchangeRetry();
         addSystemMessage(_t('ephemeral.e2eEstablished'));
         console.log('[EphE2EE] key exchange complete, encryption ready');
-        // Derive call token from DR root key and store for call E2EE
+        // Derive call token from DR root key and store for call E2EE.
+        // Must complete BEFORE any call can be accepted/initiated —
+        // without the token, key derivation fails → encrypted audio
+        // cannot be decrypted → both sides hear noise.
         if (ephDrState?.rk && sessionState?.owner_digest) {
-          deriveCallTokenFromDR(ephDrState.rk).then(tokenBytes => {
+          _callTokenPromise = deriveCallTokenFromDR(ephDrState.rk).then(tokenBytes => {
             const token = bytesToB64Url(tokenBytes);
             setContactSecret(sessionState.owner_digest, {
               conversation: { token },
@@ -521,6 +526,8 @@ function handleWsMessage(msg) {
             });
             console.log('[EphE2EE] call token stored for owner');
           }).catch(err => console.warn('[EphE2EE] call token derive failed:', err?.message));
+          // Gate incoming call signals until token is stored
+          setCallTokenGate(_callTokenPromise);
         }
         // Send nickname via encrypted control message
         if (guestNickname) _sendNicknameControl();

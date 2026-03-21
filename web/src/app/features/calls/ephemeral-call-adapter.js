@@ -26,6 +26,16 @@ import { prepareCallKeyEnvelope } from './key-manager.js';
 // ── Ephemeral context ──
 let _ephCtx = null;
 let _prevSignalSender = null; // stashed regular signal sender to restore on deactivation
+let _callTokenGate = null;    // promise that resolves when call token is stored
+
+/**
+ * Set a promise that must resolve before incoming call signals are processed.
+ * This prevents handling call-invite before the call token is stored,
+ * which would cause key derivation failure → encrypted audio played raw → noise.
+ */
+export function setCallTokenGate(promise) {
+  _callTokenGate = promise || null;
+}
 
 /**
  * Activate ephemeral call mode.
@@ -58,6 +68,7 @@ export function activateEphemeralCallMode(ctx) {
 export function deactivateEphemeralCallMode() {
   if (!_ephCtx) return;
   _ephCtx = null;
+  _callTokenGate = null;
   setMediaSessionEphemeralMode(false);
   // Restore previous signal sender so regular calls continue working
   if (_prevSignalSender) {
@@ -140,6 +151,22 @@ export function handleEphemeralCallMessage(msg) {
     return false;
   }
 
+  // If a call token gate is pending, wait for it before processing the
+  // invite — otherwise key derivation will fail (token not stored yet)
+  // and encrypted audio will play as raw noise on both sides.
+  if (_callTokenGate) {
+    const gate = _callTokenGate;
+    gate.then(() => {
+      _callTokenGate = null;
+      _processEphemeralCallMessage(msg);
+    });
+    return true;
+  }
+
+  return _processEphemeralCallMessage(msg);
+}
+
+function _processEphemeralCallMessage(msg) {
   const callType = msg.type.replace('ephemeral-', '');
 
   const translated = {
