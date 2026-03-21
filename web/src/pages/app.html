@@ -70,8 +70,8 @@
   <!-- Async CSS — non-render-blocking -->
   <link rel="stylesheet" href="/assets/app-bundle.css" media="print" onload="this.media='all'" />
   <noscript><link rel="stylesheet" href="/assets/app-bundle.css" /></noscript>
-  <link rel="stylesheet" href="/assets/libs/boxicons/boxicons.min.css" media="print" onload="this.media='all'" />
-  <noscript><link rel="stylesheet" href="/assets/libs/boxicons/boxicons.min.css" /></noscript>
+  <link rel="stylesheet" href="/assets/icons/lucide.css" media="print" onload="this.media='all'" />
+  <noscript><link rel="stylesheet" href="/assets/icons/lucide.css" /></noscript>
   <script>
     // 防止未初始化時的全域 ReferenceError（Safari 會因 inviteBtn 未宣告而中斷）
     if (typeof inviteBtn === 'undefined') {
@@ -132,6 +132,8 @@
 </head>
 
 <body>
+  <!-- Lucide SVG icon sprite (hidden, referenced via <use href="#i-{name}"/>) -->
+  <svg xmlns="http://www.w3.org/2000/svg" style="display:none"><symbol id="i-circle-user" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="10" r="3"/><path d="M7 20.662V19a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v1.662"/></symbol><symbol id="i-message-circle" viewBox="0 0 24 24"><path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719"/></symbol><symbol id="i-cloud" viewBox="0 0 24 24"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></symbol><symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol><symbol id="i-user" viewBox="0 0 24 24"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol><symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></symbol><symbol id="i-phone" viewBox="0 0 24 24"><path d="M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384"/></symbol><symbol id="i-phone-off" viewBox="0 0 24 24"><path d="M10.1 13.9a14 14 0 0 0 3.732 2.668 1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2 18 18 0 0 1-12.728-5.272"/><path d="M22 2 2 22"/><path d="M4.76 13.582A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 .244.473"/></symbol><symbol id="i-video" viewBox="0 0 24 24"><path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5"/><rect x="2" y="6" width="14" height="12" rx="2"/></symbol><symbol id="i-mic-off" viewBox="0 0 24 24"><path d="M12 19v3"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M16.95 16.95A7 7 0 0 1 5 12v-2"/><path d="M18.89 13.23A7 7 0 0 0 19 12v-2"/><path d="m2 2 20 20"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/></symbol><symbol id="i-refresh-cw" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol><symbol id="i-paperclip" viewBox="0 0 24 24"><path d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551"/></symbol><symbol id="i-send" viewBox="0 0 24 24"><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/><path d="m21.854 2.147-10.94 10.939"/></symbol><symbol id="i-message-square" viewBox="0 0 24 24"><path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z"/></symbol><symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M16 3.128a4 4 0 0 1 0 7.744"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="9" cy="7" r="4"/></symbol><symbol id="i-user-plus" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" x2="19" y1="8" y2="14"/><line x1="22" x2="16" y1="11" y2="11"/></symbol><symbol id="i-qr-code" viewBox="0 0 24 24"><rect width="5" height="5" x="3" y="3" rx="1"/><rect width="5" height="5" x="16" y="3" rx="1"/><rect width="5" height="5" x="3" y="16" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3"/><path d="M21 21v.01"/><path d="M12 7v3a2 2 0 0 1-2 2H7"/><path d="M3 12h.01"/><path d="M12 3h.01"/><path d="M12 16v.01"/><path d="M16 12h1"/><path d="M21 12v.01"/><path d="M12 21v-1"/></symbol><symbol id="i-scan-line" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></symbol><symbol id="i-grid-3x3" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M9 3v18"/><path d="M15 3v18"/></symbol><symbol id="i-cloud-upload" viewBox="0 0 24 24"><path d="M12 13v8"/><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="m8 17 4-4 4 4"/></symbol><symbol id="i-folder-plus" viewBox="0 0 24 24"><path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol><symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol><symbol id="i-trash-2" viewBox="0 0 24 24"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol><symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m17 8-5-5-5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></symbol><symbol id="i-image" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></symbol><symbol id="i-film" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/><path d="M17 7.5h4"/><path d="M17 16.5h4"/></symbol><symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></symbol><symbol id="i-file-text" viewBox="0 0 24 24"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></symbol><symbol id="i-file" viewBox="0 0 24 24"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/></symbol><symbol id="i-file-spreadsheet" viewBox="0 0 24 24"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M8 13h2"/><path d="M14 13h2"/><path d="M8 17h2"/><path d="M14 17h2"/></symbol><symbol id="i-presentation" viewBox="0 0 24 24"><path d="M2 3h20"/><path d="M21 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3"/><path d="m7 21 5-5 5 5"/></symbol><symbol id="i-archive" viewBox="0 0 24 24"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></symbol><symbol id="i-settings" viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></symbol><symbol id="i-camera" viewBox="0 0 24 24"><path d="M13.997 4a2 2 0 0 1 1.76 1.05l.486.9A2 2 0 0 0 18.003 7H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h1.997a2 2 0 0 0 1.759-1.048l.489-.904A2 2 0 0 1 10.004 4z"/><circle cx="12" cy="13" r="3"/></symbol><symbol id="i-pencil" viewBox="0 0 24 24"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></symbol><symbol id="i-copy" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></symbol><symbol id="i-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></symbol><symbol id="i-chevron-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol><symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol><symbol id="i-circle-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></symbol><symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol><symbol id="i-play" viewBox="0 0 24 24"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></symbol><symbol id="i-square" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/></symbol><symbol id="i-log-in" viewBox="0 0 24 24"><path d="m10 17 5-5-5-5"/><path d="M15 12H3"/><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/></symbol><symbol id="i-shield-check" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></symbol><symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></symbol><symbol id="i-credit-card" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/></symbol><symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 19v3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><rect x="9" y="2" width="6" height="13" rx="3"/></symbol><symbol id="i-volume-2" viewBox="0 0 24 24"><path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/></symbol><symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></symbol><symbol id="i-smile" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" x2="9.01" y1="9" y2="9"/><line x1="15" x2="15.01" y1="9" y2="9"/></symbol></svg>
   <div id="uatBadge" class="uat-badge">U A T</div>
   <script>if(window.APP_ENV&&window.APP_ENV!=='production'){document.getElementById('uatBadge').classList.add('visible')}</script>
   <script>
@@ -523,7 +525,7 @@
     <section id="tab-contacts" class="tab">
       <div class="card contacts-card">
         <div id="contactsRefreshHint" class="contacts-refresh">
-          <i class='bx bx-refresh icon' aria-hidden="true"></i>
+          <svg class="icon icon-lg" aria-hidden="true"><use href="#i-refresh-cw"/></svg>
           <span class="label" data-i18n="contacts.pullToRefresh"></span>
         </div>
         <div id="contactsScroll" class="contacts-scroll">
@@ -531,22 +533,22 @@
             <span><strong id="contactsCount">0</strong> <span data-i18n="contacts.friendCount"></span></span>
             <div class="add-friend-wrapper">
               <button id="btnContactsAddFriend" class="contacts-add-btn" type="button" data-i18n-aria-label="contacts.addFriend" data-i18n-title="contacts.addFriend">
-                <i class='bx bx-user-plus'></i>
+                <svg class="icon"><use href="#i-user-plus"/></svg>
               </button>
               <div id="contactsAddFriendMenu" class="add-friend-menu add-friend-menu--below" style="display:none">
                 <button id="btnContactsAddFriendQr" class="add-friend-menu-item" type="button">
-                  <i class='bx bx-qr'></i>
+                  <svg class="icon"><use href="#i-qr-code"/></svg>
                   <span data-i18n="contacts.qrAddFriend"></span>
                 </button>
                 <button id="btnContactsAddFriendCode" class="add-friend-menu-item" type="button">
-                  <i class='bx bx-dialpad'></i>
+                  <svg class="icon"><use href="#i-grid-3x3"/></svg>
                   <span data-i18n="contacts.usePairingCode"></span>
                 </button>
               </div>
             </div>
           </div>
           <div class="contacts-search-wrap">
-            <i class='bx bx-search' aria-hidden="true"></i>
+            <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
             <input id="contactsSearch" type="text" class="contacts-search" data-i18n-placeholder="contacts.searchPlaceholder" placeholder="Search friends…" autocomplete="off" />
           </div>
           <ul id="contactsList" class="contact-list"></ul>
@@ -558,7 +560,7 @@
         <div class="messages-body">
           <aside class="messages-sidebar">
             <div id="conversationRefresh" class="conversation-refresh">
-              <i class='bx bx-refresh icon' aria-hidden="true"></i>
+              <svg class="icon icon-lg" aria-hidden="true"><use href="#i-refresh-cw"/></svg>
               <span class="label" data-i18n="messages.pullToRefreshConversations"></span>
             </div>
             <div id="groupDrafts" class="conversation-group-drafts" aria-live="polite" style="display:none"
@@ -591,8 +593,7 @@
           </aside>
           <div class="messages-thread">
             <div class="messages-header">
-              <button id="messagesBackBtn" type="button" class="messages-back hidden" data-i18n-aria-label="misc.backToConversationList"><i
-                  class='bx bx-chevron-left'></i></button>
+              <button id="messagesBackBtn" type="button" class="messages-back hidden" data-i18n-aria-label="misc.backToConversationList"><svg class="icon"><use href="#i-chevron-left"/></svg></button>
               <div id="messagesPeerAvatar" class="messages-peer-avatar"></div>
               <div class="messages-header-meta">
                 <strong id="messagesPeerName" data-i18n="contacts.selectToChat"></strong>
@@ -601,16 +602,16 @@
               <div class="messages-actions">
                 <span id="messagesWsIndicator" class="connection-indicator messages-ws-indicator"
                   aria-hidden="true"><span class="dot" aria-hidden="true"></span></span>
-                <button id="bizConvSettingsBtn" type="button" class="messages-action-btn biz-conv-settings-btn hidden" aria-label="Group Settings"><i class='bx bx-cog'></i></button>
+                <button id="bizConvSettingsBtn" type="button" class="messages-action-btn biz-conv-settings-btn hidden" aria-label="Group Settings"><svg class="icon"><use href="#i-settings"/></svg></button>
                 <div class="call-menu-wrapper">
                   <button id="messagesCallBtn" type="button" class="messages-action-btn" data-i18n-aria-label="calls.title" data-i18n-title="calls.title"
-                    disabled><i class='bx bx-phone'></i></button>
+                    disabled><svg class="icon"><use href="#i-phone"/></svg></button>
                   <div id="callSubmenu" class="call-submenu hidden">
                     <button type="button" class="call-submenu-item" data-call-type="voice">
-                      <i class='bx bx-phone'></i><span data-i18n="calls.voiceCall"></span>
+                      <svg class="icon"><use href="#i-phone"/></svg><span data-i18n="calls.voiceCall"></span>
                     </button>
                     <button type="button" class="call-submenu-item" data-call-type="video">
-                      <i class='bx bx-video'></i><span data-i18n="calls.videoCall"></span>
+                      <svg class="icon"><use href="#i-video"/></svg><span data-i18n="calls.videoCall"></span>
                     </button>
                   </div>
                 </div>
@@ -622,7 +623,7 @@
                 <span class="spinner" aria-hidden="true"></span>
               </div>
               <div id="messagesEmpty" class="messages-empty">
-                <i class='bx bx-message-dots' aria-hidden="true"></i>
+                <svg class="icon" aria-hidden="true"><use href="#i-message-circle"/></svg>
                 <p class="messages-empty-title" data-i18n="messages.noConversationSelected"></p>
                 <p class="messages-empty-hint" data-i18n="messages.selectConversationToChat"></p>
               </div>
@@ -630,12 +631,10 @@
               <ul id="messagesList" class="messages-list"></ul>
             </div>
             <form id="messageComposer" class="messages-composer">
-              <button id="composerAttach" type="button" class="composer-attach" data-i18n-aria-label="messages.attachFile"><i
-                  class='bx bx-paperclip'></i></button>
+              <button id="composerAttach" type="button" class="composer-attach" data-i18n-aria-label="messages.attachFile"><svg class="icon"><use href="#i-paperclip"/></svg></button>
               <input id="messageFileInput" type="file" class="sr-only" style="display:none" />
               <textarea id="messageInput" data-i18n-placeholder="messages.inputPlaceholder" placeholder="Enter message…" rows="1" maxlength="1024"></textarea>
-              <button id="messageSend" type="submit" class="composer-send" data-i18n-aria-label="messages.sendMessage"><i
-                  class='bx bx-send'></i></button>
+              <button id="messageSend" type="submit" class="composer-send" data-i18n-aria-label="messages.sendMessage"><svg class="icon"><use href="#i-send"/></svg></button>
             </form>
           </div>
         </div>
@@ -643,7 +642,7 @@
     </section>
     <section id="tab-drive" class="tab">
       <div id="driveRefreshHint" class="drive-refresh">
-        <i class='bx bx-refresh icon' aria-hidden="true"></i>
+        <svg class="icon icon-lg" aria-hidden="true"><use href="#i-refresh-cw"/></svg>
         <span class="label" data-i18n="drive.pullToRefresh"></span>
       </div>
       <div class="drive-usage" aria-live="polite">
@@ -674,10 +673,8 @@
                 <path d="M9 9L12 12" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
               </svg>
             </button>
-            <button id="btnUploadOpen" type="button" class="secondary" data-i18n-aria-label="drive.uploadFile" data-i18n-title="drive.uploadFile"><i
-                class='bx bx-cloud-upload'></i></button>
-            <button id="btnNewFolder" type="button" class="secondary" data-i18n-aria-label="drive.newFolder" data-i18n-title="drive.newFolder"><i
-                class='bx bx-folder-plus'></i></button>
+            <button id="btnUploadOpen" type="button" class="secondary" data-i18n-aria-label="drive.uploadFile" data-i18n-title="drive.uploadFile"><svg class="icon"><use href="#i-cloud-upload"/></svg></button>
+            <button id="btnNewFolder" type="button" class="secondary" data-i18n-aria-label="drive.newFolder" data-i18n-title="drive.newFolder"><svg class="icon"><use href="#i-folder-plus"/></svg></button>
           </div>
         </div>
         <ul id="driveList" class="list"></ul>
@@ -716,28 +713,28 @@
         <!-- Actions -->
         <div style="display:flex;gap:8px;margin-bottom:16px;">
           <button id="safe-btn-start" type="button" class="primary" style="flex:1;padding:10px;border-radius:8px;font-size:13px;font-weight:600;">
-            <i class='bx bx-play'></i>
+            <svg class="icon"><use href="#i-play"/></svg>
             <span data-i18n="safe.start">Start</span>
           </button>
           <button id="safe-btn-stop" type="button" class="secondary" style="flex:1;padding:10px;border-radius:8px;font-size:13px;font-weight:600;" disabled>
-            <i class='bx bx-stop'></i>
+            <svg class="icon"><use href="#i-square"/></svg>
             <span data-i18n="safe.stop">Stop</span>
           </button>
         </div>
 
         <button id="safe-btn-open" type="button" class="primary" style="width:100%;padding:14px;border-radius:8px;font-size:15px;font-weight:700;margin-bottom:16px;letter-spacing:0.5px;" disabled>
-          <i class='bx bx-log-in'></i>
+          <svg class="icon"><use href="#i-log-in"/></svg>
           <span data-i18n="safe.enterSafe">Enter SAFE™</span>
         </button>
 
         <button id="safe-btn-delete" type="button" style="width:100%;padding:10px;border-radius:8px;font-size:13px;font-weight:600;margin-bottom:16px;background:#fee2e2;color:#dc2626;border:1px solid #fca5a5;cursor:pointer;" disabled>
-          <i class='bx bx-trash'></i>
+          <svg class="icon"><use href="#i-trash-2"/></svg>
           <span data-i18n="safe.deleteEnv">Delete Environment</span>
         </button>
 
         <!-- Error display -->
         <div id="safe-error" style="display:none;text-align:center;padding:12px;margin-top:8px;">
-          <i class='bx bx-error-circle' style="font-size:28px;color:var(--danger);"></i>
+          <svg class="icon icon-xl" style="color:var(--danger);"><use href="#i-circle-alert"/></svg>
           <p id="safe-error-msg" style="color:var(--danger);margin:8px 0;font-size:12px;"></p>
         </div>
       </div>
@@ -747,14 +744,13 @@
         <div class="profile-header">
           <div class="profile-avatar">
             <img id="profileAvatarImg" src="/assets/images/avatar.png" alt="Avatar" />
-            <button id="btnProfileEdit" class="avatar-edit-btn" type="button" data-i18n-aria-label="profile.editAvatar"><i
-                class='bx bx-camera'></i></button>
+            <button id="btnProfileEdit" class="avatar-edit-btn" type="button" data-i18n-aria-label="profile.editAvatar"><svg class="icon"><use href="#i-camera"/></svg></button>
           </div>
           <div class="profile-main">
             <div class="profile-nickname">
               <strong id="profileNickname">……</strong>
               <button id="btnProfileNickEdit" class="profile-edit-btn" type="button" data-i18n-aria-label="profile.editNickname">
-                <i class='bx bx-pencil'></i>
+                <svg class="icon"><use href="#i-pencil"/></svg>
                 <span data-i18n="profile.editNickname"></span>
               </button>
             </div>
@@ -765,15 +761,15 @@
               </div>
               <div class="add-friend-wrapper">
                 <button id="btnShareModal" class="profile-share-btn" type="button" data-i18n-aria-label="contacts.addFriend" data-i18n-title="contacts.addFriend">
-                  <i class='bx bx-user-plus'></i>
+                  <svg class="icon"><use href="#i-user-plus"/></svg>
                 </button>
                 <div id="addFriendMenu" class="add-friend-menu" style="display:none">
                   <button id="btnAddFriendQr" class="add-friend-menu-item" type="button">
-                    <i class='bx bx-qr'></i>
+                    <svg class="icon"><use href="#i-qr-code"/></svg>
                     <span data-i18n="contacts.qrAddFriend"></span>
                   </button>
                   <button id="btnAddFriendCode" class="add-friend-menu-item" type="button">
-                    <i class='bx bx-dialpad'></i>
+                    <svg class="icon"><use href="#i-grid-3x3"/></svg>
                     <span data-i18n="contacts.usePairingCode"></span>
                   </button>
                 </div>
@@ -796,14 +792,14 @@
             <button type="button" class="share-close" data-share-close-btn data-i18n-aria-label="common.close" aria-label="Close">×</button>
             <button id="btnShareSwitchScan" class="share-corner-toggle share-corner-toggle--scan" type="button"
               data-i18n-aria-label="share.switchToScanMode" aria-label="Switch to scan mode">
-              <i class='bx bx-camera' aria-hidden="true"></i>
+              <svg class="icon"><use href="#i-camera"/></svg>
             </button>
           </header>
           <div class="share-body share-body-qr">
             <div class="share-countdown">
               <span id="inviteCountdown"></span>
               <button id="inviteRefreshBtn" class="invite-refresh-btn" type="button" data-i18n-aria-label="share.manualRefreshInvites" aria-label="Refresh friend invite">
-                <i class='bx bx-refresh' aria-hidden="true"></i>
+                <svg class="icon"><use href="#i-refresh-cw"/></svg>
               </button>
               <!-- inviteConsumeBtn removed: WS auto-consume is sufficient -->
               <!-- inviteRetryBtn removed: redundant with inviteRefreshBtn -->
@@ -840,7 +836,7 @@
         <div class="pairing-code-countdown">
           <span id="pairingCountdown"></span>
           <button id="pairingRefreshBtn" class="invite-refresh-btn" type="button" data-i18n-aria-label="share.refreshPairingCode" aria-label="Refresh pairing code">
-            <i class='bx bx-refresh' aria-hidden="true"></i>
+            <svg class="icon"><use href="#i-refresh-cw"/></svg>
           </button>
         </div>
         <div id="pairingDigits" class="pairing-code-digits">
@@ -967,30 +963,30 @@
     <div class="navbar-pill">
       <button id="nav-contacts" class="navbtn" data-i18n-aria-label="nav.contacts">
         <span class="nav-badge" data-tab="contacts"></span>
-        <i class='bx bx-user-circle'></i>
+        <svg class="icon"><use href="#i-circle-user"/></svg>
         <span data-i18n="nav.contacts"></span>
       </button>
       <button id="nav-messages" class="navbtn" data-i18n-aria-label="nav.messages">
         <span class="nav-badge" data-tab="messages"></span>
-        <i class='bx bx-message-dots'></i>
+        <svg class="icon"><use href="#i-message-circle"/></svg>
         <span data-i18n="nav.messages"></span>
       </button>
       <button id="nav-drive" class="navbtn active" data-i18n-aria-label="nav.encryptedCloud">
         <span class="nav-badge" data-tab="drive"></span>
         <span class="nav-icon-stack" aria-hidden="true">
-          <i class='bx bxs-cloud nav-icon-base'></i>
-          <i class='bx bx-lock-alt nav-icon-lock'></i>
+          <svg class="icon icon-base"><use href="#i-cloud"/></svg>
+          <svg class="icon icon-lock"><use href="#i-lock"/></svg>
         </span>
         <span data-i18n="nav.encryptedCloud"></span>
       </button>
       <button id="nav-profile" class="navbtn" data-i18n-aria-label="nav.myFiles">
         <span class="nav-badge" data-tab="profile"></span>
-        <i class='bx bx-user'></i>
+        <svg class="icon"><use href="#i-user"/></svg>
         <span data-i18n="nav.myFiles"></span>
       </button>
       <button id="nav-safe" class="navbtn" style="display:none" aria-label="SAFE ™">
         <span class="nav-badge" data-tab="safe"></span>
-        <i class='bx bxl-chrome'></i>
+        <svg class="icon"><use href="#i-globe"/></svg>
         <span>SAFE ™</span>
       </button>
     </div>
@@ -998,18 +994,18 @@
 
   <div id="mediaPermissionOverlay" class="media-permission-overlay" aria-hidden="true" style="display:none">
     <div class="media-permission-card" role="dialog" aria-modal="true" aria-labelledby="mediaPermissionTitle">
-      <i class='bx bxs-lock-shield icon' aria-hidden="true"></i>
+      <svg class="icon icon-2x" aria-hidden="true"><use href="#i-shield"/></svg>
       <h2 id="mediaPermissionTitle" data-i18n="mediaPermission.enableVoiceCall"></h2>
       <p data-i18n="mediaPermission.clickBelowToAuth"></p>
       <ul>
-        <li><i class='bx bx-microphone'></i><span data-i18n="mediaPermission.micRequiredForE2ee"></span></li>
-        <li><i class='bx bx-volume-full'></i><span data-i18n="mediaPermission.unlockAudioPlayback"></span></li>
+        <li><svg class="icon"><use href="#i-mic"/></svg><span data-i18n="mediaPermission.micRequiredForE2ee"></span></li>
+        <li><svg class="icon"><use href="#i-volume-2"/></svg><span data-i18n="mediaPermission.unlockAudioPlayback"></span></li>
       </ul>
       <div id="mediaPermissionStatus" class="media-permission-status" role="status" aria-live="polite"></div>
       <p class="media-permission-hints" data-i18n="mediaPermission.safariRetryHint"></p>
       <div class="media-permission-actions">
         <button id="mediaPermissionAllowBtn" type="button" class="media-permission-btn">
-          <i class='bx bx-check-shield'></i><span id="mediaPermissionAllowLabel" data-i18n="mediaPermission.allowMicrophone"></span>
+          <svg class="icon"><use href="#i-shield-check"/></svg><span id="mediaPermissionAllowLabel" data-i18n="mediaPermission.allowMicrophone"></span>
         </button>
         <button id="mediaPermissionDebugBtn" type="button" class="media-permission-skip" style="display:none">Debug</button>
         <button id="mediaPermissionSkipBtn" type="button" class="media-permission-skip" data-i18n="mediaPermission.later"></button>
