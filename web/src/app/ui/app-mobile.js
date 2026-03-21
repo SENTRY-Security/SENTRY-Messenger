@@ -1187,36 +1187,59 @@ function initSafeBrowser() {
     return sec ? `${msg} ${sec}` : msg;
   }
 
-  // ── Fullscreen overlay ──────────────────────────────────────────
-  const fsOverlay = document.getElementById('safe-fullscreen-overlay');
-  const fsIframe = document.getElementById('safe-fullscreen-iframe');
-  const btnExitFs = document.getElementById('safe-btn-exit-fullscreen');
+  // ── SAFE modal (same pattern as PDF viewer) ─────────────────────
+  let _safeModalCleanup = null;
 
-  function enterFullscreen(url) {
-    if (!fsOverlay || !fsIframe) return;
-    fsIframe.src = url;
-    fsOverlay.style.display = '';
-    document.body.style.overflow = 'hidden';
-  }
+  function openSafeModal(url) {
+    const modalEl = document.getElementById('modal');
+    const body = document.getElementById('modalBody');
+    if (!modalEl || !body) return;
 
-  function exitFullscreen() {
-    if (!fsOverlay || !fsIframe) return;
-    fsOverlay.style.display = 'none';
-    fsIframe.src = 'about:blank';
-    document.body.style.overflow = '';
-  }
+    // Close any existing modal content
+    _safeModalCleanup?.();
 
-  btnExitFs?.addEventListener('click', () => {
-    exitFullscreen();
-    safeBrowser.stop();
-  });
+    modalEl.classList.add('safe-modal');
+    document.getElementById('modalTitle').textContent = '';
+    body.innerHTML = `
+      <div class="safe-viewer">
+        <iframe sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                allow="fullscreen *; clipboard-read; clipboard-write"
+                src="${url}"
+                allowfullscreen="true"></iframe>
+        <button type="button" class="safe-exit-btn" id="safeExitBtn"
+                aria-label="${t('viewer.close')}">
+          <i class='bx bx-x'></i>
+        </button>
+      </div>`;
 
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && fsOverlay && fsOverlay.style.display !== 'none') {
-      exitFullscreen();
+    // Show modal
+    modalEl.style.display = 'flex';
+    modalEl.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('modal-open');
+
+    // Exit handler
+    const cleanup = () => {
+      const iframe = body.querySelector('iframe');
+      if (iframe) iframe.src = 'about:blank';
+      modalEl.classList.remove('safe-modal');
+      modalEl.style.display = 'none';
+      modalEl.setAttribute('aria-hidden', 'true');
+      document.body.classList.remove('modal-open');
+      body.innerHTML = '';
+      _safeModalCleanup = null;
+    };
+
+    body.querySelector('#safeExitBtn')?.addEventListener('click', () => {
+      cleanup();
       safeBrowser.stop();
-    }
-  });
+    });
+
+    _safeModalCleanup = cleanup;
+  }
+
+  function closeSafeModal() {
+    _safeModalCleanup?.();
+  }
 
   // ── State machine — react to safe-browser.js state changes ─────
   safeBrowser.onStateChange((state, detail) => {
@@ -1233,10 +1256,10 @@ function initSafeBrowser() {
           startingDetail.textContent = formatContainerStatus(detail.containerStatus, detail.elapsed);
         }
 
-        // When iframeUrl is ready → directly enter fullscreen
+        // When iframeUrl is ready → open modal view (like PDF)
         if (detail?.iframeUrl) {
           if (startingDetail) startingDetail.textContent = t('safe.statusHealthy');
-          enterFullscreen(detail.iframeUrl);
+          openSafeModal(detail.iframeUrl);
           // Mark connected after a short delay (cross-origin onload unreliable)
           setTimeout(() => {
             if (safeBrowser.getState() === 'starting') safeBrowser.markConnected();
@@ -1246,17 +1269,16 @@ function initSafeBrowser() {
       }
 
       case 'connected':
-        showPanel('starting');
-        if (startingDetail) startingDetail.textContent = t('safe.statusHealthy');
+        // Modal is already open, nothing to do
         break;
 
       case 'stopped':
-        exitFullscreen();
+        closeSafeModal();
         showPanel('stopped');
         break;
 
       case 'error':
-        exitFullscreen();
+        closeSafeModal();
         showPanel('error');
         if (errorMsg) errorMsg.textContent = detail?.error || 'Connection error';
         break;

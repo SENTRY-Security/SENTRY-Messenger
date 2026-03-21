@@ -694,19 +694,6 @@
         <p id="safe-starting-detail" style="color:var(--muted);font-size:12px;margin-top:8px;" data-i18n="safe.startingHint">First launch may take a few seconds.</p>
       </div>
 
-      <!-- Fullscreen overlay — the main browser view, covers entire viewport -->
-      <div id="safe-fullscreen-overlay" style="display:none;position:fixed;inset:0;z-index:9999;background:#000;">
-        <iframe id="safe-fullscreen-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-                allow="fullscreen *; clipboard-read; clipboard-write"
-                style="width:100%;height:100%;border:none;background:#000;"
-                allowfullscreen="true"></iframe>
-        <button id="safe-btn-exit-fullscreen" type="button"
-                style="position:fixed;top:12px;right:12px;z-index:10000;background:rgba(0,0,0,0.6);color:#fff;border:none;border-radius:50%;width:40px;height:40px;font-size:20px;cursor:pointer;opacity:0.5;transition:opacity 0.2s;"
-                onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.5'"
-                title="Exit">
-          <i class='bx bx-x'></i>
-        </button>
-      </div>
 
       <!-- State: Stopped (user explicitly stopped, or idle shutdown) -->
       <div id="safe-stopped" style="display:none;text-align:center;padding:48px 24px;">
