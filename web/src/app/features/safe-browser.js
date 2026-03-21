@@ -112,6 +112,17 @@ async function apiStatus() {
   return res.json();
 }
 
+// ── iframe URL builder ───────────────────────────────────────────
+
+function buildIframeUrl(password) {
+  const base = getWorkerUrl();
+  const url = new URL(base + '/api/safe/browser/vnc.html');
+  url.searchParams.set('autoconnect', 'true');
+  url.searchParams.set('resize', 'scale');
+  if (password) url.searchParams.set('password', password);
+  return url.toString();
+}
+
 // ── Polling ──────────────────────────────────────────────────────
 
 function stopPolling() {
@@ -135,10 +146,7 @@ function startPolling(password) {
       // Container is ready — load the iframe
       if (data.status === 'running' || data.status === 'healthy') {
         stopPolling();
-        const base = getWorkerUrl();
-        const iframeUrl = new URL(base + '/api/safe/browser/');
-        if (password) iframeUrl.searchParams.set('password', password);
-        setState('starting', { iframeUrl: iframeUrl.toString() });
+        setState('starting', { iframeUrl: buildIframeUrl(password) });
       }
     } catch (err) {
       log({ safePollError: err?.message });
@@ -165,10 +173,7 @@ export async function autoStart() {
 
     if (result.status === 'running') {
       // Container already running — load iframe immediately
-      const base = getWorkerUrl();
-      const iframeUrl = new URL(base + '/api/safe/browser/');
-      if (result.password) iframeUrl.searchParams.set('password', result.password);
-      setState('starting', { iframeUrl: iframeUrl.toString() });
+      setState('starting', { iframeUrl: buildIframeUrl(result.password) });
     } else {
       // Container is starting/building — poll every 3s
       _containerStatus = result.status;

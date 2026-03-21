@@ -1260,11 +1260,26 @@ function initSafeBrowser() {
   // Stop button
   btnStop?.addEventListener('click', () => safeBrowser.stop());
 
-  // Fullscreen
+  // Fullscreen — hide navigator & top bar, use entire screen
   btnFullscreen?.addEventListener('click', () => {
-    if (iframe) {
-      if (iframe.requestFullscreen) iframe.requestFullscreen();
-      else if (iframe.webkitRequestFullscreen) iframe.webkitRequestFullscreen();
+    const el = browserEl || iframe;
+    if (!el) return;
+    if (el.requestFullscreen) el.requestFullscreen();
+    else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+  });
+
+  // When entering/exiting fullscreen, resize iframe to fill available space
+  document.addEventListener('fullscreenchange', () => {
+    if (document.fullscreenElement === browserEl) {
+      // Entered fullscreen — hide toolbar, maximize iframe
+      const toolbar = document.getElementById('safe-toolbar');
+      if (toolbar) toolbar.style.display = 'none';
+      if (iframe) iframe.style.height = '100vh';
+    } else {
+      // Exited fullscreen — restore toolbar
+      const toolbar = document.getElementById('safe-toolbar');
+      if (toolbar) toolbar.style.display = '';
+      resizeIframe();
     }
   });
 
