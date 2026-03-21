@@ -163,14 +163,9 @@ export async function renderPdfViewer({ url, name, modalApi }) {
       if (bounds && (bounds.w < canvas.width * 0.95 || bounds.h < canvas.height * 0.95)) {
         cropCanvas(canvas, bounds);
       }
-      // CSS: 100% width, auto height — browser fits cropped content to container
-      canvas.style.width = '100%';
-      canvas.style.height = 'auto';
+      // Set aspect-ratio on wrap so height matches cropped content proportions
       const aspect = canvas.width / canvas.height;
-      entry.wrap.style.width = '100%';
-      entry.wrap.style.height = 'auto';
       entry.wrap.style.aspectRatio = `${aspect}`;
-      entry.wrap.style.minHeight = '0';
       entry.rendered = true;
       entry.currentRenderScale = renderScale;
     } catch (err) {
