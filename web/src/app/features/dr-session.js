@@ -2779,92 +2779,74 @@ async function buildVideoPreviewBlob(file) {
   }
 }
 
-const EXCEL_MIMES = [
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'application/vnd.ms-excel',
-  'application/vnd.ms-excel.sheet.macroenabled.12',
-  'text/csv'
+const WORD_MIMES = [
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/msword',
+  'application/vnd.ms-word.document.macroenabled.12'
 ];
 
-function isExcelFile(file) {
+function isWordFile(file) {
   const ct = resolveContentType(file).toLowerCase().split(';')[0].trim();
-  if (EXCEL_MIMES.some(m => ct === m)) return true;
+  if (WORD_MIMES.some(m => ct === m)) return true;
   const name = file?.name || '';
-  return /\.(xlsx|xls|xlsm|csv)$/i.test(name);
+  return /\.(docx|doc|docm)$/i.test(name);
 }
 
-async function buildExcelPreviewBlob(file) {
+async function buildWordPreviewBlob(file) {
   if (!file) return null;
   try {
-    const mod = await import(/* webpackIgnore: true */ '/assets/libs/xlsx.min.mjs');
-    const XLSX = mod.default || mod.XLSX || mod;
-    const data = new Uint8Array(await file.arrayBuffer());
-    const wb = XLSX.read(data, { type: 'array', sheetRows: 20 });
-    const sheet = wb.Sheets[wb.SheetNames[0]];
-    if (!sheet) return null;
-    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
-    if (!rows.length) return null;
-
-    // Draw a mini spreadsheet onto canvas
-    const MAX_ROWS = Math.min(rows.length, 15);
-    const MAX_COLS = Math.min(Math.max(...rows.slice(0, MAX_ROWS).map(r => r.length)), 8);
-    if (!MAX_COLS) return null;
-
-    const CELL_W = 110, CELL_H = 28, HEADER_H = 32, PAD = 12;
-    const cw = PAD * 2 + MAX_COLS * CELL_W;
-    const ch = PAD + HEADER_H + MAX_ROWS * CELL_H + PAD;
-    const canvas = document.createElement('canvas');
-    canvas.width = cw;
-    canvas.height = ch;
-    const ctx = canvas.getContext('2d');
-
-    // Background
-    ctx.fillStyle = '#111827';
-    ctx.fillRect(0, 0, cw, ch);
-
-    // Header row
-    ctx.fillStyle = '#1e293b';
-    ctx.fillRect(PAD, PAD, MAX_COLS * CELL_W, HEADER_H);
-
-    // Grid lines + text
-    ctx.font = '13px -apple-system, sans-serif';
-    ctx.textBaseline = 'middle';
-    for (let r = 0; r < MAX_ROWS; r++) {
-      const row = rows[r] || [];
-      const y = PAD + HEADER_H + r * CELL_H;
-      // Alternating row bg
-      if (r > 0 && r % 2 === 0) {
-        ctx.fillStyle = 'rgba(148,163,184,0.04)';
-        ctx.fillRect(PAD, y, MAX_COLS * CELL_W, CELL_H);
+    const mod = await import(/* webpackIgnore: true */ '/assets/libs/docx-preview.min.mjs');
+    const docxLib = mod.default || mod.docx || mod;
+    if (!docxLib?.renderAsync) return null;
+    const data = await file.arrayBuffer();
+    // Render into a hidden container to capture as image
+    const container = document.createElement('div');
+    container.style.cssText = 'position:fixed;left:-9999px;top:0;width:800px;background:#fff;';
+    document.body.appendChild(container);
+    try {
+      await docxLib.renderAsync(data, container, null, {
+        className: 'word-docx',
+        inWrapper: false,
+        ignoreWidth: true,
+        ignoreHeight: true,
+        breakPages: false,
+        experimental: true,
+        useBase64URL: true
+      });
+      // Draw visible portion to canvas
+      const section = container.querySelector('section') || container;
+      const rect = { w: Math.min(section.scrollWidth, 800), h: Math.min(section.scrollHeight, 1100) };
+      if (!rect.w || !rect.h) return null;
+      const canvas = document.createElement('canvas');
+      canvas.width = rect.w;
+      canvas.height = rect.h;
+      const ctx = canvas.getContext('2d');
+      // White background
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, rect.w, rect.h);
+      // Draw text content as simplified preview
+      ctx.fillStyle = '#1e293b';
+      ctx.font = '14px -apple-system, sans-serif';
+      const textContent = section.innerText || '';
+      const lines = textContent.split('\n').slice(0, 40);
+      let y = 24;
+      for (const line of lines) {
+        if (y > rect.h - 10) break;
+        ctx.fillText(line.slice(0, 80), 16, y);
+        y += 20;
       }
-      for (let c = 0; c < MAX_COLS; c++) {
-        const x = PAD + c * CELL_W;
-        const cellY = r === 0 ? PAD : y;
-        const cellH = r === 0 ? HEADER_H : CELL_H;
-        // Cell border
-        ctx.strokeStyle = 'rgba(148,163,184,0.12)';
-        ctx.strokeRect(x, cellY, CELL_W, cellH);
-        // Cell text
-        const val = String(row[c] ?? '').slice(0, 14);
-        ctx.fillStyle = r === 0 ? '#94a3b8' : '#e2e8f0';
-        ctx.font = r === 0 ? 'bold 12px -apple-system, sans-serif' : '12px -apple-system, sans-serif';
-        ctx.fillText(val, x + 6, cellY + cellH / 2);
-      }
-    }
-
-    const target = scaleToPreviewSize(cw, ch);
-    if (target.width && target.height && (target.width !== cw || target.height !== ch)) {
+      const target = scaleToPreviewSize(rect.w, rect.h);
       const scaled = document.createElement('canvas');
-      scaled.width = target.width;
-      scaled.height = target.height;
-      scaled.getContext('2d').drawImage(canvas, 0, 0, target.width, target.height);
+      scaled.width = target.width || rect.w;
+      scaled.height = target.height || rect.h;
+      scaled.getContext('2d').drawImage(canvas, 0, 0, scaled.width, scaled.height);
       const blob = await canvasToJpegBlob(scaled);
-      return { blob, width: target.width, height: target.height, contentType: 'image/jpeg' };
+      return { blob, width: scaled.width, height: scaled.height, contentType: 'image/jpeg' };
+    } finally {
+      container.remove();
     }
-    const blob = await canvasToJpegBlob(canvas);
-    return { blob, width: cw, height: ch, contentType: 'image/jpeg' };
   } catch (err) {
-    logDrSend('excel-preview-failed', { error: err?.message || err });
+    logDrSend('word-preview-failed', { error: err?.message || err });
     return null;
   }
 }
@@ -2882,8 +2864,8 @@ export async function buildMediaPreviewBlob(file) {
       return null;
     }
   }
-  if (isExcelFile(file)) {
-    return buildExcelPreviewBlob(file);
+  if (isWordFile(file)) {
+    return buildWordPreviewBlob(file);
   }
   return null;
 }

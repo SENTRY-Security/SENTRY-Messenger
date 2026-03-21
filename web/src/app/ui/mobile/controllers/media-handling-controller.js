@@ -12,6 +12,7 @@ import { isMseSupported, detectCodecFromInitSegment, buildMimeFromCodecString, c
 import { mergeInitSegments } from '../../../features/mp4-remuxer.js';
 import { renderPdfViewer, cleanupPdfViewer } from '../viewers/pdf-viewer.js';
 import { renderExcelViewer, cleanupExcelViewer, isExcelMime, isExcelFilename } from '../viewers/excel-viewer.js';
+import { renderWordViewer, cleanupWordViewer, isWordMime, isWordFilename } from '../viewers/word-viewer.js';
 import { openImageViewer, cleanupImageViewer } from '../viewers/image-viewer.js';
 import { openVideoViewer, cleanupVideoViewer } from '../viewers/video-viewer.js';
 import { escapeHtml, fmtSize, escapeSelector } from '../ui-utils.js';
@@ -1095,6 +1096,7 @@ export class MediaHandlingController extends BaseController {
 
         cleanupPdfViewer();
         cleanupExcelViewer();
+        cleanupWordViewer();
 
         // Clear all modal classes
         const classesToRemove = [
@@ -1147,6 +1149,17 @@ export class MediaHandlingController extends BaseController {
             wrap.appendChild(msg);
         } else if (isExcelMime(ct) || isExcelFilename(resolvedName)) {
             const handled = await renderExcelViewer({
+                url,
+                blob,
+                name: resolvedName,
+                modalApi: { openModal, closeModal, showConfirmModal: showConfirm }
+            });
+            if (handled) {
+                this.deps.openPreviewModal?.();
+                return;
+            }
+        } else if (isWordMime(ct) || isWordFilename(resolvedName)) {
+            const handled = await renderWordViewer({
                 url,
                 blob,
                 name: resolvedName,

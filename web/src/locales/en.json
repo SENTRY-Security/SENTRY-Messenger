@@ -860,7 +860,9 @@
     "loadingPage": "Loading page {{num}}…",
     "downloadExcel": "Download Excel",
     "excelEmpty": "This sheet is empty",
-    "excelLoadFailed": "Excel load failed: {{error}}"
+    "excelLoadFailed": "Excel load failed: {{error}}",
+    "downloadWord": "Download Word",
+    "wordLoadFailed": "Word load failed: {{error}}"
   },
   "mediaHandling": {
     "videoDataIncomplete": "Video data incomplete, cannot play",

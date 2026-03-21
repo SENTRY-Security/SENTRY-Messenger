@@ -860,7 +860,9 @@
     "loadingPage": "載入第 {{num}} 頁…",
     "downloadExcel": "下載 Excel",
     "excelEmpty": "此工作表無內容",
-    "excelLoadFailed": "Excel 載入失敗：{{error}}"
+    "excelLoadFailed": "Excel 載入失敗：{{error}}",
+    "downloadWord": "下載 Word",
+    "wordLoadFailed": "Word 載入失敗：{{error}}"
   },
   "mediaHandling": {
     "videoDataIncomplete": "影片資料不完整，無法播放",

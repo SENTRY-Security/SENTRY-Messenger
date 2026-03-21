@@ -857,7 +857,9 @@
     "loadingPage": "{{num}} 페이지 로드 중…",
     "downloadExcel": "Excel 다운로드",
     "excelEmpty": "이 시트는 비어 있습니다",
-    "excelLoadFailed": "Excel 로드 실패: {{error}}"
+    "excelLoadFailed": "Excel 로드 실패: {{error}}",
+    "downloadWord": "Word 다운로드",
+    "wordLoadFailed": "Word 로드 실패: {{error}}"
   },
   "mediaHandling": {
     "videoDataIncomplete": "동영상 데이터가 불완전하여 재생할 수 없습니다",

@@ -857,7 +857,9 @@
     "loadingPage": "Đang tải trang {{num}}…",
     "downloadExcel": "Tải Excel",
     "excelEmpty": "Trang tính này trống",
-    "excelLoadFailed": "Tải Excel thất bại: {{error}}"
+    "excelLoadFailed": "Tải Excel thất bại: {{error}}",
+    "downloadWord": "Tải Word",
+    "wordLoadFailed": "Tải Word thất bại: {{error}}"
   },
   "mediaHandling": {
     "videoDataIncomplete": "Dữ liệu video không đầy đủ, không thể phát",

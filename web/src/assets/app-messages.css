@@ -837,6 +837,21 @@
   box-shadow: 0 12px 36px rgba(15, 23, 42, 0.35);
 }
 
+.message-file-preview-generic {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 180px;
+  height: 120px;
+  border-radius: 12px;
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.message-file-preview-generic .file-type-icon {
+  width: 48px;
+  height: 48px;
+}
+
 .message-file-preview-pdf {
   width: 240px;
   height: 180px;

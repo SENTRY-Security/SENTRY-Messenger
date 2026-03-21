@@ -857,7 +857,9 @@
     "loadingPage": "กำลังโหลดหน้า {{num}}…",
     "downloadExcel": "ดาวน์โหลด Excel",
     "excelEmpty": "ชีตนี้ว่างเปล่า",
-    "excelLoadFailed": "โหลด Excel ล้มเหลว: {{error}}"
+    "excelLoadFailed": "โหลด Excel ล้มเหลว: {{error}}",
+    "downloadWord": "ดาวน์โหลด Word",
+    "wordLoadFailed": "โหลด Word ล้มเหลว: {{error}}"
   },
   "mediaHandling": {
     "videoDataIncomplete": "ข้อมูลวิดีโอไม่สมบูรณ์ ไม่สามารถเล่นได้",

@@ -414,7 +414,19 @@ export class MessageRenderer {
         } else {
             const generic = document.createElement('div');
             generic.className = 'message-file-preview-generic';
-            generic.textContent = t('renderer.file');
+            const ext = (media?.name || '').split('.').pop()?.toLowerCase() || '';
+            const xlsExts = ['xlsx', 'xls', 'xlsm', 'csv'];
+            const docExts = ['docx', 'doc', 'docm', 'rtf'];
+            const pptExts = ['pptx', 'ppt', 'pptm', 'odp', 'key'];
+            if (xlsExts.includes(ext)) {
+                generic.innerHTML = '<svg class="icon file-type-icon" style="color:#16a34a"><use href="#i-file-spreadsheet"/></svg>';
+            } else if (docExts.includes(ext)) {
+                generic.innerHTML = '<svg class="icon file-type-icon" style="color:#2563eb"><use href="#i-file-text"/></svg>';
+            } else if (pptExts.includes(ext)) {
+                generic.innerHTML = '<svg class="icon file-type-icon" style="color:#ea580c"><use href="#i-presentation"/></svg>';
+            } else {
+                generic.textContent = t('renderer.file');
+            }
             container.appendChild(generic);
         }
     }
