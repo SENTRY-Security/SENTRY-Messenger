@@ -210,7 +210,7 @@ export function initContactsView(options) {
             <div class="meta">${escapeHtml(metaText)}</div>
           </div>
         </div>
-        <button type="button" class="item-delete" aria-label="${t('contacts.deleteAriaLabel')}"><i class='bx bx-trash'></i></button>`;
+        <button type="button" class="item-delete" aria-label="${t('contacts.deleteAriaLabel')}"><svg class="icon"><use href="#i-trash-2"/></svg></button>`;
 
       const deleteBtn = li.querySelector('.item-delete');
       deleteBtn?.addEventListener('click', (e) => {

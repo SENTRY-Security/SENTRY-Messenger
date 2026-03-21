@@ -652,7 +652,7 @@ export class EphemeralController extends BaseController {
             </div>
           </div>
         </div>
-        <button type="button" class="item-delete" aria-label="${escapeHtml(t('ephemeral.deleteTempChat'))}"><i class='bx bx-trash'></i></button>
+        <button type="button" class="item-delete" aria-label="${escapeHtml(t('ephemeral.deleteTempChat'))}"><svg class="icon"><use href="#i-trash-2"/></svg></button>
       `;
 
       // Click → open ephemeral conversation

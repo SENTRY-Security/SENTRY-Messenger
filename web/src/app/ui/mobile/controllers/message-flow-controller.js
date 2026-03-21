@@ -1322,12 +1322,12 @@ export class MessageFlowController extends BaseController {
                 // If we have no active peer, it means "No conversation selected".
                 if (state.activePeerDigest) {
                     this.elements.messagesEmpty.innerHTML =
-                        '<i class="bx bx-message-detail" aria-hidden="true"></i>' +
+                        '<svg class="icon" aria-hidden="true"><use href="#i-message-square"/></svg>' +
                         '<p class="messages-empty-title">' + t('messages.noMessages') + '</p>' +
                         '<p class="messages-empty-hint">' + t('messages.sendFirstMessage') + '</p>';
                 } else {
                     this.elements.messagesEmpty.innerHTML =
-                        '<i class="bx bx-message-dots" aria-hidden="true"></i>' +
+                        '<svg class="icon" aria-hidden="true"><use href="#i-message-square"/></svg>' +
                         '<p class="messages-empty-title">' + t('messages.noConversationSelected') + '</p>' +
                         '<p class="messages-empty-hint">' + t('messages.selectConversationToChat') + '</p>';
                 }

@@ -199,7 +199,7 @@ function renderStorageDetailModal(detail) {
               <div style="display:flex; align-items:center; gap:8px; margin-left:auto;">
                 <span class="storage-meta" style="color:#94a3b8;font-size:12px; white-space:nowrap;">${formatBytes(entry.sizeBytes || 0)}</span>
                 <button type="button" class="storage-copy" data-idx="${idx}" aria-label="${escapeHtml(t('versionInfo.copyAriaLabel', { key: entry.key }))}" style="border:1px solid rgba(148,163,184,0.4); background:rgba(255,255,255,0.06); color:#e2e8f0; border-radius:8px; padding:6px 8px; font-size:11px; cursor:pointer; display:flex; align-items:center; gap:4px;">
-                  <i class='bx bx-copy' aria-hidden="true"></i>
+                  <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
                   <span class="sr-only">${escapeHtml(t('versionInfo.copy'))}</span>
                 </button>
               </div>

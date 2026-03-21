@@ -219,7 +219,7 @@ export function createSubscriptionModule({ deps }) {
           <div class="sub-table-block">
             <div class="sub-table-head">
               <div class="sub-table-title">${t('subscription.activationRecords')}</div>
-              <button type="button" class="ghost-btn" id="subscriptionRefreshBtn"><i class='bx bx-sync'></i> ${t('subscription.refresh')}</button>
+              <button type="button" class="ghost-btn" id="subscriptionRefreshBtn"><svg class="icon"><use href="#i-refresh-cw"/></svg> ${t('subscription.refresh')}</button>
             </div>
             <div class="sub-table" id="subscriptionCombinedTable"></div>
           </div>
@@ -326,14 +326,14 @@ export function createSubscriptionModule({ deps }) {
         wizardContent.innerHTML = `
           <div class="channel-grid">
             <button type="button" class="channel-card" data-channel="qr">
-              <div class="channel-icon"><i class='bx bx-qr-scan'></i></div>
+              <div class="channel-icon"><svg class="icon"><use href="#i-scan-line"/></svg></div>
               <div class="channel-body">
                 <div class="channel-title">${t('subscription.qrTopUp')}</div>
                 <div class="channel-sub">${t('subscription.qrTopUpDesc')}</div>
               </div>
             </button>
             <div class="channel-card disabled" data-channel="ecpay">
-              <div class="channel-icon"><i class='bx bx-credit-card'></i></div>
+              <div class="channel-icon"><svg class="icon"><use href="#i-credit-card"/></svg></div>
               <div class="channel-body">
                 <div class="channel-title">${t('subscription.ecpayTitle')}</div>
                 <div class="channel-sub">${t('subscription.ecpayDesc')}</div>
@@ -361,7 +361,7 @@ export function createSubscriptionModule({ deps }) {
             <div class="scan-actions">
               <input id="subscriptionFileInput" type="file" accept="image/*" style="display:none" />
               <button id="subscriptionUploadBtn" type="button" class="wide-btn" ${wizard.busy ? 'disabled' : ''}>
-                <i class='bx bx-upload'></i> ${t('subscription.uploadQrImage')}
+                <svg class="icon"><use href="#i-upload"/></svg> ${t('subscription.uploadQrImage')}
               </button>
               <div id="subscriptionScanStatus" class="sub-meta">${t('subscription.startingCamera')}</div>
             </div>

@@ -894,7 +894,7 @@ export class ConversationListController extends BaseController {
           ${avatarHtml}
           <div class="conversation-content">
             <div class="conversation-row conversation-row-top">
-              <span class="conversation-name"><i class='bx bx-group' style="margin-right:4px;vertical-align:middle"></i>${escapeHtml(groupName)}</span>
+              <span class="conversation-name"><svg class="icon" style="margin-right:4px;vertical-align:middle"><use href="#i-users"/></svg>${escapeHtml(groupName)}</span>
               <span class="conversation-time">${escapeHtml(timeLabel)}</span>
             </div>
             <div class="conversation-row conversation-row-bottom">
@@ -960,7 +960,7 @@ export class ConversationListController extends BaseController {
             </div>
           </div>
         </div>
-        <button type="button" class="item-delete" aria-label="${t('messages.deleteConversationAriaLabel')}"><i class='bx bx-trash'></i></button>
+        <button type="button" class="item-delete" aria-label="${t('messages.deleteConversationAriaLabel')}"><svg class="icon"><use href="#i-trash-2"/></svg></button>
       `;
 
             const deleteBtn = li.querySelector('.item-delete');

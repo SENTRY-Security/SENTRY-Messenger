@@ -583,7 +583,7 @@ function ensureOverlayElements() {
   root.innerHTML = `
     <div class="call-card" role="dialog" aria-live="assertive">
       <button type="button" class="call-minify-btn" data-call-action="minify" aria-label="${t('calls.minimizeWindow')}">
-        <i class='bx bx-chevron-down'></i>
+        <svg class="icon"><use href="#i-chevron-down"/></svg>
       </button>
       <div class="call-peer">
         <div class="call-avatar" aria-hidden="true"></div>
@@ -598,26 +598,26 @@ function ensureOverlayElements() {
         <span class="call-secure-label">${t('callEncryption.keyPending')}</span>
       </div>
       <div class="call-actions">
-        <button type="button" class="call-btn reject" data-call-action="reject"><i class='bx bx-x'></i>${t('calls.reject')}</button>
-        <button type="button" class="call-btn accept" data-call-action="accept"><i class='bx bx-phone'></i>${t('calls.accept')}</button>
-        <button type="button" class="call-btn cancel" data-call-action="cancel"><i class='bx bx-phone-off'></i>${t('calls.cancel')}</button>
+        <button type="button" class="call-btn reject" data-call-action="reject"><svg class="icon"><use href="#i-x"/></svg>${t('calls.reject')}</button>
+        <button type="button" class="call-btn accept" data-call-action="accept"><svg class="icon"><use href="#i-phone"/></svg>${t('calls.accept')}</button>
+        <button type="button" class="call-btn cancel" data-call-action="cancel"><svg class="icon"><use href="#i-phone-off"/></svg>${t('calls.cancel')}</button>
       </div>
       <div class="call-controls hidden" aria-label="${t('calls.controls')}">
         <button type="button" class="call-btn toggle" data-call-action="camera" aria-pressed="false" style="display:none">
-          <i class='bx bx-video'></i><span>${t('calls.camera')}</span>
+          <svg class="icon"><use href="#i-video"/></svg><span>${t('calls.camera')}</span>
         </button>
         <button type="button" class="call-btn toggle" data-call-action="mute" aria-pressed="false">
-          <i class='bx bx-microphone-off'></i><span>${t('calls.mute')}</span>
+          <svg class="icon"><use href="#i-mic-off"/></svg><span>${t('calls.mute')}</span>
         </button>
         <button type="button" class="call-btn hangup" data-call-action="hangup">
-          <i class='bx bx-phone-off'></i><span>${t('calls.hangup')}</span>
+          <svg class="icon"><use href="#i-phone-off"/></svg><span>${t('calls.hangup')}</span>
         </button>
         <button type="button" class="call-btn toggle" data-call-action="flip-camera" style="display:none">
-          <i class='bx bx-refresh'></i><span>${t('calls.flipCamera')}</span>
+          <svg class="icon"><use href="#i-refresh-cw"/></svg><span>${t('calls.flipCamera')}</span>
         </button>
       </div>
       <button type="button" class="call-blur-mode-btn" data-call-action="blur-mode" data-blur-mode="face">
-        <i class='bx bx-face'></i><span>${t('calls.faceBlur')}</span>
+        <svg class="icon"><use href="#i-smile"/></svg><span>${t('calls.faceBlur')}</span>
       </button>
       <audio id="callRemoteAudio" autoplay playsinline style="display:none"></audio>
       <video class="call-remote-video" autoplay playsinline muted style="display:none"></video>
@@ -946,9 +946,9 @@ export function initCallOverlay({ showToast }) {
 
   const BLUR_MODE_CYCLE = [BLUR_MODE.FACE, BLUR_MODE.BACKGROUND, BLUR_MODE.OFF];
   function getBlurModeUi() { return {
-    [BLUR_MODE.FACE]:       { icon: 'bx-face',  label: t('calls.faceBlur') },
-    [BLUR_MODE.BACKGROUND]: { icon: 'bx-image',  label: t('calls.backgroundBlur') },
-    [BLUR_MODE.OFF]:        { icon: 'bx-show',   label: t('calls.blurOff') }
+    [BLUR_MODE.FACE]:       { icon: 'smile',  label: t('calls.faceBlur') },
+    [BLUR_MODE.BACKGROUND]: { icon: 'image',   label: t('calls.backgroundBlur') },
+    [BLUR_MODE.OFF]:        { icon: 'eye',     label: t('calls.blurOff') }
   }; }
 
   function syncBlurModeBtn() {
@@ -956,9 +956,9 @@ export function initCallOverlay({ showToast }) {
     const mode = getFaceBlurMode();
     const info = getBlurModeUi()[mode] || getBlurModeUi()[BLUR_MODE.FACE];
     ui.blurModeBtn.setAttribute('data-blur-mode', mode);
-    const icon = ui.blurModeBtn.querySelector('i');
+    const icon = ui.blurModeBtn.querySelector('svg.icon use, svg use');
     const span = ui.blurModeBtn.querySelector('span');
-    if (icon) icon.className = 'bx ' + info.icon;
+    if (icon) icon.setAttribute('href', '#i-' + info.icon);
     if (span) span.textContent = info.label;
   }
 
@@ -1447,7 +1447,7 @@ export function initCallOverlay({ showToast }) {
 
       // Incoming video call: change accept button text
       if (ui.acceptBtn && incoming) {
-        ui.acceptBtn.innerHTML = `<i class='bx bx-video'></i>${t('calls.acceptVideoCall')}`;
+        ui.acceptBtn.innerHTML = `<svg class="icon"><use href="#i-video"/></svg>${t('calls.acceptVideoCall')}`;
       }
     } else {
       // Reset video elements when not video
@@ -1462,7 +1462,7 @@ export function initCallOverlay({ showToast }) {
       if (ui.blurModeBtn) ui.blurModeBtn.style.display = 'none';
       // Reset accept button for voice
       if (ui.acceptBtn && incoming) {
-        ui.acceptBtn.innerHTML = `<i class='bx bx-phone'></i>${t('calls.accept')}`;
+        ui.acceptBtn.innerHTML = `<svg class="icon"><use href="#i-phone"/></svg>${t('calls.accept')}`;
       }
     }
   }

@@ -1250,7 +1250,7 @@ function initSafeBrowser() {
                 allowfullscreen="true"></iframe>
         <button type="button" class="safe-exit-btn" id="safeExitBtn"
                 aria-label="${t('viewer.close')}">
-          <i class='bx bx-x'></i>
+          <svg class="icon"><use href="#i-x"/></svg>
         </button>
       </div>`;
 
@@ -3089,7 +3089,7 @@ function showFatalErrorModal(message = t('errors.connectionError')) {
 
     // Icon
     const icon = document.createElement('div');
-    icon.innerHTML = `<i class='bx bx-error-circle' style='font-size: 48px; color: #ef4444;'></i>`;
+    icon.innerHTML = `<svg class="icon" style='width: 48px; height: 48px; color: #ef4444;'><use href="#i-circle-alert"/></svg>`;
 
     // Title
     const title = document.createElement('div');
