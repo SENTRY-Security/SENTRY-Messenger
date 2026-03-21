@@ -442,6 +442,15 @@
     "sentryLab": "SENTRY Lab",
     "sentryLabDesc": "启用实验性功能，可能不稳定或随时变更。"
   },
+  "safe": {
+    "description": "安全应用前端环境",
+    "serverUrl": "浏览器服务器 URL",
+    "connect": "连接",
+    "connecting": "正在连接至浏览器...",
+    "retry": "重试",
+    "setupGuide": "设置指南",
+    "setupEndpoint": "然后在上方输入服务器地址。"
+  },
   "password": {
     "title": "更改密码",
     "currentPassword": "当前密码",

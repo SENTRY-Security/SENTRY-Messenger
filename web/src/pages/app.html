@@ -684,11 +684,68 @@
       </div>
     </section>
     <section id="tab-safe" class="tab" style="display:none">
-      <div class="card" style="text-align:center;padding:48px 24px;">
-        <i class='bx bx-mobile-alt' style="font-size:64px;color:var(--muted);"></i>
-        <h2 style="margin:16px 0 8px;">SAFE ™</h2>
-        <p style="color:var(--muted);">Secure Android Frontend Environment</p>
-        <p style="color:var(--muted);font-size:13px;margin-top:8px;">Coming soon — your personal virtual Android instance.</p>
+      <!-- SAFE: Secure Application Frontend Environment -->
+
+      <!-- State: Disconnected / Setup -->
+      <div id="safe-setup" class="card" style="text-align:center;padding:32px 24px;">
+        <i class='bx bx-globe' style="font-size:48px;color:var(--accent);"></i>
+        <h2 style="margin:12px 0 8px;">SAFE</h2>
+        <p style="color:var(--muted);font-size:13px;margin-bottom:16px;" data-i18n="safe.description">Secure Application Frontend Environment</p>
+
+        <div style="display:flex;flex-direction:column;gap:12px;max-width:360px;margin:0 auto;">
+          <label style="text-align:left;font-size:13px;color:var(--muted);" data-i18n="safe.serverUrl">Browser Server URL</label>
+          <input id="safe-endpoint" type="url" placeholder="wss://your-neko-server:6901/websockify"
+                 style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-input);color:var(--fg);font-size:14px;" />
+
+          <div style="display:flex;gap:8px;">
+            <input id="safe-password" type="password" placeholder="Password"
+                   style="flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-input);color:var(--fg);font-size:14px;" />
+          </div>
+
+          <button id="safe-connect-btn" type="button" class="primary"
+                  style="padding:12px;border-radius:8px;font-size:14px;font-weight:600;">
+            <i class='bx bx-link'></i>
+            <span data-i18n="safe.connect">Connect</span>
+          </button>
+
+          <details style="text-align:left;margin-top:8px;">
+            <summary style="font-size:12px;color:var(--muted);cursor:pointer;" data-i18n="safe.setupGuide">Setup Guide</summary>
+            <div style="font-size:12px;color:var(--muted);margin-top:8px;line-height:1.6;">
+              <p><strong>Docker (local/VPS):</strong></p>
+              <code style="display:block;background:var(--bg-input);padding:8px;border-radius:4px;margin:4px 0;font-size:11px;word-break:break-all;white-space:pre-wrap;">docker run --rm --shm-size=512m -p 6901:6901 -e VNC_PW=password kasmweb/chromium:1.18.0</code>
+              <p style="margin-top:6px;" data-i18n="safe.setupEndpoint">Then enter: <code>wss://your-server:6901/websockify</code></p>
+            </div>
+          </details>
+        </div>
+      </div>
+
+      <!-- State: Connecting -->
+      <div id="safe-connecting" style="display:none;text-align:center;padding:48px 24px;">
+        <div class="spinner" style="margin:0 auto 16px;"></div>
+        <p style="color:var(--muted);" data-i18n="safe.connecting">Connecting to browser...</p>
+      </div>
+
+      <!-- State: Connected — iframe / canvas viewer -->
+      <div id="safe-browser" style="display:none;position:relative;width:100%;height:100%;">
+        <div id="safe-toolbar" style="display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--bg-card);border-bottom:1px solid var(--border);">
+          <button id="safe-btn-back" type="button" class="icon-btn" title="Back"><i class='bx bx-arrow-back'></i></button>
+          <button id="safe-btn-home" type="button" class="icon-btn" title="Home"><i class='bx bx-home'></i></button>
+          <button id="safe-btn-refresh" type="button" class="icon-btn" title="Refresh"><i class='bx bx-refresh'></i></button>
+          <span id="safe-status" style="flex:1;font-size:12px;color:var(--muted);text-align:center;"></span>
+          <button id="safe-btn-fullscreen" type="button" class="icon-btn" title="Fullscreen"><i class='bx bx-fullscreen'></i></button>
+          <button id="safe-btn-disconnect" type="button" class="icon-btn" title="Disconnect" style="color:var(--danger);"><i class='bx bx-x'></i></button>
+        </div>
+        <iframe id="safe-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                allow="fullscreen *; clipboard-read; clipboard-write"
+                style="width:100%;border:none;background:#1a1a2e;"
+                allowfullscreen="true"></iframe>
+      </div>
+
+      <!-- State: Error -->
+      <div id="safe-error" style="display:none;text-align:center;padding:48px 24px;">
+        <i class='bx bx-error-circle' style="font-size:48px;color:var(--danger);"></i>
+        <p id="safe-error-msg" style="color:var(--danger);margin:12px 0;"></p>
+        <button id="safe-retry-btn" type="button" class="secondary" data-i18n="safe.retry">Retry</button>
       </div>
     </section>
     <section id="tab-profile" class="tab">

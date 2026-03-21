@@ -1,0 +1,5 @@
+{
+  "name": "safe-browser-worker",
+  "private": true,
+  "type": "module"
+}

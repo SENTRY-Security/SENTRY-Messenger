@@ -440,6 +440,15 @@
     "sentryLab": "SENTRY Lab",
     "sentryLabDesc": "Bật các tính năng thử nghiệm, có thể không ổn định hoặc thay đổi bất cứ lúc nào."
   },
+  "safe": {
+    "description": "Môi trường giao diện ứng dụng bảo mật",
+    "serverUrl": "URL máy chủ trình duyệt",
+    "connect": "Kết nối",
+    "connecting": "Đang kết nối tới trình duyệt...",
+    "retry": "Thử lại",
+    "setupGuide": "Hướng dẫn cài đặt",
+    "setupEndpoint": "Sau đó nhập địa chỉ máy chủ ở trên."
+  },
   "password": {
     "title": "Đổi mật khẩu",
     "currentPassword": "Mật khẩu hiện tại",

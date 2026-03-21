@@ -440,6 +440,15 @@
     "sentryLab": "SENTRY Lab",
     "sentryLabDesc": "실험적 기능을 활성화합니다. 불안정하거나 변경될 수 있습니다."
   },
+  "safe": {
+    "description": "보안 애플리케이션 프론트엔드 환경",
+    "serverUrl": "브라우저 서버 URL",
+    "connect": "연결",
+    "connecting": "브라우저에 연결 중...",
+    "retry": "재시도",
+    "setupGuide": "설정 가이드",
+    "setupEndpoint": "위에 서버 주소를 입력하세요."
+  },
   "password": {
     "title": "비밀번호 변경",
     "currentPassword": "현재 비밀번호",

@@ -1,0 +1,37 @@
+# ── SAFE Browser Worker ──────────────────────────────────────────
+# Runs KasmVNC Chromium inside a CF Container, proxied via Worker.
+# Each Durable Object instance manages one browser container session.
+
+name = "safe-browser"
+main = "src/index.js"
+compatibility_date = "2025-09-17"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+# Comma-separated origins allowed for CORS / WebSocket upgrade
+CORS_ORIGINS = "https://message.sentry.red"
+# Default container idle timeout (ms) before sleep — 10 min
+CONTAINER_IDLE_MS = "600000"
+
+# Durable Object: one per browser session
+[durable_objects]
+bindings = [
+  { name = "BROWSER_SESSION", class_name = "BrowserSession" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["BrowserSession"]
+
+# ── UAT Environment ──────────────────────────────────────────────
+[env.uat]
+name = "safe-browser-uat"
+
+[env.uat.vars]
+CORS_ORIGINS = "https://uat-message.sentry.red"
+CONTAINER_IDLE_MS = "600000"
+
+[env.uat.durable_objects]
+bindings = [
+  { name = "BROWSER_SESSION", class_name = "BrowserSession" }
+]

@@ -8,6 +8,7 @@ import { log, logCapped, logForensicsEvent, setLogSink } from '../core/log.js';
 
 console.info('[App] Version: 2026-01-14T10:55:00Z (Round 11 Fix + Debug)');
 import { AUDIO_PERMISSION_KEY } from './login-ui.js';
+import * as safeBrowser from '../features/safe-browser.js';
 import { DEBUG } from './mobile/debug-flags.js';
 import { flushOutbox } from '../features/queue/outbox.js';
 import { setMessagesWsSender } from '../features/messages-support/ws-sender-adapter.js';
@@ -1135,10 +1136,145 @@ function setSafeTabVisible(visible) {
   if (visible && !tabs.includes('safe')) {
     tabs.push('safe');
     btn?.addEventListener('click', () => switchTab('safe'));
+    initSafeBrowser();
   } else if (!visible && tabs.includes('safe')) {
     tabs.splice(tabs.indexOf('safe'), 1);
     if (currentTab === 'safe') switchTab('drive');
+    safeBrowser.disconnect();
   }
+}
+
+// ── SAFE Browser integration ─────────────────────────────────────
+let _safeInitialized = false;
+
+function initSafeBrowser() {
+  if (_safeInitialized) return;
+  _safeInitialized = true;
+
+  const setupEl = document.getElementById('safe-setup');
+  const connectingEl = document.getElementById('safe-connecting');
+  const browserEl = document.getElementById('safe-browser');
+  const errorEl = document.getElementById('safe-error');
+  const iframe = document.getElementById('safe-iframe');
+
+  const endpointInput = document.getElementById('safe-endpoint');
+  const passwordInput = document.getElementById('safe-password');
+  const connectBtn = document.getElementById('safe-connect-btn');
+  const retryBtn = document.getElementById('safe-retry-btn');
+  const errorMsg = document.getElementById('safe-error-msg');
+  const statusSpan = document.getElementById('safe-status');
+
+  // Toolbar buttons
+  const btnDisconnect = document.getElementById('safe-btn-disconnect');
+  const btnFullscreen = document.getElementById('safe-btn-fullscreen');
+  const btnRefresh = document.getElementById('safe-btn-refresh');
+
+  // Restore saved endpoint
+  const saved = safeBrowser.getSavedEndpoint();
+  const savedPw = safeBrowser.getSavedPassword();
+  if (saved && endpointInput) endpointInput.value = saved;
+  if (savedPw && passwordInput) passwordInput.value = savedPw;
+
+  function showPanel(name) {
+    if (setupEl) setupEl.style.display = name === 'setup' ? '' : 'none';
+    if (connectingEl) connectingEl.style.display = name === 'connecting' ? '' : 'none';
+    if (browserEl) browserEl.style.display = name === 'browser' ? '' : 'none';
+    if (errorEl) errorEl.style.display = name === 'error' ? '' : 'none';
+  }
+
+  function resizeIframe() {
+    if (!iframe || !browserEl) return;
+    const toolbar = document.getElementById('safe-toolbar');
+    const toolbarH = toolbar ? toolbar.offsetHeight : 42;
+    const available = browserEl.offsetHeight || (window.innerHeight - 120);
+    iframe.style.height = (available - toolbarH) + 'px';
+  }
+
+  // State machine
+  safeBrowser.onStateChange((state, detail) => {
+    switch (state) {
+      case 'disconnected':
+        showPanel('setup');
+        if (iframe) iframe.src = 'about:blank';
+        break;
+
+      case 'connecting': {
+        showPanel('connecting');
+        if (iframe && detail?.iframeUrl) {
+          iframe.src = detail.iframeUrl;
+          iframe.onload = () => {
+            safeBrowser.markConnected();
+          };
+          iframe.onerror = () => {
+            safeBrowser.markError('Failed to load browser');
+          };
+          // Fallback: if iframe doesn't fire onload within 15s, mark connected anyway
+          // (cross-origin iframes may not fire load events reliably)
+          setTimeout(() => {
+            if (safeBrowser.getState() === 'connecting') {
+              safeBrowser.markConnected();
+            }
+          }, 15000);
+        }
+        break;
+      }
+
+      case 'connected':
+        showPanel('browser');
+        if (statusSpan) statusSpan.textContent = 'Connected';
+        resizeIframe();
+        break;
+
+      case 'error':
+        showPanel('error');
+        if (errorMsg) errorMsg.textContent = detail?.message || 'Connection error';
+        break;
+    }
+  });
+
+  // Connect button
+  connectBtn?.addEventListener('click', () => {
+    const ep = endpointInput?.value?.trim();
+    const pw = passwordInput?.value || '';
+    if (!ep) {
+      if (endpointInput) { endpointInput.focus(); endpointInput.style.borderColor = 'var(--danger)'; }
+      return;
+    }
+    if (endpointInput) endpointInput.style.borderColor = '';
+    safeBrowser.connect(ep, pw);
+  });
+
+  // Enter key to connect
+  endpointInput?.addEventListener('keydown', (e) => { if (e.key === 'Enter') connectBtn?.click(); });
+  passwordInput?.addEventListener('keydown', (e) => { if (e.key === 'Enter') connectBtn?.click(); });
+
+  // Retry button
+  retryBtn?.addEventListener('click', () => safeBrowser.reconnect());
+
+  // Disconnect button
+  btnDisconnect?.addEventListener('click', () => safeBrowser.disconnect());
+
+  // Fullscreen
+  btnFullscreen?.addEventListener('click', () => {
+    if (iframe) {
+      if (iframe.requestFullscreen) iframe.requestFullscreen();
+      else if (iframe.webkitRequestFullscreen) iframe.webkitRequestFullscreen();
+    }
+  });
+
+  // Refresh
+  btnRefresh?.addEventListener('click', () => {
+    if (iframe && iframe.src && iframe.src !== 'about:blank') {
+      const src = iframe.src;
+      iframe.src = 'about:blank';
+      setTimeout(() => { iframe.src = src; }, 100);
+    }
+  });
+
+  // Resize on window resize
+  window.addEventListener('resize', resizeIframe);
+
+  showPanel('setup');
 }
 let _restoreContactsBars = null;
 function switchTab(name, options = {}) {
@@ -1157,6 +1293,20 @@ function switchTab(name, options = {}) {
 
   if (name === 'drive') {
     drivePane.refreshDriveList().catch((err) => log({ driveListError: String(err?.message || err) }));
+  }
+
+  // Resize SAFE iframe when switching to/from the tab
+  if (name === 'safe') {
+    const iframe = document.getElementById('safe-iframe');
+    const browserEl = document.getElementById('safe-browser');
+    if (iframe && browserEl && safeBrowser.getState() === 'connected') {
+      requestAnimationFrame(() => {
+        const toolbar = document.getElementById('safe-toolbar');
+        const toolbarH = toolbar ? toolbar.offsetHeight : 42;
+        const available = browserEl.offsetHeight || (window.innerHeight - 120);
+        iframe.style.height = (available - toolbarH) + 'px';
+      });
+    }
   }
 
   if (name === 'messages') {
