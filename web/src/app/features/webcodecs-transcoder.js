@@ -267,8 +267,14 @@ function buildMultiSampleMoofMdat(trackId, sequenceNumber, samples, baseDecodeTi
   wFullBoxHdr(TFDT_SIZE, 'tfdt', 0);
   w32(baseDecodeTime >>> 0);
 
-  // trun (flags: data_offset | duration | size | flags | cts_offset = 0xF01)
-  wFullBoxHdr(TRUN_SIZE, 'trun', 0xF01);
+  // trun version 1: signed sample_composition_time_offset (required for
+  // B-frame videos where ctsOffset = PTS − DTS can be negative).
+  // flags: data_offset(0x1) | duration(0x100) | size(0x200) | flags(0x400) | cts(0x800) = 0xF01
+  w32(TRUN_SIZE); wStr('trun');
+  dv.setUint8(p, 1); p++;              // version = 1 (signed cts)
+  dv.setUint8(p, 0); p++;              // flags byte 0
+  dv.setUint8(p, 0x0F); p++;           // flags byte 1
+  dv.setUint8(p, 0x01); p++;           // flags byte 2 → 0x000F01
   w32(sampleCount);
   dv.setInt32(p, MOOF_SIZE + 8); p += 4; // data_offset = moof_size + mdat_header(8)
   for (let i = 0; i < sampleCount; i++) {
@@ -276,7 +282,7 @@ function buildMultiSampleMoofMdat(trackId, sequenceNumber, samples, baseDecodeTi
     w32(s.duration);
     w32(s.data.byteLength);
     w32(s.isSync ? (1 << 25) : (1 << 16));
-    w32(s.ctsOffset >>> 0);
+    dv.setInt32(p, s.ctsOffset); p += 4;  // SIGNED for version 1
   }
 
   // ── mdat ──
@@ -666,8 +672,10 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
 
   // Manual segment builder state
   let segSequenceNum = 0;          // moof sequence number (incrementing)
-  let videoFirstDts = null;        // first video DTS (for baseMediaDecodeTime)
-  let audioFirstDts = null;        // first audio DTS
+  let videoFirstPts = null;        // first video PTS (for PTS normalization)
+  let audioFirstPts = null;        // first audio PTS
+  let videoRunningDts = 0;         // monotonically increasing video DTS
+  let audioRunningDts = 0;         // monotonically increasing audio DTS
   const pendingVideoSamples = [];  // accumulated video samples for multi-sample moof
   const pendingAudioSamples = [];  // accumulated audio samples for multi-sample moof
   let samplesInPendingSegment = 0;
@@ -1109,31 +1117,16 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
   }
 
   /**
-   * Sort samples by baseDecodeTime and adjust durations so each sample's end
-   * exactly meets the next sample's start.
-   *
-   * Sorting is critical because the WebCodecs VideoEncoder may output chunks
-   * in a different order than the input frames' presentation timestamps —
-   * especially when the browser's hardware encoder uses B-frame reordering
-   * or internal buffering (even if Baseline profile was requested).  Without
-   * sorting, the multi-sample moof would have non-monotonic decode times,
-   * causing the browser to display frames out of order (the "forward a few
-   * frames, then jump back" stuttering pattern).
-   */
-  function normalizeSamples(samples) {
-    if (samples.length <= 1) return;
-    samples.sort((a, b) => a.baseDecodeTime - b.baseDecodeTime);
-    for (let i = 0; i < samples.length - 1; i++) {
-      const gap = samples[i + 1].baseDecodeTime - samples[i].baseDecodeTime;
-      if (gap > 0) samples[i].duration = gap;
-    }
-  }
-
-  /**
    * Flush accumulated per-track samples into multi-sample moof+mdat segments.
    * Produces at most 2 moofs per flush (one video, one audio) instead of
    * N per-sample moofs. This prevents iOS Safari from reporting fragmented
    * buffer ranges in video.buffered.
+   *
+   * Samples are kept in encoder output order (= DTS / decode order).
+   * DO NOT sort by PTS — that would reorder encoded data and break decode
+   * dependencies (B-frames must be decoded after their reference P-frames).
+   * Instead, each sample carries a ctsOffset (= PTS − DTS) so the browser
+   * knows when to DISPLAY vs when to DECODE each frame.
    */
   function flushPendingFragments() {
     if (pendingVideoSamples.length === 0 && pendingAudioSamples.length === 0) return;
@@ -1141,7 +1134,6 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
     const fragments = [];
 
     if (pendingVideoSamples.length > 0) {
-      normalizeSamples(pendingVideoSamples);
       const baseDts = pendingVideoSamples[0].baseDecodeTime;
       const frag = buildMultiSampleMoofMdat(incMuxVideoTrackId, ++segSequenceNum, pendingVideoSamples, baseDts);
       if (frag) fragments.push(frag);
@@ -1149,7 +1141,6 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
     }
 
     if (pendingAudioSamples.length > 0) {
-      normalizeSamples(pendingAudioSamples);
       const baseDts = pendingAudioSamples[0].baseDecodeTime;
       const frag = buildMultiSampleMoofMdat(incMuxAudioTrackId, ++segSequenceNum, pendingAudioSamples, baseDts);
       if (frag) fragments.push(frag);
@@ -1166,14 +1157,23 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
   function feedVideoToIncMuxer(frame) {
     if (!frame?.data) return;
     const sampleData = frame.data instanceof Uint8Array ? frame.data : new Uint8Array(frame.data);
-    const ts = Math.round((frame.timestamp / 1_000_000) * 90000);
-    const dur = Math.round((frame.duration / 1_000_000) * 90000);
-    if (videoFirstDts === null) videoFirstDts = ts;
-    const baseDecodeTime = ts - videoFirstDts;
+    const pts = Math.round((frame.timestamp / 1_000_000) * 90000);
+    const dur = Math.round((frame.duration / 1_000_000) * 90000) || 3000;
+    if (videoFirstPts === null) videoFirstPts = pts;
+    const normalizedPts = pts - videoFirstPts;
+
+    // DTS is monotonically increasing in encoder output order.
+    // Encoder output order IS decode order — the browser must decode
+    // frames in this order (P-frames before their dependent B-frames).
+    // ctsOffset tells the browser when to DISPLAY each frame (PTS)
+    // relative to when it's decoded (DTS).
+    const dts = videoRunningDts;
+    videoRunningDts += dur;
+    const ctsOffset = normalizedPts - dts;
 
     pendingVideoSamples.push({
-      data: sampleData, baseDecodeTime,
-      duration: dur || 3000, isSync: !!frame.key, ctsOffset: 0
+      data: sampleData, baseDecodeTime: dts,
+      duration: dur, isSync: !!frame.key, ctsOffset
     });
     samplesInPendingSegment++;
     if (samplesInPendingSegment >= SAMPLES_PER_SEGMENT) {
@@ -1185,14 +1185,18 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
     if (!frame?.data) return;
     const sampleData = frame.data instanceof Uint8Array ? frame.data : new Uint8Array(frame.data);
     const audioTimescale = audioTrack?.audio?.sample_rate || 44100;
-    const ts = Math.round((frame.timestamp / 1_000_000) * audioTimescale);
-    const dur = Math.round((frame.duration / 1_000_000) * audioTimescale);
-    if (audioFirstDts === null) audioFirstDts = ts;
-    const baseDecodeTime = ts - audioFirstDts;
+    const pts = Math.round((frame.timestamp / 1_000_000) * audioTimescale);
+    const dur = Math.round((frame.duration / 1_000_000) * audioTimescale) || 1024;
+    if (audioFirstPts === null) audioFirstPts = pts;
+    const normalizedPts = pts - audioFirstPts;
+
+    const dts = audioRunningDts;
+    audioRunningDts += dur;
+    const ctsOffset = normalizedPts - dts;
 
     pendingAudioSamples.push({
-      data: sampleData, baseDecodeTime,
-      duration: dur || 1024, isSync: frame.key !== false, ctsOffset: 0
+      data: sampleData, baseDecodeTime: dts,
+      duration: dur, isSync: frame.key !== false, ctsOffset
     });
     samplesInPendingSegment++;
     if (samplesInPendingSegment >= SAMPLES_PER_SEGMENT) {
