@@ -48,6 +48,10 @@ export async function getPdfJsLibrary() {
   return getPdfJs();
 }
 
+// ── Constants ──
+const MAX_ALIVE_PAGES = 7; // max canvas elements kept in memory
+const BASE_RENDER_SCALE = Math.max(2, window.devicePixelRatio || 2);
+
 export async function renderPdfViewer({ url, name, modalApi }) {
   const { openModal, closeModal, showConfirmModal } = modalApi || {};
   let pdfjsLib;
@@ -89,34 +93,32 @@ export async function renderPdfViewer({ url, name, modalApi }) {
   const stage = body.querySelector('#pdfStage');
 
   let pdfDoc = null;
-  const pageCanvases = [];
-  const gestureCleanups = [];
+  const pages = []; // { wrap, canvas, rendered, rendering, pageNum, alive, currentRenderScale, gestureCleanup, zoom }
+  const aliveQueue = []; // pageNum order of alive canvases (LRU)
 
   const cleanupCore = () => {
-    for (const fn of gestureCleanups) { try { fn(); } catch {} }
-    gestureCleanups.length = 0;
+    for (const p of pages) {
+      if (p.gestureCleanup) { try { p.gestureCleanup(); } catch {} }
+      evictPage(p);
+    }
     try { pdfDoc?.cleanup?.(); pdfDoc?.destroy?.(); } catch {}
     modalEl.classList.remove('pdf-modal');
   };
 
-  // Determine pixel render scale: enough resolution for crisp display
-  const BASE_RENDER_SCALE = Math.max(2, window.devicePixelRatio || 2);
-
-  // Detect content bounding box by scanning pixels; skip near-white margins
+  // ── Content-aware crop ──
   const detectContentBounds = (canvas) => {
     const ctx = canvas.getContext('2d');
     const w = canvas.width;
     const h = canvas.height;
     if (!w || !h) return null;
-    // Sample at reduced resolution for speed
     const sample = Math.max(1, Math.floor(Math.min(w, h) / 400));
     const data = ctx.getImageData(0, 0, w, h).data;
-    const THRESHOLD = 245; // pixels brighter than this are "white"
+    const THR = 245;
     let top = h, bottom = 0, left = w, right = 0;
     for (let y = 0; y < h; y += sample) {
       for (let x = 0; x < w; x += sample) {
         const i = (y * w + x) * 4;
-        if (data[i] < THRESHOLD || data[i + 1] < THRESHOLD || data[i + 2] < THRESHOLD) {
+        if (data[i] < THR || data[i + 1] < THR || data[i + 2] < THR) {
           if (y < top) top = y;
           if (y > bottom) bottom = y;
           if (x < left) left = x;
@@ -125,7 +127,6 @@ export async function renderPdfViewer({ url, name, modalApi }) {
       }
     }
     if (bottom <= top || right <= left) return null;
-    // Add small padding (1% of dimension)
     const padX = Math.round(w * 0.01);
     const padY = Math.round(h * 0.01);
     return {
@@ -136,7 +137,6 @@ export async function renderPdfViewer({ url, name, modalApi }) {
     };
   };
 
-  // Crop canvas to given bounds in-place
   const cropCanvas = (canvas, bounds) => {
     const ctx = canvas.getContext('2d');
     const imageData = ctx.getImageData(bounds.x, bounds.y, bounds.w, bounds.h);
@@ -145,25 +145,78 @@ export async function renderPdfViewer({ url, name, modalApi }) {
     ctx.putImageData(imageData, 0, 0);
   };
 
-  // Render a page; detect content bounds, crop whitespace, CSS 100% fit
+  // ── Memory management ──
+  const evictPage = (entry) => {
+    if (!entry.alive) return;
+    // Release canvas memory
+    if (entry.canvas) {
+      entry.canvas.width = 0;
+      entry.canvas.height = 0;
+      entry.canvas.style.transform = '';
+      entry.canvas.remove();
+    }
+    entry.canvas = null;
+    entry.alive = false;
+    entry.rendered = false;
+    entry.rendering = false;
+    entry.currentRenderScale = 0;
+    // Reset zoom state
+    if (entry.zoom) {
+      try { entry.zoom.reset(); } catch {}
+    }
+    const idx = aliveQueue.indexOf(entry.pageNum);
+    if (idx !== -1) aliveQueue.splice(idx, 1);
+  };
+
+  const ensureAliveSlot = () => {
+    while (aliveQueue.length >= MAX_ALIVE_PAGES) {
+      const oldestNum = aliveQueue.shift();
+      const old = pages[oldestNum - 1];
+      if (old) evictPage(old);
+    }
+  };
+
+  const ensureCanvas = (entry) => {
+    if (entry.canvas && entry.alive) {
+      // Move to end of LRU
+      const idx = aliveQueue.indexOf(entry.pageNum);
+      if (idx !== -1) aliveQueue.splice(idx, 1);
+      aliveQueue.push(entry.pageNum);
+      return entry.canvas;
+    }
+    ensureAliveSlot();
+    const canvas = document.createElement('canvas');
+    canvas.className = 'pdf-canvas';
+    entry.wrap.appendChild(canvas);
+    entry.canvas = canvas;
+    entry.alive = true;
+    entry.rendered = false;
+    entry.currentRenderScale = 0;
+    aliveQueue.push(entry.pageNum);
+    // Re-attach gesture to new canvas
+    if (entry.gestureCleanup) { try { entry.gestureCleanup(); } catch {} }
+    attachPageGesture(entry);
+    return canvas;
+  };
+
+  // ── Render ──
   const renderPageAt = async (entry, renderScale) => {
     if (entry.rendering) return;
     entry.rendering = true;
     try {
+      const canvas = ensureCanvas(entry);
       const page = await pdfDoc.getPage(entry.pageNum);
       const hiresViewport = page.getViewport({ scale: renderScale });
-      const canvas = entry.canvas;
       const ctx = canvas.getContext('2d');
-      // Render full page to pixel buffer
       canvas.width = hiresViewport.width;
       canvas.height = hiresViewport.height;
       await page.render({ canvasContext: ctx, viewport: hiresViewport }).promise;
-      // Detect and crop whitespace margins
+      // Crop whitespace
       const bounds = detectContentBounds(canvas);
       if (bounds && (bounds.w < canvas.width * 0.95 || bounds.h < canvas.height * 0.95)) {
         cropCanvas(canvas, bounds);
       }
-      // Set aspect-ratio on wrap so height matches cropped content proportions
+      // Update wrap aspect-ratio from cropped content
       const aspect = canvas.width / canvas.height;
       entry.wrap.style.aspectRatio = `${aspect}`;
       entry.rendered = true;
@@ -174,13 +227,13 @@ export async function renderPdfViewer({ url, name, modalApi }) {
     entry.rendering = false;
   };
 
-  // Initial render at base scale
   const renderPageCanvas = (entry) => renderPageAt(entry, BASE_RENDER_SCALE);
 
   // ── Per-page pinch-zoom + pan ──
   const attachPageGesture = (entry) => {
     const wrap = entry.wrap;
     const canvas = entry.canvas;
+    if (!canvas) return;
     let zoom = 1, tx = 0, ty = 0;
     const activePointers = new Map();
     let pinchStartDist = null, pinchStartZoom = 1;
@@ -190,35 +243,37 @@ export async function renderPdfViewer({ url, name, modalApi }) {
     let hiresTimer = null;
 
     const applyTransform = () => {
-      canvas.style.transform = `translate(${tx}px, ${ty}px) scale(${zoom})`;
-      canvas.style.transformOrigin = '0 0';
+      if (!entry.canvas) return;
+      entry.canvas.style.transform = `translate(${tx}px, ${ty}px) scale(${zoom})`;
+      entry.canvas.style.transformOrigin = '0 0';
       wrap.style.touchAction = zoom > 1.01 ? 'none' : 'pan-y';
     };
 
     const clampPan = () => {
-      if (zoom <= 1) { tx = 0; ty = 0; return; }
-      const w = canvas.offsetWidth * zoom;
-      const h = canvas.offsetHeight * zoom;
+      if (zoom <= 1 || !entry.canvas) { tx = 0; ty = 0; return; }
+      const w = entry.canvas.offsetWidth * zoom;
+      const h = entry.canvas.offsetHeight * zoom;
       const ww = wrap.clientWidth;
       const wh = wrap.clientHeight;
       tx = Math.max(Math.min(0, ww - w), Math.min(0, tx));
       ty = Math.max(Math.min(0, wh - h), Math.min(0, ty));
     };
 
-    // Re-render at higher resolution for sharp zoom
     const scheduleHiresRender = () => {
       if (hiresTimer) clearTimeout(hiresTimer);
       if (zoom <= 1.05) return;
       hiresTimer = setTimeout(async () => {
         hiresTimer = null;
+        if (!entry.canvas) return;
         const renderScale = Math.min(BASE_RENDER_SCALE * 5, BASE_RENDER_SCALE * zoom);
         if (entry.currentRenderScale && Math.abs(entry.currentRenderScale - renderScale) < 0.1) return;
-        const panRatioX = canvas.offsetWidth > 0 ? tx / (canvas.offsetWidth * zoom) : 0;
-        const panRatioY = canvas.offsetHeight > 0 ? ty / (canvas.offsetHeight * zoom) : 0;
+        const panRatioX = entry.canvas.offsetWidth > 0 ? tx / (entry.canvas.offsetWidth * zoom) : 0;
+        const panRatioY = entry.canvas.offsetHeight > 0 ? ty / (entry.canvas.offsetHeight * zoom) : 0;
         entry.rendered = false;
         await renderPageAt(entry, renderScale);
-        tx = panRatioX * canvas.offsetWidth * zoom;
-        ty = panRatioY * canvas.offsetHeight * zoom;
+        if (!entry.canvas) return;
+        tx = panRatioX * entry.canvas.offsetWidth * zoom;
+        ty = panRatioY * entry.canvas.offsetHeight * zoom;
         clampPan();
         applyTransform();
       }, 250);
@@ -228,7 +283,6 @@ export async function renderPdfViewer({ url, name, modalApi }) {
       if (hiresTimer) { clearTimeout(hiresTimer); hiresTimer = null; }
       zoom = 1; tx = 0; ty = 0;
       applyTransform();
-      // Downgrade back to base resolution to free memory
       if (entry.currentRenderScale && entry.currentRenderScale > BASE_RENDER_SCALE + 0.1) {
         entry.rendered = false;
         renderPageAt(entry, BASE_RENDER_SCALE);
@@ -250,6 +304,7 @@ export async function renderPdfViewer({ url, name, modalApi }) {
     };
 
     const onDown = (e) => {
+      if (!entry.canvas) return;
       wrap.setPointerCapture(e.pointerId);
       activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (activePointers.size === 2) {
@@ -337,98 +392,107 @@ export async function renderPdfViewer({ url, name, modalApi }) {
     wrap.addEventListener('pointercancel', onUp);
 
     entry.zoom = { reset: resetZoom, getZoom: () => zoom };
-    gestureCleanups.push(() => {
+    entry.gestureCleanup = () => {
       if (hiresTimer) clearTimeout(hiresTimer);
       wrap.removeEventListener('pointerdown', onDown);
       wrap.removeEventListener('pointermove', onMove);
       wrap.removeEventListener('pointerup', onUp);
       wrap.removeEventListener('pointercancel', onUp);
-    });
+    };
   };
 
-  // Update the page label based on scroll position
+  // ── Page label ──
   const updateCurrentPage = () => {
-    if (!pdfDoc || !stage || pageCanvases.length === 0) return;
+    if (!pdfDoc || !stage || pages.length === 0) return;
     const stageRect = stage.getBoundingClientRect();
     const mid = stageRect.top + stageRect.height * 0.35;
     let current = 1;
-    for (const entry of pageCanvases) {
+    for (const entry of pages) {
       const r = entry.wrap.getBoundingClientRect();
-      if (r.top <= mid && r.bottom > mid) {
-        current = entry.pageNum;
-        break;
-      }
+      if (r.top <= mid && r.bottom > mid) { current = entry.pageNum; break; }
       if (r.top > mid) break;
       current = entry.pageNum;
     }
     if (pageLabel) pageLabel.textContent = `${current} / ${pdfDoc.numPages}`;
   };
 
+  // ── Main ──
   try {
     pdfDoc = await pdfjsLib.getDocument({ url }).promise;
     if (loadingEl) loadingEl.remove();
 
-    // Create placeholder wraps + canvases for every page
+    // Get first page to estimate aspect-ratio for placeholders
+    const firstPage = await pdfDoc.getPage(1);
+    const firstVp = firstPage.getViewport({ scale: 1 });
+    const defaultAspect = firstVp.width / firstVp.height;
+
+    // Create lightweight placeholder wraps (no canvas yet)
     for (let i = 1; i <= pdfDoc.numPages; i++) {
       const wrap = document.createElement('div');
       wrap.className = 'pdf-page-wrap';
       wrap.dataset.page = i;
-      const canvas = document.createElement('canvas');
-      canvas.className = 'pdf-canvas';
-      wrap.appendChild(canvas);
+      wrap.style.aspectRatio = `${defaultAspect}`;
       stage.appendChild(wrap);
-      const entry = { canvas, wrap, rendered: false, rendering: false, pageNum: i, zoom: null, currentRenderScale: 0 };
-      pageCanvases.push(entry);
-      attachPageGesture(entry);
+      pages.push({
+        wrap, canvas: null, rendered: false, rendering: false,
+        alive: false, pageNum: i, zoom: null, currentRenderScale: 0,
+        gestureCleanup: null
+      });
     }
 
-    // Lazy-render pages as they scroll into view
+    // IntersectionObserver: render on enter, evict on leave
     const observer = new IntersectionObserver((entries) => {
       for (const ioEntry of entries) {
-        if (!ioEntry.isIntersecting) continue;
         const num = parseInt(ioEntry.target.dataset.page, 10);
-        const pc = pageCanvases[num - 1];
-        if (pc && !pc.rendered) renderPageCanvas(pc);
+        const pc = pages[num - 1];
+        if (!pc) continue;
+        if (ioEntry.isIntersecting) {
+          if (!pc.rendered && !pc.rendering) renderPageCanvas(pc);
+          else if (pc.alive) {
+            // Touch LRU
+            const idx = aliveQueue.indexOf(pc.pageNum);
+            if (idx !== -1) aliveQueue.splice(idx, 1);
+            aliveQueue.push(pc.pageNum);
+          }
+        } else {
+          // Only evict if not zoomed and not currently visible
+          if (pc.alive && (!pc.zoom || pc.zoom.getZoom() <= 1.01)) {
+            evictPage(pc);
+          }
+        }
       }
-    }, { root: stage, rootMargin: '200px 0px' });
+    }, { root: stage, rootMargin: '300px 0px' });
 
-    for (const pc of pageCanvases) observer.observe(pc.wrap);
+    for (const pc of pages) observer.observe(pc.wrap);
 
-    // Render first few pages immediately
+    // Render first visible pages
     const initialPages = Math.min(3, pdfDoc.numPages);
     for (let i = 0; i < initialPages; i++) {
-      await renderPageCanvas(pageCanvases[i]);
+      await renderPageCanvas(pages[i]);
     }
     updateCurrentPage();
 
-    // Track scroll for page label
+    // Scroll → page label
     let scrollTick = false;
     const onScroll = () => {
       if (scrollTick) return;
       scrollTick = true;
-      requestAnimationFrame(() => {
-        updateCurrentPage();
-        scrollTick = false;
-      });
+      requestAnimationFrame(() => { updateCurrentPage(); scrollTick = false; });
     };
     stage.addEventListener('scroll', onScroll, { passive: true });
 
-    // Resize handler — recompute per-page fitScale and re-render
+    // Resize
     const handleResize = () => {
-      if (!pdfDoc || pageCanvases.length === 0) return;
-      for (const pc of pageCanvases) {
-        if (pc.rendered) {
-          pc.rendered = false;
-          pc.rendering = false;
-        }
-        pc.zoom?.reset();
+      if (!pdfDoc || pages.length === 0) return;
+      for (const pc of pages) {
+        if (pc.alive) evictPage(pc);
         observer.unobserve(pc.wrap);
         observer.observe(pc.wrap);
       }
     };
     window.addEventListener('resize', handleResize);
 
-    // Download button
+    // Download
     const downloadBtn = body.querySelector('#pdfDownload');
     downloadBtn?.addEventListener('click', (e) => {
       e.preventDefault();
@@ -457,19 +521,15 @@ export async function renderPdfViewer({ url, name, modalApi }) {
         </div>`;
       const cleanupConfirm = () => overlay.remove();
       overlay.querySelector('#pdfDlCancel')?.addEventListener('click', cleanupConfirm, { once: true });
-      overlay.querySelector('#pdfDlOk')?.addEventListener('click', () => {
-        cleanupConfirm();
-        proceed();
-      }, { once: true });
+      overlay.querySelector('#pdfDlOk')?.addEventListener('click', () => { cleanupConfirm(); proceed(); }, { once: true });
       document.body.appendChild(overlay);
     });
 
-    // Close handlers
+    // Close
     body.querySelector('#pdfCloseBtn')?.addEventListener('click', () => activePdfCleanup?.());
     closeBtn?.addEventListener('click', () => activePdfCleanup?.(), { once: true });
     closeArea?.addEventListener('click', () => activePdfCleanup?.(), { once: true });
 
-    // Cleanup registration
     const prevCleanup = activePdfCleanup;
     activePdfCleanup = () => {
       if (typeof prevCleanup === 'function') prevCleanup();
