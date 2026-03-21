@@ -28,6 +28,7 @@ RUN apk add --no-cache \
 ADD https://github.com/novnc/noVNC/archive/refs/tags/v1.5.0.tar.gz /tmp/novnc.tar.gz
 ADD https://github.com/novnc/websockify/archive/refs/tags/v0.12.0.tar.gz /tmp/websockify.tar.gz
 RUN tar -xzf /tmp/novnc.tar.gz -C /opt/noVNC --strip-components=1 \
+    && mkdir -p /opt/noVNC/utils/websockify \
     && tar -xzf /tmp/websockify.tar.gz -C /opt/noVNC/utils/websockify --strip-components=1 \
     && rm /tmp/novnc.tar.gz /tmp/websockify.tar.gz \
     && ln -s /opt/noVNC/vnc.html /opt/noVNC/index.html
