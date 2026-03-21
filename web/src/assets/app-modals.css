@@ -383,6 +383,8 @@
 .modal.pdf-modal {
   padding: 0;
   align-items: stretch;
+  overflow: hidden;
+  touch-action: none;
 }
 
 .modal.pdf-modal .modal-backdrop {
@@ -397,6 +399,10 @@
   border-radius: 0;
   background: #000;
   color: #e2e8f0;
+  overflow: hidden;
+  touch-action: none;
+  animation: none;
+  transform: none;
 }
 
 .modal.pdf-modal .modal-head {
@@ -410,6 +416,7 @@
   flex: 1;
   align-items: stretch;
   justify-content: center;
+  overflow: hidden;
 }
 
 .pdf-viewer {
@@ -497,6 +504,8 @@
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
   padding: 52px 0 16px;
   display: flex;
   flex-direction: column;
