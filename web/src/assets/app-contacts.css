@@ -206,6 +206,13 @@ html.no-anim .cover-spinner {
   overflow: auto;
 }
 
+#tab-safe {
+  display: block;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  height: 100%;
+}
+
 #tab-messages {
   position: fixed;
   inset: var(--topbar-offset) 0 var(--navbar-height) 0;
