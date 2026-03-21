@@ -186,10 +186,28 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
     };
   } catch (err) {
     log({ wordViewerError: err?.message || err });
-    if (loadingEl) {
-      loadingEl.textContent = t('viewer.wordLoadFailed', { error: err?.message || err });
-      loadingEl.classList.add('word-error');
-    }
+    // Show error with download fallback
+    stageEl.innerHTML = `
+      <div class="viewer-error-state">
+        <div class="viewer-error-msg">${escapeHtml(t('viewer.wordLoadFailed', { error: err?.message || err }))}</div>
+        <button type="button" class="viewer-error-download" id="wordErrorDownload">
+          <svg viewBox="0 0 16 16" width="16" height="16" fill="none"><path d="M8 2v8m0 0l-3-3m3 3l3-3M3 11v2h10v-2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          ${t('viewer.downloadWord')}
+        </button>
+      </div>`;
+    stageEl.querySelector('#wordErrorDownload')?.addEventListener('click', () => triggerDownload(url, name || 'file.docx'));
+    // Always set up close handlers even on error
+    const doClose = () => activeWordCleanup?.();
+    body.querySelector('#wordCloseBtn')?.addEventListener('click', doClose);
+    closeBtn?.addEventListener('click', doClose, { once: true });
+    closeArea?.addEventListener('click', doClose, { once: true });
+    const prevCleanup = activeWordCleanup;
+    activeWordCleanup = () => {
+      if (typeof prevCleanup === 'function') prevCleanup();
+      modalEl.classList.remove('word-modal');
+      closeModal?.();
+      activeWordCleanup = null;
+    };
     return true;
   }
 

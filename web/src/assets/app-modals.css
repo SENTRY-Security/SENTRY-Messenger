@@ -1150,6 +1150,20 @@
 }
 .zip-encrypted-download:active { opacity: 0.85; }
 
+/* Shared viewer error state */
+.viewer-error-state {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  height: 100%; padding: 32px; text-align: center; gap: 16px;
+}
+.viewer-error-msg { font-size: 14px; color: #f87171; max-width: 320px; line-height: 1.5; }
+.viewer-error-download {
+  border: none; border-radius: 10px; padding: 10px 20px;
+  font-size: 14px; font-weight: 600; cursor: pointer;
+  background: linear-gradient(135deg, #38bdf8, #6366f1); color: #fff;
+  display: inline-flex; align-items: center; gap: 8px;
+}
+.viewer-error-download:active { opacity: 0.85; }
+
 .progress-bar {
   width: 100%;
   height: 6px;

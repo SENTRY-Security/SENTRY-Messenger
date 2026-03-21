@@ -321,10 +321,29 @@ export async function renderPptxViewer({ url, blob, name, modalApi }) {
     };
   } catch (err) {
     log({ pptxViewerError: err?.message || err });
-    if (loadingEl) {
-      loadingEl.textContent = t('viewer.pptxLoadFailed', { error: err?.message || err });
-      loadingEl.classList.add('pptx-error');
-    }
+    // Show error with download fallback
+    stageEl.innerHTML = `
+      <div class="viewer-error-state">
+        <div class="viewer-error-msg">${escapeHtml(t('viewer.pptxLoadFailed', { error: err?.message || err }))}</div>
+        <button type="button" class="viewer-error-download" id="pptxErrorDownload">
+          <svg viewBox="0 0 16 16" width="16" height="16" fill="none"><path d="M8 2v8m0 0l-3-3m3 3l3-3M3 11v2h10v-2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          ${t('viewer.downloadPptx')}
+        </button>
+      </div>`;
+    stageEl.querySelector('#pptxErrorDownload')?.addEventListener('click', () => triggerDownload(url, name || 'file.pptx'));
+    // Always set up close handlers even on error
+    const doClose = () => activePptxCleanup?.();
+    body.querySelector('#pptxCloseBtn')?.addEventListener('click', doClose);
+    closeBtn?.addEventListener('click', doClose, { once: true });
+    closeArea?.addEventListener('click', doClose, { once: true });
+    const prevCleanup = activePptxCleanup;
+    activePptxCleanup = () => {
+      if (typeof prevCleanup === 'function') prevCleanup();
+      cleanup();
+      modalEl.classList.remove('pptx-modal');
+      closeModal?.();
+      activePptxCleanup = null;
+    };
     return true;
   }
 
