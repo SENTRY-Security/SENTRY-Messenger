@@ -10,7 +10,8 @@ import {
   CALL_SESSION_DIRECTION,
   canStartCall,
   requestOutgoingCall,
-  completeCallSession
+  completeCallSession,
+  updateCallMedia
 } from './state.js';
 import {
   handleCallSignalMessage,
@@ -100,8 +101,11 @@ function _ephemeralSignalSender(payload) {
   // real WebSocket deviceId on the target's Durable Object. If targetDeviceId is
   // present, _handleNotify filters out ALL sockets and the message is never delivered.
   delete msg.targetDeviceId;
-  // Keep msg.envelope so E2EE key envelope is forwarded to peer
-  delete msg.capabilities;
+  // Keep msg.envelope AND msg.capabilities so E2EE negotiation works correctly.
+  // Previously capabilities was deleted, causing the peer to default to local
+  // capability (insertableStreams: true) even when no E2EE key exchange occurred.
+  // This mismatch led to one side encrypting audio while the other couldn't
+  // decrypt — resulting in noise or silent audio.
   delete msg.traceId;
 
   try {
@@ -163,6 +167,23 @@ export function handleEphemeralCallMessage(msg) {
   if (!handled) {
     handleCallAuxMessage(translated);
   }
+
+  // Apply peer capabilities from the signal to the media state.
+  // In regular calls, capabilities arrive inside the envelope which gets
+  // applied via applyCallKeyEnvelopeToState.  Ephemeral calls may not have
+  // an envelope (E2EE key exchange can fail), so the top-level capabilities
+  // field is the only source.  Without this, mediaState.capabilities stays
+  // at local default (insertableStreams: true), causing one side to encrypt
+  // audio while the other can't decrypt — resulting in noise or no audio.
+  if (callType === 'call-invite' && msg.capabilities && !msg.envelope) {
+    try {
+      updateCallMedia({ capabilities: msg.capabilities });
+      log({ ephCallCapabilitiesApplied: true, caps: msg.capabilities });
+    } catch (err) {
+      log({ ephCallCapabilitiesError: err?.message });
+    }
+  }
+
   return true;
 }
 
@@ -202,6 +223,7 @@ export async function initiateEphemeralCall({ mode = 'voice' } = {}) {
 
   // Prepare E2EE key envelope (best-effort — if no conversation token, skip)
   let envelope = null;
+  let e2eeReady = false;
   try {
     envelope = await prepareCallKeyEnvelope({
       callId,
@@ -209,10 +231,17 @@ export async function initiateEphemeralCall({ mode = 'voice' } = {}) {
       peerDeviceId: _ephCtx.peerDeviceId,
       direction: CALL_SESSION_DIRECTION.OUTGOING
     });
+    e2eeReady = true;
     log({ ephCallE2EE: 'envelope-prepared', callId });
   } catch (err) {
     log({ ephCallE2EESkipped: err?.message || err, callId });
   }
+
+  // When E2EE key exchange failed, explicitly advertise insertableStreams: false
+  // so the peer knows NOT to encrypt. Without this, the peer defaults to local
+  // capability (insertableStreams: true) and may encrypt audio that we cannot
+  // decrypt — causing severe noise or silent audio on one side.
+  const callCapabilities = e2eeReady ? undefined : { insertableStreams: false };
 
   // Send invite signal → adapter translates to ephemeral-call-invite
   sendCallInviteSignal({
@@ -222,7 +251,8 @@ export async function initiateEphemeralCall({ mode = 'voice' } = {}) {
     metadata: {
       displayName: _ephCtx.peerDisplayName || 'Ephemeral User'
     },
-    envelope
+    envelope,
+    capabilities: callCapabilities
   });
 
   // Start WebRTC media pipeline (creates offer, etc.)
