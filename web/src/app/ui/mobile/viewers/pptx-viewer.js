@@ -25,17 +25,13 @@ export function cleanupPptxViewer() {
 }
 
 function triggerDownload(url, filename) {
-  try {
-    const a = document.createElement('a');
-    a.href = url;
-    if (filename) a.download = filename;
-    a.rel = 'noopener noreferrer';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  } catch (err) {
-    log({ pptxDownloadError: err?.message || err });
-  }
+  const a = document.createElement('a');
+  a.href = url;
+  if (filename) a.download = filename;
+  a.rel = 'noopener noreferrer';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 const PPTX_MIMES = [
@@ -55,61 +51,242 @@ export function isPptxFilename(name) {
   return /\.(pptx|ppt|pptm)$/i.test(name);
 }
 
-// Extract text from slide XML
-function extractSlideText(xml) {
-  const texts = [];
-  // Match all <a:t> text nodes
-  const matches = xml.matchAll(/<a:t[^>]*>([\s\S]*?)<\/a:t>/g);
-  let currentParagraph = [];
-  let lastIdx = 0;
+// ── OOXML Parser Helpers ──
+const EMU_PX = 914400 / 96; // 1px = 9525 EMU → conversion factor
+const emuToPx = (emu) => Math.round(Number(emu) / EMU_PX);
 
-  // Also track paragraph breaks <a:p>
+function attr(xml, name) {
+  const m = xml.match(new RegExp(`${name}="([^"]*)"`, 'i'));
+  return m ? m[1] : null;
+}
+
+function parseColor(rPr) {
+  // <a:solidFill><a:srgbClr val="FF0000"/></a:solidFill>
+  const srgb = rPr.match(/<a:srgbClr\s+val="([^"]+)"/);
+  if (srgb) return '#' + srgb[1];
+  // <a:schemeClr val="dk1"/>
+  const scheme = rPr.match(/<a:schemeClr\s+val="([^"]+)"/);
+  if (scheme) {
+    const map = { dk1: '#1e293b', dk2: '#334155', lt1: '#ffffff', lt2: '#f1f5f9', accent1: '#4472C4', accent2: '#ED7D31', accent3: '#A5A5A5', accent4: '#FFC000', accent5: '#5B9BD5', accent6: '#70AD47', tx1: '#1e293b', tx2: '#475569', bg1: '#ffffff', bg2: '#e2e8f0' };
+    return map[scheme[1]] || '#1e293b';
+  }
+  return null;
+}
+
+function parseFontSize(rPr) {
+  // sz="2400" → 24pt → convert to px-ish
+  const sz = rPr.match(/sz="(\d+)"/);
+  if (sz) return Math.round(Number(sz[1]) / 100);
+  return null;
+}
+
+function parseTextRun(runXml) {
+  const textMatch = runXml.match(/<a:t[^>]*>([\s\S]*?)<\/a:t>/);
+  const text = textMatch ? textMatch[1] : '';
+  if (!text) return null;
+
+  const rPrMatch = runXml.match(/<a:rPr[\s\S]*?(?:\/>|<\/a:rPr>)/);
+  const rPr = rPrMatch ? rPrMatch[0] : '';
+
+  const bold = /\bb="1"/.test(rPr);
+  const italic = /\bi="1"/.test(rPr);
+  const underline = /\bu="sng"/.test(rPr);
+  const fontSize = parseFontSize(rPr);
+  const color = parseColor(rPr);
+
+  return { text, bold, italic, underline, fontSize, color };
+}
+
+function parseParagraph(pXml) {
+  const runs = [];
+  // Match each <a:r>...</a:r>
+  const rMatches = pXml.matchAll(/<a:r>([\s\S]*?)<\/a:r>/g);
+  for (const m of rMatches) {
+    const run = parseTextRun(m[1]);
+    if (run) runs.push(run);
+  }
+
+  // Paragraph alignment
+  const pPrMatch = pXml.match(/<a:pPr[^>]*>/);
+  let align = 'left';
+  if (pPrMatch) {
+    const algn = attr(pPrMatch[0], 'algn');
+    if (algn === 'ctr') align = 'center';
+    else if (algn === 'r') align = 'right';
+    else if (algn === 'just') align = 'justify';
+  }
+
+  return { runs, align };
+}
+
+function parseShape(spXml, relMap, zip, objectUrls) {
+  // Get position and size from <a:off> and <a:ext>
+  const offMatch = spXml.match(/<a:off\s+x="(\d+)"\s+y="(\d+)"/);
+  const extMatch = spXml.match(/<a:ext\s+cx="(\d+)"\s+cy="(\d+)"/);
+
+  const x = offMatch ? emuToPx(offMatch[1]) : 0;
+  const y = offMatch ? emuToPx(offMatch[2]) : 0;
+  const w = extMatch ? emuToPx(extMatch[1]) : 0;
+  const h = extMatch ? emuToPx(extMatch[2]) : 0;
+
+  // Check if this is an image shape
+  const blipMatch = spXml.match(/r:embed="(rId\d+)"/);
+  if (blipMatch && relMap[blipMatch[1]]) {
+    return { type: 'image', x, y, w, h, rId: blipMatch[1], target: relMap[blipMatch[1]] };
+  }
+
+  // Parse text body <p:txBody>
+  const txBody = spXml.match(/<p:txBody>([\s\S]*?)<\/p:txBody>/);
+  if (!txBody) return null;
+
   const paragraphs = [];
-  const pBlocks = xml.split(/<\/a:p>/);
-  for (const block of pBlocks) {
-    const lineTexts = [];
-    const tMatches = block.matchAll(/<a:t[^>]*>([\s\S]*?)<\/a:t>/g);
-    for (const m of tMatches) {
-      lineTexts.push(m[1]);
-    }
-    if (lineTexts.length) paragraphs.push(lineTexts.join(''));
+  const pMatches = txBody[1].matchAll(/<a:p>([\s\S]*?)<\/a:p>/g);
+  for (const m of pMatches) {
+    const para = parseParagraph(m[1]);
+    if (para.runs.length) paragraphs.push(para);
   }
-  return paragraphs;
+  if (!paragraphs.length) return null;
+
+  // Shape fill
+  const fillMatch = spXml.match(/<a:solidFill>([\s\S]*?)<\/a:solidFill>/);
+  const bgColor = fillMatch ? parseColor(fillMatch[0]) : null;
+
+  return { type: 'text', x, y, w, h, paragraphs, bgColor };
 }
 
-// Extract image relationships from slide XML + rels
-function extractSlideImages(slideXml, relsXml, zip) {
-  const images = [];
-  if (!relsXml) return images;
+function buildRelMap(relsXml) {
+  const map = {};
+  if (!relsXml) return map;
+  const matches = relsXml.matchAll(/Id="(rId\d+)"[^>]*Target="([^"]+)"/g);
+  for (const m of matches) map[m[1]] = m[2];
+  return map;
+}
 
-  // Build relationship map
-  const relMap = {};
-  const relMatches = relsXml.matchAll(/Id="(rId\d+)"[^>]*Target="([^"]+)"/g);
-  for (const m of relMatches) {
-    relMap[m[1]] = m[2];
+function resolvePath(target) {
+  const resolved = target.startsWith('/') ? target.slice(1) : 'ppt/slides/' + target;
+  const parts = resolved.split('/');
+  const stack = [];
+  for (const p of parts) {
+    if (p === '..') stack.pop();
+    else if (p !== '.') stack.push(p);
+  }
+  return stack.join('/');
+}
+
+// Get slide dimensions from presentation.xml
+async function getSlideSize(zip) {
+  try {
+    const presXml = await zip.file('ppt/presentation.xml')?.async('string');
+    if (!presXml) return { w: 960, h: 540 };
+    const sldSz = presXml.match(/<p:sldSz\s+cx="(\d+)"\s+cy="(\d+)"/);
+    if (sldSz) return { w: emuToPx(sldSz[1]), h: emuToPx(sldSz[2]) };
+  } catch {}
+  return { w: 960, h: 540 };
+}
+
+// Parse slide background
+function parseSlideBg(slideXml) {
+  // Solid fill background
+  const bgMatch = slideXml.match(/<p:bg>([\s\S]*?)<\/p:bg>/);
+  if (!bgMatch) return null;
+  return parseColor(bgMatch[1]);
+}
+
+// ── Build slide DOM ──
+async function buildSlideElement(slideXml, relsXml, zip, slideSize, objectUrls) {
+  const relMap = buildRelMap(relsXml);
+  const bgColor = parseSlideBg(slideXml) || '#ffffff';
+
+  const slide = document.createElement('div');
+  slide.className = 'pptx-slide';
+  slide.style.cssText = `aspect-ratio:${slideSize.w}/${slideSize.h};background:${bgColor};position:relative;overflow:hidden;`;
+
+  // Parse all shapes <p:sp>
+  const shapes = [];
+  const spMatches = slideXml.matchAll(/<p:sp>([\s\S]*?)<\/p:sp>/g);
+  for (const m of spMatches) {
+    const shape = parseShape(m[1], relMap, zip, objectUrls);
+    if (shape) shapes.push(shape);
   }
 
-  // Find image references in slide XML: <a:blip r:embed="rIdX"/>
-  const blipMatches = slideXml.matchAll(/r:embed="(rId\d+)"/g);
-  for (const m of blipMatches) {
-    const target = relMap[m[1]];
-    if (target && /\.(png|jpg|jpeg|gif|bmp|svg|webp|emf|wmf|tiff?)$/i.test(target)) {
-      // Resolve path relative to ppt/slides/
-      const resolved = target.startsWith('/') ? target.slice(1) : 'ppt/slides/' + target;
-      const normalized = resolved.replace(/\/\.\.\//g, () => { return '/'; });
-      // Simple path normalization
-      const parts = normalized.split('/');
-      const stack = [];
-      for (const p of parts) {
-        if (p === '..') stack.pop();
-        else if (p !== '.') stack.push(p);
+  // Also parse <p:pic> (picture shapes)
+  const picMatches = slideXml.matchAll(/<p:pic>([\s\S]*?)<\/p:pic>/g);
+  for (const m of picMatches) {
+    const offMatch = m[1].match(/<a:off\s+x="(\d+)"\s+y="(\d+)"/);
+    const extMatch = m[1].match(/<a:ext\s+cx="(\d+)"\s+cy="(\d+)"/);
+    const blipMatch = m[1].match(/r:embed="(rId\d+)"/);
+    if (blipMatch && relMap[blipMatch[1]]) {
+      shapes.push({
+        type: 'image',
+        x: offMatch ? emuToPx(offMatch[1]) : 0,
+        y: offMatch ? emuToPx(offMatch[2]) : 0,
+        w: extMatch ? emuToPx(extMatch[1]) : 0,
+        h: extMatch ? emuToPx(extMatch[2]) : 0,
+        rId: blipMatch[1],
+        target: relMap[blipMatch[1]]
+      });
+    }
+  }
+
+  // Scale factor: slide is rendered at a max width, positions need to be percentage-based
+  const scaleX = 100 / slideSize.w;
+  const scaleY = 100 / slideSize.h;
+
+  for (const shape of shapes) {
+    const el = document.createElement('div');
+    el.style.cssText = `position:absolute;left:${shape.x * scaleX}%;top:${shape.y * scaleY}%;width:${shape.w * scaleX}%;height:${shape.h * scaleY}%;overflow:hidden;`;
+
+    if (shape.type === 'image') {
+      const imgPath = resolvePath(shape.target);
+      try {
+        const imgFile = zip.file(imgPath);
+        if (imgFile) {
+          const imgBlob = await imgFile.async('blob');
+          const imgUrl = URL.createObjectURL(imgBlob);
+          objectUrls.push(imgUrl);
+          const img = document.createElement('img');
+          img.src = imgUrl;
+          img.className = 'pptx-shape-img';
+          img.style.cssText = 'width:100%;height:100%;object-fit:contain;';
+          img.decoding = 'async';
+          el.appendChild(img);
+        }
+      } catch {}
+    } else if (shape.type === 'text') {
+      if (shape.bgColor) el.style.background = shape.bgColor;
+      el.style.padding = '4px 8px';
+      el.style.boxSizing = 'border-box';
+      el.style.display = 'flex';
+      el.style.flexDirection = 'column';
+      el.style.justifyContent = 'center';
+
+      for (const para of shape.paragraphs) {
+        const pEl = document.createElement('p');
+        pEl.style.cssText = `margin:0 0 2px;text-align:${para.align};line-height:1.3;`;
+
+        for (const run of para.runs) {
+          const span = document.createElement('span');
+          let style = '';
+          if (run.fontSize) style += `font-size:${run.fontSize}pt;`;
+          if (run.color) style += `color:${run.color};`;
+          if (run.bold) style += 'font-weight:700;';
+          if (run.italic) style += 'font-style:italic;';
+          if (run.underline) style += 'text-decoration:underline;';
+          if (style) span.style.cssText = style;
+          span.textContent = run.text;
+          pEl.appendChild(span);
+        }
+        el.appendChild(pEl);
       }
-      images.push(stack.join('/'));
     }
+
+    slide.appendChild(el);
   }
-  return images;
+
+  return slide;
 }
 
+// ── Main Viewer ──
 export async function renderPptxViewer({ url, blob, name, modalApi }) {
   const { openModal, closeModal, showConfirmModal } = modalApi || {};
   let JSZip;
@@ -181,7 +358,9 @@ export async function renderPptxViewer({ url, blob, name, modalApi }) {
     }
 
     const zip = await JSZip.loadAsync(arrayBuffer);
-    if (loadingEl) loadingEl.remove();
+
+    // Get slide dimensions
+    const slideSize = await getSlideSize(zip);
 
     // Find all slides
     const slideFiles = Object.keys(zip.files)
@@ -193,69 +372,23 @@ export async function renderPptxViewer({ url, blob, name, modalApi }) {
       });
 
     if (!slideFiles.length) throw new Error('No slides found');
+    if (loadingEl) loadingEl.remove();
 
-    // Parse each slide
-    const slides = [];
+    // Parse and build each slide
+    const slideEls = [];
     for (const slideFile of slideFiles) {
       const slideXml = await zip.file(slideFile)?.async('string');
       if (!slideXml) continue;
       const slideNum = slideFile.match(/slide(\d+)/)?.[1] || '1';
       const relsFile = `ppt/slides/_rels/slide${slideNum}.xml.rels`;
       const relsXml = await zip.file(relsFile)?.async('string').catch(() => null);
-
-      const texts = extractSlideText(slideXml);
-      const imagePaths = extractSlideImages(slideXml, relsXml, zip);
-
-      // Load images as blob URLs
-      const imageUrls = [];
-      for (const imgPath of imagePaths) {
-        try {
-          const imgFile = zip.file(imgPath);
-          if (!imgFile) continue;
-          const imgBlob = await imgFile.async('blob');
-          const imgUrl = URL.createObjectURL(imgBlob);
-          objectUrls.push(imgUrl);
-          imageUrls.push(imgUrl);
-        } catch {}
-      }
-
-      slides.push({ texts, imageUrls, num: slides.length + 1 });
+      const slideEl = await buildSlideElement(slideXml, relsXml, zip, slideSize, objectUrls);
+      slideEls.push(slideEl);
     }
 
-    if (!slides.length) throw new Error('No slide content');
+    if (!slideEls.length) throw new Error('No slide content');
 
-    // Build slide elements
-    const slideEls = [];
-    for (const slide of slides) {
-      const el = document.createElement('div');
-      el.className = 'pptx-slide';
-
-      let html = '';
-      // Images
-      if (slide.imageUrls.length) {
-        html += '<div class="pptx-slide-images">';
-        for (const imgUrl of slide.imageUrls) {
-          html += `<img src="${imgUrl}" class="pptx-slide-img" alt="" decoding="async" />`;
-        }
-        html += '</div>';
-      }
-      // Text
-      if (slide.texts.length) {
-        html += '<div class="pptx-slide-text">';
-        for (const line of slide.texts) {
-          html += `<p>${escapeHtml(line)}</p>`;
-        }
-        html += '</div>';
-      }
-      if (!html) {
-        html = `<div class="pptx-slide-empty">${t('viewer.pptxSlideEmpty')}</div>`;
-      }
-
-      el.innerHTML = html;
-      slideEls.push(el);
-    }
-
-    // Show first slide
+    // Show slides
     let currentSlide = 0;
     const showSlide = (idx) => {
       if (idx < 0 || idx >= slideEls.length) return;
@@ -293,12 +426,7 @@ export async function renderPptxViewer({ url, blob, name, modalApi }) {
       e.preventDefault();
       const proceed = () => triggerDownload(url, name || 'file.pptx');
       if (typeof showConfirmModal === 'function') {
-        showConfirmModal({
-          title: t('viewer.downloadPptx'),
-          message: t('drive.downloadPdfConfirm'),
-          confirmLabel: t('drive.download'),
-          onConfirm: proceed
-        });
+        showConfirmModal({ title: t('viewer.downloadPptx'), message: t('drive.downloadPdfConfirm'), confirmLabel: t('drive.download'), onConfirm: proceed });
         return;
       }
       proceed();
