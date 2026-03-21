@@ -14,6 +14,7 @@ import { renderPdfViewer, cleanupPdfViewer } from '../viewers/pdf-viewer.js';
 import { renderExcelViewer, cleanupExcelViewer, isExcelMime, isExcelFilename } from '../viewers/excel-viewer.js';
 import { renderWordViewer, cleanupWordViewer, isWordMime, isWordFilename } from '../viewers/word-viewer.js';
 import { renderZipViewer, cleanupZipViewer, isZipMime, isZipFilename } from '../viewers/zip-viewer.js';
+import { renderPptxViewer, cleanupPptxViewer, isPptxMime, isPptxFilename } from '../viewers/pptx-viewer.js';
 import { openImageViewer, cleanupImageViewer } from '../viewers/image-viewer.js';
 import { openVideoViewer, cleanupVideoViewer } from '../viewers/video-viewer.js';
 import { escapeHtml, fmtSize, escapeSelector } from '../ui-utils.js';
@@ -1099,6 +1100,7 @@ export class MediaHandlingController extends BaseController {
         cleanupExcelViewer();
         cleanupWordViewer();
         cleanupZipViewer();
+        cleanupPptxViewer();
 
         // Clear all modal classes
         const classesToRemove = [
@@ -1162,6 +1164,17 @@ export class MediaHandlingController extends BaseController {
             }
         } else if (isWordMime(ct) || isWordFilename(resolvedName)) {
             const handled = await renderWordViewer({
+                url,
+                blob,
+                name: resolvedName,
+                modalApi: { openModal, closeModal, showConfirmModal: showConfirm }
+            });
+            if (handled) {
+                this.deps.openPreviewModal?.();
+                return;
+            }
+        } else if (isPptxMime(ct) || isPptxFilename(resolvedName)) {
+            const handled = await renderPptxViewer({
                 url,
                 blob,
                 name: resolvedName,

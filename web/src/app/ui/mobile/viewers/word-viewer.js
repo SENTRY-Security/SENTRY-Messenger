@@ -129,8 +129,10 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
     // Container must be in the DOM before renderAsync (it accesses childNodes)
     const docContainer = document.createElement('div');
     docContainer.className = 'word-doc-container';
-    const styleContainer = document.createElement('style');
-    document.head.appendChild(styleContainer);
+    // docx-preview injects <style> elements into the style container
+    const styleContainer = document.createElement('div');
+    styleContainer.className = 'word-docx-styles';
+    document.body.appendChild(styleContainer);
     stageEl.appendChild(docContainer);
     if (loadingEl) loadingEl.remove();
 

@@ -871,7 +871,9 @@
     "pdfUnlock": "Unlock",
     "pdfPasswordEmpty": "Please enter a password",
     "pdfPasswordWrong": "Wrong password, please try again",
-    "togglePassword": "Show/hide password"
+    "togglePassword": "Show/hide password",
+    "downloadPptx": "Download PowerPoint",
+    "pptxLoadFailed": "PowerPoint load failed: {{error}}"
   },
   "mediaHandling": {
     "videoDataIncomplete": "Video data incomplete, cannot play",

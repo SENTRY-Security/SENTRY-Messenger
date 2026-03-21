@@ -871,7 +871,9 @@
     "pdfUnlock": "解鎖",
     "pdfPasswordEmpty": "請輸入密碼",
     "pdfPasswordWrong": "密碼錯誤，請重試",
-    "togglePassword": "顯示/隱藏密碼"
+    "togglePassword": "顯示/隱藏密碼",
+    "downloadPptx": "下載 PowerPoint",
+    "pptxLoadFailed": "PowerPoint 載入失敗：{{error}}"
   },
   "mediaHandling": {
     "videoDataIncomplete": "影片資料不完整，無法播放",
