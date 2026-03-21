@@ -873,7 +873,9 @@
     "pdfPasswordWrong": "密碼錯誤，請重試",
     "togglePassword": "顯示/隱藏密碼",
     "downloadPptx": "下載 PowerPoint",
-    "pptxLoadFailed": "PowerPoint 載入失敗：{{error}}"
+    "pptxLoadFailed": "PowerPoint 載入失敗：{{error}}",
+    "zipEncrypted": "此壓縮檔已加密",
+    "zipEncryptedHint": "加密壓縮檔無法在線上預覽，請下載後使用解壓縮工具開啟"
   },
   "mediaHandling": {
     "videoDataIncomplete": "影片資料不完整，無法播放",

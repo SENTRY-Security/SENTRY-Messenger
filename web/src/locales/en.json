@@ -873,7 +873,9 @@
     "pdfPasswordWrong": "Wrong password, please try again",
     "togglePassword": "Show/hide password",
     "downloadPptx": "Download PowerPoint",
-    "pptxLoadFailed": "PowerPoint load failed: {{error}}"
+    "pptxLoadFailed": "PowerPoint load failed: {{error}}",
+    "zipEncrypted": "This archive is encrypted",
+    "zipEncryptedHint": "Encrypted archives cannot be previewed online. Please download and open with a decompression tool"
   },
   "mediaHandling": {
     "videoDataIncomplete": "Video data incomplete, cannot play",
