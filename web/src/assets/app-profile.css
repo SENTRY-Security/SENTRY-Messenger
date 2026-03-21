@@ -7,7 +7,7 @@
 .profile-header {
   display: flex;
   align-items: flex-start;
-  gap: 18px;
+  gap: 28px;
   position: relative;
 }
 
@@ -286,7 +286,7 @@ body.modal-open .profile-share-btn {
   .profile-header {
     flex-direction: row;
     align-items: flex-start;
-    gap: 14px;
+    gap: 20px;
   }
 
   .profile-avatar {
