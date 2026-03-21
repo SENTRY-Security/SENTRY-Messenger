@@ -71,37 +71,50 @@
 
 .profile-nickname {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  flex-direction: row;
+  align-items: center;
+  gap: 0;
   font-size: 18px;
   font-weight: 700;
   color: var(--fg);
   letter-spacing: 0.3px;
-  align-items: flex-end;
+  background: var(--bg-elevated);
+  border-radius: 14px;
+  padding: 8px 6px 8px 14px;
 }
 
-.profile-nickname button {
+.profile-nickname strong {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-nick-edit-icon {
+  flex: 0 0 auto;
   border: none;
-  background: var(--bg-elevated);
-  color: var(--fg);
-  font-size: 13px;
-  font-weight: 500;
-  border-radius: 999px;
-  padding: 6px 12px;
+  background: none;
+  color: #94a3b8;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
   cursor: pointer;
-  align-self: flex-end;
-  box-shadow: none;
+  transition: color 0.15s, background 0.15s;
 }
 
-.profile-nickname button i,
-.profile-nickname button .icon {
-  font-size: 16px;
+.profile-nick-edit-icon:hover {
+  color: var(--fg);
+  background: rgba(148, 163, 184, 0.15);
 }
 
-.profile-nickname button:active {
+.profile-nick-edit-icon .icon {
+  font-size: 15px;
+}
+
+.profile-nick-edit-icon:active {
   transform: translateY(1px);
 }
 
@@ -308,11 +321,9 @@ body.modal-open .profile-share-btn {
   }
 
   .profile-nickname {
-    align-items: flex-end;
-  }
-
-  .profile-nickname button {
-    align-self: flex-end;
+    align-items: center;
+    padding: 6px 4px 6px 12px;
+    font-size: 16px;
   }
 
   .profile-stats {
