@@ -216,16 +216,10 @@ export function createPushModal({ deps }) {
           <span style="font-size:12px;">${escapeHtml(t('push.statusUnsupportedDetail'))}</span>
         </div>`;
     } else if (iosNeedsPWA || iosNoPush) {
-      // iOS browser mode — show tutorial video, then PIN generation
+      // iOS browser mode — auto-show tutorial video if no devices, then PIN generation
       const currentSettings = getEffectiveSettings ? getEffectiveSettings() : {};
       const autoLogoutOn = !!currentSettings.autoLogoutOnBackground;
       contentHTML = `
-        <!-- Tutorial video section (hidden when device exists) -->
-        <div id="pushTutorial" style="padding:12px 0;">
-          <button type="button" id="pushShowTutorial" style="width:100%;padding:10px 16px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;background:rgba(56,189,248,0.15);color:#38bdf8;">
-            ${escapeHtml(t('push.explainTitle'))}
-          </button>
-        </div>
         <!-- PIN section (initially hidden, shown after tutorial) -->
         <div id="pushPinSection" style="display:none;padding:12px 0;">
           <button type="button" id="pushGeneratePin" style="width:100%;padding:10px 16px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;background:rgba(56,189,248,0.15);color:#38bdf8;">
@@ -300,15 +294,20 @@ export function createPushModal({ deps }) {
 
     // iOS browser mode: step wizard + generate PIN + manage existing devices
     if (iosNeedsPWA || iosNoPush) {
-      const tutorialEl = body.querySelector('#pushTutorial');
       const deviceSection = body.querySelector('#pushDeviceSection');
+      const pinSection = body.querySelector('#pushPinSection');
+      let tutorialShown = false;
 
-      // Toggle tutorial vs device-only view based on existing devices
+      // Toggle device section visibility based on existing devices
       function updateWizardVisibility(devices) {
         const hasDevices = devices && devices.length > 0;
-        if (tutorialEl) tutorialEl.style.display = hasDevices ? 'none' : '';
         if (deviceSection) {
           deviceSection.style.display = hasDevices ? '' : 'none';
+        }
+        // Auto-show tutorial video if no devices and not shown yet
+        if (!hasDevices && !tutorialShown) {
+          tutorialShown = true;
+          showVideoTutorialModal();
         }
       }
 
@@ -372,12 +371,7 @@ export function createPushModal({ deps }) {
         }
       }
 
-      renderDevicesWithVisibility();
-
-      // Tutorial video button → opens a standalone video modal
-      const showTutorialBtn = body.querySelector('#pushShowTutorial');
-      const pinSection = body.querySelector('#pushPinSection');
-
+      // Tutorial video modal — auto-opened when no devices exist
       function showVideoTutorialModal() {
         const overlay = document.createElement('div');
         overlay.className = 'push-tutorial-overlay';
@@ -397,7 +391,6 @@ export function createPushModal({ deps }) {
           </div>`;
         document.body.appendChild(overlay);
 
-        // Try to play video (handle autoplay restrictions)
         const video = overlay.querySelector('video');
         if (video) video.play().catch(() => {});
 
@@ -406,18 +399,16 @@ export function createPushModal({ deps }) {
         overlay.querySelector('#tutorialClose')?.addEventListener('click', cleanup, { once: true });
         overlay.querySelector('#tutorialUnderstood')?.addEventListener('click', () => {
           cleanup();
-          // Show PIN section and hide tutorial button
+          // Show PIN section
           if (pinSection) pinSection.style.display = '';
-          if (showTutorialBtn) showTutorialBtn.parentElement.style.display = 'none';
         }, { once: true });
 
-        // Close on backdrop click
         overlay.addEventListener('click', (e) => {
           if (e.target === overlay) cleanup();
         });
       }
 
-      showTutorialBtn?.addEventListener('click', showVideoTutorialModal);
+      renderDevicesWithVisibility();
 
       const generatePinBtn = body.querySelector('#pushGeneratePin');
       const pinDisplay = body.querySelector('#pushPinDisplay');
@@ -496,6 +487,35 @@ export function createPushModal({ deps }) {
       }
     }
 
+    // Helper: show tutorial video modal, returns promise<boolean>
+    function showTutorialVideoPromise() {
+      return new Promise((resolve) => {
+        const overlay = document.createElement('div');
+        overlay.className = 'push-tutorial-overlay';
+        overlay.innerHTML = `
+          <div class="push-tutorial-panel">
+            <div class="push-tutorial-header">${escapeHtml(t('push.tutorialTitle'))}</div>
+            <div class="push-tutorial-video-wrap">
+              <video autoplay loop muted playsinline class="push-tutorial-video">
+                <source src="/assets/images/AVAssetExportPreset960x540.mov" type="video/quicktime">
+                <source src="/assets/images/AVAssetExportPreset960x540.mov" type="video/mp4">
+              </video>
+            </div>
+            <div class="push-tutorial-actions">
+              <button type="button" class="push-tutorial-btn primary" id="tutorialUnderstood">${escapeHtml(t('common.understood'))}</button>
+              <button type="button" class="push-tutorial-btn secondary" id="tutorialClose">${escapeHtml(t('common.close'))}</button>
+            </div>
+          </div>`;
+        document.body.appendChild(overlay);
+        const video = overlay.querySelector('video');
+        if (video) video.play().catch(() => {});
+        const cleanup = (result) => { overlay.remove(); resolve(result); };
+        overlay.querySelector('#tutorialUnderstood')?.addEventListener('click', () => cleanup(true), { once: true });
+        overlay.querySelector('#tutorialClose')?.addEventListener('click', () => cleanup(false), { once: true });
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(false); });
+      });
+    }
+
     actionBtn?.addEventListener('click', async () => {
       const sub = await getPushSubscription().catch(() => null);
       actionBtn.disabled = true;
@@ -510,33 +530,7 @@ export function createPushModal({ deps }) {
           log({ pushUnsubscribeError: err?.message || err });
         }
       } else {
-        // Show tutorial video modal, then subscribe on confirm
-        const confirmed = await new Promise((resolve) => {
-          const overlay = document.createElement('div');
-          overlay.className = 'push-tutorial-overlay';
-          overlay.innerHTML = `
-            <div class="push-tutorial-panel">
-              <div class="push-tutorial-header">${escapeHtml(t('push.tutorialTitle'))}</div>
-              <div class="push-tutorial-video-wrap">
-                <video autoplay loop muted playsinline class="push-tutorial-video">
-                  <source src="/assets/images/AVAssetExportPreset960x540.mov" type="video/quicktime">
-                  <source src="/assets/images/AVAssetExportPreset960x540.mov" type="video/mp4">
-                </video>
-              </div>
-              <div class="push-tutorial-actions">
-                <button type="button" class="push-tutorial-btn primary" id="tutorialUnderstood">${escapeHtml(t('common.understood'))}</button>
-                <button type="button" class="push-tutorial-btn secondary" id="tutorialClose">${escapeHtml(t('common.close'))}</button>
-              </div>
-            </div>`;
-          document.body.appendChild(overlay);
-          const video = overlay.querySelector('video');
-          if (video) video.play().catch(() => {});
-          const cleanup = (result) => { overlay.remove(); resolve(result); };
-          overlay.querySelector('#tutorialUnderstood')?.addEventListener('click', () => cleanup(true), { once: true });
-          overlay.querySelector('#tutorialClose')?.addEventListener('click', () => cleanup(false), { once: true });
-          overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(false); });
-        });
-
+        const confirmed = await showTutorialVideoPromise();
         if (!confirmed) {
           actionBtn.disabled = false;
           return;
@@ -559,6 +553,26 @@ export function createPushModal({ deps }) {
     });
 
     renderDeviceList(deviceList, updateStatus);
+
+    // Auto-show tutorial if not yet subscribed
+    if (!isActive) {
+      const confirmed = await showTutorialVideoPromise();
+      if (confirmed) {
+        if (actionBtn) actionBtn.disabled = true;
+        try {
+          await subscribePush();
+          showToast(t('push.enabledToast'));
+          open(); // reopen to refresh
+        } catch (err) {
+          log({ pushSubscribeError: err?.message || err });
+          const msg = err?.code === 'PERMISSION_DENIED'
+            ? t('push.permissionDenied')
+            : (err?.message || t('errors.saveSettingsFailed'));
+          showAlertModal({ title: t('errors.operationFailed'), message: msg });
+          if (actionBtn) actionBtn.disabled = false;
+        }
+      }
+    }
   }
 
   return { open };
