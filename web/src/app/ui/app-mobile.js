@@ -1823,6 +1823,7 @@ if (userMenuVersionBtn) {
 }
 
 updateSubscriptionBadge();
+document.getElementById('subscriptionBadge')?.addEventListener('click', () => openSubscriptionModal());
 setTimeout(() => {
   refreshSubscriptionStatus({ silent: true });
   if (drivePane?.showSubscriptionGateIfExpired) drivePane.showSubscriptionGateIfExpired();

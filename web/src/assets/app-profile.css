@@ -128,7 +128,12 @@
   min-width: 64px;
   padding: 10px 12px;
   border-radius: 14px;
+  cursor: pointer;
   transition: background 0.2s, border-color 0.2s;
+}
+
+.sub-badge:active {
+  transform: scale(0.95);
 }
 
 .sub-badge-icon {
