@@ -1,11 +1,14 @@
 // data-worker/src/browser-session.js
-// SAFE Browser — KasmVNC Chromium on Cloudflare Containers.
+// SAFE Browser — Chromium + noVNC on Cloudflare Containers.
 // Merged into data-worker so /api/safe/* routes are handled directly.
+//
+// Container stack: Alpine + Xvfb + Chromium + x11vnc + noVNC (websockify)
+// noVNC serves HTML5 client + WebSocket on port 6901.
 
 import { Container } from '@cloudflare/containers';
 
 export class BrowserSession extends Container {
-  // KasmVNC serves its HTML5 client + WebSocket on port 6901
+  // noVNC WebSocket proxy listens on port 6901
   defaultPort = 6901;
 
   // Auto-sleep after 10 minutes of no activity
@@ -35,9 +38,9 @@ export class BrowserSession extends Container {
   //
   // Routes:
   //   GET  /api/safe/status      → return container state
-  //   POST /api/safe/start       → start container, return KasmVNC URL
+  //   POST /api/safe/start       → start container, return noVNC URL
   //   POST /api/safe/stop        → stop container
-  //   *    /api/safe/browser/**  → proxy to KasmVNC (HTTP + WebSocket)
+  //   *    /api/safe/browser/**  → proxy to noVNC (HTTP + WebSocket)
 
   async fetch(request) {
     const url = new URL(request.url);
@@ -65,7 +68,7 @@ export class BrowserSession extends Container {
         // Set password before starting
         this.envVars = { VNC_PW: vncPassword };
 
-        // Start container and wait for KasmVNC to be ready on port 6901
+        // Start container and wait for noVNC to be ready on port 6901
         await this.startAndWaitForPorts();
 
         return Response.json({
@@ -94,7 +97,7 @@ export class BrowserSession extends Container {
       }
     }
 
-    // ── Proxy to KasmVNC ───────────────────────────────────────
+    // ── Proxy to noVNC ─────────────────────────────────────────
     if (path.startsWith('/api/safe/browser')) {
       const state = await this.getState();
       if (state !== 'running') {
