@@ -339,6 +339,7 @@ a{color:#f59e0b}
 
 export const onRequest: PagesFunction<{
   ORIGIN_API: string;
+  SAFE_WORKER_URL?: string;
 }> = async ({ request, env, next }) => {
   const url = new URL(request.url);
 
@@ -418,6 +419,36 @@ export const onRequest: PagesFunction<{
       status: 204,
       headers: corsHeaders(request),
     });
+  }
+
+  // --- SAFE Worker proxy: /api/safe/* → separate safe-browser Worker ---
+  if (url.pathname.startsWith('/api/safe/') && (env as any).SAFE_WORKER_URL) {
+    const safeBase = ((env as any).SAFE_WORKER_URL as string).replace(/\/+$/, '');
+    const targetUrl = new URL(url.pathname + url.search, safeBase);
+
+    // WebSocket upgrade: forward directly
+    const isUpgrade = request.headers.get('Upgrade')?.toLowerCase() === 'websocket';
+    if (isUpgrade) {
+      try {
+        return await fetch(new Request(targetUrl.toString(), request));
+      } catch (err) {
+        console.error('[SAFE Proxy] WebSocket upstream failed:', err);
+        return json({ error: 'BadGateway', message: 'SAFE worker unavailable' }, 502, request);
+      }
+    }
+
+    try {
+      const response = await fetch(new Request(targetUrl.toString(), request), { cf: { cacheTtl: 0 } } as any);
+      if ((response as any).webSocket || response.status === 101) return response;
+      const headers = new Headers(response.headers);
+      headers.set('Cache-Control', 'no-store');
+      const cors = corsHeaders(request);
+      for (const [k, v] of Object.entries(cors)) headers.set(k, v);
+      return new Response(response.body, { status: response.status, headers });
+    } catch (err) {
+      console.error('[SAFE Proxy] upstream fetch failed:', err);
+      return json({ error: 'BadGateway', message: 'SAFE worker unavailable' }, 502, request);
+    }
   }
 
   // ORIGIN_API points to the Worker, which handles all routing:

@@ -69,7 +69,9 @@ async function apiStart() {
   const base = getWorkerUrl();
   const res = await fetch(base + '/api/safe/start', {
     method: 'POST',
-    headers: authHeaders(),
+    headers: {
+      'Authorization': authHeaders()['Authorization'],
+    },
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
@@ -85,7 +87,9 @@ async function apiStop() {
   const base = getWorkerUrl();
   await fetch(base + '/api/safe/stop', {
     method: 'POST',
-    headers: authHeaders(),
+    headers: {
+      'Authorization': authHeaders()['Authorization'],
+    },
   }).catch(() => {});
 }
 
@@ -95,7 +99,9 @@ async function apiStop() {
 async function apiStatus() {
   const base = getWorkerUrl();
   const res = await fetch(base + '/api/safe/status', {
-    headers: authHeaders(),
+    headers: {
+      'Authorization': authHeaders()['Authorization'],
+    },
   });
   if (!res.ok) return { status: 'unknown' };
   return res.json();
