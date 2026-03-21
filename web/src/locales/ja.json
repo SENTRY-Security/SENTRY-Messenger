@@ -868,7 +868,9 @@
     "pdfUnlock": "ロック解除",
     "pdfPasswordEmpty": "パスワードを入力してください",
     "pdfPasswordWrong": "パスワードが間違っています",
-    "togglePassword": "パスワードの表示/非表示"
+    "togglePassword": "パスワードの表示/非表示",
+    "downloadPptx": "PowerPoint をダウンロード",
+    "pptxLoadFailed": "PowerPoint の読み込みに失敗しました：{{error}}"
   },
   "mediaHandling": {
     "videoDataIncomplete": "動画データが不完全なため再生できません",

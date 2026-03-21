@@ -868,7 +868,9 @@
     "pdfUnlock": "ปลดล็อก",
     "pdfPasswordEmpty": "กรุณาใส่รหัสผ่าน",
     "pdfPasswordWrong": "รหัสผ่านไม่ถูกต้อง โปรดลองอีกครั้ง",
-    "togglePassword": "แสดง/ซ่อนรหัสผ่าน"
+    "togglePassword": "แสดง/ซ่อนรหัสผ่าน",
+    "downloadPptx": "ดาวน์โหลด PowerPoint",
+    "pptxLoadFailed": "โหลด PowerPoint ล้มเหลว: {{error}}"
   },
   "mediaHandling": {
     "videoDataIncomplete": "ข้อมูลวิดีโอไม่สมบูรณ์ ไม่สามารถเล่นได้",

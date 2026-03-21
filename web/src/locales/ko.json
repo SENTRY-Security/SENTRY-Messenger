@@ -868,7 +868,9 @@
     "pdfUnlock": "잠금 해제",
     "pdfPasswordEmpty": "비밀번호를 입력하세요",
     "pdfPasswordWrong": "비밀번호가 틀렸습니다. 다시 시도하세요",
-    "togglePassword": "비밀번호 표시/숨기기"
+    "togglePassword": "비밀번호 표시/숨기기",
+    "downloadPptx": "PowerPoint 다운로드",
+    "pptxLoadFailed": "PowerPoint 로드 실패: {{error}}"
   },
   "mediaHandling": {
     "videoDataIncomplete": "동영상 데이터가 불완전하여 재생할 수 없습니다",

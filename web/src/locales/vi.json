@@ -868,7 +868,9 @@
     "pdfUnlock": "Mở khóa",
     "pdfPasswordEmpty": "Vui lòng nhập mật khẩu",
     "pdfPasswordWrong": "Sai mật khẩu, vui lòng thử lại",
-    "togglePassword": "Hiện/ẩn mật khẩu"
+    "togglePassword": "Hiện/ẩn mật khẩu",
+    "downloadPptx": "Tải PowerPoint",
+    "pptxLoadFailed": "Tải PowerPoint thất bại: {{error}}"
   },
   "mediaHandling": {
     "videoDataIncomplete": "Dữ liệu video không đầy đủ, không thể phát",
