@@ -49,9 +49,12 @@ export class BrowserSession extends Container {
     // ── Status check ───────────────────────────────────────────
     if (path === '/api/safe/status' && request.method === 'GET') {
       const state = await this.getState();
+      const startedAt = await this.ctx.storage.get('started_at');
+      const elapsed = startedAt ? Math.round((Date.now() - startedAt) / 1000) : null;
       return Response.json({
         status: state,
         port: this.defaultPort,
+        elapsed,
       });
     }
 
@@ -68,11 +71,29 @@ export class BrowserSession extends Container {
         // Set password before starting
         this.envVars = { VNC_PW: vncPassword };
 
-        // Start container and wait for noVNC to be ready on port 6901
-        await this.startAndWaitForPorts();
+        // Check if already running
+        const currentState = await this.getState();
+        if (currentState === 'running') {
+          return Response.json({
+            status: 'running',
+            password: vncPassword,
+            browserPath: '/api/safe/browser/',
+          });
+        }
+
+        // Record start time for elapsed tracking
+        await this.ctx.storage.put('started_at', Date.now());
+
+        // Start container in background — don't block the response.
+        // Frontend will poll /api/safe/status every 3s to track progress.
+        this.ctx.waitUntil(
+          this.startAndWaitForPorts().catch(err => {
+            console.error('[SAFE] Background start failed:', err?.message);
+          })
+        );
 
         return Response.json({
-          status: 'running',
+          status: 'starting',
           password: vncPassword,
           browserPath: '/api/safe/browser/',
         });

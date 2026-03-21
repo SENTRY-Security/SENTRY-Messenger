@@ -1163,6 +1163,7 @@ function initSafeBrowser() {
   const resumeBtn = document.getElementById('safe-resume-btn');
   const errorMsg = document.getElementById('safe-error-msg');
   const statusSpan = document.getElementById('safe-status');
+  const startingDetail = document.getElementById('safe-starting-detail');
 
   // Toolbar buttons
   const btnStop = document.getElementById('safe-btn-stop');
@@ -1184,6 +1185,16 @@ function initSafeBrowser() {
     iframe.style.height = (available - toolbarH) + 'px';
   }
 
+  function formatContainerStatus(containerStatus, elapsed) {
+    const sec = elapsed != null ? `${elapsed}s` : '';
+    switch (containerStatus) {
+      case 'starting': return `Container provisioning… ${sec}`;
+      case 'imageDownloading': return `Downloading image… ${sec}`;
+      case 'creating': return `Creating container… ${sec}`;
+      default: return containerStatus ? `${containerStatus}… ${sec}` : `Preparing… ${sec}`;
+    }
+  }
+
   // State machine — react to safe-browser.js state changes
   safeBrowser.onStateChange((state, detail) => {
     switch (state) {
@@ -1193,8 +1204,15 @@ function initSafeBrowser() {
 
       case 'starting': {
         showPanel('starting');
+
+        // Update status detail text during polling
+        if (startingDetail && detail?.containerStatus) {
+          startingDetail.textContent = formatContainerStatus(detail.containerStatus, detail.elapsed);
+        }
+
         // When iframeUrl is ready, load it
         if (iframe && detail?.iframeUrl) {
+          if (startingDetail) startingDetail.textContent = 'Loading browser…';
           iframe.src = detail.iframeUrl;
           iframe.onload = () => safeBrowser.markConnected();
           iframe.onerror = () => safeBrowser.markError('Failed to load browser');

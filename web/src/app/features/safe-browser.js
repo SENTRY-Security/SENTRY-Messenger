@@ -18,10 +18,15 @@ let _state = 'idle'; // idle | starting | connected | stopped | error
 let _listeners = [];
 let _iframeUrl = null;
 let _lastError = null;
+let _pollTimer = null;
+let _containerStatus = null; // raw container state from backend (e.g. 'starting', 'running')
+let _elapsed = null;         // seconds since container start was requested
 
 export function getState() { return _state; }
 export function getIframeUrl() { return _iframeUrl; }
 export function getLastError() { return _lastError; }
+export function getContainerStatus() { return _containerStatus; }
+export function getElapsed() { return _elapsed; }
 
 export function onStateChange(fn) {
   _listeners.push(fn);
@@ -48,7 +53,7 @@ function getWorkerUrl() {
   }
   // 2. Same-origin: safe-worker deployed as route on same domain
   //    (via Cloudflare Pages Function or Service Binding)
-  return '';
+  return window.location.origin;
 }
 
 // ── API calls ────────────────────────────────────────────────────
@@ -107,6 +112,40 @@ async function apiStatus() {
   return res.json();
 }
 
+// ── Polling ──────────────────────────────────────────────────────
+
+function stopPolling() {
+  if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+}
+
+function startPolling(password) {
+  stopPolling();
+  _pollTimer = setInterval(async () => {
+    try {
+      const data = await apiStatus();
+      _containerStatus = data.status;
+      _elapsed = data.elapsed;
+
+      // Notify listeners so UI can update the status text
+      for (const fn of _listeners) {
+        try { fn(_state, { containerStatus: data.status, elapsed: data.elapsed }); }
+        catch (e) { /* ignore */ }
+      }
+
+      // Container is ready — load the iframe
+      if (data.status === 'running') {
+        stopPolling();
+        const base = getWorkerUrl();
+        const iframeUrl = new URL(base + '/api/safe/browser/');
+        if (password) iframeUrl.searchParams.set('password', password);
+        setState('starting', { iframeUrl: iframeUrl.toString() });
+      }
+    } catch (err) {
+      log({ safePollError: err?.message });
+    }
+  }, 3000);
+}
+
 // ── Public API ───────────────────────────────────────────────────
 
 /**
@@ -118,18 +157,24 @@ export async function autoStart() {
   if (_state === 'starting' || _state === 'connected') return;
 
   setState('starting');
+  _containerStatus = null;
+  _elapsed = null;
 
   try {
     const result = await apiStart();
 
-    // Build iframe URL: Worker proxies /api/safe/browser/ to KasmVNC
-    const base = getWorkerUrl();
-    const iframeUrl = new URL(base + '/api/safe/browser/');
-    if (result.password) {
-      iframeUrl.searchParams.set('password', result.password);
+    if (result.status === 'running') {
+      // Container already running — load iframe immediately
+      const base = getWorkerUrl();
+      const iframeUrl = new URL(base + '/api/safe/browser/');
+      if (result.password) iframeUrl.searchParams.set('password', result.password);
+      setState('starting', { iframeUrl: iframeUrl.toString() });
+    } else {
+      // Container is starting/building — poll every 3s
+      _containerStatus = result.status;
+      setState('starting', { containerStatus: result.status, elapsed: 0 });
+      startPolling(result.password);
     }
-
-    setState('starting', { iframeUrl: iframeUrl.toString() });
   } catch (err) {
     log({ safeAutoStartError: err?.message });
     setState('error', { error: err?.message || 'Failed to start browser' });
@@ -154,6 +199,7 @@ export function markError(message) {
  * Stop the browser session.
  */
 export async function stop() {
+  stopPolling();
   setState('stopped');
   _iframeUrl = null;
   await apiStop();
