@@ -2779,6 +2779,96 @@ async function buildVideoPreviewBlob(file) {
   }
 }
 
+const EXCEL_MIMES = [
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel',
+  'application/vnd.ms-excel.sheet.macroenabled.12',
+  'text/csv'
+];
+
+function isExcelFile(file) {
+  const ct = resolveContentType(file).toLowerCase().split(';')[0].trim();
+  if (EXCEL_MIMES.some(m => ct === m)) return true;
+  const name = file?.name || '';
+  return /\.(xlsx|xls|xlsm|csv)$/i.test(name);
+}
+
+async function buildExcelPreviewBlob(file) {
+  if (!file) return null;
+  try {
+    const mod = await import(/* webpackIgnore: true */ '/assets/libs/xlsx.min.mjs');
+    const XLSX = mod.default || mod.XLSX || mod;
+    const data = new Uint8Array(await file.arrayBuffer());
+    const wb = XLSX.read(data, { type: 'array', sheetRows: 20 });
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    if (!sheet) return null;
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+    if (!rows.length) return null;
+
+    // Draw a mini spreadsheet onto canvas
+    const MAX_ROWS = Math.min(rows.length, 15);
+    const MAX_COLS = Math.min(Math.max(...rows.slice(0, MAX_ROWS).map(r => r.length)), 8);
+    if (!MAX_COLS) return null;
+
+    const CELL_W = 110, CELL_H = 28, HEADER_H = 32, PAD = 12;
+    const cw = PAD * 2 + MAX_COLS * CELL_W;
+    const ch = PAD + HEADER_H + MAX_ROWS * CELL_H + PAD;
+    const canvas = document.createElement('canvas');
+    canvas.width = cw;
+    canvas.height = ch;
+    const ctx = canvas.getContext('2d');
+
+    // Background
+    ctx.fillStyle = '#111827';
+    ctx.fillRect(0, 0, cw, ch);
+
+    // Header row
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(PAD, PAD, MAX_COLS * CELL_W, HEADER_H);
+
+    // Grid lines + text
+    ctx.font = '13px -apple-system, sans-serif';
+    ctx.textBaseline = 'middle';
+    for (let r = 0; r < MAX_ROWS; r++) {
+      const row = rows[r] || [];
+      const y = PAD + HEADER_H + r * CELL_H;
+      // Alternating row bg
+      if (r > 0 && r % 2 === 0) {
+        ctx.fillStyle = 'rgba(148,163,184,0.04)';
+        ctx.fillRect(PAD, y, MAX_COLS * CELL_W, CELL_H);
+      }
+      for (let c = 0; c < MAX_COLS; c++) {
+        const x = PAD + c * CELL_W;
+        const cellY = r === 0 ? PAD : y;
+        const cellH = r === 0 ? HEADER_H : CELL_H;
+        // Cell border
+        ctx.strokeStyle = 'rgba(148,163,184,0.12)';
+        ctx.strokeRect(x, cellY, CELL_W, cellH);
+        // Cell text
+        const val = String(row[c] ?? '').slice(0, 14);
+        ctx.fillStyle = r === 0 ? '#94a3b8' : '#e2e8f0';
+        ctx.font = r === 0 ? 'bold 12px -apple-system, sans-serif' : '12px -apple-system, sans-serif';
+        ctx.fillText(val, x + 6, cellY + cellH / 2);
+      }
+    }
+
+    const target = scaleToPreviewSize(cw, ch);
+    if (target.width && target.height && (target.width !== cw || target.height !== ch)) {
+      const scaled = document.createElement('canvas');
+      scaled.width = target.width;
+      scaled.height = target.height;
+      scaled.getContext('2d').drawImage(canvas, 0, 0, target.width, target.height);
+      const blob = await canvasToJpegBlob(scaled);
+      return { blob, width: target.width, height: target.height, contentType: 'image/jpeg' };
+    }
+    const blob = await canvasToJpegBlob(canvas);
+    return { blob, width: cw, height: ch, contentType: 'image/jpeg' };
+  } catch (err) {
+    logDrSend('excel-preview-failed', { error: err?.message || err });
+    return null;
+  }
+}
+
 export async function buildMediaPreviewBlob(file) {
   const type = resolveContentType(file).toLowerCase();
   if (type.startsWith('image/')) {
@@ -2791,6 +2881,9 @@ export async function buildMediaPreviewBlob(file) {
       logDrSend('video-preview-failed', { error: err?.message || err });
       return null;
     }
+  }
+  if (isExcelFile(file)) {
+    return buildExcelPreviewBlob(file);
   }
   return null;
 }
