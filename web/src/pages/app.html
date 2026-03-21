@@ -684,33 +684,57 @@
       </div>
     </section>
     <section id="tab-safe" class="tab" style="display:none">
-      <!-- SAFE: Secure Application Frontend Environment
-           Zero-config: auto-starts a browser container when the tab is opened. -->
+      <div style="padding:16px;">
+        <!-- Header -->
+        <div style="text-align:center;margin-bottom:20px;">
+          <div style="font-size:22px;font-weight:700;letter-spacing:1px;" data-i18n="safe.brand">SAFE™</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px;" data-i18n="safe.tagline">Secure Application Frontend Environment</div>
+        </div>
 
-      <!-- State: Starting (shown automatically on first open) -->
-      <div id="safe-starting" style="text-align:center;padding:48px 24px;">
-        <div class="spinner" style="margin:0 auto 16px;"></div>
-        <p style="color:var(--muted);font-size:14px;" data-i18n="safe.starting">Starting browser...</p>
-        <p id="safe-starting-detail" style="color:var(--muted);font-size:12px;margin-top:8px;" data-i18n="safe.startingHint">First launch may take a few seconds.</p>
-      </div>
+        <!-- Status card -->
+        <div class="card" style="padding:16px;margin-bottom:16px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+            <span style="font-size:13px;font-weight:600;" data-i18n="safe.containerStatus">Instance Status</span>
+            <span id="safe-status-badge" style="font-size:11px;padding:3px 10px;border-radius:12px;font-weight:600;background:var(--bg-hover);color:var(--muted);">--</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px;font-size:12px;color:var(--muted);">
+            <div style="display:flex;justify-content:space-between;">
+              <span data-i18n="safe.statusLabel">Status</span>
+              <span id="safe-status-text">--</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;">
+              <span data-i18n="safe.elapsedLabel">Uptime</span>
+              <span id="safe-elapsed-text">--</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;">
+              <span data-i18n="safe.port">Port</span>
+              <span id="safe-port-text">6901</span>
+            </div>
+          </div>
+        </div>
 
+        <!-- Actions -->
+        <div style="display:flex;gap:8px;margin-bottom:16px;">
+          <button id="safe-btn-start" type="button" class="primary" style="flex:1;padding:10px;border-radius:8px;font-size:13px;font-weight:600;">
+            <i class='bx bx-play'></i>
+            <span data-i18n="safe.start">Start</span>
+          </button>
+          <button id="safe-btn-stop" type="button" class="secondary" style="flex:1;padding:10px;border-radius:8px;font-size:13px;font-weight:600;" disabled>
+            <i class='bx bx-stop'></i>
+            <span data-i18n="safe.stop">Stop</span>
+          </button>
+        </div>
 
-      <!-- State: Stopped (user explicitly stopped, or idle shutdown) -->
-      <div id="safe-stopped" style="display:none;text-align:center;padding:48px 24px;">
-        <i class='bx bx-power-off' style="font-size:48px;color:var(--muted);"></i>
-        <p style="color:var(--muted);margin:12px 0;" data-i18n="safe.stopped">Browser stopped.</p>
-        <button id="safe-resume-btn" type="button" class="primary"
-                style="padding:12px 32px;border-radius:8px;font-size:14px;font-weight:600;">
-          <i class='bx bx-play'></i>
-          <span data-i18n="safe.resume">Resume</span>
+        <button id="safe-btn-open" type="button" class="primary" style="width:100%;padding:14px;border-radius:8px;font-size:15px;font-weight:700;margin-bottom:16px;letter-spacing:0.5px;" disabled>
+          <i class='bx bx-log-in'></i>
+          <span data-i18n="safe.enterSafe">Enter SAFE™</span>
         </button>
-      </div>
 
-      <!-- State: Error -->
-      <div id="safe-error" style="display:none;text-align:center;padding:48px 24px;">
-        <i class='bx bx-error-circle' style="font-size:48px;color:var(--danger);"></i>
-        <p id="safe-error-msg" style="color:var(--danger);margin:12px 0;"></p>
-        <button id="safe-retry-btn" type="button" class="secondary" data-i18n="safe.retry">Retry</button>
+        <!-- Error display -->
+        <div id="safe-error" style="display:none;text-align:center;padding:12px;margin-top:8px;">
+          <i class='bx bx-error-circle' style="font-size:28px;color:var(--danger);"></i>
+          <p id="safe-error-msg" style="color:var(--danger);margin:8px 0;font-size:12px;"></p>
+        </div>
       </div>
     </section>
     <section id="tab-profile" class="tab">

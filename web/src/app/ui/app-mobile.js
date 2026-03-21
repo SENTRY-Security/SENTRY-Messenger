@@ -1153,38 +1153,60 @@ function initSafeBrowser() {
   if (_safeInitialized) return;
   _safeInitialized = true;
 
-  const startingEl = document.getElementById('safe-starting');
-  const stoppedEl = document.getElementById('safe-stopped');
+  // ── DOM refs ───────────────────────────────────────────────────
+  const statusBadge = document.getElementById('safe-status-badge');
+  const statusText = document.getElementById('safe-status-text');
+  const elapsedText = document.getElementById('safe-elapsed-text');
   const errorEl = document.getElementById('safe-error');
-
-  const retryBtn = document.getElementById('safe-retry-btn');
-  const resumeBtn = document.getElementById('safe-resume-btn');
   const errorMsg = document.getElementById('safe-error-msg');
-  const startingDetail = document.getElementById('safe-starting-detail');
+  const btnStart = document.getElementById('safe-btn-start');
+  const btnStop = document.getElementById('safe-btn-stop');
+  const btnOpen = document.getElementById('safe-btn-open');
 
-  function showPanel(name) {
-    if (startingEl) startingEl.style.display = name === 'starting' ? '' : 'none';
-    if (stoppedEl) stoppedEl.style.display = name === 'stopped' ? '' : 'none';
-    if (errorEl) errorEl.style.display = name === 'error' ? '' : 'none';
+  // ── Status badge colors ────────────────────────────────────────
+  const badgeStyles = {
+    stopped:    { bg: 'var(--bg-hover)', color: 'var(--muted)' },
+    running:    { bg: '#fef3c7',         color: '#92400e' },
+    healthy:    { bg: '#d1fae5',         color: '#065f46' },
+    stopping:   { bg: '#fef3c7',         color: '#92400e' },
+    error:      { bg: '#fee2e2',         color: '#991b1b' },
+  };
+
+  function statusI18nKey(s) {
+    switch (s) {
+      case 'stopped':          return 'safe.statusStopped';
+      case 'stopped_with_code': return 'safe.statusStopped';
+      case 'running':          return 'safe.statusRunning';
+      case 'stopping':         return 'safe.statusStopping';
+      case 'healthy':          return 'safe.statusHealthy';
+      default:                 return 'safe.statusDefault';
+    }
   }
 
-  function formatContainerStatus(containerStatus, elapsed) {
-    const sec = elapsed != null ? t('safe.statusElapsed', { seconds: elapsed }) : '';
-    let msg;
-    switch (containerStatus) {
-      case 'stopped':
-      case 'stopped_with_code':
-        msg = t('safe.statusStopped'); break;
-      case 'running':
-        msg = t('safe.statusRunning'); break;
-      case 'stopping':
-        msg = t('safe.statusStopping'); break;
-      case 'healthy':
-        return t('safe.statusHealthy');
-      default:
-        msg = t('safe.statusDefault'); break;
+  function updatePanel(containerStatus, elapsed) {
+    const s = containerStatus || 'stopped';
+    const label = t(statusI18nKey(s));
+
+    if (statusText) statusText.textContent = label;
+    if (elapsedText) elapsedText.textContent = elapsed != null ? t('safe.statusElapsed', { seconds: elapsed }) : '--';
+
+    // Badge
+    if (statusBadge) {
+      statusBadge.textContent = label;
+      const style = badgeStyles[s] || badgeStyles.stopped;
+      statusBadge.style.background = style.bg;
+      statusBadge.style.color = style.color;
     }
-    return sec ? `${msg} ${sec}` : msg;
+
+    // Button states
+    const isRunning = s === 'running' || s === 'healthy';
+    const isStopped = s === 'stopped' || s === 'stopped_with_code';
+    if (btnStart) btnStart.disabled = !isStopped;
+    if (btnStop) btnStop.disabled = isStopped;
+    if (btnOpen) btnOpen.disabled = s !== 'healthy';
+
+    // Error
+    if (errorEl) errorEl.style.display = 'none';
   }
 
   // ── SAFE modal (same pattern as PDF viewer) ─────────────────────
@@ -1195,7 +1217,6 @@ function initSafeBrowser() {
     const body = document.getElementById('modalBody');
     if (!modalEl || !body) return;
 
-    // Close any existing modal content
     _safeModalCleanup?.();
 
     modalEl.classList.add('safe-modal');
@@ -1212,12 +1233,10 @@ function initSafeBrowser() {
         </button>
       </div>`;
 
-    // Show modal
     modalEl.style.display = 'flex';
     modalEl.setAttribute('aria-hidden', 'false');
     document.body.classList.add('modal-open');
 
-    // Exit handler
     const cleanup = () => {
       const iframe = body.querySelector('iframe');
       if (iframe) iframe.src = 'about:blank';
@@ -1241,63 +1260,62 @@ function initSafeBrowser() {
     _safeModalCleanup?.();
   }
 
-  // ── State machine — react to safe-browser.js state changes ─────
+  // ── State machine ─────────────────────────────────────────────
   safeBrowser.onStateChange((state, detail) => {
     switch (state) {
       case 'idle':
-        showPanel('starting');
+        updatePanel('stopped', null);
         break;
 
-      case 'starting': {
-        showPanel('starting');
-
-        // Update status detail text during polling
-        if (startingDetail && detail?.containerStatus) {
-          startingDetail.textContent = formatContainerStatus(detail.containerStatus, detail.elapsed);
+      case 'starting':
+        if (detail?.containerStatus) {
+          updatePanel(detail.containerStatus, detail.elapsed);
+        } else {
+          updatePanel('running', detail?.elapsed ?? null);
         }
 
-        // When iframeUrl is ready → open modal view (like PDF)
+        // When iframeUrl is ready → enable "Open Browser" button (user clicks to open modal)
         if (detail?.iframeUrl) {
-          if (startingDetail) startingDetail.textContent = t('safe.statusHealthy');
-          openSafeModal(detail.iframeUrl);
-          // Mark connected after a short delay (cross-origin onload unreliable)
+          updatePanel('healthy', detail?.elapsed);
           setTimeout(() => {
             if (safeBrowser.getState() === 'starting') safeBrowser.markConnected();
           }, 5000);
         }
         break;
-      }
 
       case 'connected':
-        // Modal is already open, nothing to do
+        updatePanel('healthy', safeBrowser.getElapsed());
         break;
 
       case 'stopped':
         closeSafeModal();
-        showPanel('stopped');
+        updatePanel('stopped', null);
         break;
 
       case 'error':
         closeSafeModal();
-        showPanel('error');
+        updatePanel('stopped', null);
+        if (errorEl) errorEl.style.display = '';
         if (errorMsg) errorMsg.textContent = detail?.error || 'Connection error';
         break;
     }
   });
 
-  // Resume / Retry buttons
-  resumeBtn?.addEventListener('click', () => safeBrowser.resume());
-  retryBtn?.addEventListener('click', () => safeBrowser.retry());
+  // ── Button handlers ─────────────────────────────────────────────
+  btnStart?.addEventListener('click', () => safeBrowser.autoStart());
+  btnStop?.addEventListener('click', () => safeBrowser.stop());
+  btnOpen?.addEventListener('click', () => {
+    const url = safeBrowser.getIframeUrl();
+    if (url) openSafeModal(url);
+  });
 
-  showPanel('starting');
+  // Initial state
+  updatePanel('stopped', null);
 }
 
-// Called when SAFE tab becomes active — auto-start if not already running
+// Called when SAFE tab becomes active — no longer auto-starts
 function onSafeTabActivated() {
-  if (!_safeAutoStarted || safeBrowser.getState() === 'idle') {
-    _safeAutoStarted = true;
-    safeBrowser.autoStart();
-  }
+  // Panel shows current state; user clicks Start manually
 }
 let _restoreContactsBars = null;
 function switchTab(name, options = {}) {
