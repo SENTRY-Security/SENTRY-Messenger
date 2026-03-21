@@ -859,7 +859,10 @@
     "excelEmpty": "このシートは空です",
     "excelLoadFailed": "Excel の読み込みに失敗しました：{{error}}",
     "downloadWord": "Word をダウンロード",
-    "wordLoadFailed": "Word の読み込みに失敗しました：{{error}}"
+    "wordLoadFailed": "Word の読み込みに失敗しました：{{error}}",
+    "downloadZip": "アーカイブをダウンロード",
+    "zipFiles": "ファイル",
+    "zipLoadFailed": "アーカイブの読み込みに失敗しました：{{error}}"
   },
   "mediaHandling": {
     "videoDataIncomplete": "動画データが不完全なため再生できません",

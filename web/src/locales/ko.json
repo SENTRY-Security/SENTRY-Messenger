@@ -859,7 +859,10 @@
     "excelEmpty": "이 시트는 비어 있습니다",
     "excelLoadFailed": "Excel 로드 실패: {{error}}",
     "downloadWord": "Word 다운로드",
-    "wordLoadFailed": "Word 로드 실패: {{error}}"
+    "wordLoadFailed": "Word 로드 실패: {{error}}",
+    "downloadZip": "압축 파일 다운로드",
+    "zipFiles": "개 파일",
+    "zipLoadFailed": "압축 파일 로드 실패: {{error}}"
   },
   "mediaHandling": {
     "videoDataIncomplete": "동영상 데이터가 불완전하여 재생할 수 없습니다",

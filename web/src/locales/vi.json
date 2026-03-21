@@ -859,7 +859,10 @@
     "excelEmpty": "Trang tính này trống",
     "excelLoadFailed": "Tải Excel thất bại: {{error}}",
     "downloadWord": "Tải Word",
-    "wordLoadFailed": "Tải Word thất bại: {{error}}"
+    "wordLoadFailed": "Tải Word thất bại: {{error}}",
+    "downloadZip": "Tải tệp nén",
+    "zipFiles": "tệp",
+    "zipLoadFailed": "Tải tệp nén thất bại: {{error}}"
   },
   "mediaHandling": {
     "videoDataIncomplete": "Dữ liệu video không đầy đủ, không thể phát",
