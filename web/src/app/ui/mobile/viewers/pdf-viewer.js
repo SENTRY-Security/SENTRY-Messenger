@@ -110,34 +110,40 @@ export async function renderPdfViewer({ url, name, modalApi }) {
     return Math.min(3, Math.max(0.6, available / viewport.width));
   };
 
-  // Render a single page into its canvas
-  const renderPageCanvas = async (entry) => {
-    if (entry.rendered || entry.rendering) return;
+  // Render a page canvas at a given render scale; CSS size stays at fitScale dimensions
+  const renderPageAt = async (entry, renderScale) => {
+    if (entry.rendering) return;
     entry.rendering = true;
     try {
       const page = await pdfDoc.getPage(entry.pageNum);
       const baseViewport = page.getViewport({ scale: 1 });
-      if (entry.pageNum === 1) {
+      if (entry.pageNum === 1 && !entry.rendered) {
         fitScale = computeFitScale(baseViewport);
       }
-      const viewport = page.getViewport({ scale: fitScale });
+      const cssViewport = page.getViewport({ scale: fitScale });
+      const hiresViewport = page.getViewport({ scale: renderScale });
       const canvas = entry.canvas;
       const ctx = canvas.getContext('2d');
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      canvas.style.width = `${viewport.width}px`;
-      canvas.style.height = `${viewport.height}px`;
-      // Size wrap to exact content dimensions — no whitespace
-      entry.wrap.style.width = `${viewport.width}px`;
-      entry.wrap.style.height = `${viewport.height}px`;
+      // High-res pixel buffer
+      canvas.width = hiresViewport.width;
+      canvas.height = hiresViewport.height;
+      // CSS size stays at fit dimensions (visual 1x size)
+      canvas.style.width = `${cssViewport.width}px`;
+      canvas.style.height = `${cssViewport.height}px`;
+      entry.wrap.style.width = `${cssViewport.width}px`;
+      entry.wrap.style.height = `${cssViewport.height}px`;
       entry.wrap.style.minHeight = '0';
-      await page.render({ canvasContext: ctx, viewport }).promise;
+      await page.render({ canvasContext: ctx, viewport: hiresViewport }).promise;
       entry.rendered = true;
+      entry.currentRenderScale = renderScale;
     } catch (err) {
       log({ pdfPageRenderError: err?.message, page: entry.pageNum });
     }
     entry.rendering = false;
   };
+
+  // Initial render at fitScale
+  const renderPageCanvas = (entry) => renderPageAt(entry, fitScale);
 
   // ── Per-page pinch-zoom + pan ──
   const attachPageGesture = (entry) => {
@@ -149,11 +155,11 @@ export async function renderPdfViewer({ url, name, modalApi }) {
     let pinchStartMid = null, pinchStartTx = 0, pinchStartTy = 0;
     let panStart = null;
     let lastTapTime = 0;
+    let hiresTimer = null;
 
     const applyTransform = () => {
       canvas.style.transform = `translate(${tx}px, ${ty}px) scale(${zoom})`;
       canvas.style.transformOrigin = '0 0';
-      // Allow stage scroll when page is at 1x; lock when zoomed
       wrap.style.touchAction = zoom > 1.01 ? 'none' : 'pan-y';
     };
 
@@ -163,17 +169,47 @@ export async function renderPdfViewer({ url, name, modalApi }) {
       const h = canvas.offsetHeight * zoom;
       const ww = wrap.clientWidth;
       const wh = wrap.clientHeight;
-      const maxTx = 0;
-      const minTx = Math.min(0, ww - w);
-      const maxTy = 0;
-      const minTy = Math.min(0, wh - h);
-      tx = Math.max(minTx, Math.min(maxTx, tx));
-      ty = Math.max(minTy, Math.min(maxTy, ty));
+      tx = Math.max(Math.min(0, ww - w), Math.min(0, tx));
+      ty = Math.max(Math.min(0, wh - h), Math.min(0, ty));
+    };
+
+    // Re-render at high resolution, then reset CSS transform
+    const scheduleHiresRender = () => {
+      if (hiresTimer) clearTimeout(hiresTimer);
+      if (zoom <= 1.05) return;
+      hiresTimer = setTimeout(async () => {
+        hiresTimer = null;
+        const targetZoom = zoom;
+        const targetRenderScale = fitScale * targetZoom;
+        // Cap render scale to avoid excessive memory use
+        const maxRenderScale = fitScale * 5;
+        const renderScale = Math.min(maxRenderScale, targetRenderScale);
+        if (entry.currentRenderScale && Math.abs(entry.currentRenderScale - renderScale) < 0.1) return;
+        // Save current pan ratio before re-render
+        const panRatioX = canvas.offsetWidth > 0 ? tx / (canvas.offsetWidth * zoom) : 0;
+        const panRatioY = canvas.offsetHeight > 0 ? ty / (canvas.offsetHeight * zoom) : 0;
+        entry.rendered = false;
+        await renderPageAt(entry, renderScale);
+        // After re-render: canvas CSS size is still fitScale dimensions,
+        // but pixel buffer is hi-res. Keep CSS transform for pan only (zoom=1 visually via hi-res pixels).
+        // Actually we keep the CSS zoom so the visual size = cssSize * zoom stays the same.
+        // The hi-res buffer just provides sharper pixels within that zoomed view.
+        tx = panRatioX * canvas.offsetWidth * zoom;
+        ty = panRatioY * canvas.offsetHeight * zoom;
+        clampPan();
+        applyTransform();
+      }, 250);
     };
 
     const resetZoom = () => {
+      if (hiresTimer) { clearTimeout(hiresTimer); hiresTimer = null; }
       zoom = 1; tx = 0; ty = 0;
       applyTransform();
+      // Re-render at base fitScale if we had a hi-res render
+      if (entry.currentRenderScale && entry.currentRenderScale > fitScale + 0.1) {
+        entry.rendered = false;
+        renderPageAt(entry, fitScale);
+      }
     };
 
     const pDist = () => {
@@ -203,9 +239,8 @@ export async function renderPdfViewer({ url, name, modalApi }) {
       } else if (activePointers.size === 1) {
         const now = Date.now();
         if (now - lastTapTime < 300) {
-          // Double-tap toggle
           if (zoom > 1.2) {
-            zoom = 1; tx = 0; ty = 0;
+            resetZoom();
           } else {
             const rect = wrap.getBoundingClientRect();
             const tapX = e.clientX - rect.left;
@@ -214,8 +249,9 @@ export async function renderPdfViewer({ url, name, modalApi }) {
             tx = wrap.clientWidth / 2 - tapX * zoom;
             ty = wrap.clientHeight / 2 - tapY * zoom;
             clampPan();
+            applyTransform();
+            scheduleHiresRender();
           }
-          applyTransform();
           lastTapTime = 0;
           return;
         }
@@ -233,7 +269,6 @@ export async function renderPdfViewer({ url, name, modalApi }) {
         e.preventDefault();
         const dist = pDist();
         const newZoom = Math.min(5, Math.max(1, pinchStartZoom * (dist / pinchStartDist)));
-        // Pinch towards midpoint
         const mid = pMid();
         const rect = wrap.getBoundingClientRect();
         const focusX = pinchStartMid.x - rect.left;
@@ -265,8 +300,11 @@ export async function renderPdfViewer({ url, name, modalApi }) {
       }
       if (activePointers.size === 0) {
         panStart = null;
-        // Snap back if barely zoomed
-        if (zoom < 1.05) resetZoom();
+        if (zoom < 1.05) {
+          resetZoom();
+        } else {
+          scheduleHiresRender();
+        }
       }
     };
 
@@ -277,6 +315,7 @@ export async function renderPdfViewer({ url, name, modalApi }) {
 
     entry.zoom = { reset: resetZoom, getZoom: () => zoom };
     gestureCleanups.push(() => {
+      if (hiresTimer) clearTimeout(hiresTimer);
       wrap.removeEventListener('pointerdown', onDown);
       wrap.removeEventListener('pointermove', onMove);
       wrap.removeEventListener('pointerup', onUp);
@@ -315,7 +354,7 @@ export async function renderPdfViewer({ url, name, modalApi }) {
       canvas.className = 'pdf-canvas';
       wrap.appendChild(canvas);
       stage.appendChild(wrap);
-      const entry = { canvas, wrap, rendered: false, rendering: false, pageNum: i, zoom: null };
+      const entry = { canvas, wrap, rendered: false, rendering: false, pageNum: i, zoom: null, currentRenderScale: 0 };
       pageCanvases.push(entry);
       attachPageGesture(entry);
     }
