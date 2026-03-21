@@ -1109,6 +1109,27 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
   }
 
   /**
+   * Sort samples by baseDecodeTime and adjust durations so each sample's end
+   * exactly meets the next sample's start.
+   *
+   * Sorting is critical because the WebCodecs VideoEncoder may output chunks
+   * in a different order than the input frames' presentation timestamps —
+   * especially when the browser's hardware encoder uses B-frame reordering
+   * or internal buffering (even if Baseline profile was requested).  Without
+   * sorting, the multi-sample moof would have non-monotonic decode times,
+   * causing the browser to display frames out of order (the "forward a few
+   * frames, then jump back" stuttering pattern).
+   */
+  function normalizeSamples(samples) {
+    if (samples.length <= 1) return;
+    samples.sort((a, b) => a.baseDecodeTime - b.baseDecodeTime);
+    for (let i = 0; i < samples.length - 1; i++) {
+      const gap = samples[i + 1].baseDecodeTime - samples[i].baseDecodeTime;
+      if (gap > 0) samples[i].duration = gap;
+    }
+  }
+
+  /**
    * Flush accumulated per-track samples into multi-sample moof+mdat segments.
    * Produces at most 2 moofs per flush (one video, one audio) instead of
    * N per-sample moofs. This prevents iOS Safari from reporting fragmented
@@ -1120,13 +1141,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
     const fragments = [];
 
     if (pendingVideoSamples.length > 0) {
-      // Adjust durations so each sample's end exactly meets the next sample's
-      // start — eliminates rounding-induced 1-tick gaps that cause iOS Safari
-      // to report fragmented buffer ranges.
-      for (let i = 0; i < pendingVideoSamples.length - 1; i++) {
-        const gap = pendingVideoSamples[i + 1].baseDecodeTime - pendingVideoSamples[i].baseDecodeTime;
-        if (gap > 0) pendingVideoSamples[i].duration = gap;
-      }
+      normalizeSamples(pendingVideoSamples);
       const baseDts = pendingVideoSamples[0].baseDecodeTime;
       const frag = buildMultiSampleMoofMdat(incMuxVideoTrackId, ++segSequenceNum, pendingVideoSamples, baseDts);
       if (frag) fragments.push(frag);
@@ -1134,10 +1149,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
     }
 
     if (pendingAudioSamples.length > 0) {
-      for (let i = 0; i < pendingAudioSamples.length - 1; i++) {
-        const gap = pendingAudioSamples[i + 1].baseDecodeTime - pendingAudioSamples[i].baseDecodeTime;
-        if (gap > 0) pendingAudioSamples[i].duration = gap;
-      }
+      normalizeSamples(pendingAudioSamples);
       const baseDts = pendingAudioSamples[0].baseDecodeTime;
       const frag = buildMultiSampleMoofMdat(incMuxAudioTrackId, ++segSequenceNum, pendingAudioSamples, baseDts);
       if (frag) fragments.push(frag);
