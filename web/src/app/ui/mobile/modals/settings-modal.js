@@ -1,6 +1,17 @@
 // System settings modal (online status, auto-logout, logout redirect, change password)
 
 import { escapeHtml } from '../ui-utils.js';
+import { t, getCurrentLang, setLang, applyDOMTranslations } from '/locales/index.js';
+
+const SUPPORTED_LANGUAGES = [
+  { code: 'zh-Hant', label: '🇹🇼 繁體中文' },
+  { code: 'zh-Hans', label: '🇨🇳 简体中文' },
+  { code: 'en',      label: '🇺🇸 English' },
+  { code: 'ja',      label: '🇯🇵 日本語' },
+  { code: 'ko',      label: '🇰🇷 한국어' },
+  { code: 'th',      label: '🇹🇭 ภาษาไทย' },
+  { code: 'vi',      label: '🇻🇳 Tiếng Việt' }
+];
 
 const LOGOUT_REDIRECT_DEFAULT_URL = '/pages/logout.html';
 const LOGOUT_REDIRECT_PLACEHOLDER = 'https://example.com/logout';
@@ -16,7 +27,7 @@ export function createSettingsModule({ deps }) {
   const { log, showToast, sessionStore, openModal, closeModal, resetModalVariants,
     DEFAULT_SETTINGS, saveSettings, loadSettings,
     getMkRaw, getAccountDigest,
-    openChangePasswordModal, showAlertModal } = deps;
+    openChangePasswordModal, openPushModal, showAlertModal, onLabToggle } = deps;
 
   let initPromise = null;
   let customLogoutCtx = null;
@@ -60,7 +71,14 @@ export function createSettingsModule({ deps }) {
       try { console.info('[settings] boot:load:done ' + JSON.stringify({ ok: info.ok !== false, hasEnvelope: !!info.hasEnvelope, urlMode: info.urlMode || null, hasUrl: !!info.hasUrl, urlLen: info.urlLen || 0, ts: info.ts || null })); } catch { }
       const applied = settings || { ...DEFAULT_SETTINGS, updatedAt: Date.now() };
       sessionStore.settingsState = applied;
-      try { console.info('[settings] boot:apply ' + JSON.stringify({ autoLogoutRedirectMode: applied.autoLogoutRedirectMode || null, hasCustomLogoutUrl: !!applied.autoLogoutCustomUrl })); } catch { }
+      // Apply saved language preference from encrypted settings (post-login)
+      if (applied.language && applied.language !== getCurrentLang()) {
+        try {
+          await setLang(applied.language);
+          console.info('[settings] language applied from encrypted settings:', applied.language);
+        } catch (err) { console.warn('[settings] language apply failed', err); }
+      }
+      try { console.info('[settings] boot:apply ' + JSON.stringify({ autoLogoutRedirectMode: applied.autoLogoutRedirectMode || null, hasCustomLogoutUrl: !!applied.autoLogoutCustomUrl, language: applied.language || null })); } catch { }
       return applied;
     } catch (err) {
       try { console.info('[settings] boot:load:done ' + JSON.stringify({ ok: false, hasEnvelope: true, reason: err?.message || String(err), ts: null })); } catch { }
@@ -120,20 +138,20 @@ export function createSettingsModule({ deps }) {
     if (!input || !saveBtn) return;
     const sanitized = sanitizeUrl(input.value || '');
     if (!sanitized) {
-      if (errorEl) errorEl.textContent = '請輸入有效的 http/https 網址，例如 https://example.com。';
+      if (errorEl) errorEl.textContent = t('settings.invalidUrlError');
       input.focus();
       return;
     }
     if (errorEl) errorEl.textContent = '';
     const originalLabel = saveBtn.textContent;
     saveBtn.disabled = true;
-    saveBtn.textContent = '儲存中…';
+    saveBtn.textContent = t('settings.saving');
     try {
       await customLogoutCtx.onSubmit(sanitized);
       closeCustomLogoutModal();
     } catch (err) {
       log({ customLogoutSaveError: err?.message || err });
-      if (errorEl) errorEl.textContent = err?.userMessage || err?.message || '儲存設定失敗，請稍後再試。';
+      if (errorEl) errorEl.textContent = err?.userMessage || err?.message || t('errors.saveSettingsFailed');
     } finally {
       saveBtn.disabled = false;
       saveBtn.textContent = originalLabel;
@@ -163,7 +181,7 @@ export function createSettingsModule({ deps }) {
     input.placeholder = LOGOUT_REDIRECT_PLACEHOLDER;
     if (errorEl) errorEl.textContent = '';
     saveBtn.disabled = false;
-    saveBtn.textContent = '儲存';
+    saveBtn.textContent = t('settings.saved');
     modal.style.display = 'flex';
     modal.setAttribute('aria-hidden', 'false');
     setTimeout(() => { try { input.focus({ preventScroll: true }); } catch { input.focus(); } }, 30);
@@ -174,14 +192,14 @@ export function createSettingsModule({ deps }) {
   async function persistPatch(partial) {
     const previous = getEffective();
     const next = { ...previous, ...partial };
-    const trackedKeys = ['showOnlineStatus', 'autoLogoutOnBackground', 'autoLogoutRedirectMode', 'autoLogoutCustomUrl'];
+    const trackedKeys = ['autoLogoutOnBackground', 'autoLogoutRedirectMode', 'autoLogoutCustomUrl', 'language', 'sentryLab'];
     const noChange = trackedKeys.every((key) => previous[key] === next[key]);
     if (noChange) return previous;
     sessionStore.settingsState = next;
     try {
       const saved = await saveSettings(next);
       sessionStore.settingsState = saved;
-      log({ settingsSaved: { showOnlineStatus: saved.showOnlineStatus, autoLogoutOnBackground: saved.autoLogoutOnBackground, autoLogoutRedirectMode: saved.autoLogoutRedirectMode, hasCustomLogoutUrl: !!sanitizeUrl(saved.autoLogoutCustomUrl) } });
+      log({ settingsSaved: { autoLogoutOnBackground: saved.autoLogoutOnBackground, autoLogoutRedirectMode: saved.autoLogoutRedirectMode, hasCustomLogoutUrl: !!sanitizeUrl(saved.autoLogoutCustomUrl) } });
       return saved;
     } catch (err) {
       sessionStore.settingsState = previous;
@@ -216,25 +234,15 @@ export function createSettingsModule({ deps }) {
     if (!modalElement || !body) return;
     resetModalVariants(modalElement);
     modalElement.classList.add('settings-modal');
-    if (title) title.textContent = '系統設定';
-    const customSummaryValue = sanitizeUrl(current.autoLogoutCustomUrl) || '尚未設定安全網址';
+    if (title) title.textContent = t('settings.systemSettings');
+    const customSummaryValue = sanitizeUrl(current.autoLogoutCustomUrl) || t('settings.noSafeUrlSet');
     const autoLogoutDetailsVisible = !!current.autoLogoutOnBackground;
     body.innerHTML = `
       <div id="systemSettings" class="settings-form">
         <div class="settings-item">
           <div class="settings-text">
-            <strong>顯示我的上線狀態</strong>
-            <p>好友可以看到你目前是否在線上。</p>
-          </div>
-          <label class="settings-switch">
-            <input type="checkbox" id="settingsShowOnline" ${current.showOnlineStatus ? 'checked' : ''} />
-            <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
-          </label>
-        </div>
-        <div class="settings-item">
-          <div class="settings-text">
-            <strong>當畫面不在前台時自動登出</strong>
-            <p>離開或縮小瀏覽器時自動清除登入狀態。</p>
+            <strong>${escapeHtml(t('settings.autoLogoutOnBackground'))}</strong>
+            <p>${escapeHtml(t('settings.autoLogoutOnBackgroundDesc'))}</p>
           </div>
           <label class="settings-switch">
             <input type="checkbox" id="settingsAutoLogout" ${current.autoLogoutOnBackground ? 'checked' : ''} />
@@ -245,35 +253,66 @@ export function createSettingsModule({ deps }) {
           <label class="settings-option">
             <input type="radio" name="autoLogoutRedirect" id="settingsLogoutDefault" value="default" ${current.autoLogoutRedirectMode !== 'custom' ? 'checked' : ''} />
           <div class="option-body">
-            <strong>預設登出頁面</strong>
-            <p>使用系統提供的安全登出頁面。</p>
+            <strong>${escapeHtml(t('settings.defaultLogoutPage'))}</strong>
+            <p>${escapeHtml(t('settings.defaultLogoutPageDesc'))}</p>
           </div>
         </label>
         <div class="settings-option custom-option">
           <input type="radio" name="autoLogoutRedirect" id="settingsLogoutCustom" value="custom" ${current.autoLogoutRedirectMode === 'custom' ? 'checked' : ''} />
           <div class="option-body">
-            <strong>客製化登出頁面</strong>
-            <p>導向指定的 HTTPS 網址，僅限受信任的頁面。</p>
+            <strong>${escapeHtml(t('settings.customLogoutPage'))}</strong>
+            <p>${escapeHtml(t('settings.customLogoutPageDesc'))}</p>
             <div class="custom-summary" id="settingsLogoutSummary">${escapeHtml(customSummaryValue)}</div>
-            <button type="button" class="settings-link subtle" id="settingsLogoutManage">設定網址</button>
+            <button type="button" class="settings-link subtle" id="settingsLogoutManage">${escapeHtml(t('settings.setUrl'))}</button>
           </div>
         </div>
         </div>
         <div class="settings-item">
           <div class="settings-text">
-            <strong>變更密碼</strong>
-            <p>更新登入密碼，需輸入目前密碼與新密碼。</p>
+            <strong>${escapeHtml(t('settings.changePassword'))}</strong>
+            <p>${escapeHtml(t('password.newPasswordMinLength'))}</p>
           </div>
-          <button type="button" class="settings-link" id="settingsChangePassword">變更</button>
+          <button type="button" class="settings-link" id="settingsChangePassword">${escapeHtml(t('settings.changePassword'))}</button>
         </div>
+        <div class="settings-item">
+          <div class="settings-text">
+            <strong>${escapeHtml(t('settings.language'))}</strong>
+          </div>
+          <select id="settingsLanguage" class="settings-select" style="padding:6px 10px;border:1px solid var(--line);border-radius:8px;font-size:14px;background:var(--bg);color:var(--fg);">
+            ${SUPPORTED_LANGUAGES.map(l => `<option value="${l.code}" ${l.code === getCurrentLang() ? 'selected' : ''}>${escapeHtml(l.label)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="settings-item" id="settingsPushRow" style="cursor:pointer;">
+          <div class="settings-text">
+            <strong>${escapeHtml(t('push.settingsTitle'))}</strong>
+            <p>${escapeHtml(t('push.settingsDesc'))}</p>
+          </div>
+          <span style="color:var(--muted);font-size:18px;">›</span>
+        </div>
+        ${window.APP_ENV && window.APP_ENV !== 'production' ? `<div class="settings-item">
+          <div class="settings-text" style="display:flex;align-items:center;gap:8px;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">
+              <path d="M10 2v6L4.5 18.5A1.5 1.5 0 0 0 6 21h12a1.5 1.5 0 0 0 1.5-2.5L14 8V2"/>
+              <path d="M8.5 2h7"/>
+              <path d="M7 16h10"/>
+            </svg>
+            <div>
+              <strong>${escapeHtml(t('settings.sentryLab'))}</strong>
+              <p>${escapeHtml(t('settings.sentryLabDesc'))}</p>
+            </div>
+          </div>
+          <label class="settings-switch">
+            <input type="checkbox" id="settingsSentryLab" ${current.sentryLab ? 'checked' : ''} />
+            <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+          </label>
+        </div>` : ''}
         <div class="settings-actions">
-          <button type="button" class="secondary" id="settingsClose">關閉</button>
+          <button type="button" class="secondary" id="settingsClose">${escapeHtml(t('common.close'))}</button>
         </div>
       </div>`;
     openModal();
 
     const closeBtn = body.querySelector('#settingsClose');
-    const showOnlineInput = body.querySelector('#settingsShowOnline');
     const autoLogoutInput = body.querySelector('#settingsAutoLogout');
     const autoLogoutOptionsSection = body.querySelector('#settingsAutoLogoutOptions');
     const logoutDefaultRadio = body.querySelector('#settingsLogoutDefault');
@@ -282,12 +321,36 @@ export function createSettingsModule({ deps }) {
     const logoutManageBtn = body.querySelector('#settingsLogoutManage');
     const changePasswordBtn = body.querySelector('#settingsChangePassword');
 
+    const languageSelect = body.querySelector('#settingsLanguage');
+    languageSelect?.addEventListener('change', async (e) => {
+      const newLang = e.target.value;
+      languageSelect.disabled = true;
+      try {
+        // Save language to encrypted settings (not localStorage)
+        await persistPatch({ language: newLang });
+        await setLang(newLang);
+        // Live switch: close and re-open settings modal with new language
+        closeModal();
+        setTimeout(() => open(), 80);
+      } catch (err) {
+        log({ languageSaveError: err?.message || err });
+        languageSelect.disabled = false;
+        if (typeof showAlertModal === 'function') showAlertModal({ title: t('errors.saveFailed'), message: t('errors.saveSettingsFailed') });
+      }
+    });
+
+    // --- Push notification row → opens push modal ---
+    const pushRow = body.querySelector('#settingsPushRow');
+    if (pushRow && typeof openPushModal === 'function') {
+      pushRow.addEventListener('click', () => openPushModal(), { once: true });
+    }
+
     closeBtn?.addEventListener('click', () => closeModal(), { once: true });
     changePasswordBtn?.addEventListener('click', (event) => {
       event.preventDefault();
       openChangePasswordModal().catch((err) => {
         log({ changePasswordModalError: err?.message || err });
-        if (typeof showAlertModal === 'function') showAlertModal({ title: '操作失敗', message: '目前無法開啟變更密碼視窗，請稍後再試。' });
+        if (typeof showAlertModal === 'function') showAlertModal({ title: t('errors.operationFailed'), message: t('settings.cannotOpenPasswordModal') });
       });
     });
 
@@ -303,7 +366,7 @@ export function createSettingsModule({ deps }) {
     };
     const refreshSummary = () => {
       if (!logoutSummaryEl) return;
-      logoutSummaryEl.textContent = sanitizeUrl(getEffective().autoLogoutCustomUrl) || '尚未設定安全網址';
+      logoutSummaryEl.textContent = sanitizeUrl(getEffective().autoLogoutCustomUrl) || t('settings.noSafeUrlSet');
     };
     const launchCustomModal = (invoker) => {
       openCustomLogoutModal({
@@ -328,7 +391,7 @@ export function createSettingsModule({ deps }) {
       logoutDefaultRadio.disabled = true;
       logoutCustomRadio && (logoutCustomRadio.disabled = true);
       try { await persistPatch({ autoLogoutRedirectMode: 'default', autoLogoutCustomUrl: null }); refreshSummary(); }
-      catch (err) { log({ logoutRedirectModeSaveError: err?.message || err, mode: 'default' }); if (typeof showAlertModal === 'function') showAlertModal({ title: '儲存失敗', message: '儲存設定失敗，請稍後再試。' }); }
+      catch (err) { log({ logoutRedirectModeSaveError: err?.message || err, mode: 'default' }); if (typeof showAlertModal === 'function') showAlertModal({ title: t('errors.saveFailed'), message: t('errors.saveSettingsFailed') }); }
       finally { logoutDefaultRadio.disabled = false; if (logoutCustomRadio) logoutCustomRadio.disabled = false; syncRadios(); }
     });
     logoutCustomRadio?.addEventListener('change', (event) => {
@@ -344,12 +407,11 @@ export function createSettingsModule({ deps }) {
         const nextValue = !!input.checked;
         if (previous[key] === nextValue) return;
         input.disabled = true;
-        try { await persistPatch({ [key]: nextValue }); if (key === 'autoLogoutOnBackground') _autoLoggedOut = false; }
-        catch (err) { log({ settingsAutoSaveError: err?.message || err }); if (typeof showAlertModal === 'function') showAlertModal({ title: '儲存失敗', message: '儲存設定失敗，請稍後再試。' }); input.checked = !!previous[key]; }
+        try { await persistPatch({ [key]: nextValue }); if (key === 'autoLogoutOnBackground') _autoLoggedOut = false; if (key === 'sentryLab' && typeof onLabToggle === 'function') onLabToggle(nextValue); }
+        catch (err) { log({ settingsAutoSaveError: err?.message || err }); if (typeof showAlertModal === 'function') showAlertModal({ title: t('errors.saveFailed'), message: t('errors.saveSettingsFailed') }); input.checked = !!previous[key]; }
         finally { input.disabled = false; }
       });
     };
-    registerToggle(showOnlineInput, 'showOnlineStatus');
     if (autoLogoutInput) {
       autoLogoutInput.addEventListener('change', async () => {
         const previous = getEffective();
@@ -359,10 +421,13 @@ export function createSettingsModule({ deps }) {
         autoLogoutInput.disabled = true;
         setAutoLogoutVis(nextValue);
         try { await persistPatch({ autoLogoutOnBackground: nextValue }); _autoLoggedOut = false; }
-        catch (err) { log({ settingsAutoSaveError: err?.message || err }); if (typeof showAlertModal === 'function') showAlertModal({ title: '儲存失敗', message: '儲存設定失敗，請稍後再試。' }); autoLogoutInput.checked = prevValue; }
+        catch (err) { log({ settingsAutoSaveError: err?.message || err }); if (typeof showAlertModal === 'function') showAlertModal({ title: t('errors.saveFailed'), message: t('errors.saveSettingsFailed') }); autoLogoutInput.checked = prevValue; }
         finally { autoLogoutInput.disabled = false; const state = getEffective(); setAutoLogoutVis(!!state.autoLogoutOnBackground); syncRadios(); }
       });
     }
+
+    const sentryLabInput = body.querySelector('#settingsSentryLab');
+    registerToggle(sentryLabInput, 'sentryLab');
   }
 
   return {

@@ -20,6 +20,7 @@ import {
   normalizePeerIdentity
 } from '../../core/store.js';
 import { buildCallPeerIdentity, logCallIdentitySet } from './identity.js';
+import { t } from '/locales/index.js';
 
 export const CALL_SESSION_STATUS = Object.freeze({
   IDLE: 'idle',
@@ -177,7 +178,7 @@ export function resolveCallPeerProfile({
   const conversationId = threadEntry?.conversationId
     || contactEntry?.conversation?.conversation_id
     || null;
-  const fallbackName = digest ? `好友 ${digest.slice(-4)}` : '好友';
+  const fallbackName = digest ? `${t('common.friend')} ${digest.slice(-4)}` : t('common.friend');
   const placeholderName = displayNameFallback || fallbackName;
   const source = (nickname || avatarUrl) ? 'snapshot' : 'fallback';
   return {
@@ -572,7 +573,7 @@ export function setCallPeerDeviceId(peerDeviceId, { callId = null } = {}) {
 
 export function updateCallSessionStatus(nextStatus, { error = null, callId = null } = {}) {
   if (!Object.values(CALL_SESSION_STATUS).includes(nextStatus)) {
-    throw new Error(`未知的 call session 狀態：${nextStatus}`);
+    throw new Error(t('calls.unknownState', { state: nextStatus }));
   }
   activeSession.status = nextStatus;
   if (callId) activeSession.callId = callId;

@@ -13,6 +13,7 @@ import { normalizePeerIdentity } from '../../../core/store.js';
 import { MessageKeyVault } from '../../../features/message-key-vault.js';
 import { importContactSecretsSnapshot } from '../../../core/contact-secrets.js';
 import { migrateTimelineConversation } from '../../../features/timeline-store.js';
+import { t } from '/locales/index.js';
 
 export class ActiveConversationController extends BaseController {
     constructor(deps) {
@@ -48,7 +49,7 @@ export class ActiveConversationController extends BaseController {
      */
     updatePeerNameDisplay(name) {
         if (this.elements.peerName) {
-            this.elements.peerName.textContent = name || '選擇好友開始聊天';
+            this.elements.peerName.textContent = name || t('contacts.selectToChat');
         }
     }
 
@@ -103,7 +104,7 @@ export class ActiveConversationController extends BaseController {
         if (!key) return;
 
         const contactEntry = this.sessionStore.contactIndex?.get?.(key) || null;
-        const nickname = contactEntry?.nickname || fallbackName || `好友 ${key.slice(-4)}`;
+        const nickname = contactEntry?.nickname || fallbackName || `${t('common.friend')} ${key.slice(-4)}`;
         const avatar = contactEntry?.avatar || null;
 
         this.updatePeerNameDisplay(nickname);
@@ -140,7 +141,7 @@ export class ActiveConversationController extends BaseController {
         // Update active peer display if relevant
         const state = this.getMessageState();
         if (state.activePeerDigest === peerKey) {
-            const nickname = entry.nickname || `好友 ${peerKey.slice(-4)}`;
+            const nickname = entry.nickname || `${t('common.friend')} ${peerKey.slice(-4)}`;
             const avatar = entry.avatar || null;
             this.updatePeerNameDisplay(nickname);
             this.updatePeerAvatar(avatar);
@@ -154,9 +155,14 @@ export class ActiveConversationController extends BaseController {
     async setActiveConversation(peerAccountDigest, passedId = null, passedToken = null) {
         const peerKey = normalizePeerKey(peerAccountDigest);
         if (!peerKey) {
-            this.showToast('無效的聯絡人');
+            this.showToast(t('errors.invalidContact'));
             return;
         }
+
+        // Clear ephemeral avatar styling (re-applied by _openEphemeralConversation if needed)
+        document.getElementById('messagesList')?.classList.remove('ephemeral-active');
+        document.getElementById('messagesPeerAvatar')?.classList.remove('ephemeral-active');
+        this.deps.controllers?.ephemeral?.hideConvTimerBar?.();
 
         // Save draft for the conversation we're leaving
         this.deps.controllers?.composer?.saveDraft();
@@ -179,6 +185,7 @@ export class ActiveConversationController extends BaseController {
         state.conversationId = targetConvId;
         state.conversationToken = passedToken || convEntry?.token_b64 || null;
         state.activePeerDeviceId = convEntry?.peerDeviceId || null;
+        state.activeBizConv = false; // Clear biz-conv flag for 1-to-1
         state.viewMode = 'detail';
         state.loading = false;
         // [FIX] Reset Cursor State
@@ -195,10 +202,20 @@ export class ActiveConversationController extends BaseController {
         }
 
         // Refresh metadata
-        const nickname = contactEntry?.nickname || `好友 ${peerKey.slice(-4)}`;
+        const nickname = contactEntry?.nickname || `${t('common.friend')} ${peerKey.slice(-4)}`;
         const avatar = contactEntry?.avatar || null;
         this.updatePeerNameDisplay(nickname);
         this.updatePeerAvatar(avatar);
+        // Clear biz-conv header click handler
+        if (this.elements.peerName) {
+            this.elements.peerName.style.cursor = '';
+            this.elements.peerName.onclick = null;
+        }
+        // Hide biz-conv settings button for 1-to-1
+        if (this.elements.bizConvSettingsBtn) {
+            this.elements.bizConvSettingsBtn.classList.add('hidden');
+            this.elements.bizConvSettingsBtn.onclick = null;
+        }
 
         // Load messages if conversation exists (Token is optional for local load)
         if (state.conversationId) {
@@ -237,7 +254,7 @@ export class ActiveConversationController extends BaseController {
             // New or pending contact, ensure empty state shows
             if (this.elements.messagesEmpty) {
                 this.elements.messagesEmpty.classList.remove('hidden');
-                this.elements.messagesEmpty.textContent = '尚無訊息';
+                this.elements.messagesEmpty.textContent = t('messages.noMessages');
             }
             this.deps.updateMessagesStatusUI?.();
         }
@@ -253,6 +270,86 @@ export class ActiveConversationController extends BaseController {
         // Restore draft for the conversation we're entering (or clear input)
         this.deps.controllers?.composer?.restoreDraft();
         // [UX] Auto-focus input when entering conversation
+        this.deps.focusComposerInput?.();
+    }
+
+    /**
+     * Set active business conversation (group chat).
+     */
+    async setActiveBizConv(conversationId) {
+        if (!conversationId) return;
+
+        // Save draft for the conversation we're leaving
+        this.deps.controllers?.composer?.saveDraft();
+
+        const state = this.getMessageState();
+        const threads = this.deps.getConversationThreads?.() || new Map();
+        const thread = threads.get(conversationId) || {};
+
+        // Update state for biz-conv mode
+        state.activePeerDigest = null;
+        state.activePeerDeviceId = null;
+        state.conversationId = conversationId;
+        state.conversationToken = null;
+        state.activeBizConv = true;
+        state.viewMode = 'detail';
+        state.loading = false;
+        state.hasMore = true;
+        state.nextCursor = null;
+        state.nextCursorTs = null;
+
+        // UI Reset
+        this.clearMessagesView();
+
+        // Navigation
+        if (this.deps.getCurrentTab?.() !== 'messages') {
+            this.deps.switchTab?.('messages');
+        }
+
+        // Display group info in header
+        const groupName = thread.bizConvName || t('messages.bizConvDefault');
+        const memberCount = thread.bizConvMemberCount || 0;
+        this.updatePeerNameDisplay(memberCount > 0 ? `${groupName} (${memberCount})` : groupName);
+        if (thread.bizConvAvatar) {
+            this.updatePeerAvatar({ thumbDataUrl: thread.bizConvAvatar });
+        } else {
+            this.updatePeerAvatar({ initials: groupName.slice(0, 2).toUpperCase() });
+        }
+
+        // Make header name clickable for group info
+        if (this.elements.peerName) {
+            this.elements.peerName.style.cursor = 'pointer';
+            this.elements.peerName.onclick = () => {
+                this.deps.openBizConvInfoModal?.(conversationId);
+            };
+        }
+        // Show gear icon for group settings
+        if (this.elements.bizConvSettingsBtn) {
+            this.elements.bizConvSettingsBtn.classList.remove('hidden');
+            this.elements.bizConvSettingsBtn.onclick = () => {
+                this.deps.openBizConvInfoModal?.(conversationId);
+            };
+        }
+
+        // Load messages from timeline
+        if (conversationId) {
+            this.deps.loadActiveConversationMessages?.({ append: false })
+                .catch((err) => {
+                    this.log({ loadBizConvMessagesError: err?.message || err, conversationId });
+                })
+                .finally(() => {
+                    this.deps.updateComposerAvailability?.();
+                });
+        }
+
+        // Final UI sync
+        try {
+            this.deps.applyMessagesLayout?.();
+            this.deps.updateMessagesUI?.({ scrollToEnd: true, forceFullRender: true });
+        } catch { /* ignore */ }
+
+        this.deps.updateComposerAvailability?.();
+        this.deps.controllers?.composer?.restoreDraft();
         this.deps.focusComposerInput?.();
     }
 
@@ -337,7 +434,7 @@ export class ActiveConversationController extends BaseController {
         }
 
         if (!conversationId) {
-            this.showToast('找不到對話');
+            this.showToast(t('errors.conversationNotFound'));
             return;
         }
 

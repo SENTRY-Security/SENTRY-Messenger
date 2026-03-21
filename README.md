@@ -1,8 +1,17 @@
 # SENTRY Messenger
 
-**端對端加密即時通訊系統** — 採用 Signal Protocol (X3DH + Double Ratchet) 實現高安全性的訊息傳遞。
+Open-source end-to-end encrypted messenger with Signal Protocol, ephemeral chat, secure calls, and encrypted media streaming.
+
+**端對端加密即時通訊系統** — 基於 Signal Protocol (X3DH + Double Ratchet)，部署於 Cloudflare Workers 全 Serverless 架構。
 
 > 官網：https://sentry.red ・ 版本：0.1.9 ・ 授權：AGPL-3.0-only
+
+### 為什麼開源？
+
+本專案以 AGPL-3.0 開源，基於兩個核心理念：
+
+1. **分享設計與實作** — 將完整的工程實踐分享給開發者社群，包括 Signal Protocol 的實際應用、純前端影片分片加密串流管線（WebCodecs 轉碼 → per-chunk AES-256-GCM 加密 → MSE 串流解密播放），以及 Cloudflare Workers + Durable Objects 的全 Serverless 部署經驗。
+2. **公開驗證安全性** — 端對端加密系統的信任應建立在可檢視的程式碼之上。本專案的密碼學實作（X3DH 金鑰交換、Double Ratchet、媒體分片加密、金鑰管理）皆開放審閱。完整的[安全審計文件](#安全審計與威脅模型)記錄了已知限制與修復狀態。
 
 ---
 
@@ -11,6 +20,7 @@
 - [架構概覽](#架構概覽)
 - [核心功能](#核心功能)
 - [視訊通話架構](#視訊通話架構)
+- [臨時對話 (Ephemeral Chat)](#臨時對話-ephemeral-chat)
 - [分片加密串流](#分片加密串流)
 - [專案結構](#專案結構)
 - [密碼學協定](#密碼學協定)
@@ -18,7 +28,10 @@
 - [資料庫 Schema](#資料庫-schema)
 - [API 端點](#api-端點)
 - [WebSocket 即時通訊](#websocket-即時通訊)
+- [Web Push 推播通知](#web-push-推播通知)
 - [安全設計原則](#安全設計原則)
+- [安全審計與威脅模型](#安全審計與威脅模型)
+- [橫向部署與擴展優勢](#橫向部署與擴展優勢)
 - [快速開始](#快速開始)
 - [部署](#部署)
 - [測試](#測試)
@@ -28,33 +41,35 @@
 
 ## 架構概覽
 
-### 三層 Hybrid 部署架構
+### 全 Serverless 雙層架構
 
 ```
                     ┌──────────────────────────────────────────────────────────────┐
                     │                     SENTRY Messenger                         │
                     └──────────────────────────────────────────────────────────────┘
 
-  ┌──────────────────────┐     ┌───────────────────────┐     ┌─────────────────────────┐
-  │   Frontend (web/)    │     │  Backend (src/)        │     │  Data Layer              │
-  │                      │     │                        │     │  (data-worker/)          │
-  │  Cloudflare Pages    │────▶│  Express + WebSocket   │────▶│  Cloudflare Workers      │
-  │  Vanilla JS SPA      │     │  Linode VPS (PM2)      │     │  D1 (SQLite) + R2 Storage│
-  │  esbuild bundler     │     │  HMAC-signed requests  │     │                          │
-  └──────────────────────┘     └───────────────────────┘     └─────────────────────────┘
-         │                              │                              │
-         │  ◀── HTTPS/WSS ──▶          │  ◀── HMAC-auth REST ──▶     │
-         │                              │                              │
-  ┌──────┴──────┐               ┌───────┴───────┐             ┌───────┴───────┐
-  │ X3DH + DR   │               │ Rate Limit    │             │ D1 Database   │
-  │ 客戶端加密   │               │ Helmet/CORS   │             │ R2 媒體儲存   │
-  │ IndexedDB   │               │ JWT WS Auth   │             │ OPAQUE 紀錄   │
-  └─────────────┘               └───────────────┘             └───────────────┘
+  ┌──────────────────────┐                          ┌─────────────────────────────────┐
+  │   Frontend (web/)    │                          │  Cloudflare Workers              │
+  │                      │                          │  (data-worker/)                  │
+  │  Cloudflare Pages    │─── HTTPS / WSS ────────▶│  API + WebSocket (Durable Objects)│
+  │  Vanilla JS SPA      │                          │  D1 (SQLite) + R2 + KV           │
+  │  esbuild bundler     │                          │                                  │
+  └──────────────────────┘                          └─────────────────────────────────┘
+         │                                                        │
+  ┌──────┴──────┐                                         ┌───────┴───────┐
+  │ X3DH + DR   │                                         │ D1 Database   │
+  │ 客戶端加密   │                                         │ R2 媒體儲存   │
+  │ IndexedDB   │                                         │ OPAQUE + SDM  │
+  └─────────────┘                                         │ KV Sessions   │
+                                                          │ Durable Objects│
+                                                          │  (WebSocket)  │
+                                                          └───────────────┘
 ```
 
 1. **Frontend (`web/`)** — 純靜態 SPA，部署至 Cloudflare Pages，所有加密/解密在客戶端完成
-2. **Backend (`src/`)** — Node.js Express API + WebSocket 伺服器，部署於 VPS (PM2)，負責路由轉發與即時信令
-3. **Data Worker (`data-worker/`)** — Cloudflare Workers，直接存取 D1 資料庫與 R2 物件儲存，以 HMAC 驗證 Backend 請求
+2. **Cloudflare Workers (`data-worker/`)** — 統一後端，處理所有 REST API、WebSocket 即時通訊（Durable Objects）、OPAQUE 認證、SDM 驗證、金鑰管理，直接存取 D1/R2/KV
+
+> **v0.1.9 架構遷移：** 原有的 Node.js Express + WebSocket 中繼層（`src/`）已完全移除。所有 API 端點與 WebSocket 連線管理已遷移至 Cloudflare Workers + Durable Objects，實現完全 Serverless 架構。不再需要 VPS、PM2 或任何伺服器維運。
 
 ---
 
@@ -67,24 +82,26 @@
 | 金鑰交換 | X3DH (Extended Triple Diffie-Hellman) | 非同步建立共享密鑰，支援離線初始化 |
 | 訊息加密 | Double Ratchet | 每則訊息獨立金鑰，前向保密 + 後向保密 |
 | 對稱加密 | XChaCha20-Poly1305 / AES-256-GCM | 訊息內容 AEAD 加密 |
-| 身份驗證 | Ed25519 簽章 + OPAQUE PAKE | 無密碼洩漏風險的密碼認證 |
+| 身份驗證 | Ed25519 簽章 + OPAQUE PAKE | 密碼不經網路傳輸的認證協定 |
 | NFC 認證 | NTAG 424 DNA SDM (CMAC/HKDF/EV2) | 實體 NFC 標籤身份綁定 |
-| 金鑰派生 | HKDF-SHA256 / Argon2id | 密碼學安全的金鑰衍生 |
+| 金鑰派生 | HKDF-SHA256 / Argon2id | 金鑰衍生與密碼強化 |
 | 主金鑰保護 | Argon2id + AES-256-GCM wrapping | 使用者密碼保護主金鑰 |
 | 媒體分片加密 | HKDF-SHA256 → AES-256-GCM per-chunk | 每 chunk 獨立鑰匙與 IV，info tag 域分離 |
 | 通話 E2EE | InsertableStreams + AES-GCM | WebRTC 逐幀加密，counter-based nonce，10 分鐘金鑰輪換 |
+| 推播預覽 E2EE | ECDH P-256 + HKDF-SHA256 + AES-256-GCM | 推播通知預覽內容端對端加密，伺服器無法讀取 |
 
 ### 通訊功能
 
-- **端對端加密訊息** — 文字、媒體、檔案，伺服器無法解密
+- **端對端加密訊息** — 文字、媒體、檔案均在客戶端加密，伺服器僅中繼密文
 - **語音/視訊通話** — WebRTC P2P + Cloudflare TURN relay，InsertableStreams E2EE 媒體加密
 - **AI 人臉/背景馬賽克** — MediaPipe Face Detection 三階段模糊（人臉馬賽克 / 背景馬賽克 / 關閉），三層偵測策略（Native FaceDetector → MediaPipe WASM → 膚色偵測）
 - **分片加密串流** — 影片上傳自動轉碼為 fMP4，Per-chunk AES-256-GCM 加密，MSE/ManagedMediaSource 即時串流播放（單檔上限 1GB），AIMD 自適應併發控制
 - **WebCodecs 智慧轉碼** — 所有影片自動轉碼至 720p/1.5Mbps H.264 fMP4（4K/1080p 自動縮放），HEVC/VP9 等非 H.264 格式自動轉碼，已是 H.264 且未超限時直接 remux 免轉碼，串流式轉碼→加密→上傳管線（低記憶體佔用）
+- **臨時對話 (Ephemeral Chat)** — 一次性加密連結，未註冊 Guest 透過瀏覽器加入限時 E2EE 對話（X3DH + Double Ratchet），支援文字/圖片/語音視訊通話，倒數結束自動銷毀，7 語言 i18n
 - **聯絡人邀請** — 加密 Invite Dropbox 機制（支援離線互加 + 確認回饋）
 - **群組對話** — 多人加密聊天室，角色權限管理（owner/admin/member）
 - **已讀回條** — Commit-driven 訊息狀態追蹤（✓ sent / ✓✓ delivered）
-- **即時推播** — WebSocket 即時訊息通知與通話信令
+- **即時推播** — WebSocket 即時訊息通知與通話信令（Durable Objects per-account 隔離），推播預覽端對端加密（ECDH P-256 + AES-256-GCM，伺服器無法讀取通知內容）
 - **訊息重播** — Message Key Vault 支援歷史訊息回放
 - **聯絡人備份** — 加密備份/還原聯絡人密鑰至伺服器
 - **訂閱管理** — 訂閱碼兌換、驗證、QR 掃描上傳與配額管理
@@ -99,13 +116,16 @@
 
 ### 安全特性
 
-- **零知識架構** — 伺服器僅儲存密文，無法解密任何訊息內容
-- **前向保密 (Forward Secrecy)** — 每則訊息使用獨立金鑰，密鑰洩漏不影響歷史訊息
-- **後向保密 (Break-in Recovery)** — Double Ratchet 自動修復，即使當前密鑰洩漏也會在新交換後恢復安全
+- **客戶端加密** — 訊息與媒體在客戶端加密後才離開裝置，伺服器僅儲存密文
+- **前向保密 (Forward Secrecy)** — Double Ratchet 為每則訊息衍生獨立金鑰，設計上限制單一金鑰洩漏的影響範圍
+- **後向保密 (Break-in Recovery)** — 新的 DH 交換後產生新的 Root Key，設計上使攻擊者無法持續解密後續訊息
 - **抗重放攻擊** — Per-conversation Counter 單調遞增，伺服器端強制驗證
 - **無 Fallback 政策** — 嚴格密碼協定，拒絕任何降級/重試/回滾
 - **離線密鑰交換** — 透過 X3DH Prekey Bundle，對方離線時也能安全初始化
+- **推播預覽 E2EE** — 推播通知預覽內容（發送者名稱、訊息摘要）在發送端以接收者裝置公鑰加密（ECDH P-256 + AES-256-GCM），伺服器僅中繼密文，Service Worker 在本地解密顯示
 - **強制登出** — 帳號清除時透過 WebSocket `force-logout` 即時踢出所有裝置
+
+> **已知限制：** 訊息與媒體內容在客戶端加密，伺服器不持有解密金鑰。但通訊 metadata（社交圖譜、時間戳、在線狀態等）對伺服器仍然可見。完整分析見 [Metadata Exposure](docs/security/metadata-exposure.md) 與 [Known Limitations](docs/security/known-limitations.md)。
 
 ---
 
@@ -129,7 +149,7 @@
 
 - **架構**: 純 P2P 點對點通話（非 SFU），WebSocket 僅用於信令交換
 - **ICE**: 完整候選收集（host + srflx + relay），Cloudflare STUN + 動態 TURN 憑證
-- **DTLS**: ECDSA P-256 憑證，確保傳輸層加密
+- **DTLS**: ECDSA P-256 憑證，提供傳輸層加密
 - **媒體**: 音訊（echo cancellation + noise suppression + auto gain control）+ 視訊
 - **Safari 相容**: 完整 ICE 候選嵌入 SDP、獨立 `<audio>` 元素、usernameFragment 注入
 
@@ -161,7 +181,7 @@ Face Detection (每 200ms 偵測一次，結果快取)
   │           Model: BlazeFace Short Range TFLite (~1.5MB)
   └── Tier 3: 膚色區域偵測 (YCbCr 閾值 + BFS 連通分量)
   ↓
-Pixelation (14×14 pixel blocks, 20% padding)
+Pixelation (28×28 pixel blocks, 35% padding, ±30 color noise)
   ├── FACE mode → 馬賽克偵測到的人臉區域
   ├── BACKGROUND mode → 馬賽克人臉以外的所有區域
   └── OFF mode → 直接通過不處理
@@ -174,6 +194,380 @@ RTCRtpSender.replaceTrack() → 送出處理後的視訊
 - **瀏覽器支援**: Chrome 51+ / Firefox 43+ / Safari 15+ / iOS Safari 15+
 - **Safari 心跳**: 每 ~33ms 維持 captureStream 活性
 - **模式切換**: 通話介面左上角按鈕，藍色（人臉）→ 紫色（背景）→ 灰色（關閉）
+
+---
+
+## 臨時對話 (Ephemeral Chat)
+
+一次性加密臨時對話系統，允許已註冊使用者（Owner）產生一次性連結，讓未安裝 App 的外部人員（Guest）透過瀏覽器加入限時加密對話。倒數結束或任一方關閉頁面後，session 資料從伺服器端清除。
+
+### 架構概覽
+
+```
+Owner (App 內)                  Cloudflare Worker                 Guest (瀏覽器)
+─────────────                   ─────────────────                 ──────────────
+     │                                │                                │
+     │── POST create-link ───────────▶│ 建立 ephemeral_invites         │
+     │◀── { token, session_id } ──────│                                │
+     │                                │                                │
+     │   分享連結 /e/{token}           │                                │
+     │─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ▶│
+     │                                │                                │
+     │                                │◀── POST consume { token } ─────│
+     │                                │ 驗證 → 建立 ephemeral_sessions  │
+     │                                │── { session, ownerBundle } ────▶│
+     │                                │                                │
+     │                                │    ┌── WebSocket 雙向連線 ──┐   │
+     │                                │    │                        │   │
+     │◀══════ ephemeral-key-exchange ══╪════╪════════════════════════╪═══│ Guest X3DH
+     │ X3DH respond                   │    │                        │   │
+     │══════ ephemeral-key-exchange-ack╪════╪════════════════════════╪══▶│
+     │                                │    │                        │   │
+     │◀═══ ephemeral-message (E2EE) ══╪════╪════════════════════════╪══▶│ DR 加密訊息
+     │◀═══ ephemeral-call-* (信令) ═══╪════╪════════════════════════╪══▶│ 通話信令
+     │                                │    │                        │   │
+     │                                │    └────────────────────────┘   │
+     │                                │                                │
+     │                                │── session expired ────────────▶│ 倒數結束
+     │                                │   清除 sessions + invites       │ 銷毀畫面
+```
+
+### 連結生命週期
+
+#### 1. Owner 建立連結
+
+Owner 在 App 內點擊「臨時對話」，前端產生 X3DH Prekey Bundle（`ik_pub`, `spk_pub`, `spk_sig`, `opks`），連同帳號驗證資訊一併送至後端：
+
+```
+POST /api/v1/ephemeral/create-link
+{ account_token, account_digest, prekey_bundle }
+→ { token, session_id, expires_at }
+```
+
+- 連結格式：`https://domain/e/{token}`
+- 每位 Owner 最多同時擁有 **2 個**活躍 session
+- 邀請連結有效期限預設 **24 小時**（未消費則自動過期）
+- Owner 可在消費前撤銷連結（`POST /api/v1/ephemeral/revoke-invite`）
+
+#### 2. Guest 消費連結
+
+Guest 開啟連結，`boot()` 從 URL 解析 token（支援 `/e/{token}`、`#{token}`、`?t={token}` 三種格式）：
+
+```
+POST /api/v1/ephemeral/consume
+{ token }
+→ { session_id, conversation_id, guest_digest, guest_device_id, ws_token, expires_at, prekey_bundle, owner_digest }
+```
+
+- Token 僅能消費一次（`consumed_at` 標記）
+- 消費後建立 `ephemeral_sessions` 記錄
+- Guest 獲得臨時身份（`guest_digest` + `guest_device_id`）
+- 返回 Owner 的 Prekey Bundle 供 X3DH 金鑰交換
+
+#### 3. 連結過期與清理
+
+- 未消費邀請：24 小時後過期（D1 `expires_at` 欄位）
+- 已建立 Session：預設 **10 分鐘**倒數，可延長
+- Owner 手動終止：`POST /api/v1/ephemeral/delete`
+- Guest 主動結束：透過 WebSocket 發送 `ephemeral-guest-leave`
+
+### 端對端加密 (E2EE)
+
+臨時對話採用與主聊天相同的 Signal Protocol 加密流程（X3DH + Double Ratchet），訊息內容在客戶端加密後才經由伺服器中繼。
+
+#### X3DH 金鑰交換
+
+```
+Owner (建立連結時)                              Guest (消費連結時)
+────────────────                                ──────────────────
+生成 Prekey Bundle:                             收到 Owner Bundle:
+  ik_pub (身份金鑰)                               ik_pub, spk_pub, spk_sig, opks[0]
+  spk_pub (簽名預金鑰)
+  spk_sig (Ed25519 簽章)                         生成 Guest Bundle:
+  opks[] (一次性預金鑰)                             ik_pub, spk_pub, spk_sig, ek_pub
+
+                                                x3dhInitiate(guestPriv, ownerBundle)
+                                                → ephDrState (Double Ratchet 初始狀態)
+
+                                                透過 WS 發送 ephemeral-key-exchange
+                         ◀─────────────────────── { guestBundle, opk_id }
+
+x3dhRespond(ownerPriv, guestBundle)
+→ ephDrState (匹配的 DR 狀態)
+
+發送 ephemeral-key-exchange-ack ──────────────▶ keyExchangeComplete = true
+```
+
+- 金鑰交換具備**漸進式重試**機制（2s → 4s → 8s → 15s → 30s）
+- 第 3 次重試起同時啟用 **HTTP Fallback**（`POST /api/v1/ephemeral/key-exchange-submit`），將 Guest Bundle 持久化至 D1，確保 Owner 離線/重連後仍可完成交換
+- 收到 ACK 前，所有訊息發送被阻擋並提示「等待加密建立」
+
+#### Double Ratchet 訊息加密
+
+金鑰交換完成後，所有訊息（文字、圖片、控制訊息）皆經 Double Ratchet 加密：
+
+```
+明文 → drEncryptText(ephDrState, plaintext, { deviceId, version })
+     → { header: { counter, deviceId, version }, iv_b64, ciphertext_b64 }
+
+密文 → drDecryptText(ephDrState, { header, iv_b64, ciphertext_b64 })
+     → 明文
+```
+
+- 每則訊息獨立金鑰（前向保密）
+- Header 包含 counter（防重放）、deviceId、version
+- 加密演算法：XChaCha20-Poly1305 / AES-256-GCM（AEAD）
+
+### WebSocket 即時通訊
+
+#### 連線建立
+
+Guest 進入聊天後建立 WebSocket 連線：
+
+```
+WSS://{host}/api/ws?token={ws_token}&deviceId={guest_device_id}
+→ 發送 { type: 'auth', accountDigest, token }
+→ 收到 { type: 'auth', ok: true }
+```
+
+#### 訊息類型
+
+| 類型 | 方向 | 說明 |
+|------|------|------|
+| `ephemeral-message` | 雙向 | E2EE 加密訊息（文字、圖片、控制） |
+| `ephemeral-key-exchange` | Guest→Owner | Guest 的 X3DH 公開金鑰 |
+| `ephemeral-key-exchange-ack` | Owner→Guest | Owner 確認金鑰交換完成 |
+| `ephemeral-extended` | Server→雙方 | Session 延長通知（新 `expires_at`） |
+| `ephemeral-deleted` | Server→Guest | Owner 終止 Session |
+| `ephemeral-guest-leave` | Guest→Owner | Guest 主動結束對話 |
+| `ephemeral-peer-reconnected` | Server→對方 | 對方重新連線 |
+| `ephemeral-peer-disconnected` | Server→對方 | 對方斷線 |
+| `ephemeral-call-*` | 雙向 | 通話信令（invite/offer/answer/accept/reject/ice-candidate/end） |
+
+#### 斷線重連
+
+- 指數退避重連：基礎 2s，上限 30s，加 30% 隨機抖動
+- 重連前先刷新 WS Token（`POST /api/v1/ephemeral/ws-token`）
+- Token 刷新失敗（session 過期/被刪除）→ 直接顯示銷毀畫面
+- 重連成功後自動重新觸發未完成的金鑰交換
+- 重連時伺服器發送 `ephemeral-peer-reconnected` 通知對方
+
+#### 離線訊息緩衝
+
+當對方無活躍 WebSocket 連線時（如頁面切到背景、斷線中），伺服器會暫存訊息：
+
+- **緩衝上限**：每個對話最多 **50 則**訊息
+- **緩衝 TTL**：**5 分鐘**過期自動清除
+- **可緩衝類型**：`ephemeral-message`、`ephemeral-key-exchange`、`ephemeral-key-exchange-ack`
+- 對方重新連線時自動按序 flush 所有緩衝訊息（`_flushEphemeralBuffers()`）
+- 過期緩衝由 Durable Object alarm 定時清理
+
+#### 控制訊息
+
+透過 E2EE 加密通道傳送的特殊控制訊息（JSON `_ctrl` 欄位）：
+
+| 控制類型 | 說明 |
+|----------|------|
+| `set-nickname` | Guest 設定暱稱，通知 Owner |
+| `peer-away` | 頁面切到背景（`visibilitychange`） |
+| `peer-back` | 頁面回到前景 |
+| `no-webrtc` | 通知 Owner 此 Guest 瀏覽器不支援 WebRTC |
+
+### 計時器與 Session 管理
+
+#### 倒數計時器
+
+- Session 建立時設定 `expires_at`（Unix timestamp）
+- 前端每秒更新（`setInterval`），顯示 `MM:SS` 格式
+- 進度條採用四色漸層（綠→黃→紅），搭配火焰 emoji 指示器
+- 剩餘 ≤20% 時間：時鐘文字轉紅 + 呼吸動畫
+- 倒數歸零：自動觸發 `destroyChat()`
+
+#### Session 延長
+
+- 剩餘 ≤5 分鐘時啟用「延長」按鈕
+- 每次延長 **10 分鐘**
+- 延長次數由 `extended_count` 追蹤
+- Owner 或 Guest 均可觸發延長
+- 延長後伺服器透過 `ephemeral-extended` 通知雙方同步新的 `expires_at`
+
+#### Session 終止
+
+三種終止方式：
+
+1. **倒數結束** — 前端偵測 `remaining ≤ 0`，自動銷毀
+2. **Owner 終止** — `POST /api/v1/ephemeral/delete`，伺服器發送 `ephemeral-deleted` 通知 Guest
+3. **Guest 終止** — 點擊「結束」按鈕 → 確認 Modal → 發送 `ephemeral-guest-leave` → 銷毀畫面
+
+銷毀流程（`destroyChat()`）：
+1. 停止 Double Ratchet 金鑰交換重試
+2. 停用 Ephemeral Call 模式
+3. 清除計時器
+4. 通知對方（若 WS 仍連線）
+5. 關閉 WebSocket
+6. 隱藏聊天 UI，顯示銷毀畫面
+7. 清除所有狀態（`sessionState`, `ephDrState`, `sessionStorage`）
+
+### 語音 / 視訊通話
+
+臨時對話整合標準通話系統，透過 **Ephemeral Call Adapter** 橋接：
+
+```
+Guest UI                    Ephemeral Call Adapter              標準 Call Pipeline
+─────────                   ──────────────────────              ─────────────────
+voiceCallBtn.click()  ───▶  initiateEphemeralCall()
+                            ↓
+                            activateEphemeralCallMode({         initCallOverlay()
+                              conversationId,                   initCallMediaSession()
+                              sessionId,
+                              peerDigest,
+                              wsSend: (msg) => ws.send(msg),
+                              side: 'guest'
+                            })
+                            ↓
+                            ephemeral-call-* ◀══ 轉譯 ══▶ call-*
+                            (WebSocket 訊息)              (標準信令)
+```
+
+- **WebRTC 偵測**：頁面載入時立即偵測（`boot()` 之前），檢查 `RTCPeerConnection` + `getUserMedia`
+- 不支援時：Splash 畫面即顯示警告 → 暱稱畫面顯示警告 → 進入聊天後按鈕 disabled + 系統訊息通知 → 透過加密控制訊息通知 Owner
+- **媒體預請求**：進入聊天時靜默播放 click 音效解鎖 Web Audio API，並預請求 mic + camera 權限（快取 60 秒）
+- 通話信令透過 WebSocket `ephemeral-call-*` 訊息類型中繼
+
+### Guest 端 UX 流程
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   Splash 畫面    │     │   暱稱輸入畫面    │     │    聊天畫面      │     │   銷毀畫面       │
+│                 │     │                 │     │                 │     │                 │
+│ ① WebRTC 偵測   │     │ 火焰動畫頭像     │     │ Header (徽章)    │     │ 🔥              │
+│ ② Matrix 動畫   │────▶│ 暱稱輸入 (≤20字) │────▶│ 倒數計時器       │────▶│ 對話已銷毀       │
+│ ③ 進度條 0→100% │     │ WebRTC 警告      │     │ 訊息列表         │     │ 所有訊息已永久   │
+│ ④ 驗證→加密→連線 │     │ 「加入對話」按鈕  │     │ 通話按鈕         │     │ 清除             │
+│ ⑤ X3DH 金鑰交換 │     │                 │     │ 附件 + 輸入框    │     │                 │
+└─────────────────┘     └─────────────────┘     │ 結束按鈕         │     └─────────────────┘
+                                                └─────────────────┘
+```
+
+#### Splash 畫面（進度階段）
+
+| 進度 | 狀態文字 | 實際操作 |
+|------|----------|----------|
+| 0% | 頁面載入 | WebRTC 偵測（`boot()` 之前） |
+| 20% | 驗證連結有效性… | 解析 URL Token |
+| 40% | 產生臨時身份金鑰… | 載入 NaCl 加密庫 |
+| 60% | 交換加密協定… | 消費 Token + X3DH 金鑰交換 |
+| 80% | 建立端對端加密通道… | 等待確認 |
+| 100% | 連線完成 | 過渡至暱稱畫面 |
+
+#### 錯誤處理
+
+| HTTP 狀態 | 顯示訊息 |
+|-----------|----------|
+| 404 | 此連結已過期或已被使用 |
+| 410 | 此連結已過期 |
+| 其他 | 連線失敗：{error} |
+
+### 資料庫 Schema
+
+#### ephemeral_invites（一次性連結 Token）
+
+| 欄位 | 類型 | 說明 |
+|------|------|------|
+| `token` | TEXT PK | 一次性邀請 Token |
+| `owner_digest` | TEXT | Owner 帳號摘要（FK → accounts） |
+| `owner_device_id` | TEXT | Owner 裝置 ID |
+| `prekey_bundle_json` | TEXT | Owner X3DH Prekey Bundle（JSON） |
+| `consumed_at` | INTEGER | 消費時間戳（NULL = 未消費） |
+| `expires_at` | INTEGER | 過期時間戳 |
+| `created_at` | INTEGER | 建立時間 |
+
+#### ephemeral_sessions（活躍臨時對話）
+
+| 欄位 | 類型 | 說明 |
+|------|------|------|
+| `session_id` | TEXT PK | Session 唯一 ID |
+| `invite_token` | TEXT | 對應的邀請 Token |
+| `owner_digest` | TEXT | Owner 帳號摘要 |
+| `owner_device_id` | TEXT | Owner 裝置 ID |
+| `guest_digest` | TEXT | Guest 臨時摘要 |
+| `guest_device_id` | TEXT | Guest 臨時裝置 ID |
+| `conversation_id` | TEXT | 對話 ID（FK → conversations） |
+| `expires_at` | INTEGER | 過期時間戳（可延長） |
+| `extended_count` | INTEGER | 延長次數 |
+| `created_at` | INTEGER | 建立時間 |
+| `deleted_at` | INTEGER | 軟刪除時間（NULL = 活躍） |
+| `pending_key_exchange_json` | TEXT | HTTP Fallback 暫存 Guest 公開金鑰 Bundle |
+
+索引：`owner+deleted_at`、`guest_digest`、`conversation_id`、`expires_at`
+
+### API 端點 (`/api/v1/ephemeral/`)
+
+| 方法 | 路徑 | 驗證 | 說明 |
+|------|------|------|------|
+| POST | `create-link` | Owner | 建立一次性連結（含 Prekey Bundle） |
+| POST | `consume` | 無 | Guest 消費 Token，取得 Session 資訊 |
+| POST | `extend` | Owner/Guest | 延長 Session 10 分鐘 |
+| POST | `delete` | Owner | 終止 Session |
+| POST | `revoke-invite` | Owner | 撤銷未消費的邀請連結 |
+| POST | `list` | Owner | 列出所有活躍 Session |
+| POST | `session-info` | Guest | 取得 Session 資訊（重連用） |
+| POST | `ws-token` | Guest | 取得新 WebSocket Token（重連用） |
+| POST | `key-exchange-submit` | Guest | HTTP Fallback 金鑰交換（持久化至 D1） |
+| POST | `clear-pending-kex` | Owner | 清除已處理的待處理金鑰交換 |
+| POST | `cleanup` | 系統 | 垃圾回收：清除過期 Session + 未消費邀請 |
+
+#### 伺服器端路由與 Durable Objects
+
+- **訊息路由**：`_handleEphemeralRelay()` 根據 `conversationId` / `sessionId` 查詢 `ephemeral_sessions` 表，確定目標 peer digest，透過對應 Durable Object 轉發
+- **Owner 通知**：`notifyAccountDO()` — 路由至已註冊帳號的 AccountWebSocket DO
+- **Guest 通知**：`notifyEphemeralDO()` — 路由至 `EPHEMERAL_` 前綴識別的臨時 Guest DO
+- **WS Token**：HS256 JWT（`{ accountDigest, iat, exp }`），Guest token 有效期 = Session 剩餘時間
+
+#### 社交分享預覽（OG Meta Tags）
+
+臨時連結支援社交平台分享預覽（`/e/{token}` 路由 by Cloudflare Functions）：
+
+- 爬蟲（社交平台 bot）：返回含 OG meta tags 的最小 HTML（不含 redirect）
+- 真實瀏覽器：返回含 OG tags + JavaScript 即時 redirect 至 `/pages/ephemeral.html#{token}`
+- 根據 `Accept-Language` / `?lang=` 參數提供本地化 OG 文字
+
+### 安全設計
+
+- **一次性 Token** — 32 字元 nano ID，使用 `UPDATE ... WHERE consumed_at IS NULL` 原子操作確保僅能消費一次
+- **臨時身份** — Guest 獲得伺服器生成的臨時身份（`EPHEMERAL_` + 32 字元隨機 digest、`eph-` + 16 字元隨機 device_id），不關聯任何永久帳號
+- **完整 E2EE** — 所有訊息（含控制訊息、圖片）皆經 Double Ratchet 加密，伺服器僅中繼密文
+- **Session 限制** — 每位 Owner 最多 2 個同時活躍 Session
+- **金鑰交換 Fallback** — WS 重試 + HTTP 持久化雙路徑，確保金鑰交換不會因網路問題永久失敗
+- **前向保密** — 每則訊息使用獨立 DR 金鑰，洩漏不影響其他訊息
+- **狀態銷毀** — Session 結束時清除所有客戶端狀態（`sessionState`、`ephDrState`、`sessionStorage`）
+- **Peer Presence** — 透過 `visibilitychange` 事件偵測對方是否在前景，警告訊息可能未送達
+
+### 國際化 (i18n)
+
+臨時對話完整支援 **7 種語言**：English、繁體中文、簡體中文、日本語、한국어、ภาษาไทย、Tiếng Việt
+
+- Splash 頁面採用**同步 XHR** 載入語言包（確保首次繪製即為正確語言）
+- `boot()` 後非同步載入完整 i18n 模組
+- 所有 UI 文字透過 `data-i18n`、`data-i18n-placeholder`、`data-i18n-html` 屬性標記
+- 共計約 **70+ 個** ephemeral 專用 i18n key（涵蓋 splash、暱稱、聊天、通話、錯誤、計時器、終止等場景）
+
+### 檔案結構
+
+```
+web/src/
+├── pages/ephemeral.html                              # Guest 端完整 HTML（Splash + 暱稱 + 聊天 + 銷毀）
+├── app/ui/ephemeral-ui.js                            # Guest 端控制器（Boot、WS、E2EE、Timer、Call）
+├── app/ui/mobile/controllers/ephemeral-controller.js # Owner 端控制器（建立連結、管理 Session）
+├── app/api/ephemeral.js                              # API 封裝（10 個端點）
+├── app/features/calls/ephemeral-call-adapter.js      # 通話信令轉譯（ephemeral-call-* ↔ call-*）
+├── shared/crypto/dr.js                               # Double Ratchet 加密/解密
+├── shared/crypto/prekeys.js                          # X3DH Prekey Bundle 生成
+└── locales/{en,zh-Hant,zh-Hans,ja,ko,th,vi}.json    # i18n 語言包
+
+data-worker/
+└── migrations/0010_add_ephemeral_sessions.sql         # DB Schema（invites + sessions）
+```
 
 ---
 
@@ -287,78 +681,18 @@ MSE 串流播放                            │  MediaSource Extensions      │
 ```
 SENTRY-Messenger/
 │
-├── src/                              # ═══ Node.js Backend ═══
-│   ├── server.js                     # HTTP + WebSocket 啟動入口，graceful shutdown
-│   ├── app.js                        # Express 設定 (Helmet, CORS, 壓縮, Rate Limit, Pino logging)
-│   │
-│   ├── routes/                       # API 路由層
-│   │   ├── index.js                  # 路由聚合器（掛載 /api 前綴）
-│   │   ├── auth.routes.js            # SDM/OPAQUE 認證 + MK 存取
-│   │   ├── keys.routes.js            # X3DH SPK/OPK 發布與 Bundle 取得
-│   │   ├── devkeys.routes.js         # 裝置金鑰備份/還原
-│   │   ├── friends.routes.js         # 聯絡人刪除（掛載於 / 及 /v1）
-│   │   ├── ws-token.routes.js        # WebSocket JWT 產生
-│   │   └── v1/                       # v1 API 端點
-│   │       ├── messages.routes.js    #   訊息 CRUD / 原子發送 / Probe
-│   │       ├── media.routes.js       #   媒體上傳/下載 Presigned URL
-│   │       ├── calls.routes.js       #   通話邀請/信令/TURN/Metrics
-│   │       ├── contact-secrets.routes.js  # 聯絡人密鑰備份
-│   │       ├── contacts.routes.js    #   聯絡人同步 + 頭像 Presigned URL
-│   │       ├── groups.routes.js      #   群組管理（CRUD + 成員新增/移除）
-│   │       ├── invites.routes.js     #   Invite Dropbox（含 confirm/unconfirmed）
-│   │       ├── account.routes.js     #   帳號資訊
-│   │       ├── message-key-vault.routes.js # 訊息金鑰保險庫 CRUD
-│   │       ├── subscription.routes.js #   訂閱管理（兌換/驗證/掃描上傳）
-│   │       ├── admin.routes.js       #   管理員操作（帳號清除）
-│   │       └── debug.routes.js       #   除錯端點（遠端 Console）
-│   │
-│   ├── controllers/                  # 業務邏輯層
-│   │   ├── messages.controller.js    # 訊息建立/原子發送/狀態查詢/刪除
-│   │   ├── contact-secrets.controller.js # 聯絡人密鑰備份/還原
-│   │   ├── calls.controller.js       # 通話生命週期管理
-│   │   ├── account.controller.js     # 帳號證據/狀態
-│   │   ├── groups.controller.js      # 群組 CRUD
-│   │   ├── friends.controller.js     # 好友關係
-│   │   ├── invites.controller.js     # Invite Dropbox 操作
-│   │   ├── subscription.controller.js # 訂閱兌換
-│   │   └── message-key-vault.controller.js # Key Vault 操作
-│   │
-│   ├── ws/                           # WebSocket 伺服器
-│   │   └── index.js                  # 連線管理/認證/通話信令/Presence/帳號鎖定
-│   │
-│   ├── services/                     # 外部服務整合
-│   │   ├── s3.js                     # R2/S3 Presigned URL 產生
-│   │   ├── call-worker.js            # Cloudflare Worker API 呼叫封裝
-│   │   ├── portal-subscription.js    # 訂閱入口整合
-│   │   └── subscription-local.js     # 本地訂閱模擬
-│   │
-│   ├── lib/                          # 密碼學工具
-│   │   ├── ntag424-kdf.js            # NTAG 424 DNA 金鑰派生 (HKDF/EV2)
-│   │   └── ntag424-verify.js         # SDM CMAC 驗證
-│   │
-│   ├── utils/                        # 共用工具
-│   │   ├── env.js                    # 環境變數載入
-│   │   ├── logger.js                 # Pino 結構化日誌
-│   │   ├── account-context.js        # 帳號認證解析
-│   │   ├── account-verify.js         # 帳號 digest 驗證
-│   │   ├── conversation-auth.js      # 對話存取控制
-│   │   ├── call-validators.js        # 通話 ID/事件驗證
-│   │   ├── hmac.js                   # HMAC 簽章 (Worker API 通訊)
-│   │   ├── ws-token.js               # WebSocket JWT 產生/驗證
-│   │   └── session-utils.js          # Session 時間戳正規化
-│   │
-│   ├── middlewares/                   # Express 中介軟體
-│   │   ├── async.js                  # Async 錯誤包裝器
-│   │   └── error.js                  # 全域錯誤處理 + 404
-│   │
-│   └── schemas/                      # 驗證 Schema
-│       └── message.schema.js         # Zod 訊息 payload 驗證
-│
-├── data-worker/                      # ═══ Cloudflare Worker ═══
+├── data-worker/                      # ═══ Cloudflare Workers 統一後端 ═══
 │   ├── src/
-│   │   ├── worker.js                 # D1 查詢 + R2 操作 + HMAC 驗證
-│   │   └── u8-strict.js              # Uint8Array 驗證
-│   ├── migrations/                   # D1 資料庫遷移（共 6 個）
+│   │   ├── worker.js                 # 主入口：REST API 路由、HMAC 驗證、
+│   │   │                             #   OPAQUE/SDM 認證、D1/R2/KV 操作、
+│   │   │                             #   金鑰管理、訊息 CRUD、媒體簽章、
+│   │   │                             #   通話管理、聯絡人/群組/訂閱 API
+│   │   ├── account-ws.js             # Durable Object：per-account WebSocket 管理
+│   │   │                             #   JWT 認證、心跳、通話信令轉發、
+│   │   │                             #   Presence (KV)、訊息/事件廣播
+│   │   └── u8-strict.js              # Uint8Array 驗證工具
+│   ├── package.json                  # Worker 依賴 (@cloudflare/opaque-ts)
+│   ├── migrations/                   # D1 資料庫遷移
 │   │   ├── 0001_consolidated.sql     # 主要 Schema（核心表）
 │   │   ├── 0002_fix_missing_tables.sql  # 補建缺失表（contact_secret_backups 等）
 │   │   ├── 0003_restore_deletion_cursors.sql  # deletion_cursors + legacy prekey
@@ -366,7 +700,7 @@ SENTRY-Messenger/
 │   │   ├── 0005_add_min_ts_to_deletion_cursors.sql # 新增 min_ts 欄位
 │   │   ├── 0006_drop_min_counter_from_deletion_cursors.sql # 移除 min_counter
 │   │   └── 0007_add_pairing_code.sql # 配對碼支援
-│   └── wrangler.toml                 # Workers 設定 (D1 binding)
+│   └── wrangler.toml                 # Workers 設定 (D1 + KV + Durable Objects bindings)
 │
 ├── web/                              # ═══ Frontend SPA ═══
 │   ├── build.mjs                     # esbuild 打包設定
@@ -656,7 +990,7 @@ SENTRY-Messenger/
 │   └── assets/                       # 測試資源
 │
 ├── scripts/                          # ═══ 部署與工具 ═══
-│   ├── deploy-hybrid.sh              # 一鍵 Hybrid 部署
+│   ├── deploy-hybrid.sh              # 一鍵部署
 │   ├── deploy-prod.sh                # 正式環境部署
 │   ├── wipe-all.sh                   # 全環境清除
 │   ├── serve-web.mjs                 # 本地 Web 伺服器
@@ -748,23 +1082,31 @@ SENTRY-Messenger/
 | 密碼雜湊 | Argon2id (m=64MB, t=3, p=4) | — |
 | 簽章 | Ed25519 | — |
 | 金鑰交換曲線 | X25519 (via ed2curve) | — |
+| 推播預覽加密 | ECDH P-256 + AES-256-GCM | 96 bit (IV) |
+| 推播預覽金鑰派生 | HKDF-SHA256 (info: `sentry-push-preview-v1`) | — |
 
 ### NFC 認證 (NTAG 424 DNA SDM)
 
 ```
 NFC 標籤 tap → UID + Counter + CMAC
                        ↓
-              HKDF/EV2 金鑰派生 (NTAG424_KM + salt)
+              Worker: HKDF/EV2 金鑰派生 (NTAG424_KM + salt)
                        ↓
-              CMAC 驗證 → Counter 單調性檢查 (防重放)
+              Worker: AES-CMAC 驗證 (RFC 4493) → Counter 單調性檢查 (防重放)
                        ↓
-              帳號 token 發放
+              KV session 發放 (TTL 300s) + 帳號 token
 ```
+
+- AES-CMAC 使用 Web Crypto API AES-CBC 模擬 ECB（`nodejs_compat`）
+- 支援 HKDF-SHA256 與 EV2-CMAC 兩種金鑰派生模式
+- 支援 `NTAG424_KM_OLD` legacy key 自動 fallback
 
 ### OPAQUE 密碼認證
 
-- 基於 P-256 曲線的 OPAQUE PAKE 協定
+- 基於 P-256 曲線的 OPAQUE PAKE 協定（`@cloudflare/opaque-ts`）
+- 完全在 Cloudflare Worker 執行
 - 兩階段流程: `register-init` → `register-finish` / `login-init` → `login-finish`
+- `login-init` 產生的 `expected` 暫存於 KV（TTL 120s），`login-finish` 消費後刪除
 - 伺服器不持有明文密碼，防止離線字典攻擊
 - 成功後衍生 Session Key
 
@@ -824,13 +1166,13 @@ atomicSend API                 # 訊息 + vault key 原子寫入
   ↓
 伺服器 D1 持久化               # messages_secure + message_key_vault
   ↓
-WebSocket 通知對方             # secure-message 事件
+WebSocket 通知對方             # secure-message 事件（經 Durable Object 轉發）
 ```
 
 ### 接收流程
 
 ```
-WebSocket: "secure-message" 事件
+WebSocket: "secure-message" 事件（Durable Object → Client）
   ↓
 Facade: onWsIncomingMessageNew()
   ↓
@@ -1072,19 +1414,22 @@ media_objects         # 媒體物件追蹤
 
 ## API 端點
 
+> 所有 API 端點均由 Cloudflare Workers 統一處理，前端直連 Worker URL。
+
 ### 認證 (`/api/v1/auth/`)
 
-| 端點 | 方法 | 說明 |
-|------|------|------|
-| `/auth/sdm/exchange` | POST | NFC 標籤 SDM 認證 → 帳號 token |
-| `/auth/sdm/debug-kit` | POST | 產生測試用 SDM 憑證 |
-| `/auth/opaque/register-init` | POST | OPAQUE 註冊初始化 |
-| `/auth/opaque/register-finish` | POST | OPAQUE 註冊完成 |
-| `/auth/opaque/login-init` | POST | OPAQUE 登入初始化 |
-| `/auth/opaque/login-finish` | POST | OPAQUE 登入完成 |
-| `/auth/opaque/debug` | GET | OPAQUE 設定除錯（非敏感資訊） |
-| `/mk/store` | POST | 儲存 wrapped MK（首次設定） |
-| `/mk/update` | POST | 更新 wrapped MK（變更密碼） |
+| 端點 | 方法 | 說明 | 狀態儲存 |
+|------|------|------|----------|
+| `/auth/sdm/exchange` | POST | NFC 標籤 SDM 認證 → 帳號 token | KV session (TTL 300s) |
+| `/auth/sdm/debug-kit` | POST | 產生測試用 SDM 憑證 | KV counter (TTL 24h) |
+| `/auth/brand` | GET | 品牌查詢（splash 用） | — |
+| `/auth/opaque/register-init` | POST | OPAQUE 註冊初始化 | — |
+| `/auth/opaque/register-finish` | POST | OPAQUE 註冊完成 → D1 | — |
+| `/auth/opaque/login-init` | POST | OPAQUE 登入初始化 | KV expected (TTL 120s) |
+| `/auth/opaque/login-finish` | POST | OPAQUE 登入完成 → Session Key | KV 消費後刪除 |
+| `/auth/opaque/debug` | GET | OPAQUE 設定除錯（非敏感資訊） | — |
+| `/mk/store` | POST | 儲存 wrapped MK（首次設定，消費 session） | KV session 單次消費 |
+| `/mk/update` | POST | 更新 wrapped MK（變更密碼） | — |
 
 ### 金鑰管理 (`/api/v1/keys/`)
 
@@ -1187,18 +1532,11 @@ media_objects         # 媒體物件追蹤
 |------|------|------|
 | `/admin/purge-account` | POST | 清除帳號資料（需 HMAC `x-auth` header） |
 
-### 除錯 (`/api/v1/debug/`)
-
-| 端點 | 方法 | 說明 |
-|------|------|------|
-| `/debug/config` | GET | 取得除錯設定（遠端 Console 啟用狀態） |
-| `/debug/console` | POST | 轉送前端 Console 日誌 |
-
 ### 其他
 
 | 端點 | 方法 | 說明 |
 |------|------|------|
-| `/friends/delete` | POST | 刪除聯絡人（掛載於 `/api/` 及 `/api/v1/`） |
+| `/friends/delete` | POST | 刪除聯絡人 |
 | `/ws/token` | POST | 取得 WebSocket JWT token |
 | `/account/evidence` | GET | 取得帳號資訊 |
 | `/health` | GET | 健康檢查 |
@@ -1208,22 +1546,23 @@ media_objects         # 媒體物件追蹤
 
 ## WebSocket 即時通訊
 
-### 連線流程
+### 架構
+
+WebSocket 連線由 **Cloudflare Durable Objects** 管理（`AccountWebSocket` class），每個帳號對應一個 Durable Object 實例，支援同一帳號多裝置同時連線。
 
 ```
-Client                                Server
-  │                                      │
-  │──── WebSocket 連線 ─────────────────▶│
-  │◀─── hello (server greeting) ────────│
-  │──── auth (JWT token) ──────────────▶│
-  │◀─── auth_ok / auth_fail ───────────│
-  │                                      │
-  │◀─── secure-message (新訊息) ────────│
-  │◀─── vault-ack (金鑰確認) ──────────│
-  │◀─── call-invite (通話邀請) ────────│
-  │──── presence-subscribe ────────────▶│
-  │◀─── presence-update ───────────────│
-  │                                      │
+Client                          Worker                         Durable Object
+  │                                │                               │
+  │── POST /ws/token ─────────────▶│                               │
+  │◀── JWT token ─────────────────│                               │
+  │                                │                               │
+  │── WebSocket /ws ──────────────▶│── Upgrade ──────────────────▶│
+  │                                │                               │
+  │◀─── hello (server greeting) ──────────────────────────────────│
+  │──── auth (JWT token) ─────────────────────────────────────────▶│
+  │◀─── auth_ok / auth_fail ─────────────────────────────────────│
+  │                                                                │
+  │◀─── secure-message / call-invite / presence-update ───────────│
 ```
 
 ### 訊息類型
@@ -1287,6 +1626,143 @@ Client                                Server
 
 ---
 
+## Web Push 推播通知
+
+### 架構概覽
+
+```
+ 發送者                    Cloudflare Worker (DO)              接收者裝置
+┌────────┐  POST /messages  ┌──────────────────────┐  Web Push API  ┌─────────────┐
+│ Client │ ───────────────▶ │ notifyAccountDO()    │ ────────────▶  │ Service     │
+│  E2E   │  encrypted_      │   ↓                  │                │ Worker (SW) │
+│ encrypt│  previews{}      │ _sendPushNotifications│                │   ↓         │
+└────────┘                  │   ↓ VAPID + AES-GCM  │                │ E2E decrypt │
+                            │   ↓ RFC 8291/8292    │                │ → showNotify│
+                            └──────────────────────┘                └─────────────┘
+```
+
+推播通知基於 W3C Push API 標準，使用 VAPID 身份驗證（RFC 8292）和 AES-128-GCM 傳輸加密（RFC 8291）。所有推播流程在 Cloudflare Workers Durable Objects 內完成，不依賴第三方推播服務。
+
+推播通知預覽內容（發送者名稱、訊息摘要、訊息類型）採用**端對端加密**：發送端以接收者裝置的 ECDH P-256 公鑰加密預覽內容（AES-256-GCM），伺服器僅中繼密文，Service Worker 使用裝置私鑰在本地解密後顯示通知。
+
+### E2E 推播預覽加密
+
+```
+發送端 (Sender)                                      接收端 (Service Worker)
+───────────────                                      ──────────────────────
+1. 取得接收者裝置公鑰                                  1. 收到推播 payload (密文)
+   GET /d1/push/preview-keys                            ↓
+       ↓                                             2. 從 IndexedDB 載入裝置私鑰
+2. 產生 Ephemeral ECDH P-256 keypair                    ↓
+       ↓                                             3. ECDH(device_private, ephemeral_public)
+3. ECDH(ephemeral_private, device_public)                → shared secret
+   → shared secret                                      ↓
+       ↓                                             4. HKDF-SHA256(shared, info="sentry-push-preview-v1")
+4. HKDF-SHA256(shared, info="sentry-push-preview-v1")    → AES-256-GCM key
+   → AES-256-GCM key                                    ↓
+       ↓                                             5. AES-256-GCM 解密
+5. AES-256-GCM 加密 {title, body, msgType}               → {title, body, msgType}
+       ↓                                                ↓
+6. 組合: [ephemeral_pub(65B) | IV(12B) | ciphertext]  6. 顯示通知
+       ↓
+7. Base64URL 編碼 → encrypted_previews[device_id]
+```
+
+| 屬性 | 說明 |
+|------|------|
+| 加密演算法 | ECDH P-256 + HKDF-SHA256 + AES-256-GCM |
+| 金鑰隔離 | 每台裝置獨立 ECDH 金鑰對，私鑰僅存於裝置 IndexedDB |
+| 前向保密 | 每次加密使用新的 Ephemeral keypair |
+| 伺服器零知識 | 伺服器僅儲存裝置公鑰，無法解密預覽內容 |
+| Wire Format | `[ephemeral P-256 pubkey (65B)] + [IV (12B)] + [ciphertext + GCM tag (16B)]` |
+
+### 隱私設計
+
+| 原則 | 說明 |
+|------|------|
+| 預覽 E2E 加密 | 推播預覽內容（發送者、訊息摘要）以接收者裝置公鑰加密，伺服器僅中繼密文 |
+| Fallback 零內容 | 若裝置未註冊預覽公鑰或解密失敗，推播 payload 僅含 `{ title: "SENTRY MESSENGER" }`，不暴露任何內容 |
+| 客戶端 i18n | 通知文字由 Service Worker 根據接收者的 `navigator.language` 在本地解析，伺服器不傳送任何語系資訊 |
+| 訂閱隔離 | 每個 `account_digest` 獨立管理訂閱端點，Durable Object 隔離確保無跨帳號洩漏 |
+
+### 訊息類型過濾
+
+並非所有訊息都觸發推播。伺服器端執行兩層過濾：
+
+**第一層 — 通知類型白名單（Notification Type Allowlist）**
+
+僅以下 5 種通知類型允許觸發推播：
+
+| 通知類型 | 說明 |
+|----------|------|
+| `secure-message` | 1:1 加密訊息 |
+| `message-new` | 一般新訊息 |
+| `biz-conv-message` | 群組對話訊息 |
+| `call-invite` | 通話邀請 |
+| `notify` | 系統通知 |
+
+**第二層 — 控制訊息排除（Control Message Exclusion）**
+
+即使通知類型通過第一層，若訊息的 `msgType`（從 `header_json` 提取）屬於以下控制類型，仍不發送推播：
+
+```
+read-receipt, delivery-receipt, session-init, session-ack, session-error,
+profile-update, contact-share, conversation-deleted, placeholder
+```
+
+### 多語系支援 (i18n)
+
+Service Worker 內嵌翻譯字典，根據接收者瀏覽器語系自動選擇通知文字：
+
+| 語系 | 通知內容 |
+|------|---------|
+| `en` | You have a new message |
+| `zh-Hant` | 你有一則新訊息 |
+| `zh-Hans` | 你有一条新消息 |
+| `ja` | 新しいメッセージがあります |
+| `ko` | 새 메시지가 있습니다 |
+| `th` | คุณมีข้อความใหม่ |
+| `vi` | Bạn có tin nhắn mới |
+
+語系解析邏輯與主應用的 `locales/index.js` 一致（BCP-47 標準化），不支援的語系自動 fallback 至英文。
+
+### 訂閱管理
+
+| 操作 | 端點 | 說明 |
+|------|------|------|
+| 註冊訂閱 | `POST /d1/push/subscribe` | 儲存 endpoint + p256dh + auth + preview_public_key 至 `push_subscriptions` |
+| 取消訂閱 | `POST /d1/push/unsubscribe` | 移除指定 endpoint |
+| 列出訂閱 | `POST /d1/push/list` | 列出帳號下所有推播訂閱 |
+| 預覽公鑰查詢 | `POST /d1/push/preview-keys` | 取得接收者所有裝置的預覽加密公鑰（發送端用） |
+| PIN 產生 | `POST /d1/push/pin/generate` | 產生 6 位數 PIN 碼（iOS PWA 訂閱用） |
+| PIN 驗證 | `POST /d1/push/pin/verify` | 驗證 PIN 並完成訂閱（iOS PWA） |
+| 自動清理 | — | 推送時收到 404/410 回應自動刪除失效訂閱 |
+
+### 平台相容性
+
+| 平台 | 支援狀態 | 備註 |
+|------|---------|------|
+| Chrome / Edge (Desktop & Android) | 完整支援 | 關閉瀏覽器後仍可接收 |
+| Firefox (Desktop & Android) | 完整支援 | |
+| Safari (macOS 13+) | 完整支援 | 需允許通知權限 |
+| iOS Safari (16.4+) | PWA 模式支援 | 必須先加入主畫面（Add to Home Screen），支援 PIN 碼訂閱流程 |
+
+### 相關檔案
+
+| 檔案 | 說明 |
+|------|------|
+| `web/src/sw.js` | Service Worker — 推播接收、E2E 預覽解密、i18n、通知顯示 |
+| `web/src/app/crypto/push-preview.js` | 推播預覽 E2E 加密/解密（ECDH P-256 + AES-256-GCM） |
+| `web/src/app/features/push-preview-keys.js` | 推播預覽金鑰管理（產生、儲存、註冊） |
+| `web/src/app/features/push-subscription.js` | 推播訂閱生命週期管理 |
+| `web/src/app/features/queue/outbox.js` | 發送端 — 取得接收者公鑰並加密預覽 |
+| `data-worker/src/account-ws.js` | Durable Object — `_sendPushNotifications()` 推播發送 |
+| `data-worker/src/web-push.js` | VAPID JWT + AES-128-GCM 傳輸加密實作（RFC 8291/8292） |
+| `data-worker/migrations/0015_add_push_subscriptions.sql` | 推播訂閱表 schema（含 `preview_public_key` 欄位） |
+| `web/src/app/ui/mobile/modals/push-modal.js` | 前端推播設定 UI |
+
+---
+
 ## 安全設計原則
 
 ### 嚴格密碼協定 — 無 Fallback 政策
@@ -1301,11 +1777,13 @@ Client                                Server
 | 模糊錯誤處理 | 不允許 try-catch fallback |
 | 對話重置 | 必須顯式操作，不隱式重建 state |
 
-### 零知識設計
+### 伺服器端資料處理
 
-- 伺服器只儲存 `ciphertext_b64` + `header_json`，無法解密訊息內容
-- 聯絡人資料以 `encrypted_blob` 儲存，伺服器無法讀取
-- Master Key 以 Argon2id + AES-GCM 包裝後儲存，伺服器無法取得明文
+伺服器不持有訊息內容的解密金鑰。通訊 metadata（社交圖譜、時間戳等）仍對伺服器可見（詳見 [Metadata Exposure](docs/security/metadata-exposure.md)）：
+
+- 訊息以 `ciphertext_b64` + `header_json` 儲存，解密金鑰僅存在於客戶端
+- 聯絡人資料以 `encrypted_blob` 儲存，解密金鑰僅存在於客戶端
+- Master Key 以 Argon2id + AES-GCM 包裝後儲存，需使用者密碼才能解包
 
 ### Commit-driven Side Effects
 
@@ -1321,36 +1799,122 @@ Client                                Server
 
 ---
 
+## 安全審計與威脅模型
+
+本專案維護完整的安全文件，所有分析均基於實際程式碼掃描，可回溯至具體程式碼位置。
+
+### 架構與協定
+
+| 文件 | 說明 |
+|------|------|
+| [Protocol Overview](docs/security/protocol-overview.md) | 系統各協議的實際實作狀態，涵蓋註冊、X3DH、Double Ratchet、訊息傳輸等完整流程 |
+| [Security Architecture](docs/security/security-architecture.md) | 整體安全架構分析，包括加密層、信任邊界、資料流與各元件安全性質 |
+| [Key Management](docs/security/key-management.md) | 所有金鑰類型的完整盤點 — 用途、產生方式、儲存位置、生命週期與輪換機制 |
+| [Message Lifecycle](docs/security/message-lifecycle.md) | 一則訊息從發送到接收的完整安全生命週期追蹤 |
+| [Media & Attachment Security](docs/security/media-and-attachment-security.md) | 媒體檔案從選擇、加密、分片上傳到串流解密播放的完整安全分析 |
+
+### 威脅模型與風險評估
+
+| 文件 | 說明 |
+|------|------|
+| [Threat Model](docs/security/threat-model.md) | 威脅模型定義 — 攻擊者能力假設、安全目標、防護範圍 |
+| [Trust Boundaries](docs/security/trust-boundaries.md) | 系統中各信任邊界與元件間的信任關係分析 |
+| [Metadata Exposure](docs/security/metadata-exposure.md) | 伺服器、儲存層、網路觀察者各自可見的中繼資料盤點 |
+| [Data Classification](docs/security/data-classification.md) | 系統中各類資料的機密等級分類（C1–C5） |
+| [Security Assumptions & Out of Scope](docs/security/security-assumptions-and-out-of-scope.md) | 明確區分系統承諾防護與不承諾防護的項目 |
+
+### 審計與發現
+
+| 文件 | 說明 |
+|------|------|
+| [Security Review Checklist](docs/security/security-review-checklist.md) | 供內部或第三方審計使用的逐項檢查清單，每項對應具體程式碼位置 |
+| [Security Findings by Severity](docs/security/security-findings-by-severity.md) | 所有安全發現依嚴重程度排序（Critical → Low），含修復狀態追蹤 |
+| [Repo Findings Summary](docs/security/repo-findings-summary.md) | 完整倉庫掃描的安全發現摘要 |
+| [Audit Readiness](docs/security/audit-readiness.md) | 各模組對第三方安全審計的準備度評估 |
+| [Known Limitations](docs/security/known-limitations.md) | 已知限制與尚未完整實作的安全性質（誠實揭露） |
+| [Open Questions](docs/security/open-questions.md) | 掃描過程中發現的未解決問題，待進一步確認 |
+
+---
+
+## 橫向部署與擴展優勢
+
+### 從 VPS 到全 Serverless 的架構遷移
+
+原架構使用 Node.js Express + WebSocket 部署於 Linode VPS（PM2 管理），存在以下限制：單一伺服器承載所有連線、手動水平擴展困難、WebSocket sticky session 問題、需自行管理伺服器維運（OS 更新、SSL、監控、備份）。
+
+遷移至 Cloudflare Workers + Durable Objects 後，實現了完全 Serverless 的架構：
+
+### 自動彈性擴展
+
+| 面向 | VPS 架構 (舊) | Workers 架構 (新) |
+|------|--------------|-------------------|
+| API 請求處理 | 單台 VPS，PM2 cluster | Cloudflare 全球邊緣網路自動分發 |
+| WebSocket 連線 | 單台 VPS 承載上限 | Durable Objects per-account 隔離，無上限 |
+| 擴展方式 | 手動加機器 + Load Balancer | 零配置自動擴展 |
+| 冷啟動 | N/A（常駐進程） | 毫秒級冷啟動（Worker isolate） |
+
+### 全球邊緣部署
+
+- **API 延遲降低** — Cloudflare Workers 部署於全球 300+ 節點，使用者自動連至最近的邊緣節點處理 API 請求
+- **WebSocket 就近接入** — Durable Objects 根據帳號自動分配至最近的資料中心，減少信令延遲
+- **D1 智慧路由** — SQLite 資料庫自動複製讀取副本至邊緣，降低查詢延遲
+
+### 運維零負擔
+
+| 項目 | VPS 架構 (舊) | Workers 架構 (新) |
+|------|--------------|-------------------|
+| 伺服器維運 | OS 更新、安全修補、監控 | 完全免維運 |
+| SSL 憑證 | 手動管理或 Let's Encrypt | Cloudflare 自動管理 |
+| 程序管理 | PM2 守護、OOM 監控 | 平台自動管理 |
+| 部署流程 | SSH + git pull + PM2 reload | `wrangler deploy`（零停機） |
+| 高可用性 | 需手動設定冗餘 | 平台內建，自動 failover |
+| DDoS 防護 | 需額外設定 | Cloudflare 內建防護 |
+
+### Durable Objects — 有狀態 WebSocket 的最佳解
+
+傳統 WebSocket 水平擴展的痛點是 **sticky session**：同一帳號的多個連線必須路由至同一台伺服器，才能正確轉發訊息。Durable Objects 天然解決了這個問題：
+
+- **Per-account 隔離** — 每個帳號對應一個 `AccountWebSocket` 實例，所有裝置的 WebSocket 連線自動路由至同一個 DO
+- **Hibernatable API** — 無活動時 DO 自動休眠（不佔用計算資源），收到訊息時毫秒級喚醒
+- **內建持久化** — DO 可使用 Transactional Storage 持久化 Presence 狀態，無需外部 Redis
+- **自動遷移** — Cloudflare 自動將 DO 遷移至最佳資料中心，無需手動管理
+
+### 成本效益
+
+| 項目 | VPS 架構 (舊) | Workers 架構 (新) |
+|------|--------------|-------------------|
+| 固定成本 | VPS 月租（無論流量高低） | 依用量計費（請求數 + CPU 時間） |
+| 低流量時 | 仍需支付固定費用 | 近乎零成本 |
+| 突發流量 | 可能當機或需臨時擴容 | 自動擴展，按量計費 |
+| 維運人力 | 需 DevOps 投入 | 零維運成本 |
+
+---
+
 ## 快速開始
 
 ### 前置需求
 
 - Node.js >= 18
-- Cloudflare 帳號 (Workers + D1 + R2 + Pages)
-- 已設定遠端主機 SSH (`~/.ssh/config` 中的 `Message` host)
+- Cloudflare 帳號 (Workers + D1 + R2 + KV + Pages)
+- Wrangler CLI (`npm install -g wrangler`)
 
 ### 本地開發
 
 ```bash
-# 安裝 Backend 依賴
+# 安裝依賴
 npm install
+cd web && npm install && cd ..
 
-# 建立 .env 檔案並填入必要環境變數
-# 必填：WS_TOKEN_SECRET (>= 32 字元)、DATA_API_URL、DATA_API_HMAC
-
-# 啟動 Backend 開發伺服器
-npm run dev
+# 啟動 Worker 本地開發 (D1 + KV + Durable Objects)
+cd data-worker && npx wrangler dev
 
 # ─── 另一個終端 ───
 
-# 安裝 Frontend 依賴
-cd web && npm install
-
-# 開發模式（raw 複製，不壓縮）
-npm run build:raw
+# 前端開發模式（raw 複製，不壓縮）
+cd web && npm run build:raw
 
 # 或使用 Wrangler 本地預覽
-npm run preview
+cd web && npm run preview
 ```
 
 ### Frontend 打包
@@ -1368,68 +1932,74 @@ npm run preview      # Wrangler Pages 本地預覽
 
 ## 部署
 
-### 一鍵 Hybrid 部署
+### 架構概覽
 
-```bash
-./scripts/deploy-hybrid.sh
+```
+GitHub Push (main)
+  │
+  ├── deploy-worker    # Cloudflare Worker (D1 migrations + wrangler deploy + secrets)
+  └── deploy-pages     # Cloudflare Pages (npm build → wrangler pages deploy ./dist)
 ```
 
-部署流程：
+僅需兩個部署目標，無伺服器維運。
 
-1. **Cloudflare Worker** — `wrangler d1 migrations apply` + `wrangler deploy` 部署 `data-worker/`
-2. **Cloudflare Pages** — `npm run build`（esbuild bundle + SRI）→ `wrangler pages deploy ./dist`
-3. **Backend** — git push → SSH 到遠端 → `npm install --production && pm2 reload message-api`
+### GitHub Actions CI/CD
 
-### Frontend Bundle 打包
+```yaml
+deploy.yml (main branch):
+  ├── job: changes         # dorny/paths-filter 偵測變更路徑
+  ├── job: deploy-worker   # data-worker/** 變更 → D1 migrations + wrangler deploy + secrets
+  └── job: deploy-pages    # web/** 變更 → npm build + wrangler pages deploy
+
+deploy-uat.yml (non-main branches):
+  ├── job: deploy-worker   # --env uat → message-data-uat
+  └── job: deploy-pages    # --env uat → UAT Pages
+```
+
+### Worker 部署
+
+```bash
+cd data-worker
+
+# 套用 D1 資料庫遷移
+wrangler d1 migrations apply message_db --remote
+
+# 部署 Worker
+wrangler deploy
+
+# 設定 Secrets (首次或變更時)
+wrangler secret put OPAQUE_OPRF_SEED
+wrangler secret put OPAQUE_AKE_PRIV_B64
+wrangler secret put OPAQUE_AKE_PUB_B64
+wrangler secret put NTAG424_KM
+wrangler secret put DATA_API_HMAC
+wrangler secret put ACCOUNT_HMAC_KEY
+wrangler secret put INVITE_TOKEN_KEY
+wrangler secret put PORTAL_HMAC_SECRET
+wrangler secret put S3_ACCESS_KEY
+wrangler secret put S3_SECRET_KEY
+wrangler secret put WS_TOKEN_SECRET
+```
+
+### Pages 部署
 
 ```bash
 cd web
-npm run build        # esbuild 打包 → dist/（ES2022, code splitting, minify, SRI）
-npm run build:raw    # 直接複製 src → dist（開發用，不壓縮）
-npm run verify       # 打包完整性驗證（SHA256 + SRI SHA384）
-npm run verify:cdn   # CDN 完整性驗證（含 verbose）
-npm run preview      # Wrangler Pages 本地預覽
+
+# Bundle 模式
+npm run build && wrangler pages deploy ./dist --project-name message-web-hybrid
+
+# Raw 模式（開發用）
+wrangler pages deploy ./src
 ```
 
-**Bundle 特性：**
+### Frontend Bundle 特性
+
 - **esbuild** ES2022 target，code splitting + minification + source maps
 - **SRI** (Subresource Integrity) — 所有 JS/CSS 注入 SHA384 完整性雜湊
 - **Build Manifest** — `dist/build-manifest.json` 含 git commit hash + 每檔 SHA256
 - **Entry Points**: `app-mobile.js`、`login-ui.js`、`debug-page.js`、`media-permission-demo.js`
 - **CSS Bundle**: `app-bundle.css` 單檔壓縮
-
-### GitHub Actions CI/CD
-
-```yaml
-deploy.yml:
-  ├── job: deploy-worker     # Cloudflare Worker (D1 migrations + wrangler deploy)
-  ├── job: deploy-pages      # Cloudflare Pages (npm build → wrangler pages deploy ./dist)
-  └── job: deploy-backend    # Node.js VPS (SSH → git pull → npm install → pm2 reload)
-```
-
-### Worker D1 遷移
-
-```bash
-cd data-worker
-wrangler d1 migrations apply message_db     # 套用資料庫遷移（共 7 個）
-wrangler deploy                              # 部署 Worker
-```
-
-### 手動部署
-
-```bash
-# Worker
-cd data-worker && wrangler deploy
-
-# Pages（bundle 模式）
-cd web && npm run build && wrangler pages deploy ./dist --project-name message-web-hybrid
-
-# Pages（raw 模式，開發用）
-cd web && wrangler pages deploy ./src
-
-# Backend (VPS)
-ssh Message "cd /path/to/app && git pull && npm install --production && pm2 reload message-api"
-```
 
 ---
 
@@ -1473,107 +2043,82 @@ cd web && npm run verify:cdn     # CDN 完整性驗證（含 verbose）
 
 ## 環境變數
 
-### 核心設定
+> 所有後端環境變數均設定於 Cloudflare Workers（`wrangler.toml` 或 `wrangler secret put`）。
+
+### Worker 公開設定 (wrangler.toml `[vars]`)
 
 | 變數 | 說明 | 範例 |
 |------|------|------|
-| `PORT` | HTTP 監聽埠 | `3000` |
-| `NODE_ENV` | 環境模式 | `development` / `production` |
-| `SERVICE_NAME` | 服務名稱 | `message-api` |
-| `SERVICE_VERSION` | 服務版本 | `0.1.0` |
-| `WS_TOKEN_SECRET` | WebSocket JWT 簽章金鑰 (>= 32 字元) | `<random-string>` |
-| `DATA_API_URL` | Cloudflare Worker URL | `https://message-data.xxx.workers.dev` |
-| `DATA_API_HMAC` | Worker 通訊 HMAC 密鑰 | `<secret>` |
-| `CORS_ORIGIN` | 允許的 CORS 來源 (逗號分隔) | `https://sentry.red,https://app.sentry.red` |
-| `DISABLE_RATE_LIMIT` | 停用 API 限速 (`1` = 停用) | `1` |
-
-### S3/R2 儲存
-
-| 變數 | 說明 | 範例 |
-|------|------|------|
-| `S3_ENDPOINT` | R2 / S3 相容端點 URL | |
-| `S3_BUCKET` | 儲存桶名稱 | |
-| `S3_ACCESS_KEY` | S3 存取金鑰 | |
-| `S3_SECRET_KEY` | S3 秘密金鑰 | |
-| `UPLOAD_MAX_BYTES` | 單檔上傳大小限制 | `1073741824` (1GB) |
-| `DRIVE_QUOTA_BYTES` | 每個對話儲存配額 | `3221225472` (3GB) |
-| `SIGNED_PUT_TTL` | 上傳簽章 URL 有效期 (秒) | `900` |
-| `SIGNED_GET_TTL` | 下載簽章 URL 有效期 (秒) | `900` |
-
-### NFC 認證 (NTAG 424 DNA)
-
-| 變數 | 說明 | 範例 |
-|------|------|------|
-| `NTAG424_KM` | 主金鑰 | `<32 hex chars>` |
-| `NTAG424_KDF` | 派生模式 | `HKDF` / `EV2` |
+| `OPAQUE_SERVER_ID` | OPAQUE 伺服器識別符 | `api.message.sentry.red` |
+| `NTAG424_KDF` | NFC 金鑰派生模式 | `HKDF` / `EV2` |
 | `NTAG424_SALT` | HKDF salt | `sentry.red` |
 | `NTAG424_INFO` | HKDF info | `ntag424-slot-0` |
 | `NTAG424_KVER` | 金鑰版本 | `1` |
+| `S3_ENDPOINT` | R2 / S3 相容端點 URL | `https://xxx.r2.cloudflarestorage.com` |
+| `S3_REGION` | S3 區域 | `auto` |
+| `S3_BUCKET` | 儲存桶名稱 | `message-media` |
+| `SIGNED_PUT_TTL` | 上傳簽章 URL 有效期 (秒) | `900` |
+| `SIGNED_GET_TTL` | 下載簽章 URL 有效期 (秒) | `900` |
 
-### OPAQUE PAKE 認證
+### Worker Secrets (`wrangler secret put`)
 
-| 變數 | 說明 | 範例 |
-|------|------|------|
-| `OPAQUE_OPRF_SEED` | OPRF 種子 | `<64 hex chars>` |
-| `OPAQUE_AKE_PRIV_B64` | AKE 私鑰 | `<base64>` |
-| `OPAQUE_AKE_PUB_B64` | AKE 公鑰 | `<base64>` |
-| `OPAQUE_SERVER_ID` | 伺服器識別符 | `api.sentry` |
+| 變數 | 說明 |
+|------|------|
+| `OPAQUE_OPRF_SEED` | OPRF 種子 (32 bytes hex) |
+| `OPAQUE_AKE_PRIV_B64` | OPAQUE AKE 私鑰 (base64) |
+| `OPAQUE_AKE_PUB_B64` | OPAQUE AKE 公鑰 (base64) |
+| `NTAG424_KM` | NFC 主金鑰 (16 bytes hex) |
+| `NTAG424_KM_OLD` | NFC 舊主金鑰（fallback） |
+| `DATA_API_HMAC` | API HMAC 驗證密鑰 |
+| `ACCOUNT_HMAC_KEY` | 帳號 HMAC 密鑰 |
+| `INVITE_TOKEN_KEY` | 邀請 Token 密鑰 |
+| `PORTAL_HMAC_SECRET` | Portal HMAC 密鑰 |
+| `S3_ACCESS_KEY` | R2/S3 存取金鑰 |
+| `S3_SECRET_KEY` | R2/S3 秘密金鑰 |
+| `WS_TOKEN_SECRET` | WebSocket JWT 簽章金鑰 (>= 32 字元) |
 
-### WebRTC 通話
+### D1 Database Binding
 
-| 變數 | 說明 | 範例 |
-|------|------|------|
-| `CLOUDFLARE_TURN_TOKEN_ID` | Cloudflare TURN token ID | `<token-id>` |
-| `CLOUDFLARE_TURN_TOKEN_KEY` | Cloudflare TURN token 密鑰 | `<token-key>` |
-| `TURN_TTL_SECONDS` | TURN 憑證有效期 (秒) | `300` |
-| `TURN_SHARED_SECRET` | TURN 憑證簽章密鑰 (備用) | `<secret>` |
-| `TURN_STUN_URIS` | STUN 伺服器列表 (逗號分隔) | `stun:stun.cloudflare.com:3478` |
-| `TURN_RELAY_URIS` | TURN relay 伺服器列表 | `turn:relay.example.com` |
-| `CALL_LOCK_TTL_MS` | 通話鎖定逾時 (毫秒, 最小 30s) | `120000` |
-| `CALL_SESSION_TTL_SECONDS` | 通話 Session 過期時間 | `90` |
-| `CALL_EXTRA_STUN_URIS` | 額外 STUN 伺服器 | `stun:stun.l.google.com:19302` |
+| Binding | 用途 |
+|---------|------|
+| `DB` | D1 SQLite 資料庫（message_db） |
 
-### 除錯與遠端 Console
+### KV Namespace Binding
 
-| 變數 | 說明 | 範例 |
-|------|------|------|
-| `REMOTE_CONSOLE_ENABLED` | 啟用遠端 Console 日誌 | `true` |
-| `REMOTE_CONSOLE_LOG` | 遠端 Console 日誌路徑 | `/var/log/remote-console.log` |
+| Binding | 用途 | TTL |
+|---------|------|-----|
+| `AUTH_KV` | SDM exchange session、OPAQUE login expected、debug counter、Presence | 120s–300s |
+
+```bash
+# 建立 KV namespace
+wrangler kv namespace create AUTH_KV
+wrangler kv namespace create AUTH_KV --env uat
+# 將產出的 id 填入 wrangler.toml
+```
+
+### Durable Objects Binding
+
+| Binding | Class | 用途 |
+|---------|-------|------|
+| `ACCOUNT_WS` | `AccountWebSocket` | Per-account WebSocket 連線管理 |
+
+### WebRTC 通話（Worker Secrets）
+
+| 變數 | 說明 |
+|------|------|
+| `CLOUDFLARE_TURN_TOKEN_ID` | Cloudflare TURN token ID |
+| `CLOUDFLARE_TURN_TOKEN_KEY` | Cloudflare TURN token 密鑰 |
 
 ---
 
 ## 技術棧
 
-### Backend 依賴
+### Worker 依賴
 
 | 套件 | 用途 |
 |------|------|
-| express | HTTP API 框架 |
-| ws | WebSocket 伺服器 |
-| helmet | HTTP 安全標頭 |
-| compression | 回應壓縮 |
-| cors | CORS 中間件 |
-| express-rate-limit | API 限速 |
-| pino / pino-http | 結構化日誌 |
-| jsonwebtoken | JWT 產生/驗證 |
-| dotenv | 環境變數載入 |
-| @cloudflare/opaque-ts | OPAQUE PAKE 協定 |
-| @noble/curves, @noble/hashes, @noble/ed25519 | 密碼學原語 |
-| tweetnacl | NaCl 加密函式庫 |
-| ed2curve | Ed25519 → X25519 轉換 |
-| elliptic | 橢圓曲線加密 |
-| @aws-sdk/client-s3 | R2/S3 操作 |
-| @aws-sdk/s3-presigned-post | S3 Presigned POST |
-| @aws-sdk/s3-request-presigner | S3 Presigned URL |
-| zod | Schema 驗證 |
-| nanoid | 安全亂數 ID |
-| multer | Multipart 檔案上傳 |
-| jimp | 伺服器端圖片處理 |
-| jsqr | QR Code 解碼 |
-| qrcode-reader | QR Code 讀取 |
-| pdfjs-dist | PDF 解析 |
-| node-aes-cmac | AES-CMAC (NTAG424) |
-| pm2 | 程序管理 |
+| @cloudflare/opaque-ts | OPAQUE PAKE 協定 (P-256) |
+| node:crypto (nodejs_compat) | AES-CMAC / HKDF-SHA256 / HMAC / JWT 驗證 |
 
 ### Frontend 工具與技術
 
@@ -1602,22 +2147,24 @@ cd web && npm run verify:cdn     # CDN 完整性驗證（含 verbose）
 |------|------|
 | @playwright/test | E2E 測試框架 |
 | wrangler | Cloudflare CLI（Workers/D1/Pages） |
-| GitHub Actions | CI/CD（三階段自動部署） |
+| GitHub Actions | CI/CD（雙階段自動部署） |
 
 ### Infrastructure
 
 | 服務 | 用途 |
 |------|------|
-| Cloudflare Workers | 資料層 API |
+| Cloudflare Workers | 統一後端 API + WebSocket（Durable Objects） |
 | Cloudflare D1 | SQLite 資料庫 |
+| Cloudflare KV | 短期 auth session + Presence 儲存 |
 | Cloudflare R2 | 媒體物件儲存 |
 | Cloudflare Pages | 前端部署（esbuild bundle + Pages Functions） |
 | Cloudflare TURN | WebRTC 通話 relay（動態憑證） |
-| Linode VPS | Backend + WebSocket |
-| PM2 | 程序管理 + 自動重啟 |
+| Cloudflare Durable Objects | Per-account 有狀態 WebSocket 管理 |
 
 ---
 
 ## 授權
 
 AGPL-3.0-only
+
+本專案選擇 AGPL-3.0 授權，確保所有衍生作品同樣保持開源，讓社群能持續審閱與驗證安全性。

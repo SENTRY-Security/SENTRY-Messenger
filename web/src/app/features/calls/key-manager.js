@@ -5,7 +5,8 @@ import { bytesToB64, b64ToBytes, b64UrlToBytes } from '../../../shared/utils/bas
 import { toU8Strict } from '/shared/utils/u8-strict.js';
 import {
   CALL_EVENT,
-  subscribeCallEvent
+  subscribeCallEvent,
+  emitCallEvent
 } from './events.js';
 import {
   CALL_SESSION_DIRECTION,
@@ -19,15 +20,29 @@ import {
 } from './state.js';
 import { CALL_MEDIA_STATE_STATUS } from '../../../shared/calls/schemas.js';
 import { buildCallPeerIdentity } from './identity.js';
+import { t } from '/locales/index.js';
 
 const encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
-const ZERO_SALT = new Uint8Array(32);
 
 let subscriptions = [];
 let deriveTask = null;
 let suppressAutoDerive = false;
 let keyContext = null;
 let isResettingContext = false;
+let rotationTimer = null;
+let keyContextListeners = [];
+
+/** Register a callback invoked after keyContext is updated (e.g. for ScriptTransform rekey). */
+export function onKeyContextUpdate(fn) {
+  if (typeof fn === 'function') keyContextListeners.push(fn);
+  return () => { keyContextListeners = keyContextListeners.filter(f => f !== fn); };
+}
+
+function notifyKeyContextListeners() {
+  for (const fn of keyContextListeners) {
+    try { fn(keyContext); } catch {}
+  }
+}
 
 const ROLE_KEY_LABELS = {
   caller: {
@@ -104,9 +119,27 @@ export function getCallKeyContext() {
 export function supportsInsertableStreams() {
   const senderProto = typeof RTCRtpSender !== 'undefined' ? RTCRtpSender.prototype : null;
   if (!senderProto) return false;
-  return typeof senderProto.createEncodedStreams === 'function'
+  // Legacy API (Chrome < 118, older browsers)
+  if (typeof senderProto.createEncodedStreams === 'function'
     || typeof senderProto.createEncodedAudioStreams === 'function'
-    || typeof senderProto.createEncodedVideoStreams === 'function';
+    || typeof senderProto.createEncodedVideoStreams === 'function') return true;
+  // Modern API (Safari 15.4+, Chrome 118+): RTCRtpScriptTransform
+  if (typeof RTCRtpScriptTransform !== 'undefined') return true;
+  return false;
+}
+
+/**
+ * Returns true when the browser uses the modern RTCRtpScriptTransform API
+ * (Safari 15.4+, Chrome 118+) instead of the legacy createEncodedStreams().
+ */
+export function usesScriptTransform() {
+  const senderProto = typeof RTCRtpSender !== 'undefined' ? RTCRtpSender.prototype : null;
+  if (!senderProto) return false;
+  // If legacy API is available, prefer it (simpler, main-thread transforms)
+  if (typeof senderProto.createEncodedStreams === 'function'
+    || typeof senderProto.createEncodedAudioStreams === 'function'
+    || typeof senderProto.createEncodedVideoStreams === 'function') return false;
+  return typeof RTCRtpScriptTransform !== 'undefined';
 }
 
 export async function prepareCallKeyEnvelope({
@@ -118,7 +151,7 @@ export async function prepareCallKeyEnvelope({
   capabilities = null,
   direction = null
 } = {}) {
-  if (!hasWebCrypto()) throw new Error('此瀏覽器不支援 WebCrypto');
+  if (!hasWebCrypto()) throw new Error(t('callKeys.webCryptoNotSupported'));
   if (!callId) throw new Error('callId required');
   const session = getCallSessionSnapshot();
   const digest = normalizeAccountDigest(peerAccountDigest || session?.peerAccountDigest || null);
@@ -156,6 +189,7 @@ export async function prepareCallKeyEnvelope({
   });
   await finalizeContext(context);
   keyContext = context;
+  notifyKeyContextListeners();
   return envelope;
 }
 
@@ -190,13 +224,14 @@ async function deriveKeysFromEnvelope({ session, envelope, trigger }) {
   const context = await buildKeyContext({ session, envelope });
   await finalizeContext(context);
   keyContext = context;
+  notifyKeyContextListeners();
   log({ callKeyReady: true, callId: context.callId, trigger });
   return context;
 }
 
 async function buildKeyContext({ session, envelope, saltBytes = null }) {
   const digest = normalizeAccountDigest(session?.peerAccountDigest || null);
-  if (!digest) throw new Error('缺少好友 account digest');
+  if (!digest) throw new Error(t('callKeys.missingFriendDigest'));
   const peerDeviceId = normalizePeerDeviceId(session?.peerDeviceId || null);
   if (!peerDeviceId) throw new Error('peerDeviceId required for call key');
   const identity = buildCallPeerIdentity({ peerAccountDigest: digest, peerDeviceId });
@@ -214,25 +249,25 @@ async function buildKeyContext({ session, envelope, saltBytes = null }) {
     }));
   } catch { }
   logCallKeyDerive({ callId, peerKey: identity.peerKey, hasSecret: !!secretB64 });
-  if (!secretB64) throw new Error('缺少好友密鑰，請重新同步聯絡人');
+  if (!secretB64) throw new Error(t('callKeys.missingFriendKey'));
   const baseSecret = b64UrlToBytes(secretB64);
-  if (!baseSecret || !baseSecret.length) throw new Error('無法解析好友密鑰');
+  if (!baseSecret || !baseSecret.length) throw new Error(t('callKeys.cannotParseFriendKey'));
   const salt = saltBytes || b64ToBytes(envelope?.cmkSalt || '');
-  if (!salt || !salt.length) throw new Error('缺少通話金鑰 salt');
+  if (!salt || !salt.length) throw new Error(t('callKeys.missingCallKeySalt'));
   const epoch = Number.isFinite(envelope?.epoch) ? envelope.epoch : 0;
-  if (!callId) throw new Error('callId 無效');
+  if (!callId) throw new Error(t('callKeys.invalidCallId'));
   const role = toRole(session?.direction);
-  const masterKey = await deriveMasterKey(baseSecret, salt, callId, epoch);
+  const { key: masterKey, subSalt } = await deriveMasterKey(baseSecret, salt, callId, epoch);
   const proofB64 = await computeProof(masterKey, callId, epoch);
   if (envelope?.cmkProof && envelope.cmkProof !== proofB64) {
-    throw new Error('call master key proof 驗證失敗');
+    throw new Error(t('callKeys.proofVerifyFailed'));
   }
   const labels = ROLE_KEY_LABELS[role] || ROLE_KEY_LABELS.caller;
   const keys = {
-    audioTx: await deriveDirectionalKey(masterKey, labels.audioTxKey, labels.audioTxNonce),
-    audioRx: await deriveDirectionalKey(masterKey, labels.audioRxKey, labels.audioRxNonce),
-    videoTx: await deriveDirectionalKey(masterKey, labels.videoTxKey, labels.videoTxNonce),
-    videoRx: await deriveDirectionalKey(masterKey, labels.videoRxKey, labels.videoRxNonce)
+    audioTx: await deriveDirectionalKey(masterKey, subSalt, labels.audioTxKey, labels.audioTxNonce),
+    audioRx: await deriveDirectionalKey(masterKey, subSalt, labels.audioRxKey, labels.audioRxNonce),
+    videoTx: await deriveDirectionalKey(masterKey, subSalt, labels.videoTxKey, labels.videoTxNonce),
+    videoRx: await deriveDirectionalKey(masterKey, subSalt, labels.videoRxKey, labels.videoRxNonce)
   };
   return {
     callId,
@@ -269,7 +304,11 @@ async function deriveMasterKey(baseSecret, salt, callId, epoch) {
     baseKey,
     512
   );
-  return new Uint8Array(bits);
+  const full = new Uint8Array(bits);
+  return {
+    key: full.slice(0, 32),     // first 256 bits: master key material
+    subSalt: full.slice(32, 64) // second 256 bits: sub-derivation salt
+  };
 }
 
 async function computeProof(masterKey, callId, epoch) {
@@ -285,16 +324,16 @@ async function computeProof(masterKey, callId, epoch) {
   return bytesToB64(new Uint8Array(mac));
 }
 
-async function deriveDirectionalKey(masterKey, keyLabel, nonceLabel) {
-  const keyBytes = await deriveSubMaterial(masterKey, keyLabel, 256);
-  const nonceBytes = await deriveSubMaterial(masterKey, nonceLabel, 96);
+async function deriveDirectionalKey(masterKey, subSalt, keyLabel, nonceLabel) {
+  const keyBytes = await deriveSubMaterial(masterKey, subSalt, keyLabel, 256);
+  const nonceBytes = await deriveSubMaterial(masterKey, subSalt, nonceLabel, 96);
   return {
     key: keyBytes,
     nonce: nonceBytes
   };
 }
 
-async function deriveSubMaterial(masterKey, label, lengthBits) {
+async function deriveSubMaterial(masterKey, subSalt, label, lengthBits) {
   const hkdfKey = await crypto.subtle.importKey(
     'raw',
     toU8Strict(masterKey, 'web/src/app/features/calls/key-manager.js:255:deriveSubMaterial'),
@@ -303,9 +342,8 @@ async function deriveSubMaterial(masterKey, label, lengthBits) {
     ['deriveBits']
   );
   const info = encoder.encode(label);
-  const salt = ZERO_SALT;
   const bits = await crypto.subtle.deriveBits(
-    { name: 'HKDF', hash: 'SHA-256', salt, info },
+    { name: 'HKDF', hash: 'SHA-256', salt: subSalt, info },
     hkdfKey,
     lengthBits
   );
@@ -338,9 +376,66 @@ async function finalizeContext(context) {
   setCallMediaStatus(CALL_MEDIA_STATE_STATUS.READY);
 }
 
+// ── Epoch rotation (M-8 fix) ──────────────────────────────────────
+// The caller (initiator) drives rotation. Every rotateIntervalMs
+// (default 10 min), it increments epoch, derives fresh keys, and
+// emits a CALL_EVENT.REKEY with the new envelope so the signaling
+// layer can send it to the peer.
+
+function startRotationTimer() {
+  stopRotationTimer();
+  const mediaState = getCallMediaState();
+  const interval = mediaState?.rotateIntervalMs;
+  if (!interval || interval <= 0) return;
+  rotationTimer = setInterval(() => {
+    rotateEpoch().catch((err) => {
+      log({ callEpochRotateError: err?.message || err });
+    });
+  }, interval);
+}
+
+function stopRotationTimer() {
+  if (rotationTimer) {
+    clearInterval(rotationTimer);
+    rotationTimer = null;
+  }
+}
+
+async function rotateEpoch() {
+  const session = getCallSessionSnapshot();
+  const mediaState = getCallMediaState();
+  if (!session || !mediaState) return;
+  // Only the initiator (caller / outgoing direction) drives rotation
+  if (session.direction !== CALL_SESSION_DIRECTION.OUTGOING) return;
+  if (session.status !== CALL_SESSION_STATUS.IN_CALL) return;
+  if (!mediaState.cmkMaterial) return;
+  const currentEpoch = mediaState.epoch || 1;
+  const nextEpoch = currentEpoch + 1;
+  log({ callEpochRotate: true, callId: session.callId, from: currentEpoch, to: nextEpoch });
+  const envelope = await prepareCallKeyEnvelope({
+    callId: session.callId,
+    peerAccountDigest: session.peerAccountDigest,
+    peerDeviceId: session.peerDeviceId,
+    epoch: nextEpoch,
+    direction: session.direction
+  });
+  const now = Date.now();
+  updateCallMedia({
+    lastRotateAt: now,
+    nextRotateAt: now + (mediaState.rotateIntervalMs || 600000)
+  });
+  // Emit rekey event so signaling layer can send envelope to peer
+  emitCallEvent(CALL_EVENT.REKEY, {
+    envelope,
+    callId: session.callId,
+    epoch: nextEpoch
+  });
+}
+
 function resetKeyContext(reason) {
   if (isResettingContext) return;
   isResettingContext = true;
+  stopRotationTimer();
   keyContext = null;
   const state = getCallMediaState();
   try {
@@ -384,10 +479,15 @@ function handleCallStateEvent(session) {
     || snapshot.status === CALL_SESSION_STATUS.FAILED
     || snapshot.status === CALL_SESSION_STATUS.IDLE
   ) {
+    stopRotationTimer();
     if (hasContext) {
       resetKeyContext('session-complete');
     }
     return;
+  }
+  // Start rotation timer when call becomes active with keys ready
+  if (snapshot.status === CALL_SESSION_STATUS.IN_CALL && hasContext && !rotationTimer) {
+    startRotationTimer();
   }
   // When the call is connected but no key envelope was exchanged (no
   // pending envelope and no derived context), mark E2E as skipped so

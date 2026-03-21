@@ -7,6 +7,7 @@ import { getMkRaw, getAccountDigest, buildAccountPayload } from '../core/store.j
 import { encryptWithMK as aeadEncryptWithMK, decryptWithMK as aeadDecryptWithMK, b64, b64u8 } from '../crypto/aead.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
 import { encryptAndPutChunked, CHUNK_SIZE, UnsupportedVideoFormatError } from './chunked-upload.js';
+import { t } from '/locales/index.js';
 
 const encoder = new TextEncoder();
 export const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024; // 1 GB
@@ -48,16 +49,17 @@ const EXT_CONTENT_TYPE = new Map([
 ]);
 
 /**
- * Retry a fetch-based operation on network errors (TypeError: Failed to fetch).
+ * Retry a fetch-based operation on network errors (TypeError: Failed to fetch / Load failed).
  * Uses exponential backoff: 1s, 2s, 4s. Only retries on TypeError (network-level
- * failures); server errors (4xx/5xx) are returned immediately for caller handling.
+ * failures, including CORS-blocked 502s); server errors (4xx/5xx) are returned
+ * immediately for caller handling.
  */
 async function fetchWithRetry(fn, maxRetries = 3) {
   for (let attempt = 0; ; attempt++) {
     try {
       return await fn();
     } catch (err) {
-      const isNetworkError = err instanceof TypeError && /fetch/i.test(err.message);
+      const isNetworkError = err instanceof TypeError && /fetch|load failed/i.test(err.message);
       if (!isNetworkError || attempt >= maxRetries) throw err;
       const delay = 1000 * Math.pow(2, attempt); // 1s, 2s, 4s
       console.warn(`[saveToDrive] network error, retrying in ${delay}ms (${attempt + 1}/${maxRetries})`, err.message);
@@ -149,7 +151,7 @@ function requireMediaInfoTag(infoTag) {
 function buildEnvelope({ ct, keyType, keyU8, infoTag, contentType, name }) {
   const normalizedInfoTag = requireMediaInfoTag(infoTag);
   const envelope = {
-    v: keyType === 'shared' ? 2 : 1,
+    v: 2,
     aead: 'aes-256-gcm',
     iv_b64: b64(ct.iv),
     hkdf_salt_b64: b64(ct.hkdfSalt),
@@ -212,7 +214,7 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
   const name = typeof file.name === 'string' ? file.name : 'blob.bin';
   const fileSize = typeof file.size === 'number' ? file.size : null;
   if (fileSize != null && fileSize > MAX_UPLOAD_BYTES) {
-    throw new Error('檔案大小超過 1GB 限制');
+    throw new Error(t('upload.fileSizeExceeded', { limitMB: 1024 }));
   }
   const dirSegments = normalizeDirSegments(dir);
   if (dirSegments.length && !mk) {
@@ -222,7 +224,7 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
   // 1) Read & Encrypt
   const plainBuf = new Uint8Array(await file.arrayBuffer());
   if (plainBuf.byteLength > MAX_UPLOAD_BYTES) {
-    throw new Error('檔案大小超過 1GB 限制');
+    throw new Error(t('upload.fileSizeExceeded', { limitMB: 1024 }));
   }
   const infoTag = requireMediaInfoTag(useSharedKey ? encryptionInfoTag : MEDIA_INFO_TAG);
   const ctKey = useSharedKey ? sharedKeyU8 : mk;
@@ -283,6 +285,8 @@ export async function encryptAndPut({ convId, file, dir, skipIndex = false, dire
         dir: dirSegments,
         iv_b64: envelope.iv_b64,
         env: {
+          v: envelope.v,
+          aead: envelope.aead,
           iv_b64: envelope.iv_b64,
           hkdf_salt_b64: envelope.hkdf_salt_b64,
           info_tag: envelope.info_tag,
@@ -325,7 +329,7 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
   const name = typeof file.name === 'string' ? file.name : 'blob.bin';
   const fileSize = typeof file.size === 'number' ? file.size : null;
   if (fileSize != null && fileSize > MAX_UPLOAD_BYTES) {
-    throw new Error('檔案大小超過 1GB 限制');
+    throw new Error(t('upload.fileSizeExceeded', { limitMB: 1024 }));
   }
   const dirSegments = normalizeDirSegments(dir);
   if (dirSegments.length && !mk) {
@@ -334,7 +338,7 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
 
   const plainBuf = new Uint8Array(await file.arrayBuffer());
   if (plainBuf.byteLength > MAX_UPLOAD_BYTES) {
-    throw new Error('檔案大小超過 1GB 限制');
+    throw new Error(t('upload.fileSizeExceeded', { limitMB: 1024 }));
   }
   const infoTag = requireMediaInfoTag(useSharedKey ? encryptionInfoTag : MEDIA_INFO_TAG);
   const ctKey = useSharedKey ? sharedKeyU8 : mk;
@@ -421,6 +425,8 @@ export async function encryptAndPutWithProgress({ convId, file, onProgress, dir,
         dir: dirSegments,
         iv_b64: envelope.iv_b64,
         env: {
+          v: envelope.v,
+          aead: envelope.aead,
           iv_b64: envelope.iv_b64,
           hkdf_salt_b64: envelope.hkdf_salt_b64,
           info_tag: envelope.info_tag,
@@ -521,7 +527,7 @@ export async function downloadAndDecrypt({ key, envelope, onStatus, onProgress, 
   }
   const infoTag = requireMediaInfoTag(meta.info_tag || meta.infoTag);
 
-  progress?.({ stage: 'sign', message: '取得下載授權…' });
+  progress?.({ stage: 'sign', message: t('mediaHandling.gettingDownloadAuth') });
   const { download } = await signGet({ key });
   if (!download?.url) throw new Error('sign-get returned no URL');
 
@@ -615,14 +621,24 @@ export async function downloadAndDecrypt({ key, envelope, onStatus, onProgress, 
     }
   }
 
-  progress?.({ stage: 'decrypt', message: '解密檔案中…' });
-  const plain = await aeadDecryptWithMK(
-    cipherU8,
-    baseKey,
-    b64u8(meta.hkdf_salt_b64),
-    b64u8(meta.iv_b64),
-    infoTag
-  );
+  progress?.({ stage: 'decrypt', message: t('mediaHandling.decryptingFile') });
+  const useAad = (meta.v ?? 1) >= 2;
+  let plain;
+  try {
+    plain = await aeadDecryptWithMK(
+      cipherU8, baseKey, b64u8(meta.hkdf_salt_b64), b64u8(meta.iv_b64), infoTag, { useAad }
+    );
+  } catch (firstErr) {
+    // Fallback: retry with opposite AAD setting for transition-window data
+    // (encrypted post-M-4 with AAD but envelope labeled v1, or vice versa)
+    try {
+      plain = await aeadDecryptWithMK(
+        cipherU8, baseKey, b64u8(meta.hkdf_salt_b64), b64u8(meta.iv_b64), infoTag, { useAad: !useAad }
+      );
+    } catch {
+      throw firstErr; // throw original error if fallback also fails
+    }
+  }
   progress?.({ stage: 'done', bytes: plain.length });
   const blob = new Blob([plain], { type: meta.contentType || 'application/octet-stream' });
   return { blob, contentType: meta.contentType || 'application/octet-stream', name: meta.name || 'decrypted.bin', bytes: plain.length };
@@ -726,7 +742,8 @@ export async function saveChatMediaToDrive({ media, driveDir } = {}) {
       dir: dirSegments,
       iv_b64: envelope.iv_b64,
       env: {
-        v: envelope.v || 1,
+        v: envelope.v ?? 2,
+        aead: envelope.aead || 'aes-256-gcm',
         iv_b64: envelope.iv_b64,
         hkdf_salt_b64: envelope.hkdf_salt_b64,
         info_tag: envelope.info_tag,

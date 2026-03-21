@@ -1,8 +1,13 @@
 // Centralized debug switches (front-end + local diagnostics)
+// H-3 fix: In production builds (__PRODUCTION__ = true), all switches are forced off.
+// __PRODUCTION__ is injected by esbuild at build time (see build.mjs).
+/* global __PRODUCTION__ */
+const _PROD = typeof __PRODUCTION__ !== 'undefined' && __PRODUCTION__;
+
 export const DEBUG = {
-  replay: true,
+  replay: !_PROD && true,
   forensics: false,
-  drVerbose: true,
+  drVerbose: !_PROD && true,
   profileCounter: false,
   drCounter: false,
   contactsA1: false,
@@ -12,7 +17,7 @@ export const DEBUG = {
   uiNoise: false,
   queueNoise: false,
   avatarBug: false,
-  conversationReset: true,
+  conversationReset: !_PROD && true,
   identityTrace: false
 };
 

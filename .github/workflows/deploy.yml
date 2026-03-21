@@ -11,26 +11,41 @@ jobs:
     runs-on: ubuntu-latest
     name: Detect Changes
     outputs:
-      worker: ${{ steps.filter.outputs.worker }}
-      web: ${{ steps.filter.outputs.web }}
-      backend: ${{ steps.filter.outputs.backend }}
+      worker: ${{ steps.detect.outputs.worker }}
+      web: ${{ steps.detect.outputs.web }}
+      backend: ${{ steps.detect.outputs.backend }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Check changed paths
-        uses: dorny/paths-filter@v3
-        id: filter
         with:
-          filters: |
-            worker:
-              - 'data-worker/**'
-            web:
-              - 'web/**'
-            backend:
-              - 'src/**'
-              - 'package.json'
-              - 'package-lock.json'
+          fetch-depth: 0
+
+      - name: Detect changed paths
+        id: detect
+        run: |
+          BASE="${{ github.event.before }}"
+          HEAD="${{ github.sha }}"
+          if [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            BASE="HEAD~1"
+          fi
+          CHANGED=$(git diff --name-only "$BASE" "$HEAD" 2>/dev/null || git diff --name-only HEAD~1 HEAD)
+          echo "Changed files:"
+          echo "$CHANGED"
+          echo "worker=false" >> "$GITHUB_OUTPUT"
+          echo "web=false" >> "$GITHUB_OUTPUT"
+          echo "backend=false" >> "$GITHUB_OUTPUT"
+          if echo "$CHANGED" | grep -q '^data-worker/'; then
+            echo "worker=true" >> "$GITHUB_OUTPUT"
+            echo "→ Worker changes detected"
+          fi
+          if echo "$CHANGED" | grep -q '^web/'; then
+            echo "web=true" >> "$GITHUB_OUTPUT"
+            echo "→ Web changes detected"
+          fi
+          if echo "$CHANGED" | grep -qE '^(src/|package\.json|package-lock\.json)'; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+            echo "→ Backend changes detected"
+          fi
 
   # ── Data Worker (Cloudflare Worker) ─────────────────────────────────
   deploy-worker:
@@ -48,7 +63,11 @@ jobs:
           node-version: 20
           cache: 'npm'
 
-      - name: Install Dependencies
+      - name: Install Root Dependencies
+        run: npm install
+
+      - name: Install Worker Dependencies
+        working-directory: data-worker
         run: npm install
 
       - name: Check Wrangler Authentication
@@ -83,6 +102,38 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CI: true
 
+      - name: Set Worker Secrets
+        working-directory: data-worker
+        run: |
+          echo "Setting Worker secrets..."
+          printf '%s' "$SECRET_OPAQUE_OPRF_SEED"    | npx wrangler@4 secret put OPAQUE_OPRF_SEED 2>&1 || true
+          printf '%s' "$SECRET_OPAQUE_AKE_PRIV_B64" | npx wrangler@4 secret put OPAQUE_AKE_PRIV_B64 2>&1 || true
+          printf '%s' "$SECRET_OPAQUE_AKE_PUB_B64"  | npx wrangler@4 secret put OPAQUE_AKE_PUB_B64 2>&1 || true
+          printf '%s' "$SECRET_NTAG424_KM"           | npx wrangler@4 secret put NTAG424_KM 2>&1 || true
+          printf '%s' "$SECRET_DATA_API_HMAC"        | npx wrangler@4 secret put DATA_API_HMAC 2>&1 || true
+          printf '%s' "$SECRET_ACCOUNT_HMAC_KEY"     | npx wrangler@4 secret put ACCOUNT_HMAC_KEY 2>&1 || true
+          printf '%s' "$SECRET_INVITE_TOKEN_KEY"     | npx wrangler@4 secret put INVITE_TOKEN_KEY 2>&1 || true
+          printf '%s' "$SECRET_PORTAL_HMAC_SECRET"   | npx wrangler@4 secret put PORTAL_HMAC_SECRET 2>&1 || true
+          printf '%s' "$SECRET_S3_ACCESS_KEY"        | npx wrangler@4 secret put S3_ACCESS_KEY 2>&1 || true
+          printf '%s' "$SECRET_S3_SECRET_KEY"        | npx wrangler@4 secret put S3_SECRET_KEY 2>&1 || true
+          printf '%s' "$SECRET_WS_TOKEN_SECRET"      | npx wrangler@4 secret put WS_TOKEN_SECRET 2>&1 || true
+          echo "Worker secrets set."
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SECRET_OPAQUE_OPRF_SEED: ${{ secrets.OPAQUE_OPRF_SEED }}
+          SECRET_OPAQUE_AKE_PRIV_B64: ${{ secrets.OPAQUE_AKE_PRIV_B64 }}
+          SECRET_OPAQUE_AKE_PUB_B64: ${{ secrets.OPAQUE_AKE_PUB_B64 }}
+          SECRET_NTAG424_KM: ${{ secrets.NTAG424_KM }}
+          SECRET_DATA_API_HMAC: ${{ secrets.DATA_API_HMAC }}
+          SECRET_ACCOUNT_HMAC_KEY: ${{ secrets.ACCOUNT_HMAC_KEY }}
+          SECRET_INVITE_TOKEN_KEY: ${{ secrets.INVITE_TOKEN_KEY }}
+          SECRET_PORTAL_HMAC_SECRET: ${{ secrets.PORTAL_HMAC_SECRET }}
+          SECRET_S3_ACCESS_KEY: ${{ secrets.S3_ACCESS_KEY }}
+          SECRET_S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
+          SECRET_WS_TOKEN_SECRET: ${{ secrets.WS_TOKEN_SECRET }}
+          CI: true
+
   # ── Web (Cloudflare Pages) ────────────────────────────────────────────
   deploy-pages:
     runs-on: ubuntu-latest
@@ -115,6 +166,7 @@ jobs:
           npm run build
         env:
           CI: true
+          SENTRY_ENV: production
 
       - name: Copy Functions to Dist
         working-directory: web
@@ -187,7 +239,6 @@ jobs:
             SERVICE_VERSION=0.1.0
             PORT=${{ secrets.PORT }}
             ADMIN_IP_ALLOW=${{ secrets.ADMIN_IP_ALLOW }}
-            REMOTE_CONSOLE_ENABLED=1
             CORS_ORIGIN=${{ secrets.CORS_ORIGIN }}
             # Cloudflare
             CLOUDFLARE_ACCOUNT_ID=${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

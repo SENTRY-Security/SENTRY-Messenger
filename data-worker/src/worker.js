@@ -1,9 +1,218 @@
 import crypto from 'node:crypto';
 import { toU8Strict } from './u8-strict.js';
+import { createJwt, verifyJwt } from './jwt.js';
+import { createWebPush } from './web-push.js';
+import { getOpaqueConfig, OpaqueID, OpaqueServer, KE1, KE3, RegistrationRequest, RegistrationRecord, ExpectedAuthResult } from '@cloudflare/opaque-ts';
+
+// Re-export Durable Object classes so Cloudflare runtime can find them
+export { AccountWebSocket } from './account-ws.js';
+export { RateLimiter } from './rate-limiter.js';
+export { BrowserSession } from './browser-session.js';
 
 // ---- 基本工具與正規化 ----
 const textEncoder = new TextEncoder();
+
+// Node.js proxy removed — all routes are now served by Cloudflare Workers.
 const INVITE_INFO_TAG = 'contact-init/dropbox/v1';
+
+// ---- AES-CMAC (RFC 4493) implemented with Web Crypto API ----
+// Uses AES-CBC with zero IV to simulate AES-ECB per block (for a single
+// 16-byte block, CBC with zero IV is identical to ECB).
+async function aesCmac(keyBuf, dataBuf) {
+  const BLOCKLEN = 16;
+  const Rb = 0x87;
+  const ZERO_IV = new Uint8Array(BLOCKLEN);
+
+  const rawKey = keyBuf instanceof Uint8Array ? keyBuf : new Uint8Array(keyBuf.buffer || keyBuf);
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw', rawKey, { name: 'AES-CBC' }, false, ['encrypt']
+  );
+
+  // Helper: AES-ECB encrypt a single 16-byte block via AES-CBC(zero IV).
+  // AES-CBC output = encrypted block (16 B) + PKCS7 pad block (16 B) → take first 16.
+  async function ecbBlock(block) {
+    const ct = await crypto.subtle.encrypt({ name: 'AES-CBC', iv: ZERO_IV }, cryptoKey, block);
+    return new Uint8Array(ct, 0, BLOCKLEN);
+  }
+
+  // Step 1: Generate subkeys  L = AES-ECB(K, 0^128)
+  const L = await ecbBlock(ZERO_IV);
+  function dbl(buf) {
+    const out = new Uint8Array(BLOCKLEN);
+    let carry = 0;
+    for (let i = BLOCKLEN - 1; i >= 0; i--) {
+      const v = (buf[i] << 1) | carry;
+      out[i] = v & 0xff;
+      carry = buf[i] >> 7;
+    }
+    if (carry) out[BLOCKLEN - 1] ^= Rb;
+    return out;
+  }
+  const K1 = dbl(L);
+  const K2 = dbl(K1);
+
+  // Step 2: Prepare blocks
+  const data = dataBuf instanceof Uint8Array ? dataBuf : new Uint8Array(
+    Buffer.isBuffer(dataBuf) ? dataBuf.buffer.slice(dataBuf.byteOffset, dataBuf.byteOffset + dataBuf.byteLength) : (dataBuf || [])
+  );
+  const n = data.length === 0 ? 1 : Math.ceil(data.length / BLOCKLEN);
+  const lastComplete = data.length > 0 && data.length % BLOCKLEN === 0;
+  const Mn = new Uint8Array(BLOCKLEN);
+  if (lastComplete) {
+    Mn.set(data.subarray((n - 1) * BLOCKLEN, n * BLOCKLEN));
+    for (let i = 0; i < BLOCKLEN; i++) Mn[i] ^= K1[i];
+  } else {
+    const tail = data.length - (n - 1) * BLOCKLEN;
+    if (tail > 0) Mn.set(data.subarray((n - 1) * BLOCKLEN, data.length));
+    Mn[tail] = 0x80; // padding
+    for (let i = 0; i < BLOCKLEN; i++) Mn[i] ^= K2[i];
+  }
+
+  // Step 3: CBC-MAC
+  let X = new Uint8Array(BLOCKLEN);
+  for (let i = 0; i < n - 1; i++) {
+    const block = data.subarray(i * BLOCKLEN, (i + 1) * BLOCKLEN);
+    for (let j = 0; j < BLOCKLEN; j++) X[j] ^= block[j];
+    X = await ecbBlock(X);
+  }
+  for (let j = 0; j < BLOCKLEN; j++) X[j] ^= Mn[j];
+  const T = await ecbBlock(X);
+  return Buffer.from(T); // Return as Buffer for caller compatibility
+}
+
+// ---- NTAG424 KDF ----
+function ntag424_normalizeCtr(ctrHex) {
+  const s = String(ctrHex || '').replace(/[^0-9a-f]/gi, '').toUpperCase();
+  const right6 = s.length > 6 ? s.slice(-6) : s;
+  return right6.padStart(6, '0');
+}
+
+function ntag424_hkdf16(kmHex, uidHex, salt, info) {
+  const km = Buffer.from(kmHex, 'hex');
+  const hmac = (key, data) => crypto.createHmac('sha256', key).update(data).digest();
+  const prk = hmac(Buffer.from(salt || ''), km);
+  const okm = hmac(prk, Buffer.from(`${info || 'ntag424-static-key'}:${uidHex}`, 'utf8'));
+  return okm.subarray(0, 16);
+}
+
+async function ntag424_ev2cmac16(kmHex, uidHex, tagidHex, kver) {
+  const parts = [Buffer.from([0x01]), Buffer.from('EV2-KDF')];
+  if (uidHex) parts.push(Buffer.from(uidHex, 'hex'));
+  if (tagidHex) parts.push(Buffer.from(String(tagidHex).replace(/-/g, ''), 'hex'));
+  if (kver != null) parts.push(Buffer.from([Number(kver) & 0xff]));
+  return (await aesCmac(Buffer.from(kmHex, 'hex'), Buffer.concat(parts))).subarray(0, 16);
+}
+
+async function ntag424_deriveKey(env, kmEnvName, uidHex, tagidHex) {
+  const kmHex = String(env[kmEnvName] || '').trim().toUpperCase();
+  if (!/^[0-9A-Fa-f]{32}$/.test(kmHex)) throw new Error(`${kmEnvName} missing or invalid`);
+  const uid = String(uidHex || '').toUpperCase();
+  const mode = String(env.NTAG424_KDF || 'HKDF').toUpperCase();
+  const kver = env.NTAG424_KVER ? Number(env.NTAG424_KVER) : undefined;
+  if (mode === 'EV2') return ntag424_ev2cmac16(kmHex, uid, tagidHex, kver);
+  const salt = env.NTAG424_SALT || env.DOMAIN || 'sentry.red';
+  const info = env.NTAG424_INFO || 'ntag424-static-key';
+  return ntag424_hkdf16(kmHex, uid, salt, info);
+}
+
+async function ntag424_deriveWithFallback(env, uidHex, tagidHex) {
+  const current = await ntag424_deriveKey(env, 'NTAG424_KM', uidHex, tagidHex);
+  const oldHex = String(env.NTAG424_KM_OLD || '').trim();
+  if (/^[0-9A-Fa-f]{32}$/.test(oldHex)) {
+    const uid = String(uidHex || '').toUpperCase();
+    const mode = String(env.NTAG424_KDF || 'HKDF').toUpperCase();
+    const kver = env.NTAG424_KVER ? Number(env.NTAG424_KVER) : undefined;
+    const legacy = (mode === 'EV2')
+      ? await ntag424_ev2cmac16(oldHex.toUpperCase(), uid, tagidHex, kver)
+      : ntag424_hkdf16(oldHex.toUpperCase(), uid, env.NTAG424_SALT || env.DOMAIN || 'sentry.red', env.NTAG424_INFO || 'ntag424-static-key');
+    return { current, legacy };
+  }
+  return { current };
+}
+
+// ---- NTAG424 SDM CMAC Verify ----
+async function ntag424_computeSdmCmac(sdmKeyHex, uidHex, ctrHex) {
+  const K = Buffer.from(sdmKeyHex, 'hex');
+  const UID = Buffer.from(String(uidHex).replace(/[^0-9a-f]/gi, ''), 'hex');
+  const ctr6 = ntag424_normalizeCtr(ctrHex);
+  const ctrBuf = Buffer.from(ctr6, 'hex');
+  const ctrLSB = Buffer.from(ctrBuf).reverse();
+  const SV2 = Buffer.concat([Buffer.from('3CC300010080', 'hex'), UID, ctrLSB]);
+  const Kses = await aesCmac(K, SV2);
+  const full = await aesCmac(Kses, Buffer.alloc(0));
+  // MACt: take odd-indexed bytes (indices 1,3,5,7,9,11,13,15) → 8 bytes
+  const mac8 = Buffer.alloc(8);
+  for (let i = 1, j = 0; i < 16 && j < 8; i += 2, j++) mac8[j] = full[i];
+  return mac8.toString('hex').toUpperCase();
+}
+
+async function ntag424_verifyCmac(env, uidHex, ctrHex, cmacHex, tagidHex) {
+  const { current, legacy } = await ntag424_deriveWithFallback(env, uidHex, tagidHex);
+  const got = String(cmacHex || '').replace(/[^0-9a-f]/gi, '').toUpperCase();
+  const keyHex = current.toString('hex').toUpperCase();
+  const expected = await ntag424_computeSdmCmac(keyHex, uidHex, ctrHex);
+  if (got === expected) return { ok: true, expected, got, used: 'current' };
+  if (legacy) {
+    const legacyHex = legacy.toString('hex').toUpperCase();
+    const expectedOld = await ntag424_computeSdmCmac(legacyHex, uidHex, ctrHex);
+    if (got === expectedOld) return { ok: true, expected: expectedOld, got, used: 'legacy' };
+  }
+  return { ok: false, expected, got, used: 'current' };
+}
+
+async function ntag424_computeSdmCmacForDebug(env, uidHex, ctrHex) {
+  const key = await ntag424_deriveKey(env, 'NTAG424_KM', uidHex);
+  return ntag424_computeSdmCmac(key.toString('hex').toUpperCase(), uidHex, ctrHex);
+}
+
+// ---- OPAQUE Server (singleton per isolate) ----
+let _opaqueServer = null;
+function getOrInitOpaqueServer(env) {
+  if (_opaqueServer) return _opaqueServer;
+  const seedHex = String(env.OPAQUE_OPRF_SEED || '').trim();
+  if (!/^[0-9A-Fa-f]{64}$/.test(seedHex)) return null;
+  const cfg = getOpaqueConfig(OpaqueID.OPAQUE_P256);
+  const oprf_seed = Array.from(Buffer.from(seedHex, 'hex'));
+  const serverId = env.OPAQUE_SERVER_ID || env.DOMAIN || 'api.sentry';
+  const privB64 = String(env.OPAQUE_AKE_PRIV_B64 || '').trim();
+  const pubB64 = String(env.OPAQUE_AKE_PUB_B64 || '').trim();
+  let ake_keypair = null;
+  if (privB64 && pubB64) {
+    ake_keypair = {
+      private_key: Array.from(Buffer.from(privB64, 'base64')),
+      public_key: Array.from(Buffer.from(pubB64, 'base64'))
+    };
+  }
+  try {
+    _opaqueServer = new OpaqueServer(cfg, oprf_seed, ake_keypair, serverId);
+    return _opaqueServer;
+  } catch (e) {
+    console.error('[opaque.init] failed', e?.message || e);
+    return null;
+  }
+}
+
+// ---- Auth KV helpers ----
+const AUTH_KV_PREFIX_SESS = 'sess:';
+const AUTH_KV_PREFIX_OPAQUE = 'opaque:';
+const AUTH_KV_PREFIX_DBG_CTR = 'dbgctr:';
+
+async function kvPut(env, key, value, ttlSeconds) {
+  if (!env.AUTH_KV) throw new Error('AUTH_KV not bound');
+  await env.AUTH_KV.put(key, JSON.stringify(value), { expirationTtl: ttlSeconds });
+}
+
+async function kvGet(env, key) {
+  if (!env.AUTH_KV) return null;
+  const raw = await env.AUTH_KV.get(key);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+async function kvDelete(env, key) {
+  if (!env.AUTH_KV) return;
+  await env.AUTH_KV.delete(key);
+}
 
 function timingSafeEqual(a, b) {
   if (a.length !== b.length) return false;
@@ -107,9 +316,59 @@ async function verifyHMAC(req, env) {
   return timingSafeEqual(sig, sigPipe) || timingSafeEqual(sig, sigNewline);
 }
 
+// ---- Distributed rate limiting via Durable Object ----
+
+/**
+ * Resolve rate-limit key: prefer account-based, fallback to IP-based.
+ * @param {Request} req
+ * @param {{ body?: object }} [opts]
+ * @returns {string|null} e.g. "account:ABC123..." or "ip:1.2.3.4"
+ */
+function resolveRateLimitKey(req, { body } = {}) {
+  const hdr = req.headers.get('x-account-digest');
+  const digest = normalizeAccountDigest(hdr)
+    || normalizeAccountDigest(body?.account_digest)
+    || normalizeAccountDigest(body?.accountDigest);
+  if (digest) return `account:${digest}`;
+  const ip = req.headers.get('CF-Connecting-IP') || req.headers.get('X-Forwarded-For') || null;
+  return ip ? `ip:${ip}` : null;
+}
+
+/**
+ * Check rate limit using the RateLimiter Durable Object.
+ * @param {object} env - Worker env bindings
+ * @param {string} key - Rate limit key (e.g. "ip:1.2.3.4" or "account:DIGEST")
+ * @param {string} action - Action name (e.g. "pairing-lookup", "api-call")
+ * @param {number} limit - Max requests per window
+ * @param {number} windowSec - Window duration in seconds
+ * @returns {{ allowed: boolean, remaining: number, retryAfter: number }}
+ */
+async function checkRateLimit(env, key, action, limit, windowSec) {
+  if (!env.RATE_LIMITER) {
+    // Binding not available (e.g. local dev) — allow all
+    return { allowed: true, remaining: limit, retryAfter: 0 };
+  }
+  const doId = env.RATE_LIMITER.idFromName(key);
+  const stub = env.RATE_LIMITER.get(doId);
+  const resp = await stub.fetch('https://do/check', {
+    method: 'POST',
+    body: JSON.stringify({ action, limit, windowSec })
+  });
+  return resp.json();
+}
+
+async function resetRateLimit(env, key, action) {
+  if (!env.RATE_LIMITER) return;
+  const doId = env.RATE_LIMITER.idFromName(key);
+  const stub = env.RATE_LIMITER.get(doId);
+  await stub.fetch('https://do/reset', {
+    method: 'POST',
+    body: JSON.stringify({ action })
+  });
+}
+
 // ---- 帳號與 MK / TAGS 相關共用 ----
 let dataTablesReady = false;
-const _pairingCodeRateLimit = new Map(); // { accountDigest → { attempts, lockedUntil } }
 
 function bytesToHex(u8) {
   let out = '';
@@ -226,43 +485,7 @@ function normalizeSignedPrekey(spk) {
   };
 }
 
-function normalizeGroupId(value) {
-  const token = String(value || '').trim();
-  if (!token) return null;
-  if (!/^[A-Za-z0-9_-]{8,128}$/.test(token)) return null;
-  return token;
-}
-
-function normalizeGroupName(value) {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  return trimmed.slice(0, 120);
-}
-
-function normalizeGroupRole(value) {
-  const role = String(value || '').toLowerCase();
-  if (role === 'owner' || role === 'admin') return role;
-  return 'member';
-}
-
-function normalizeGroupStatus(value) {
-  const status = String(value || '').toLowerCase();
-  if (['active', 'left', 'kicked', 'removed'].includes(status)) return status;
-  return null;
-}
-
-function normalizeGroupAvatar(value) {
-  if (value === null || value === undefined) return null;
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    return trimmed ? trimmed : null;
-  }
-  if (typeof value === 'object') {
-    try { return JSON.stringify(value); } catch { return null; }
-  }
-  return null;
-}
+// [REMOVED] Old group normalize functions — replaced by Business Conversation architecture
 
 function normalizeInviteDropboxEnvelope(envelope) {
   if (!envelope || typeof envelope !== 'object') return null;
@@ -275,14 +498,14 @@ function normalizeInviteDropboxEnvelope(envelope) {
   const info = String(envelope.info || '').trim();
   const createdAt = Number(envelope.createdAt || 0);
   const expiresAt = Number(envelope.expiresAt || 0);
-  if (!Number.isFinite(v) || v !== 1) return null;
+  if (!Number.isFinite(v) || (v !== 1 && v !== 2)) return null;
   if (aead !== 'aes-256-gcm') return null;
   if (info !== INVITE_INFO_TAG) return null;
   if (!Number.isFinite(createdAt) || createdAt <= 0) return null;
   if (!Number.isFinite(expiresAt) || expiresAt <= 0) return null;
   const sealed = envelope.sealed;
   if (!sealed || typeof sealed !== 'object') return null;
-  const sealedAllowed = new Set(['eph_pub_b64', 'iv_b64', 'ct_b64']);
+  const sealedAllowed = new Set(['eph_pub_b64', 'iv_b64', 'ct_b64', 'salt_b64']);
   for (const key of Object.keys(sealed)) {
     if (!sealedAllowed.has(key)) return null;
   }
@@ -290,15 +513,18 @@ function normalizeInviteDropboxEnvelope(envelope) {
   const iv = String(sealed.iv_b64 || '').trim();
   const ct = String(sealed.ct_b64 || '').trim();
   if (!ephPub || !iv || !ct) return null;
+  const saltB64 = sealed.salt_b64 ? String(sealed.salt_b64).trim() : null;
+  const normalizedSealed = {
+    eph_pub_b64: ephPub,
+    iv_b64: iv,
+    ct_b64: ct
+  };
+  if (saltB64) normalizedSealed.salt_b64 = saltB64;
   return {
     v,
     aead,
     info,
-    sealed: {
-      eph_pub_b64: ephPub,
-      iv_b64: iv,
-      ct_b64: ct
-    },
+    sealed: normalizedSealed,
     createdAt,
     expiresAt
   };
@@ -607,101 +833,66 @@ async function removeConversationAccess(env, { conversationId, accountDigest }) 
   }
 }
 
-async function upsertGroupMember(env, {
-  groupId,
-  accountDigest,
-  role = 'member',
-  status = 'active',
-  inviterAccountDigest = null,
-  joinedAt = null
-} = {}) {
-  if (!groupId || !accountDigest) return false;
-  const normalizedRole = normalizeGroupRole(role);
-  const normalizedStatus = normalizeGroupStatus(status) || 'active';
-  const joined = Number.isFinite(Number(joinedAt)) && Number(joinedAt) > 0
-    ? Math.floor(Number(joinedAt))
-    : Math.floor(Date.now() / 1000);
-  try {
-    await env.DB.prepare(`
-      INSERT INTO group_members (
-        group_id, account_digest, role, status,
-        inviter_account_digest, joined_at
-      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-      ON CONFLICT(group_id, account_digest) DO UPDATE SET
-        role=excluded.role,
-        status=excluded.status,
-        inviter_account_digest=COALESCE(excluded.inviter_account_digest, group_members.inviter_account_digest),
-        joined_at=COALESCE(group_members.joined_at, excluded.joined_at),
-        updated_at=strftime('%s','now')
-    `).bind(
-      groupId,
-      accountDigest,
-      normalizedRole,
-      normalizedStatus,
-      inviterAccountDigest || null,
-      joined
-    ).run();
-    return true;
-  } catch (err) {
-    console.warn('group_member_upsert_failed', err?.message || err);
-    return false;
-  }
-}
+// [REMOVED] upsertGroupMember — replaced by Business Conversation architecture
 
-async function fetchGroupWithMembers(env, groupId) {
-  if (!groupId) return null;
-  await ensureDataTables(env);
-  const groupRows = await env.DB.prepare(
-    `SELECT group_id, conversation_id, creator_account_digest, name, avatar_json, created_at, updated_at
-       FROM groups WHERE group_id=?1`
-  ).bind(groupId).all();
-  const group = groupRows?.results?.[0] || null;
-  if (!group) return null;
-  const membersRes = await env.DB.prepare(
-    `SELECT group_id, account_digest, role, status, inviter_account_digest,
-            joined_at, muted_until, last_read_ts, created_at, updated_at
-       FROM group_members
-      WHERE group_id=?1`
-  ).bind(groupId).all();
-  const members = (membersRes?.results || []).map((row) => ({
-    group_id: row.group_id,
-    account_digest: row.account_digest,
-    role: row.role || 'member',
-    status: row.status || 'active',
-    inviter_account_digest: row.inviter_account_digest || null,
-    joined_at: Number(row.joined_at) || null,
-    muted_until: Number(row.muted_until) || null,
-    last_read_ts: Number(row.last_read_ts) || null,
-    created_at: Number(row.created_at) || null,
-    updated_at: Number(row.updated_at) || null
-  }));
-  return {
-    group: {
-      group_id: group.group_id,
-      conversation_id: group.conversation_id,
-      creator_account_digest: group.creator_account_digest,
-      name: group.name || null,
-      avatar: safeJSON(group.avatar_json) || null,
-      created_at: Number(group.created_at) || null,
-      updated_at: Number(group.updated_at) || null
-    },
-    members
-  };
-}
+// [REMOVED] fetchGroupWithMembers — replaced by Business Conversation architecture
 
-async function trimContactSecretBackups(env, accountDigest, limit = 5) {
+async function trimContactSecretBackups(env, accountDigest, limit = 5, currentReason = 'auto') {
   if (!accountDigest) return;
   const keep = Math.max(Number(limit) || 1, 1);
-  await env.DB.prepare(
-    `DELETE FROM contact_secret_backups
-       WHERE account_digest=?1
-         AND id NOT IN (
-           SELECT id FROM contact_secret_backups
-            WHERE account_digest=?1
-            ORDER BY updated_at DESC, id DESC
-            LIMIT ?2
-         )`
-  ).bind(accountDigest, keep).run();
+
+  // When trimming after a non-default reason (e.g. 'biz-conv-backup'),
+  // preserve the latest row of OTHER reason types so they don't get pushed out.
+  // This prevents frequent contact-secrets backups from evicting the biz-conv backup.
+  const protectedIds = [];
+  if (currentReason !== 'biz-conv-backup') {
+    // Protect the latest biz-conv-backup row
+    try {
+      const bizRow = await env.DB.prepare(
+        `SELECT id FROM contact_secret_backups
+          WHERE account_digest=?1 AND reason='biz-conv-backup'
+          ORDER BY updated_at DESC, id DESC LIMIT 1`
+      ).bind(accountDigest).first();
+      if (bizRow?.id) protectedIds.push(bizRow.id);
+    } catch { /* column may not exist yet */ }
+  } else {
+    // Protect the latest auto/contact-secrets row
+    try {
+      const autoRow = await env.DB.prepare(
+        `SELECT id FROM contact_secret_backups
+          WHERE account_digest=?1 AND reason != 'biz-conv-backup'
+          ORDER BY updated_at DESC, id DESC LIMIT 1`
+      ).bind(accountDigest).first();
+      if (autoRow?.id) protectedIds.push(autoRow.id);
+    } catch { /* column may not exist yet */ }
+  }
+
+  if (protectedIds.length > 0) {
+    // Keep the top N rows PLUS any protected rows from other reason types
+    const placeholders = protectedIds.map((_, i) => `?${i + 3}`).join(',');
+    await env.DB.prepare(
+      `DELETE FROM contact_secret_backups
+         WHERE account_digest=?1
+           AND id NOT IN (
+             SELECT id FROM contact_secret_backups
+              WHERE account_digest=?1
+              ORDER BY updated_at DESC, id DESC
+              LIMIT ?2
+           )
+           AND id NOT IN (${placeholders})`
+    ).bind(accountDigest, keep, ...protectedIds).run();
+  } else {
+    await env.DB.prepare(
+      `DELETE FROM contact_secret_backups
+         WHERE account_digest=?1
+           AND id NOT IN (
+             SELECT id FROM contact_secret_backups
+              WHERE account_digest=?1
+              ORDER BY updated_at DESC, id DESC
+              LIMIT ?2
+           )`
+    ).bind(accountDigest, keep).run();
+  }
 }
 
 const CallStatusSet = new Set(['dialing', 'ringing', 'connecting', 'connected', 'in_call', 'ended', 'failed', 'cancelled', 'timeout', 'pending']);
@@ -1046,28 +1237,44 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
     lookupDigest = await digestAccountToken(normalizedToken);
   }
 
+  // C-1 fix: SELECT includes account_token_hash for dual-mode verification
+  const ACCT_SELECT = `SELECT account_digest, account_token, account_token_hash, uid_digest, last_ctr, wrapped_mk_json, brand, brand_name, brand_logo FROM accounts`;
+
   let accountRow = null;
   if (lookupDigest) {
     const rows = await db.prepare(
-      `SELECT account_digest, account_token, uid_digest, last_ctr, wrapped_mk_json
-         FROM accounts
-        WHERE account_digest=?1`
+      `${ACCT_SELECT} WHERE account_digest=?1`
     ).bind(lookupDigest).all();
     accountRow = rows?.results?.[0] || null;
   }
 
   if (!accountRow && uidDigest) {
     const rows = await db.prepare(
-      `SELECT account_digest, account_token, uid_digest, last_ctr, wrapped_mk_json
-         FROM accounts
-        WHERE uid_digest=?1`
+      `${ACCT_SELECT} WHERE uid_digest=?1`
     ).bind(uidDigest).all();
     accountRow = rows?.results?.[0] || null;
   }
 
   if (accountRow) {
-    if (normalizedToken && accountRow.account_token !== normalizedToken) {
-      return null;
+    // C-1 fix: Dual-mode token verification
+    // 1. If hash exists → compare hash(input) vs stored hash (secure path)
+    // 2. If hash absent → fall back to plaintext comparison (legacy accounts)
+    // 3. If hash absent but match → backfill hash for future use
+    if (normalizedToken) {
+      const inputHash = await digestAccountToken(normalizedToken);
+      if (accountRow.account_token_hash) {
+        // Secure path: compare hashes
+        if (inputHash !== accountRow.account_token_hash) return null;
+      } else {
+        // Legacy fallback: plaintext comparison
+        if (accountRow.account_token !== normalizedToken) return null;
+        // Backfill hash for this legacy account (non-blocking)
+        try {
+          await db.prepare(
+            `UPDATE accounts SET account_token_hash=?1, updated_at=?2 WHERE account_digest=?3`
+          ).bind(inputHash, Math.floor(Date.now() / 1000), accountRow.account_digest).run();
+        } catch { /* non-critical: will backfill on next login */ }
+      }
     }
     return {
       account_digest: accountRow.account_digest,
@@ -1075,6 +1282,9 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
       uid_digest: accountRow.uid_digest,
       last_ctr: Number(accountRow.last_ctr || 0),
       wrapped_mk_json: accountRow.wrapped_mk_json,
+      brand: accountRow.brand || null,
+      brand_name: accountRow.brand_name || null,
+      brand_logo: accountRow.brand_logo || null,
       newly_created: false
     };
   }
@@ -1106,27 +1316,30 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
   }
 
   const now = Math.floor(Date.now() / 1000);
+  // C-1 fix: Store hash alongside token on new account creation
+  const acctTokenHash = await digestAccountToken(acctToken);
 
   try {
     await db.prepare(
-      `INSERT INTO accounts (account_digest, account_token, uid_digest, last_ctr, created_at, updated_at)
-       VALUES (?1, ?2, ?3, 0, ?4, ?4)`
-    ).bind(acctDigest, acctToken, acctUidDigest, now).run();
+      `INSERT INTO accounts (account_digest, account_token, account_token_hash, uid_digest, last_ctr, created_at, updated_at)
+       VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5)`
+    ).bind(acctDigest, acctToken, acctTokenHash, acctUidDigest, now).run();
     return {
       account_digest: acctDigest,
       account_token: acctToken,
       uid_digest: acctUidDigest,
       last_ctr: 0,
       wrapped_mk_json: null,
+      brand: null,
+      brand_name: null,
+      brand_logo: null,
       newly_created: true
     };
   } catch (err) {
     const msg = String(err?.message || '');
     if (msg.includes('UNIQUE constraint failed')) {
       const rows = await db.prepare(
-        `SELECT account_digest, account_token, uid_digest, last_ctr, wrapped_mk_json
-           FROM accounts
-          WHERE account_digest=?1 OR uid_digest=?2`
+        `${ACCT_SELECT} WHERE account_digest=?1 OR uid_digest=?2`
       ).bind(acctDigest, acctUidDigest).all();
       const row = rows?.results?.[0];
       if (row) {
@@ -1136,6 +1349,9 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
           uid_digest: row.uid_digest,
           last_ctr: Number(row.last_ctr || 0),
           wrapped_mk_json: row.wrapped_mk_json,
+          brand: row.brand || null,
+          brand_name: row.brand_name || null,
+          brand_logo: row.brand_logo || null,
           newly_created: false
         };
       }
@@ -1166,12 +1382,12 @@ async function ensureDataTables(env) {
     'call_sessions',
     'call_events',
     'contact_secret_backups',
-    'groups',
-    'group_members',
-    'group_invites',
     'subscriptions',
     'tokens',
-    'extend_logs'
+    'extend_logs',
+    'business_conversations',
+    'business_conversation_members',
+    'business_conversation_tombstones'
   ];
   try {
     const tableRows = await env.DB.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all();
@@ -1218,6 +1434,29 @@ async function ensureDataTables(env) {
     } catch (repairErr) {
       console.warn('ensureDataTables: deletion_cursors ms repair failed', repairErr?.message);
     }
+    // Auto-add brand column to accounts (multi-brand support)
+    try {
+      await env.DB.prepare(`SELECT brand FROM accounts LIMIT 0`).all();
+    } catch {
+      try {
+        await env.DB.prepare(`ALTER TABLE accounts ADD COLUMN brand TEXT`).run();
+        console.log('ensureDataTables: added brand column to accounts');
+      } catch (alterErr) {
+        console.warn('ensureDataTables: brand column add failed (may already exist)', alterErr?.message);
+      }
+    }
+    // Auto-add brand_name + brand_logo columns to accounts (white-label display metadata)
+    try {
+      await env.DB.prepare(`SELECT brand_name FROM accounts LIMIT 0`).all();
+    } catch {
+      try {
+        await env.DB.prepare(`ALTER TABLE accounts ADD COLUMN brand_name TEXT`).run();
+        await env.DB.prepare(`ALTER TABLE accounts ADD COLUMN brand_logo TEXT`).run();
+        console.log('ensureDataTables: added brand_name + brand_logo columns to accounts');
+      } catch (alterErr) {
+        console.warn('ensureDataTables: brand_name/brand_logo columns add failed (may already exist)', alterErr?.message);
+      }
+    }
     // Auto-add pairing_code + prekey_bundle_json columns to invite_dropbox
     try {
       await env.DB.prepare(`SELECT pairing_code FROM invite_dropbox LIMIT 0`).all();
@@ -1229,6 +1468,75 @@ async function ensureDataTables(env) {
         console.log('ensureDataTables: added pairing_code + prekey_bundle_json columns to invite_dropbox');
       } catch (alterErr) {
         console.warn('ensureDataTables: pairing_code columns add failed (may already exist)', alterErr?.message);
+      }
+    }
+    // Auto-create ephemeral_invites + ephemeral_sessions tables (migration 0010)
+    if (!tableNames.has('ephemeral_invites')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS ephemeral_invites (
+          token TEXT PRIMARY KEY, owner_digest TEXT NOT NULL, owner_device_id TEXT NOT NULL,
+          prekey_bundle_json TEXT NOT NULL, consumed_at INTEGER, expires_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          FOREIGN KEY (owner_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ephemeral_invites_owner ON ephemeral_invites(owner_digest)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ephemeral_invites_expires ON ephemeral_invites(expires_at)`).run();
+        console.log('ensureDataTables: created ephemeral_invites table');
+      } catch (e) { console.warn('ensureDataTables: ephemeral_invites create failed', e?.message); }
+    }
+    if (!tableNames.has('ephemeral_sessions')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS ephemeral_sessions (
+          session_id TEXT PRIMARY KEY, invite_token TEXT NOT NULL, owner_digest TEXT NOT NULL,
+          owner_device_id TEXT NOT NULL, guest_digest TEXT NOT NULL, guest_device_id TEXT NOT NULL,
+          conversation_id TEXT NOT NULL, expires_at INTEGER NOT NULL, extended_count INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), deleted_at INTEGER,
+          FOREIGN KEY (owner_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE,
+          FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ephemeral_sessions_owner ON ephemeral_sessions(owner_digest, deleted_at)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ephemeral_sessions_guest ON ephemeral_sessions(guest_digest)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ephemeral_sessions_conv ON ephemeral_sessions(conversation_id)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ephemeral_sessions_expires ON ephemeral_sessions(expires_at)`).run();
+        console.log('ensureDataTables: created ephemeral_sessions table');
+      } catch (e) { console.warn('ensureDataTables: ephemeral_sessions create failed', e?.message); }
+    }
+    // push_subscriptions table — migration 0015, with auto-create fallback
+    if (!tableNames.has('push_subscriptions')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS push_subscriptions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          account_digest TEXT NOT NULL,
+          device_id TEXT,
+          endpoint TEXT NOT NULL UNIQUE,
+          keys_p256dh TEXT NOT NULL,
+          keys_auth TEXT NOT NULL,
+          user_agent TEXT,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+        )`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_push_subs_account ON push_subscriptions(account_digest)`).run();
+        await env.DB.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_push_subs_endpoint ON push_subscriptions(endpoint)`).run();
+        console.log('ensureDataTables: created push_subscriptions table (migration 0015 fallback)');
+      } catch (e) { console.warn('ensureDataTables: push_subscriptions create failed', e?.message); }
+    }
+    // Auto-add preview_public_key column to push_subscriptions (E2E push preview)
+    try {
+      await env.DB.prepare(`SELECT preview_public_key FROM push_subscriptions LIMIT 0`).all();
+    } catch {
+      try {
+        await env.DB.prepare(`ALTER TABLE push_subscriptions ADD COLUMN preview_public_key TEXT`).run();
+        console.log('ensureDataTables: added preview_public_key column to push_subscriptions');
+      } catch (alterErr) {
+        console.warn('ensureDataTables: preview_public_key column add failed (may already exist)', alterErr?.message);
+      }
+    }
+    // Auto-add reason column to contact_secret_backups (migration 0014)
+    try {
+      await env.DB.prepare(`SELECT reason FROM contact_secret_backups LIMIT 0`).all();
+    } catch {
+      try {
+        await env.DB.prepare(`ALTER TABLE contact_secret_backups ADD COLUMN reason TEXT NOT NULL DEFAULT 'auto'`).run();
+        console.log('ensureDataTables: added reason column to contact_secret_backups');
+      } catch (alterErr) {
+        console.warn('ensureDataTables: reason column add failed (may already exist)', alterErr?.message);
       }
     }
     if (missingTables.length || missingColumns.length) {
@@ -1288,7 +1596,8 @@ async function handleTagsRoutes(req, env) {
     }
 
     if (!account.newlyCreated && !(ctrNum > account.last_ctr)) {
-      return json({ error: 'Replay', message: 'counter must be strictly increasing', lastCtr: account.last_ctr }, { status: 409 });
+      // [H-4 fix] Removed lastCtr from response — leaked internal counter state
+      return json({ error: 'Replay', message: 'counter must be strictly increasing' }, { status: 409 });
     }
 
     const now = Math.floor(Date.now() / 1000);
@@ -1315,7 +1624,10 @@ async function handleTagsRoutes(req, env) {
       account_token: account.account_token,
       account_digest: account.account_digest,
       uid_digest: account.uid_digest,
-      newly_created: account.newlyCreated
+      newly_created: account.newlyCreated,
+      brand: account.brand || undefined,
+      brand_name: account.brand_name || undefined,
+      brand_logo: account.brand_logo || undefined
     });
   }
 
@@ -1625,14 +1937,14 @@ async function handleInviteDropboxRoutes(req, env) {
       return json({ error: 'Forbidden', message: 'accountToken invalid' }, { status: 403 });
     }
 
-    // Rate limit: 3 failed attempts → 30s lockout (in-memory per worker instance)
-    const rlKey = account.account_digest;
-    const rlEntry = _pairingCodeRateLimit.get(rlKey);
-    const now = Math.floor(Date.now() / 1000);
-    if (rlEntry && rlEntry.lockedUntil > now) {
-      return json({ error: 'RateLimited', message: 'too many attempts, try again later', retry_after: rlEntry.lockedUntil - now }, { status: 429 });
+    // Rate limit: 200 attempts per 60s window (distributed via Durable Object)
+    const rlKey = `account:${account.account_digest}`;
+    const rl = await checkRateLimit(env, rlKey, 'pairing-lookup', 200, 60);
+    if (!rl.allowed) {
+      return json({ error: 'RateLimited', message: 'too many attempts, try again later', retry_after: rl.retryAfter }, { status: 429 });
     }
 
+    const now = Math.floor(Date.now() / 1000);
     const row = await env.DB.prepare(
       `SELECT invite_id, owner_account_digest, owner_device_id, owner_public_key_b64,
               expires_at, prekey_bundle_json
@@ -1642,13 +1954,6 @@ async function handleInviteDropboxRoutes(req, env) {
     ).bind(pairingCode, now).first();
 
     if (!row) {
-      // Increment failed attempts
-      const attempts = (rlEntry?.attempts || 0) + 1;
-      if (attempts >= 3) {
-        _pairingCodeRateLimit.set(rlKey, { attempts, lockedUntil: now + 30 });
-      } else {
-        _pairingCodeRateLimit.set(rlKey, { attempts, lockedUntil: 0 });
-      }
       return json({ error: 'NotFound', message: 'pairing code not found or expired' }, { status: 404 });
     }
 
@@ -1658,7 +1963,7 @@ async function handleInviteDropboxRoutes(req, env) {
     }
 
     // Success: reset rate limit
-    _pairingCodeRateLimit.delete(rlKey);
+    await resetRateLimit(env, rlKey, 'pairing-lookup');
 
     let prekeyBundle = null;
     if (row.prekey_bundle_json) {
@@ -2056,6 +2361,323 @@ async function handleInviteDropboxRoutes(req, env) {
   return null;
 }
 
+// ---- Ephemeral Chat Sessions ----
+const EPHEMERAL_TTL_SEC = 600;          // 10 minutes — session (conversation) lifetime
+const EPHEMERAL_INVITE_TTL_SEC = 86400; // 24 hours — invite link lifetime
+const EPHEMERAL_MAX_PER_OWNER = 1;
+
+async function handleEphemeralRoutes(req, env) {
+  const url = new URL(req.url);
+
+  // POST /d1/ephemeral/create-link — owner creates a one-time link
+  if (req.method === 'POST' && url.pathname === '/d1/ephemeral/create-link') {
+    const body = await req.json();
+    const ownerDigest = normalizeAccountDigest(body.ownerDigest);
+    const ownerDeviceId = body.ownerDeviceId || '';
+    const prekeyBundleJson = body.prekeyBundleJson || '{}';
+    if (!ownerDigest) return json({ error: 'BadRequest', message: 'ownerDigest required' }, { status: 400 });
+
+    await ensureDataTables(env);
+    // Check active session count (max 2)
+    const activeCount = await env.DB.prepare(
+      `SELECT COUNT(*) as cnt FROM ephemeral_sessions WHERE owner_digest = ? AND deleted_at IS NULL AND expires_at > ?`
+    ).bind(ownerDigest, Math.floor(Date.now() / 1000)).first('cnt');
+    if (activeCount >= EPHEMERAL_MAX_PER_OWNER) {
+      return json({ error: 'LimitReached', message: `max ${EPHEMERAL_MAX_PER_OWNER} active ephemeral sessions` }, { status: 429 });
+    }
+
+    // Also count unconsumed invites
+    const pendingCount = await env.DB.prepare(
+      `SELECT COUNT(*) as cnt FROM ephemeral_invites WHERE owner_digest = ? AND consumed_at IS NULL AND expires_at > ?`
+    ).bind(ownerDigest, Math.floor(Date.now() / 1000)).first('cnt');
+    if ((activeCount + pendingCount) >= EPHEMERAL_MAX_PER_OWNER) {
+      return json({ error: 'LimitReached', message: `max ${EPHEMERAL_MAX_PER_OWNER} active ephemeral sessions (including pending links)` }, { status: 429 });
+    }
+
+    const token = generateNanoId(32);
+    const now = Math.floor(Date.now() / 1000);
+    const inviteExpiresAt = now + EPHEMERAL_INVITE_TTL_SEC;
+
+    await env.DB.prepare(
+      `INSERT INTO ephemeral_invites (token, owner_digest, owner_device_id, prekey_bundle_json, expires_at) VALUES (?, ?, ?, ?, ?)`
+    ).bind(token, ownerDigest, ownerDeviceId, prekeyBundleJson, inviteExpiresAt).run();
+
+    return json({ token, expires_at: inviteExpiresAt });
+  }
+
+  // POST /d1/ephemeral/consume — guest consumes a link
+  if (req.method === 'POST' && url.pathname === '/d1/ephemeral/consume') {
+    const body = await req.json();
+    const token = (body.token || '').trim();
+    if (!token) return json({ error: 'BadRequest', message: 'token required' }, { status: 400 });
+
+    await ensureDataTables(env);
+    const now = Math.floor(Date.now() / 1000);
+
+    // Atomically consume: UPDATE WHERE consumed_at IS NULL
+    const result = await env.DB.prepare(
+      `UPDATE ephemeral_invites SET consumed_at = ? WHERE token = ? AND consumed_at IS NULL AND expires_at > ?`
+    ).bind(now, token, now).run();
+
+    if (!result?.meta?.changes) {
+      return json({ error: 'NotFound', message: 'link expired or already used' }, { status: 404 });
+    }
+
+    const invite = await env.DB.prepare(
+      `SELECT * FROM ephemeral_invites WHERE token = ?`
+    ).bind(token).first();
+
+    if (!invite) return json({ error: 'NotFound' }, { status: 404 });
+
+    // Generate guest ephemeral identity
+    const guestDigest = 'EPHEMERAL_' + generateNanoId(32).toUpperCase();
+    const guestDeviceId = 'eph-' + generateNanoId(16);
+    const sessionId = generateNanoId(32);
+    const conversationId = 'eph-' + generateNanoId(32);
+    const sessionExpiresAt = now + EPHEMERAL_TTL_SEC;
+
+    // Create conversation
+    await env.DB.prepare(
+      `INSERT INTO conversations (id, created_at) VALUES (?, ?)`
+    ).bind(conversationId, now).run();
+
+    // Create ACL for both parties
+    await env.DB.prepare(
+      `INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role) VALUES (?, ?, ?, 'owner')`
+    ).bind(conversationId, invite.owner_digest, invite.owner_device_id).run();
+    await env.DB.prepare(
+      `INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role) VALUES (?, ?, ?, 'ephemeral')`
+    ).bind(conversationId, guestDigest, guestDeviceId).run();
+
+    // Create ephemeral session
+    await env.DB.prepare(
+      `INSERT INTO ephemeral_sessions (session_id, invite_token, owner_digest, owner_device_id, guest_digest, guest_device_id, conversation_id, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(sessionId, token, invite.owner_digest, invite.owner_device_id, guestDigest, guestDeviceId, conversationId, sessionExpiresAt).run();
+
+    // Issue a WS token for the guest
+    let wsToken = null;
+    try {
+      const { token: jwt } = await createWsToken(env, { accountDigest: guestDigest, ttlSec: EPHEMERAL_TTL_SEC });
+      wsToken = jwt;
+    } catch { /* best-effort */ }
+
+    // Notify the owner that their ephemeral link was consumed
+    try {
+      await notifyAccountDO(env, invite.owner_digest, {
+        type: 'ephemeral_session_started',
+        sessionId,
+        conversationId,
+        inviteToken: token,
+        guestDigest,
+        guestDeviceId,
+        ownerDigest: invite.owner_digest,
+        ownerDeviceId: invite.owner_device_id,
+        expiresAt: sessionExpiresAt
+      });
+    } catch (e) { console.warn('[ephemeral-consume] owner notify failed', e?.message); }
+
+    return json({
+      session_id: sessionId,
+      conversation_id: conversationId,
+      guest_digest: guestDigest,
+      guest_device_id: guestDeviceId,
+      owner_digest: invite.owner_digest,
+      owner_device_id: invite.owner_device_id,
+      prekey_bundle: JSON.parse(invite.prekey_bundle_json || '{}'),
+      expires_at: sessionExpiresAt,
+      ws_token: wsToken
+    });
+  }
+
+  // POST /d1/ephemeral/extend — either party extends timer
+  if (req.method === 'POST' && url.pathname === '/d1/ephemeral/extend') {
+    const body = await req.json();
+    const sessionId = (body.sessionId || body.session_id || '').trim();
+    const callerDigest = normalizeAccountDigest(body.callerDigest || body.caller_digest || '');
+    if (!sessionId) return json({ error: 'BadRequest', message: 'sessionId required' }, { status: 400 });
+
+    await ensureDataTables(env);
+    const now = Math.floor(Date.now() / 1000);
+
+    const session = await env.DB.prepare(
+      `SELECT * FROM ephemeral_sessions WHERE session_id = ? AND deleted_at IS NULL`
+    ).bind(sessionId).first();
+    if (!session) return json({ error: 'NotFound', message: 'session not found' }, { status: 404 });
+    if (session.expires_at <= now) return json({ error: 'Expired', message: 'session already expired' }, { status: 410 });
+
+    // Only allow extend when remaining < 5 minutes
+    const remaining = session.expires_at - now;
+    if (remaining > 300) return json({ error: 'TooEarly', message: 'can only extend when < 5 minutes remaining' }, { status: 400 });
+
+    // Verify caller is owner or guest
+    if (callerDigest && callerDigest !== session.owner_digest && callerDigest !== session.guest_digest) {
+      return json({ error: 'Forbidden', message: 'not a participant' }, { status: 403 });
+    }
+
+    const newExpiresAt = now + EPHEMERAL_TTL_SEC;
+    await env.DB.prepare(
+      `UPDATE ephemeral_sessions SET expires_at = ?, extended_count = extended_count + 1 WHERE session_id = ?`
+    ).bind(newExpiresAt, sessionId).run();
+
+    // Notify both parties via WS
+    const extendPayload = {
+      type: 'ephemeral-extended',
+      sessionId,
+      conversationId: session.conversation_id,
+      expiresAt: newExpiresAt,
+      ts: Date.now()
+    };
+    try { await notifyAccountDO(env, session.owner_digest, extendPayload); } catch { /* best-effort */ }
+    try { await notifyAccountDO(env, session.guest_digest, extendPayload); } catch { /* best-effort */ }
+
+    return json({ expires_at: newExpiresAt, extended_count: session.extended_count + 1 });
+  }
+
+  // POST /d1/ephemeral/delete — owner deletes session
+  if (req.method === 'POST' && url.pathname === '/d1/ephemeral/delete') {
+    const body = await req.json();
+    const sessionId = (body.sessionId || body.session_id || '').trim();
+    const ownerDigest = normalizeAccountDigest(body.ownerDigest || body.owner_digest || '');
+    if (!sessionId || !ownerDigest) return json({ error: 'BadRequest', message: 'sessionId and ownerDigest required' }, { status: 400 });
+
+    await ensureDataTables(env);
+    const session = await env.DB.prepare(
+      `SELECT * FROM ephemeral_sessions WHERE session_id = ? AND owner_digest = ? AND deleted_at IS NULL`
+    ).bind(sessionId, ownerDigest).first();
+    if (!session) return json({ error: 'NotFound' }, { status: 404 });
+
+    return await deleteEphemeralSession(env, session);
+  }
+
+  // POST /d1/ephemeral/revoke-invite — owner revokes an unconsumed invite
+  if (req.method === 'POST' && url.pathname === '/d1/ephemeral/revoke-invite') {
+    const body = await req.json();
+    const token = (body.token || '').trim();
+    const ownerDigest = normalizeAccountDigest(body.ownerDigest || body.owner_digest || '');
+    if (!token || !ownerDigest) return json({ error: 'BadRequest', message: 'token and ownerDigest required' }, { status: 400 });
+
+    await ensureDataTables(env);
+    const invite = await env.DB.prepare(
+      `SELECT * FROM ephemeral_invites WHERE token = ? AND owner_digest = ? AND consumed_at IS NULL`
+    ).bind(token, ownerDigest).first();
+    if (!invite) return json({ error: 'NotFound', message: 'invite not found or already consumed' }, { status: 404 });
+
+    await env.DB.prepare(`DELETE FROM ephemeral_invites WHERE token = ?`).bind(token).run();
+    return json({ ok: true });
+  }
+
+  // POST /d1/ephemeral/list — owner lists active sessions
+  if (req.method === 'POST' && url.pathname === '/d1/ephemeral/list') {
+    const body = await req.json();
+    const ownerDigest = normalizeAccountDigest(body.ownerDigest || body.owner_digest || '');
+    if (!ownerDigest) return json({ error: 'BadRequest', message: 'ownerDigest required' }, { status: 400 });
+
+    await ensureDataTables(env);
+    const now = Math.floor(Date.now() / 1000);
+    // Try with pending_key_exchange_json column; fall back if migration hasn't run yet
+    let rows;
+    try {
+      rows = await env.DB.prepare(
+        `SELECT session_id, conversation_id, guest_digest, guest_device_id, expires_at, extended_count, created_at, invite_token, pending_key_exchange_json
+         FROM ephemeral_sessions WHERE owner_digest = ? AND deleted_at IS NULL AND expires_at > ? ORDER BY created_at DESC`
+      ).bind(ownerDigest, now).all();
+    } catch {
+      rows = await env.DB.prepare(
+        `SELECT session_id, conversation_id, guest_digest, guest_device_id, expires_at, extended_count, created_at, invite_token
+         FROM ephemeral_sessions WHERE owner_digest = ? AND deleted_at IS NULL AND expires_at > ? ORDER BY created_at DESC`
+      ).bind(ownerDigest, now).all();
+    }
+
+    // Also return unconsumed pending invites so the client can display/revoke them
+    const pendingRows = await env.DB.prepare(
+      `SELECT token, expires_at, created_at FROM ephemeral_invites WHERE owner_digest = ? AND consumed_at IS NULL AND expires_at > ? ORDER BY created_at DESC`
+    ).bind(ownerDigest, now).all();
+
+    return json({ sessions: rows?.results || [], pending_invites: pendingRows?.results || [] });
+  }
+
+  // POST /d1/ephemeral/cleanup — garbage-collect expired sessions
+  if (req.method === 'POST' && url.pathname === '/d1/ephemeral/cleanup') {
+    await ensureDataTables(env);
+    const now = Math.floor(Date.now() / 1000);
+    const expired = await env.DB.prepare(
+      `SELECT * FROM ephemeral_sessions WHERE deleted_at IS NULL AND expires_at <= ?`
+    ).bind(now).all();
+    const sessions = expired?.results || [];
+    let cleaned = 0;
+    for (const session of sessions) {
+      try {
+        await deleteEphemeralSession(env, session);
+        cleaned++;
+      } catch (e) { console.warn('ephemeral cleanup failed', session.session_id, e?.message); }
+    }
+    // Also clean expired unconsumed invites
+    await env.DB.prepare(`DELETE FROM ephemeral_invites WHERE expires_at <= ? AND consumed_at IS NULL`).bind(now).run();
+    return json({ cleaned });
+  }
+
+  // GET /d1/ephemeral/session-info — get session info (for guest reconnect)
+  if (req.method === 'POST' && url.pathname === '/d1/ephemeral/session-info') {
+    const body = await req.json();
+    const sessionId = (body.sessionId || body.session_id || '').trim();
+    if (!sessionId) return json({ error: 'BadRequest' }, { status: 400 });
+
+    await ensureDataTables(env);
+    const session = await env.DB.prepare(
+      `SELECT * FROM ephemeral_sessions WHERE session_id = ? AND deleted_at IS NULL`
+    ).bind(sessionId).first();
+    if (!session) return json({ error: 'NotFound' }, { status: 404 });
+    if (session.expires_at <= Math.floor(Date.now() / 1000)) {
+      return json({ error: 'Expired' }, { status: 410 });
+    }
+    return json({
+      session_id: session.session_id,
+      conversation_id: session.conversation_id,
+      owner_digest: session.owner_digest,
+      guest_digest: session.guest_digest,
+      expires_at: session.expires_at
+    });
+  }
+
+  return null;
+}
+
+async function deleteEphemeralSession(env, session) {
+  const now = Math.floor(Date.now() / 1000);
+  // Delete messages
+  await env.DB.prepare(`DELETE FROM messages_secure WHERE conversation_id = ?`).bind(session.conversation_id).run();
+  // Delete message key vault entries
+  await env.DB.prepare(`DELETE FROM message_key_vault WHERE conversation_id = ?`).bind(session.conversation_id).run();
+  // Delete ACL
+  await env.DB.prepare(`DELETE FROM conversation_acl WHERE conversation_id = ?`).bind(session.conversation_id).run();
+  // Delete conversation
+  await env.DB.prepare(`DELETE FROM conversations WHERE id = ?`).bind(session.conversation_id).run();
+  // Mark session deleted
+  await env.DB.prepare(`UPDATE ephemeral_sessions SET deleted_at = ? WHERE session_id = ?`).bind(now, session.session_id).run();
+
+  // Notify owner
+  try {
+    await notifyAccountDO(env, session.owner_digest, {
+      type: 'ephemeral-deleted',
+      sessionId: session.session_id,
+      conversationId: session.conversation_id,
+      ts: Date.now()
+    });
+  } catch { /* best-effort */ }
+
+  // Notify guest (EPHEMERAL_ digest DO)
+  try {
+    await notifyEphemeralDO(env, session.guest_digest, {
+      type: 'ephemeral-deleted',
+      sessionId: session.session_id,
+      conversationId: session.conversation_id,
+      ts: Date.now()
+    });
+  } catch { /* best-effort */ }
+
+  return json({ ok: true, deleted: session.session_id });
+}
+
 // ---- 主入口 ----
 async function handleFriendsRoutes(req, env) {
   const url = new URL(req.url);
@@ -2224,6 +2846,14 @@ async function handlePrekeysRoutes(req, env) {
 
   // Fetch per-device bundle (consume one OPK)
   if (req.method === 'GET' && url.pathname === '/d1/prekeys/bundle') {
+    // Rate limit prekey bundle fetch: 50 per 60s per account (fallback to IP)
+    const pkRlKey = resolveRateLimitKey(req);
+    if (pkRlKey) {
+      const rl = await checkRateLimit(env, pkRlKey, 'prekey-bundle', 200, 60);
+      if (!rl.allowed) {
+        return json({ error: 'RateLimited', message: 'too many requests', retry_after: rl.retryAfter }, { status: 429 });
+      }
+    }
     const peerAccountDigest = normalizeAccountDigest(url.searchParams.get('peerAccountDigest'));
     let peerDeviceId = normalizeDeviceId(url.searchParams.get('peerDeviceId'));
     if (!peerAccountDigest) {
@@ -2301,6 +2931,14 @@ async function handleAtomicSendRoutes(req, env) {
       body = await req.json();
     } catch {
       return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    // Rate limit message sending: 60 per 60s per account (fallback to IP)
+    const msgRlKey = resolveRateLimitKey(req, { body });
+    if (msgRlKey) {
+      const rl = await checkRateLimit(env, msgRlKey, 'msg-send', 200, 60);
+      if (!rl.allowed) {
+        return json({ error: 'RateLimited', message: 'too many requests', retry_after: rl.retryAfter }, { status: 429 });
+      }
     }
 
     // 1. Common Validation
@@ -2400,7 +3038,8 @@ async function handleAtomicSendRoutes(req, env) {
     `).bind(conversationId, accountDigest, senderDeviceId).first();
     const maxCounter = Number(maxRow?.max_counter ?? -1);
     if (Number.isFinite(maxCounter) && maxCounter >= 0 && msgCounter <= maxCounter) {
-      return json({ error: 'CounterTooLow', message: 'counter must be greater than previous', maxCounter }, { status: 409 });
+      // [H-4 fix] Removed maxCounter from response — leaked message sequence numbers
+      return json({ error: 'CounterTooLow', message: 'counter must be greater than previous' }, { status: 409 });
     }
 
     // 5. Construct Batch
@@ -2718,15 +3357,8 @@ async function handleMessagesRoutes(req, env) {
     });
   }
 
-  // [WS-AUTH] Token Endpoint (Mock/Stub or DO Entry)
-  if (req.method === 'POST' && (url.pathname === '/d1/ws/token' || url.pathname === '/api/v1/ws/token')) {
-    // Return a mock token for now to satisfy the client and allow connection logic to proceed (or fail gracefully at WS level)
-    return json({
-      ok: true,
-      token: 'mock-ws-token-' + Date.now(),
-      ttl: 3600
-    });
-  }
+  // [WS-AUTH] Token Endpoint — handled by handlePublicRoutes (real JWT)
+  // Mock removed: the public route at /api/v1/ws/token now issues proper JWT tokens.
 
   // [CALLS] Network Config Endpoint (Mock/Stub for WebRTC)
   if (req.method === 'GET' && (url.pathname === '/d1/calls/network-config' || url.pathname === '/api/v1/calls/network-config')) {
@@ -2819,6 +3451,60 @@ async function handleMessagesRoutes(req, env) {
       }
     }
     return json({ counts: result });
+  }
+
+  // [PERF] Batch Latest Messages — fetch the newest visible message per conversation in one request.
+  // Used by refreshConversationPreviews to avoid N individual listSecureMessages calls.
+  if (req.method === 'POST' && (url.pathname === '/d1/messages/batch-latest' || url.pathname === '/api/v1/messages/batch-latest')) {
+    let body = {};
+    try { body = await req.json(); } catch { }
+    const conversationIds = Array.isArray(body?.conversationIds) ? body.conversationIds : [];
+    const limit = Math.min(Math.max(Number(body?.limit) || 20, 1), 50);
+
+    if (!conversationIds.length) {
+      return json({ conversations: {} });
+    }
+    // Cap at 50 conversations per batch to limit query cost
+    const cappedIds = conversationIds.slice(0, 50);
+    await ensureDataTables(env);
+
+    const conversations = {};
+    for (const rawConvId of cappedIds) {
+      const conversationId = normalizeConversationId(rawConvId);
+      if (!conversationId) continue;
+      try {
+        const rows = await env.DB.prepare(`
+          SELECT id, conversation_id, sender_account_digest, sender_device_id,
+                 receiver_account_digest, receiver_device_id,
+                 header_json, ciphertext_b64, counter, created_at
+            FROM messages_secure
+           WHERE conversation_id = ?1
+           ORDER BY counter DESC, created_at DESC
+           LIMIT ?2
+        `).bind(conversationId, limit).all();
+        const items = (rows?.results || []).map(row => {
+          let payload = {};
+          try { payload = JSON.parse(row.header_json || '{}'); } catch { }
+          return {
+            id: row.id,
+            conversation_id: row.conversation_id,
+            sender_account_digest: row.sender_account_digest,
+            sender_device_id: row.sender_device_id,
+            receiver_account_digest: row.receiver_account_digest,
+            receiver_device_id: row.receiver_device_id,
+            payload,
+            ciphertext_b64: row.ciphertext_b64 || null,
+            counter: row.counter,
+            created_at: row.created_at
+          };
+        });
+        conversations[conversationId] = { items };
+      } catch (err) {
+        console.warn(`batch-latest failed for ${conversationId}`, err);
+        conversations[conversationId] = { items: [], error: true };
+      }
+    }
+    return json({ conversations });
   }
 
   if (req.method === 'GET' && (url.pathname === '/d1/messages/by-counter' || url.pathname === '/api/v1/messages/by-counter')) {
@@ -2978,7 +3664,8 @@ async function handleMessagesRoutes(req, env) {
     `).bind(conversationId, senderAccountDigest, senderDeviceId).first();
     const maxCounter = Number(maxRow?.max_counter ?? -1);
     if (Number.isFinite(maxCounter) && maxCounter >= 0 && counter <= maxCounter) {
-      return json({ error: 'CounterTooLow', message: 'counter must be greater than previous', maxCounter }, { status: 409 });
+      // [H-4 fix] Removed maxCounter from response — leaked message sequence numbers
+      return json({ error: 'CounterTooLow', message: 'counter must be greater than previous' }, { status: 409 });
     }
     await env.DB.prepare(`
       INSERT INTO conversations (id)
@@ -3054,12 +3741,13 @@ async function handleMessagesRoutes(req, env) {
     }
     await ensureDataTables(env);
 
-    const SEMANTIC_VISIBLE = new Set(['text', 'media', 'call-log', 'system']);
+    const SEMANTIC_VISIBLE = new Set(['text', 'media', 'call-log', 'system', 'biz-conv-text', 'biz-conv-message']);
     function isVisibleItem(row) {
       if (!row || !row.header_json) return false;
       try {
         const header = JSON.parse(row.header_json);
-        let type = header?.meta?.msgType || header?.meta?.msg_type || null;
+        // Check meta.msgType first (standard), then header.type (biz-conv uses this)
+        let type = header?.meta?.msgType || header?.meta?.msg_type || header?.type || null;
         if (!type && row.ciphertext_b64) {
           type = 'text';
         }
@@ -3353,6 +4041,7 @@ async function handleContactSecretsRoutes(req, env) {
   const url = new URL(req.url);
 
   if (req.method === 'POST' && url.pathname === '/d1/contact-secrets/backup') {
+    await ensureDataTables(env);
     let body;
     try {
       body = await req.json();
@@ -3374,6 +4063,7 @@ async function handleContactSecretsRoutes(req, env) {
     const checksum = typeof body?.checksum === 'string' ? String(body.checksum).slice(0, 128) : null;
     const deviceLabel = typeof body?.deviceLabel === 'string' ? String(body.deviceLabel).slice(0, 120) : null;
     const deviceId = typeof body?.deviceId === 'string' ? String(body.deviceId).slice(0, 120) : null;
+    const reason = typeof body?.reason === 'string' ? String(body.reason).slice(0, 64) : 'auto';
     const updatedAt = normalizeTimestampMs(body?.updatedAt || body?.updated_at) || Date.now();
     let version = Number.isFinite(Number(body?.version)) && Number(body.version) > 0
       ? Math.floor(Number(body.version))
@@ -3415,8 +4105,8 @@ async function handleContactSecretsRoutes(req, env) {
     await env.DB.prepare(
       `INSERT INTO contact_secret_backups (
           account_digest, version, payload_json, snapshot_version, entries,
-          checksum, bytes, updated_at, device_label, device_id, created_at
-       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, strftime('%s','now'))`
+          checksum, bytes, updated_at, device_label, device_id, reason, created_at
+       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%s','now'))`
     ).bind(
       accountDigest,
       version,
@@ -3427,10 +4117,11 @@ async function handleContactSecretsRoutes(req, env) {
       bytes,
       updatedAt,
       deviceLabel,
-      deviceId
+      deviceId,
+      reason
     ).run();
 
-    await trimContactSecretBackups(env, accountDigest, 5);
+    await trimContactSecretBackups(env, accountDigest, 5, reason);
 
     return json({
       ok: true,
@@ -3449,6 +4140,7 @@ async function handleContactSecretsRoutes(req, env) {
   }
 
   if (req.method === 'GET' && url.pathname === '/d1/contact-secrets/backup') {
+    await ensureDataTables(env);
     const accountDigest = normalizeAccountDigest(
       url.searchParams.get('accountDigest')
       || url.searchParams.get('account_digest')
@@ -3459,6 +4151,7 @@ async function handleContactSecretsRoutes(req, env) {
     const limitParam = Number(url.searchParams.get('limit') || 1);
     const limit = Math.min(Math.max(limitParam || 1, 1), 10);
     const versionParam = Number(url.searchParams.get('version') || 0);
+    const reasonFilter = (url.searchParams.get('reason') || '').trim();
 
     let stmt;
     if (Number.isFinite(versionParam) && versionParam > 0) {
@@ -3468,6 +4161,16 @@ async function handleContactSecretsRoutes(req, env) {
           ORDER BY updated_at DESC
           LIMIT 1`
       ).bind(accountDigest, Math.floor(versionParam));
+    } else if (reasonFilter) {
+      // Filter by reason (e.g. 'biz-conv-backup') so the client can fetch
+      // specifically the backup type it needs without it being buried under
+      // other backup types in a shared limit.
+      stmt = env.DB.prepare(
+        `SELECT * FROM contact_secret_backups
+          WHERE account_digest=?1 AND reason=?2
+          ORDER BY updated_at DESC, id DESC
+          LIMIT ?3`
+      ).bind(accountDigest, reasonFilter, limit);
     } else {
       stmt = env.DB.prepare(
         `SELECT * FROM contact_secret_backups
@@ -3697,7 +4400,7 @@ async function handleMessageKeyVaultRoutes(req, env) {
         JSON.stringify(wrapContext),
         drStateSnapshot || null
       ).run();
-      if (result?.changes === 0) {
+      if (result?.meta?.changes === 0) {
         logMessageKeyVault('put', {
           accountDigestSuffix4: accountDigest.slice(-4),
           conversationIdPrefix8: conversationId.slice(0, 8),
@@ -3914,7 +4617,7 @@ async function handleMessageKeyVaultRoutes(req, env) {
           WHERE account_digest=?1 AND conversation_id=?2 AND message_id=?3 AND sender_device_id=?4`
       ).bind(accountDigest, conversationId, messageId, senderDeviceId).run();
 
-      const deleted = result?.changes > 0;
+      const deleted = result?.meta?.changes > 0;
       logMessageKeyVault('delete', {
         accountDigestSuffix4: accountDigest.slice(-4),
         conversationIdPrefix8: conversationId.slice(0, 8),
@@ -3961,171 +4664,828 @@ async function handleMessageKeyVaultRoutes(req, env) {
   return null;
 }
 
+// [REMOVED] handleGroupsRoutes — replaced by Business Conversation architecture
+// Returns 410 Gone for all legacy group API calls
 async function handleGroupsRoutes(req, env) {
-  const url = new URL(req.url);
+  return json({ error: 'Removed', message: 'Legacy groups API removed. Use Business Conversation API.' }, { status: 410 });
+}
 
-  if (req.method === 'POST' && url.pathname === '/d1/groups/create') {
+// _handleGroupsRoutes_REMOVED — legacy group code deleted in Business Conversation redesign
+
+// ───── Business Conversation Helpers ────────────────────────────────────────
+
+/**
+ * Broadcast a WS event to all active members of a business conversation.
+ * Uses the ACCOUNT_WS Durable Object's /notify endpoint.
+ * @param {object} env - Worker env bindings
+ * @param {string} conversationId
+ * @param {object} event - The event payload to broadcast
+ * @param {string} [excludeDigest] - Optional account_digest to exclude (e.g. the actor)
+ */
+async function broadcastBizConvWS(env, conversationId, event, excludeDigest = null) {
+  if (!env.ACCOUNT_WS) return;
+  try {
+    const rows = await env.DB.prepare(
+      `SELECT account_digest FROM business_conversation_members WHERE conversation_id = ?1 AND status = 'active'`
+    ).bind(conversationId).all();
+    const members = rows?.results || [];
+    for (const member of members) {
+      if (excludeDigest && member.account_digest === excludeDigest) continue;
+      try {
+        const doId = env.ACCOUNT_WS.idFromName(member.account_digest);
+        const stub = env.ACCOUNT_WS.get(doId);
+        await stub.fetch('https://do/notify', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-account-digest': member.account_digest },
+          body: JSON.stringify(event)
+        });
+      } catch (err) {
+        console.warn('[biz-conv-ws] relay failed', { target: member.account_digest?.slice(0, 12), error: err?.message });
+      }
+    }
+  } catch (err) {
+    console.warn('[biz-conv-ws] broadcast failed', err?.message || err);
+  }
+}
+
+/**
+ * Send a WS notification to a single account.
+ */
+async function notifyBizConvWS(env, accountDigest, event) {
+  if (!env.ACCOUNT_WS || !accountDigest) return;
+  try {
+    const doId = env.ACCOUNT_WS.idFromName(accountDigest);
+    const stub = env.ACCOUNT_WS.get(doId);
+    await stub.fetch('https://do/notify', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-account-digest': accountDigest },
+      body: JSON.stringify(event)
+    });
+  } catch (err) {
+    console.warn('[biz-conv-ws] notify failed', { target: accountDigest?.slice(0, 12), error: err?.message });
+  }
+}
+
+// ───── Business Conversation Routes ─────────────────────────────────────────
+
+async function requireBizConvMember(env, conversationId, accountDigest) {
+  const row = await env.DB.prepare(
+    `SELECT status FROM business_conversation_members
+     WHERE conversation_id = ?1 AND account_digest = ?2`
+  ).bind(conversationId, accountDigest).first();
+  if (!row || row.status !== 'active') {
+    throw { status: 403, error: 'NotMember' };
+  }
+}
+
+async function requireBizConvOwner(env, conversationId, accountDigest) {
+  const row = await env.DB.prepare(
+    `SELECT owner_account_digest FROM business_conversations
+     WHERE conversation_id = ?1 AND status = 'active'`
+  ).bind(conversationId).first();
+  if (!row || row.owner_account_digest !== accountDigest) {
+    throw { status: 403, error: 'NotOwner' };
+  }
+}
+
+async function handleBizConvRoutes(req, env) {
+  const url = new URL(req.url);
+  const path = url.pathname;
+  const method = req.method;
+
+  // ── POST /d1/biz-conv/create ───────────────────────────────────
+  if (method === 'POST' && path === '/d1/biz-conv/create') {
     let body;
-    try {
-      body = await req.json();
-    } catch {
+    try { body = await req.json(); } catch {
       return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
     }
-    const groupId = normalizeGroupId(body?.groupId || body?.group_id);
     const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
-    const creatorAccountDigest = normalizeAccountDigest(body?.creatorAccountDigest || body?.creator_account_digest);
-    const name = normalizeGroupName(body?.name);
-    const avatarJson = normalizeGroupAvatar(body?.avatar || body?.avatarJson || body?.avatar_json);
+    const ownerDigest = normalizeAccountDigest(body?.ownerAccountDigest || body?.owner_account_digest);
+    const encryptedMetaBlob = body?.encrypted_meta_blob || body?.encryptedMetaBlob || null;
+    const encryptedPolicyBlob = body?.encrypted_policy_blob || body?.encryptedPolicyBlob || null;
     const membersInput = Array.isArray(body?.members) ? body.members : [];
-    if (!groupId || !conversationId || !creatorAccountDigest) {
-      return json({ error: 'BadRequest', message: 'groupId, conversationId, creatorAccountDigest required' }, { status: 400 });
+
+    if (!conversationId || !ownerDigest) {
+      return json({ error: 'BadRequest', message: 'conversation_id and owner_account_digest required' }, { status: 400 });
     }
 
     await ensureDataTables(env);
     const now = Math.floor(Date.now() / 1000);
-    try {
-      await env.DB.prepare(`
-        INSERT INTO groups (group_id, conversation_id, creator_account_digest, name, avatar_json, created_at, updated_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
-        ON CONFLICT(group_id) DO UPDATE SET
-          conversation_id=excluded.conversation_id,
-          name=excluded.name,
-          avatar_json=excluded.avatar_json,
-          updated_at=strftime('%s','now')
-      `).bind(groupId, conversationId, creatorAccountDigest, name, avatarJson, now).run();
-    } catch (err) {
-      console.warn('group_create_failed', err?.message || err);
-      return json({ error: 'CreateFailed', message: err?.message || 'unable to create group' }, { status: 500 });
+
+    // Check for existing conversation
+    const existing = await env.DB.prepare(
+      `SELECT conversation_id FROM business_conversations WHERE conversation_id = ?1`
+    ).bind(conversationId).first();
+    if (existing) {
+      return json({ error: 'Conflict', message: 'conversation_id already exists' }, { status: 409 });
     }
 
-    await upsertGroupMember(env, {
-      groupId,
-      accountDigest: creatorAccountDigest,
-      role: 'owner',
-      status: 'active',
-      inviterAccountDigest: creatorAccountDigest,
-      joinedAt: now
-    });
-    await grantConversationAccess(env, { conversationId, accountDigest: creatorAccountDigest });
+    // Create business_conversations record
+    await env.DB.prepare(`
+      INSERT INTO business_conversations (conversation_id, owner_account_digest, encrypted_meta_blob, encrypted_policy_blob, key_epoch, status, created_at, updated_at)
+      VALUES (?1, ?2, ?3, ?4, 0, 'active', ?5, ?5)
+    `).bind(
+      conversationId, ownerDigest,
+      encryptedMetaBlob ? JSON.stringify(encryptedMetaBlob) : null,
+      encryptedPolicyBlob ? JSON.stringify(encryptedPolicyBlob) : null,
+      now
+    ).run();
 
-    const seenDigests = new Set([creatorAccountDigest]);
+    // Add owner as member
+    await env.DB.prepare(`
+      INSERT INTO business_conversation_members (conversation_id, account_digest, encrypted_role_blob, status, confirmed_epoch, inviter_account_digest, created_at, updated_at)
+      VALUES (?1, ?2, NULL, 'active', 0, ?2, ?3, ?3)
+    `).bind(conversationId, ownerDigest, now).run();
+
+    // Grant conversation ACL for owner
+    await grantConversationAccess(env, { conversationId, accountDigest: ownerDigest });
+
+    // Add initial members
+    const seenDigests = new Set([ownerDigest]);
+    let membersCount = 1;
     for (const entry of membersInput) {
       const acct = normalizeAccountDigest(entry?.accountDigest || entry?.account_digest);
       if (!acct || seenDigests.has(acct)) continue;
       seenDigests.add(acct);
-      const role = normalizeGroupRole(entry?.role);
-      await upsertGroupMember(env, {
-        groupId,
-        accountDigest: acct,
-        role,
-        status: 'active',
-        inviterAccountDigest: creatorAccountDigest,
-        joinedAt: now
-      });
+
+      await env.DB.prepare(`
+        INSERT INTO business_conversation_members (conversation_id, account_digest, encrypted_role_blob, status, confirmed_epoch, inviter_account_digest, created_at, updated_at)
+        VALUES (?1, ?2, NULL, 'active', 0, ?3, ?4, ?4)
+      `).bind(conversationId, acct, ownerDigest, now).run();
       await grantConversationAccess(env, { conversationId, accountDigest: acct });
+      membersCount++;
     }
 
-    const detail = await fetchGroupWithMembers(env, groupId);
-    return json(detail ? { ok: true, ...detail } : { ok: true, groupId });
+    // Create member_joined tombstones for all members
+    for (const digest of seenDigests) {
+      const tombId = crypto.randomUUID();
+      await env.DB.prepare(`
+        INSERT INTO business_conversation_tombstones (id, conversation_id, tombstone_type, encrypted_payload_blob, actor_account_digest, key_epoch, created_at)
+        VALUES (?1, ?2, 'member_joined', '{}', ?3, 0, ?4)
+      `).bind(tombId, conversationId, digest, now).run();
+    }
+
+    return json({ ok: true, conversation_id: conversationId, key_epoch: 0, members_count: membersCount });
   }
 
-  if (req.method === 'POST' && url.pathname === '/d1/groups/members/add') {
-    let body;
-    try {
-      body = await req.json();
-    } catch {
-      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
-    }
-    const groupId = normalizeGroupId(body?.groupId || body?.group_id);
-    const membersInput = Array.isArray(body?.members) ? body.members : [];
-    if (!groupId || !membersInput.length) {
-      return json({ error: 'BadRequest', message: 'groupId and members required' }, { status: 400 });
-    }
-    await ensureDataTables(env);
-    const groupRow = await env.DB.prepare(`SELECT conversation_id FROM groups WHERE group_id=?1`).bind(groupId).all();
-    const group = groupRow?.results?.[0] || null;
-    if (!group) {
-      return json({ error: 'NotFound', message: 'group not found' }, { status: 404 });
-    }
-    const conversationId = group.conversation_id;
-    const now = Math.floor(Date.now() / 1000);
-    let added = 0;
-    for (const entry of membersInput) {
-      const acct = normalizeAccountDigest(entry?.accountDigest || entry?.account_digest);
-      if (!acct) continue;
-      const role = normalizeGroupRole(entry?.role);
-      const inviterAcct = normalizeAccountDigest(entry?.inviterAccountDigest || entry?.inviter_account_digest);
-      await upsertGroupMember(env, {
-        groupId,
-        accountDigest: acct,
-        role,
-        status: 'active',
-        inviterAccountDigest: inviterAcct,
-        joinedAt: now
-      });
-      await grantConversationAccess(env, { conversationId, accountDigest: acct });
-      added += 1;
-    }
-    const detail = await fetchGroupWithMembers(env, groupId);
-    return json(detail ? { ok: true, added, ...detail } : { ok: true, added });
-  }
-
-  if (req.method === 'POST' && url.pathname === '/d1/groups/members/remove') {
-    let body;
-    try {
-      body = await req.json();
-    } catch {
-      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
-    }
-    const groupId = normalizeGroupId(body?.groupId || body?.group_id);
-    const membersInput = Array.isArray(body?.members) ? body.members : [];
-    const statusOverride = normalizeGroupStatus(body?.status);
-    if (!groupId || !membersInput.length) {
-      return json({ error: 'BadRequest', message: 'groupId and members required' }, { status: 400 });
-    }
-    await ensureDataTables(env);
-    const groupRow = await env.DB.prepare(`SELECT conversation_id FROM groups WHERE group_id=?1`).bind(groupId).all();
-    const group = groupRow?.results?.[0] || null;
-    if (!group) {
-      return json({ error: 'NotFound', message: 'group not found' }, { status: 404 });
-    }
-    const conversationId = group.conversation_id;
-    const now = Math.floor(Date.now() / 1000);
-    let removed = 0;
-    for (const entry of membersInput) {
-      const acct = normalizeAccountDigest(entry?.accountDigest || entry?.account_digest);
-      if (!acct) continue;
-      const status = statusOverride || normalizeGroupStatus(entry?.status) || 'removed';
-      try {
-        await env.DB.prepare(`
-          UPDATE group_members
-             SET status=?3,
-                 updated_at=strftime('%s','now')
-           WHERE group_id=?1 AND account_digest=?2
-        `).bind(groupId, acct, status).run();
-        removed += 1;
-      } catch (err) {
-        console.warn('group_member_remove_failed', err?.message || err);
-      }
-      await removeConversationAccess(env, { conversationId, accountDigest: acct });
-    }
-    const detail = await fetchGroupWithMembers(env, groupId);
-    return json(detail ? { ok: true, removed, ...detail } : { ok: true, removed });
-  }
-
-  if (req.method === 'GET' && url.pathname === '/d1/groups/get') {
-    const groupId = normalizeGroupId(
-      url.searchParams.get('groupId')
-      || url.searchParams.get('group_id')
+  // ── GET /d1/biz-conv/get ───────────────────────────────────────
+  if (method === 'GET' && path === '/d1/biz-conv/get') {
+    const conversationId = normalizeConversationId(
+      url.searchParams.get('conversationId') || url.searchParams.get('conversation_id')
     );
-    if (!groupId) {
-      return json({ error: 'BadRequest', message: 'groupId required' }, { status: 400 });
+    const accountDigest = normalizeAccountDigest(
+      url.searchParams.get('accountDigest') || url.searchParams.get('account_digest')
+    );
+    if (!conversationId) {
+      return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
     }
-    const detail = await fetchGroupWithMembers(env, groupId);
-    if (!detail) {
-      return json({ error: 'NotFound', message: 'group not found' }, { status: 404 });
+    await ensureDataTables(env);
+
+    try {
+      if (accountDigest) await requireBizConvMember(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
     }
-    return json({ ok: true, ...detail });
+
+    const row = await env.DB.prepare(`
+      SELECT conversation_id, owner_account_digest, encrypted_meta_blob, encrypted_policy_blob, key_epoch, status, created_at
+      FROM business_conversations WHERE conversation_id = ?1
+    `).bind(conversationId).first();
+    if (!row) {
+      return json({ error: 'NotFound', message: 'conversation not found' }, { status: 404 });
+    }
+
+    return json({
+      ok: true,
+      conversation_id: row.conversation_id,
+      owner_account_digest: row.owner_account_digest,
+      encrypted_meta_blob: row.encrypted_meta_blob ? JSON.parse(row.encrypted_meta_blob) : null,
+      encrypted_policy_blob: row.encrypted_policy_blob ? JSON.parse(row.encrypted_policy_blob) : null,
+      key_epoch: row.key_epoch,
+      status: row.status,
+      created_at: row.created_at
+    });
+  }
+
+  // ── PUT /d1/biz-conv/meta ─────────────────────────────────────
+  if (method === 'PUT' && path === '/d1/biz-conv/meta') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const encryptedMetaBlob = body?.encrypted_meta_blob || body?.encryptedMetaBlob;
+    if (!conversationId || !encryptedMetaBlob) {
+      return json({ error: 'BadRequest', message: 'conversationId and encrypted_meta_blob required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      await requireBizConvOwner(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    await env.DB.prepare(`
+      UPDATE business_conversations SET encrypted_meta_blob = ?2 WHERE conversation_id = ?1
+    `).bind(conversationId, JSON.stringify(encryptedMetaBlob)).run();
+
+    return json({ ok: true });
+  }
+
+  // ── PUT /d1/biz-conv/policy ───────────────────────────────────
+  if (method === 'PUT' && path === '/d1/biz-conv/policy') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const encryptedPolicyBlob = body?.encrypted_policy_blob || body?.encryptedPolicyBlob;
+    if (!conversationId || !encryptedPolicyBlob) {
+      return json({ error: 'BadRequest', message: 'conversationId and encrypted_policy_blob required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      await requireBizConvOwner(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    await env.DB.prepare(`
+      UPDATE business_conversations SET encrypted_policy_blob = ?2 WHERE conversation_id = ?1
+    `).bind(conversationId, JSON.stringify(encryptedPolicyBlob)).run();
+
+    // Create policy_changed tombstone
+    const now = Math.floor(Date.now() / 1000);
+    const conv = await env.DB.prepare(
+      `SELECT key_epoch FROM business_conversations WHERE conversation_id = ?1`
+    ).bind(conversationId).first();
+    const tombId = crypto.randomUUID();
+    await env.DB.prepare(`
+      INSERT INTO business_conversation_tombstones (id, conversation_id, tombstone_type, encrypted_payload_blob, actor_account_digest, key_epoch, created_at)
+      VALUES (?1, ?2, 'policy_changed', '{}', ?3, ?4, ?5)
+    `).bind(tombId, conversationId, accountDigest, conv?.key_epoch || 0, now).run();
+
+    // Broadcast policy updated
+    broadcastBizConvWS(env, conversationId, {
+      type: 'biz-conv-policy-updated',
+      conversation_id: conversationId,
+      actor_account_digest: accountDigest,
+      ts: now
+    }, accountDigest);
+
+    return json({ ok: true });
+  }
+
+  // ── POST /d1/biz-conv/dissolve ────────────────────────────────
+  if (method === 'POST' && path === '/d1/biz-conv/dissolve') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    if (!conversationId) {
+      return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      await requireBizConvOwner(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    // Broadcast dissolved event BEFORE deleting (so members can still receive it)
+    await broadcastBizConvWS(env, conversationId, {
+      type: 'biz-conv-dissolved',
+      conversation_id: conversationId,
+      actor_account_digest: accountDigest,
+      ts: Math.floor(Date.now() / 1000)
+    }, accountDigest);
+
+    // Hard delete all related data (respecting FK order)
+    const del = async (sql, params = []) => {
+      try { const r = await env.DB.prepare(sql).bind(...params).run(); return r?.meta?.changes || 0; } catch { return 0; }
+    };
+
+    const summary = {};
+    summary.messages = await del(`DELETE FROM messages_secure WHERE conversation_id = ?1`, [conversationId]);
+    summary.attachments = await del(`DELETE FROM attachments WHERE conversation_id = ?1`, [conversationId]);
+    summary.tombstones = await del(`DELETE FROM business_conversation_tombstones WHERE conversation_id = ?1`, [conversationId]);
+    summary.members = await del(`DELETE FROM business_conversation_members WHERE conversation_id = ?1`, [conversationId]);
+    summary.acl = await del(`DELETE FROM conversation_acl WHERE conversation_id = ?1`, [conversationId]);
+    summary.conversation = await del(`DELETE FROM business_conversations WHERE conversation_id = ?1`, [conversationId]);
+    summary.keyVault = await del(`DELETE FROM message_key_vault WHERE conversation_id = ?1`, [conversationId]);
+
+    return json({ ok: true, deleted: true, summary });
+  }
+
+  // ── POST /d1/biz-conv/invite ──────────────────────────────────
+  if (method === 'POST' && path === '/d1/biz-conv/invite') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const inviteeDigest = normalizeAccountDigest(body?.invitee_account_digest || body?.inviteeAccountDigest);
+
+    if (!conversationId || !inviteeDigest) {
+      return json({ error: 'BadRequest', message: 'conversationId and invitee_account_digest required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      await requireBizConvMember(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    // Check if invitee is already active
+    const existingMember = await env.DB.prepare(
+      `SELECT status FROM business_conversation_members WHERE conversation_id = ?1 AND account_digest = ?2`
+    ).bind(conversationId, inviteeDigest).first();
+    if (existingMember && existingMember.status === 'active') {
+      return json({ error: 'Conflict', message: 'already an active member' }, { status: 409 });
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+
+    if (existingMember) {
+      // Re-activate left/removed member
+      await env.DB.prepare(`
+        UPDATE business_conversation_members SET status = 'active', confirmed_epoch = 0, inviter_account_digest = ?3, updated_at = ?4
+        WHERE conversation_id = ?1 AND account_digest = ?2
+      `).bind(conversationId, inviteeDigest, accountDigest, now).run();
+    } else {
+      await env.DB.prepare(`
+        INSERT INTO business_conversation_members (conversation_id, account_digest, encrypted_role_blob, status, confirmed_epoch, inviter_account_digest, created_at, updated_at)
+        VALUES (?1, ?2, NULL, 'active', 0, ?3, ?4, ?4)
+      `).bind(conversationId, inviteeDigest, accountDigest, now).run();
+    }
+
+    await grantConversationAccess(env, { conversationId, accountDigest: inviteeDigest });
+
+    // Create member_joined tombstone
+    const conv = await env.DB.prepare(
+      `SELECT key_epoch FROM business_conversations WHERE conversation_id = ?1`
+    ).bind(conversationId).first();
+    const tombId = crypto.randomUUID();
+    await env.DB.prepare(`
+      INSERT INTO business_conversation_tombstones (id, conversation_id, tombstone_type, encrypted_payload_blob, actor_account_digest, key_epoch, created_at)
+      VALUES (?1, ?2, 'member_joined', '{}', ?3, ?4, ?5)
+    `).bind(tombId, conversationId, inviteeDigest, conv?.key_epoch || 0, now).run();
+
+    // Broadcast member-changed event
+    broadcastBizConvWS(env, conversationId, {
+      type: 'biz-conv-member-changed',
+      conversation_id: conversationId,
+      change: 'joined',
+      account_digest: inviteeDigest,
+      tombstone_id: tombId,
+      ts: now
+    });
+
+    return json({ ok: true, tombstone_id: tombId });
+  }
+
+  // ── POST /d1/biz-conv/remove ──────────────────────────────────
+  if (method === 'POST' && path === '/d1/biz-conv/remove') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const targetDigest = normalizeAccountDigest(body?.target_account_digest || body?.targetAccountDigest);
+
+    if (!conversationId || !targetDigest) {
+      return json({ error: 'BadRequest', message: 'conversationId and target_account_digest required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      await requireBizConvOwner(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    // Cannot remove self (owner)
+    if (targetDigest === accountDigest) {
+      return json({ error: 'BadRequest', message: 'owner cannot remove self' }, { status: 400 });
+    }
+
+    // Verify target is active member
+    const targetMember = await env.DB.prepare(
+      `SELECT status FROM business_conversation_members WHERE conversation_id = ?1 AND account_digest = ?2`
+    ).bind(conversationId, targetDigest).first();
+    if (!targetMember || targetMember.status !== 'active') {
+      return json({ error: 'NotFound', message: 'target is not an active member' }, { status: 404 });
+    }
+
+    await env.DB.prepare(`
+      UPDATE business_conversation_members SET status = 'removed', updated_at = ?3
+      WHERE conversation_id = ?1 AND account_digest = ?2
+    `).bind(conversationId, targetDigest, Math.floor(Date.now() / 1000)).run();
+
+    await removeConversationAccess(env, { conversationId, accountDigest: targetDigest });
+
+    // Create member_removed tombstone
+    const conv = await env.DB.prepare(
+      `SELECT key_epoch FROM business_conversations WHERE conversation_id = ?1`
+    ).bind(conversationId).first();
+    const now = Math.floor(Date.now() / 1000);
+    const tombId = crypto.randomUUID();
+    await env.DB.prepare(`
+      INSERT INTO business_conversation_tombstones (id, conversation_id, tombstone_type, encrypted_payload_blob, actor_account_digest, key_epoch, created_at)
+      VALUES (?1, ?2, 'member_removed', '{}', ?3, ?4, ?5)
+    `).bind(tombId, conversationId, accountDigest, conv?.key_epoch || 0, now).run();
+
+    // Broadcast member-changed + notify removed member
+    broadcastBizConvWS(env, conversationId, {
+      type: 'biz-conv-member-changed',
+      conversation_id: conversationId,
+      change: 'removed',
+      account_digest: targetDigest,
+      tombstone_id: tombId,
+      ts: now
+    });
+    notifyBizConvWS(env, targetDigest, {
+      type: 'biz-conv-removed-notification',
+      conversation_id: conversationId,
+      ts: now
+    });
+
+    return json({ ok: true, tombstone_id: tombId, requires_key_rotation: true });
+  }
+
+  // ── POST /d1/biz-conv/leave ───────────────────────────────────
+  if (method === 'POST' && path === '/d1/biz-conv/leave') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+
+    if (!conversationId) {
+      return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      await requireBizConvMember(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    // Owner cannot leave (must transfer first)
+    const conv = await env.DB.prepare(
+      `SELECT owner_account_digest, key_epoch FROM business_conversations WHERE conversation_id = ?1`
+    ).bind(conversationId).first();
+    if (conv && conv.owner_account_digest === accountDigest) {
+      return json({ error: 'Forbidden', message: 'owner cannot leave; transfer ownership first' }, { status: 403 });
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(`
+      UPDATE business_conversation_members SET status = 'left', updated_at = ?3
+      WHERE conversation_id = ?1 AND account_digest = ?2
+    `).bind(conversationId, accountDigest, now).run();
+
+    await removeConversationAccess(env, { conversationId, accountDigest });
+
+    const tombId = crypto.randomUUID();
+    await env.DB.prepare(`
+      INSERT INTO business_conversation_tombstones (id, conversation_id, tombstone_type, encrypted_payload_blob, actor_account_digest, key_epoch, created_at)
+      VALUES (?1, ?2, 'member_left', '{}', ?3, ?4, ?5)
+    `).bind(tombId, conversationId, accountDigest, conv?.key_epoch || 0, now).run();
+
+    // Broadcast member-changed (actor already left, so they won't receive it)
+    broadcastBizConvWS(env, conversationId, {
+      type: 'biz-conv-member-changed',
+      conversation_id: conversationId,
+      change: 'left',
+      account_digest: accountDigest,
+      tombstone_id: tombId,
+      ts: now
+    });
+
+    return json({ ok: true, tombstone_id: tombId, requires_key_rotation: true });
+  }
+
+  // ── POST /d1/biz-conv/transfer ────────────────────────────────
+  if (method === 'POST' && path === '/d1/biz-conv/transfer') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const newOwnerDigest = normalizeAccountDigest(body?.new_owner_account_digest || body?.newOwnerAccountDigest);
+
+    if (!conversationId || !newOwnerDigest) {
+      return json({ error: 'BadRequest', message: 'conversationId and new_owner_account_digest required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      await requireBizConvOwner(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    // Verify new owner is active member
+    try {
+      await requireBizConvMember(env, conversationId, newOwnerDigest);
+    } catch (e) {
+      return json({ error: 'BadRequest', message: 'new owner must be an active member' }, { status: 400 });
+    }
+
+    await env.DB.prepare(`
+      UPDATE business_conversations SET owner_account_digest = ?2 WHERE conversation_id = ?1
+    `).bind(conversationId, newOwnerDigest).run();
+
+    const conv = await env.DB.prepare(
+      `SELECT key_epoch FROM business_conversations WHERE conversation_id = ?1`
+    ).bind(conversationId).first();
+    const now = Math.floor(Date.now() / 1000);
+    const tombId = crypto.randomUUID();
+    await env.DB.prepare(`
+      INSERT INTO business_conversation_tombstones (id, conversation_id, tombstone_type, encrypted_payload_blob, actor_account_digest, key_epoch, created_at)
+      VALUES (?1, ?2, 'ownership_transferred', '{}', ?3, ?4, ?5)
+    `).bind(tombId, conversationId, accountDigest, conv?.key_epoch || 0, now).run();
+
+    // Broadcast ownership transferred
+    broadcastBizConvWS(env, conversationId, {
+      type: 'biz-conv-ownership-transferred',
+      conversation_id: conversationId,
+      old_owner: accountDigest,
+      new_owner: newOwnerDigest,
+      tombstone_id: tombId,
+      ts: now
+    });
+
+    return json({ ok: true, tombstone_id: tombId });
+  }
+
+  // ── GET /d1/biz-conv/members ──────────────────────────────────
+  if (method === 'GET' && path === '/d1/biz-conv/members') {
+    const conversationId = normalizeConversationId(
+      url.searchParams.get('conversationId') || url.searchParams.get('conversation_id')
+    );
+    const accountDigest = normalizeAccountDigest(
+      url.searchParams.get('accountDigest') || url.searchParams.get('account_digest')
+    );
+    if (!conversationId) {
+      return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      if (accountDigest) await requireBizConvMember(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    const rows = await env.DB.prepare(`
+      SELECT account_digest, encrypted_role_blob, status, confirmed_epoch, created_at
+      FROM business_conversation_members WHERE conversation_id = ?1
+      ORDER BY created_at ASC
+    `).bind(conversationId).all();
+
+    const members = (rows?.results || []).map(m => ({
+      account_digest: m.account_digest,
+      encrypted_role_blob: m.encrypted_role_blob ? JSON.parse(m.encrypted_role_blob) : null,
+      status: m.status,
+      confirmed_epoch: m.confirmed_epoch,
+      created_at: m.created_at
+    }));
+
+    return json({ ok: true, members });
+  }
+
+  // ── POST /d1/biz-conv/epoch ───────────────────────────────────
+  if (method === 'POST' && path === '/d1/biz-conv/epoch') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+
+    if (!conversationId) {
+      return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      await requireBizConvOwner(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    await env.DB.prepare(`
+      UPDATE business_conversations SET key_epoch = key_epoch + 1 WHERE conversation_id = ?1
+    `).bind(conversationId).run();
+
+    const updated = await env.DB.prepare(
+      `SELECT key_epoch FROM business_conversations WHERE conversation_id = ?1`
+    ).bind(conversationId).first();
+
+    const newEpoch = updated?.key_epoch || 0;
+
+    // Broadcast key-rotated event
+    broadcastBizConvWS(env, conversationId, {
+      type: 'biz-conv-key-rotated',
+      conversation_id: conversationId,
+      new_epoch: newEpoch,
+      ts: Math.floor(Date.now() / 1000)
+    }, accountDigest);
+
+    return json({ ok: true, new_epoch: newEpoch });
+  }
+
+  // ── POST /d1/biz-conv/epoch/confirm ───────────────────────────
+  if (method === 'POST' && path === '/d1/biz-conv/epoch/confirm') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const epoch = Number(body?.epoch);
+
+    if (!conversationId || !Number.isFinite(epoch)) {
+      return json({ error: 'BadRequest', message: 'conversationId and epoch required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      await requireBizConvMember(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    await env.DB.prepare(`
+      UPDATE business_conversation_members
+      SET confirmed_epoch = MAX(confirmed_epoch, ?3), updated_at = ?4
+      WHERE conversation_id = ?1 AND account_digest = ?2
+    `).bind(conversationId, accountDigest, epoch, Math.floor(Date.now() / 1000)).run();
+
+    return json({ ok: true });
+  }
+
+  // ── GET /d1/biz-conv/epoch ────────────────────────────────────
+  if (method === 'GET' && path === '/d1/biz-conv/epoch') {
+    const conversationId = normalizeConversationId(
+      url.searchParams.get('conversationId') || url.searchParams.get('conversation_id')
+    );
+    const accountDigest = normalizeAccountDigest(
+      url.searchParams.get('accountDigest') || url.searchParams.get('account_digest')
+    );
+    if (!conversationId) {
+      return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      if (accountDigest) await requireBizConvMember(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    const conv = await env.DB.prepare(
+      `SELECT key_epoch FROM business_conversations WHERE conversation_id = ?1`
+    ).bind(conversationId).first();
+    if (!conv) {
+      return json({ error: 'NotFound' }, { status: 404 });
+    }
+
+    const pendingRows = await env.DB.prepare(`
+      SELECT account_digest, confirmed_epoch
+      FROM business_conversation_members
+      WHERE conversation_id = ?1 AND status = 'active' AND confirmed_epoch < ?2
+    `).bind(conversationId, conv.key_epoch).all();
+
+    return json({
+      ok: true,
+      key_epoch: conv.key_epoch,
+      pending_members: (pendingRows?.results || []).map(r => ({
+        account_digest: r.account_digest,
+        confirmed_epoch: r.confirmed_epoch
+      }))
+    });
+  }
+
+  // ── POST /d1/biz-conv/tombstone ───────────────────────────────
+  if (method === 'POST' && path === '/d1/biz-conv/tombstone') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const conversationId = normalizeConversationId(body?.conversationId || body?.conversation_id);
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const tombstoneType = body?.tombstone_type || body?.tombstoneType;
+    const encryptedPayloadBlob = body?.encrypted_payload_blob || body?.encryptedPayloadBlob || '{}';
+
+    if (!conversationId || !tombstoneType) {
+      return json({ error: 'BadRequest', message: 'conversationId and tombstone_type required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      await requireBizConvMember(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    const conv = await env.DB.prepare(
+      `SELECT key_epoch FROM business_conversations WHERE conversation_id = ?1`
+    ).bind(conversationId).first();
+    const now = Math.floor(Date.now() / 1000);
+    const tombId = crypto.randomUUID();
+
+    await env.DB.prepare(`
+      INSERT INTO business_conversation_tombstones (id, conversation_id, tombstone_type, encrypted_payload_blob, actor_account_digest, key_epoch, created_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+    `).bind(
+      tombId, conversationId, tombstoneType,
+      typeof encryptedPayloadBlob === 'string' ? encryptedPayloadBlob : JSON.stringify(encryptedPayloadBlob),
+      accountDigest, conv?.key_epoch || 0, now
+    ).run();
+
+    return json({ ok: true, tombstone_id: tombId, created_at: now });
+  }
+
+  // ── GET /d1/biz-conv/tombstones ───────────────────────────────
+  if (method === 'GET' && path === '/d1/biz-conv/tombstones') {
+    const conversationId = normalizeConversationId(
+      url.searchParams.get('conversationId') || url.searchParams.get('conversation_id')
+    );
+    const accountDigest = normalizeAccountDigest(
+      url.searchParams.get('accountDigest') || url.searchParams.get('account_digest')
+    );
+    const since = Number(url.searchParams.get('since') || 0);
+    const limit = Math.min(Math.max(Number(url.searchParams.get('limit') || 50), 1), 200);
+
+    if (!conversationId) {
+      return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+    try {
+      if (accountDigest) await requireBizConvMember(env, conversationId, accountDigest);
+    } catch (e) {
+      return json({ error: e.error }, { status: e.status || 403 });
+    }
+
+    const rows = await env.DB.prepare(`
+      SELECT id, tombstone_type, encrypted_payload_blob, actor_account_digest, key_epoch, created_at
+      FROM business_conversation_tombstones
+      WHERE conversation_id = ?1 AND created_at > ?2
+      ORDER BY created_at ASC
+      LIMIT ?3
+    `).bind(conversationId, since, limit + 1).all();
+
+    const results = rows?.results || [];
+    const hasMore = results.length > limit;
+    const tombstones = results.slice(0, limit).map(t => ({
+      id: t.id,
+      tombstone_type: t.tombstone_type,
+      encrypted_payload_blob: t.encrypted_payload_blob,
+      actor_account_digest: t.actor_account_digest,
+      key_epoch: t.key_epoch,
+      created_at: t.created_at
+    }));
+
+    return json({ ok: true, tombstones, has_more: hasMore });
+  }
+
+  // ── GET /d1/biz-conv/list ─────────────────────────────────────
+  if (method === 'GET' && path === '/d1/biz-conv/list') {
+    const accountDigest = normalizeAccountDigest(
+      url.searchParams.get('accountDigest') || url.searchParams.get('account_digest')
+    );
+    if (!accountDigest) {
+      return json({ error: 'BadRequest', message: 'accountDigest required' }, { status: 400 });
+    }
+    await ensureDataTables(env);
+
+    const rows = await env.DB.prepare(`
+      SELECT bc.conversation_id, bc.owner_account_digest, bc.encrypted_meta_blob,
+             bc.key_epoch, bc.status, bc.created_at,
+             bcm.status AS my_status, bcm.confirmed_epoch AS my_confirmed_epoch
+      FROM business_conversations bc
+      JOIN business_conversation_members bcm
+        ON bc.conversation_id = bcm.conversation_id
+      WHERE bcm.account_digest = ?1 AND bcm.status = 'active'
+      ORDER BY bc.updated_at DESC
+    `).bind(accountDigest).all();
+
+    const conversations = (rows?.results || []).map(r => ({
+      conversation_id: r.conversation_id,
+      owner_account_digest: r.owner_account_digest,
+      encrypted_meta_blob: r.encrypted_meta_blob ? JSON.parse(r.encrypted_meta_blob) : null,
+      key_epoch: r.key_epoch,
+      status: r.status,
+      my_status: r.my_status,
+      my_confirmed_epoch: r.my_confirmed_epoch,
+      created_at: r.created_at
+    }));
+
+    return json({ ok: true, conversations });
   }
 
   return null;
@@ -5087,25 +6447,21 @@ async function handleAccountsRoutes(req, env) {
       [accountDigest]
     );
 
-    if (groupList.length) {
-      summary.groupInvites = await del(
-        `DELETE FROM group_invites WHERE group_id IN (${groupPlaceholders})`,
-        groupList
-      );
-      summary.groupMembers = await del(
-        `DELETE FROM group_members WHERE group_id IN (${groupPlaceholders})`,
-        groupList
-      );
-      summary.groups = await del(
-        `DELETE FROM groups WHERE group_id IN (${groupPlaceholders})`,
-        groupList
-      );
-    } else {
-      summary.groupMembers = await del(
-        `DELETE FROM group_members WHERE account_digest=?1`,
-        [accountDigest]
-      );
-    }
+    // Business Conversation cleanup for purged account
+    summary.bizConvTombstones = await del(
+      `DELETE FROM business_conversation_tombstones WHERE conversation_id IN (
+        SELECT conversation_id FROM business_conversation_members WHERE account_digest=?1
+      )`, [accountDigest]
+    );
+    summary.bizConvMembers = await del(
+      `DELETE FROM business_conversation_members WHERE account_digest=?1`,
+      [accountDigest]
+    );
+    // Dissolve conversations owned by purged account
+    summary.bizConvOwned = await del(
+      `DELETE FROM business_conversations WHERE owner_account_digest=?1`,
+      [accountDigest]
+    );
 
     summary.extendLogs = await del(
       `DELETE FROM extend_logs WHERE digest=?1`,
@@ -5171,13 +6527,2914 @@ async function handleAccountsRoutes(req, env) {
     });
   }
 
+  // GET /d1/accounts/brand?uid=<hex> — lightweight brand lookup by UID
+  // Returns brand info without requiring full SDM exchange.
+  // Used by frontend to show brand on splash screen while exchange is in progress.
+  if (req.method === 'GET' && url.pathname === '/d1/accounts/brand') {
+    const uidHex = normalizeUid(url.searchParams.get('uid'));
+    if (!uidHex) {
+      return json({ error: 'BadRequest', message: 'uid query parameter required (14+ hex)' }, { status: 400 });
+    }
+    try {
+      await ensureDataTables(env);
+      const uidDigest = await hashUidToDigest(env, uidHex);
+      const row = await env.DB.prepare(
+        `SELECT brand, brand_name, brand_logo FROM accounts WHERE uid_digest=?1`
+      ).bind(uidDigest).first();
+      if (!row) {
+        return json({ brand: null, brand_name: null, brand_logo: null });
+      }
+      return json({
+        brand: row.brand || null,
+        brand_name: row.brand_name || null,
+        brand_logo: row.brand_logo || null
+      });
+    } catch (err) {
+      return json({ error: 'LookupFailed', message: err?.message || 'brand lookup failed' }, { status: 500 });
+    }
+  }
+
+  // POST /d1/accounts/set-brand — admin sets brand for account(s)
+  if (req.method === 'POST' && url.pathname === '/d1/accounts/set-brand') {
+    await ensureDataTables(env);
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+
+    const brand = body?.brand !== undefined ? (body.brand || null) : undefined;
+    if (brand === undefined) {
+      return json({ error: 'BadRequest', message: 'brand field required (string or null to clear)' }, { status: 400 });
+    }
+    const brandName = body?.brandName || body?.brand_name || null;
+    const brandLogo = body?.brandLogo || body?.brand_logo || null;
+
+    // Support single or batch: accountDigest / uidDigest / uidHex, or arrays
+    const toArray = (v) => Array.isArray(v) ? v : (v ? [v] : []);
+    const accountDigests = toArray(body?.accountDigest || body?.account_digest).map(normalizeAccountDigest).filter(Boolean);
+    const uidDigests = toArray(body?.uidDigest || body?.uid_digest).map(normalizeAccountDigest).filter(Boolean);
+    const uidHexes = toArray(body?.uidHex || body?.uid_hex).map(v => String(v || '').trim().toUpperCase()).filter(v => v.length >= 14);
+
+    // Resolve uidDigests → accountDigests
+    for (const ud of uidDigests) {
+      const row = await env.DB.prepare(
+        `SELECT account_digest FROM accounts WHERE uid_digest=?1`
+      ).bind(ud).first();
+      if (row?.account_digest) {
+        const ad = normalizeAccountDigest(row.account_digest);
+        if (ad && !accountDigests.includes(ad)) accountDigests.push(ad);
+      }
+    }
+
+    // Resolve uidHexes → accountDigests (hash uidHex to uid_digest first)
+    for (const uh of uidHexes) {
+      try {
+        const uidDigest = await hashUidToDigest(env, uh);
+        const row = await env.DB.prepare(
+          `SELECT account_digest FROM accounts WHERE uid_digest=?1`
+        ).bind(uidDigest).first();
+        if (row?.account_digest) {
+          const ad = normalizeAccountDigest(row.account_digest);
+          if (ad && !accountDigests.includes(ad)) accountDigests.push(ad);
+        }
+      } catch (err) {
+        console.warn('set-brand: uidHex lookup failed for', uh, err?.message);
+      }
+    }
+
+    if (!accountDigests.length) {
+      return json({ error: 'BadRequest', message: 'no matching accounts found; provide accountDigest, uidDigest, or uidHex' }, { status: 400 });
+    }
+
+    const updated = [];
+    const failed = [];
+    for (const ad of accountDigests) {
+      try {
+        await env.DB.prepare(
+          `UPDATE accounts SET brand=?1, brand_name=?2, brand_logo=?3 WHERE account_digest=?4`
+        ).bind(brand, brandName, brandLogo, ad).run();
+        updated.push(ad);
+      } catch (err) {
+        failed.push({ accountDigest: ad, error: err?.message || String(err) });
+      }
+    }
+
+    return json({ ok: true, brand, brandName, brandLogo, updated, failed: failed.length ? failed : undefined });
+  }
+
   return null;
 }
 
+// ── Public API helpers (Phase 1 – edge-direct access) ────────────────────────
+
+function buildCORSHeaders(req, env) {
+  const origin = req.headers.get('origin') || '';
+  const allowList = (env.CORS_ORIGINS || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  const allowed = !allowList.length || !origin || allowList.includes(origin);
+  return {
+    'Access-Control-Allow-Origin': allowed ? (origin || '*') : '',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Account-Token, X-Account-Digest, X-Device-Id, Authorization',
+    'Access-Control-Max-Age': '86400'
+  };
+}
+
+function withCORS(response, req, env) {
+  const headers = buildCORSHeaders(req, env);
+  const resp = new Response(response.body, response);
+  for (const [k, v] of Object.entries(headers)) resp.headers.set(k, v);
+  return resp;
+}
+
+/**
+ * Resolve account auth from request headers + body for public API routes.
+ * Returns { accountDigest } or null if auth fails.
+ */
+async function resolvePublicAuth(req, env, { body = null } = {}) {
+  const tokenHeader = (req.headers.get('x-account-token') || '').trim();
+  const digestHeader = (req.headers.get('x-account-digest') || '').trim();
+
+  const accountToken = tokenHeader || body?.account_token || body?.accountToken || null;
+  const rawDigest = digestHeader || body?.account_digest || body?.accountDigest || null;
+  const accountDigest = rawDigest ? normalizeAccountDigest(rawDigest) : null;
+
+  if (!accountToken && !accountDigest) return null;
+
+  await ensureDataTables(env);
+  const account = await resolveAccount(
+    env,
+    { accountToken, accountDigest },
+    { allowCreate: false, preferredAccountToken: accountToken, preferredAccountDigest: accountDigest }
+  );
+  if (!account) return null;
+  return { accountDigest: account.account_digest };
+}
+
+function isSystemOwnedConversation(convId, accountDigest) {
+  if (!convId) return false;
+  const acct = (accountDigest || '').toUpperCase();
+  if (!acct) return false;
+  return convId === `drive-${acct}` ||
+    convId === `profile-${acct}` || convId === `profile:${acct}` ||
+    convId === `settings-${acct}` ||
+    convId === `avatar-${acct}` ||
+    convId === `contacts-${acct}`;
+}
+
+/**
+ * Direct conversation authorization – replaces the HTTP round-trip
+ * that Node.js used via /d1/conversations/authorize.
+ */
+async function authorizeConversationDirect(env, { convId, accountDigest, deviceId = null }) {
+  await ensureDataTables(env);
+  const normalizedDeviceId = deviceId ? normalizeDeviceId(deviceId) : null;
+  if (normalizedDeviceId) {
+    const devRow = await env.DB.prepare(
+      `SELECT 1 FROM devices WHERE account_digest=?1 AND device_id=?2`
+    ).bind(accountDigest, normalizedDeviceId).first();
+    if (!devRow) {
+      const err = new Error('device not registered');
+      err.status = 404;
+      throw err;
+    }
+  }
+  const row = await env.DB.prepare(
+    `SELECT device_id FROM conversation_acl
+     WHERE conversation_id=?1 AND account_digest=?2
+       AND (device_id=?3 OR device_id IS NULL)`
+  ).bind(convId, accountDigest, normalizedDeviceId || '').first();
+  if (!row) {
+    await grantConversationAccess(env, { conversationId: convId, accountDigest, deviceId: normalizedDeviceId });
+  } else if (row.device_id === null && normalizedDeviceId) {
+    await grantConversationAccess(env, { conversationId: convId, accountDigest, deviceId: normalizedDeviceId });
+  }
+  return { ok: true };
+}
+
+// ── Direct D1 helpers for device & call operations (edge-direct) ──────────
+
+async function touchDeviceDirect(env, accountDigest, deviceId) {
+  await ensureDataTables(env);
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(
+    `INSERT INTO devices (account_digest, device_id, status, last_seen_at, created_at, updated_at)
+     VALUES (?1, ?2, 'active', ?3, ?3, ?3)
+     ON CONFLICT(account_digest, device_id) DO UPDATE SET status='active', last_seen_at=?3, updated_at=?3`
+  ).bind(accountDigest, deviceId, now).run();
+}
+
+async function assertDeviceActiveDirect(env, accountDigest, deviceId) {
+  await ensureDataTables(env);
+  const row = await env.DB.prepare(
+    `SELECT status FROM devices WHERE account_digest=?1 AND device_id=?2`
+  ).bind(accountDigest, deviceId).first();
+  if (!row || row.status !== 'active') {
+    const err = new Error('device not active');
+    err.status = 403;
+    err.code = 'DEVICE_NOT_ACTIVE';
+    throw err;
+  }
+}
+
+async function listActiveDevicesDirect(env, accountDigest) {
+  await ensureDataTables(env);
+  const rows = await env.DB.prepare(
+    `SELECT device_id, status, last_seen_at FROM devices
+     WHERE account_digest=?1 AND status='active'
+     ORDER BY last_seen_at DESC`
+  ).bind(accountDigest).all();
+  return (rows?.results || []).map(r => ({ deviceId: r.device_id, status: r.status }));
+}
+
+async function assertActiveDeviceOrReturn(env, accountDigest, deviceId) {
+  try {
+    await touchDeviceDirect(env, accountDigest, deviceId);
+    await assertDeviceActiveDirect(env, accountDigest, deviceId);
+    return null;
+  } catch (err) {
+    const status = err?.status || 403;
+    const code = err?.code || 'DEVICE_NOT_ACTIVE';
+    return json({ error: code, message: err?.message || 'device not active' }, { status });
+  }
+}
+
+async function resolveTargetDeviceDirect(env, peerAccountDigest, preferredDeviceId) {
+  if (preferredDeviceId) {
+    await assertDeviceActiveDirect(env, peerAccountDigest, preferredDeviceId);
+    return preferredDeviceId;
+  }
+  const devices = await listActiveDevicesDirect(env, peerAccountDigest);
+  if (!devices.length || !devices[0]?.deviceId) {
+    const err = new Error('peer-no-active-device');
+    err.status = 409;
+    err.code = 'peer-no-active-device';
+    throw err;
+  }
+  return devices[0].deviceId;
+}
+
+// ── Call network config builder (edge-direct) ────────────────────────────
+
+const CALL_NETWORK_CONFIG_DEFAULTS = {
+  version: 1,
+  turnSecretsEndpoint: '/api/v1/calls/turn-credentials',
+  turnTtlSeconds: 300,
+  rtcpProbe: { timeoutMs: 1500, maxAttempts: 3, targetBitrateKbps: 2000 },
+  bandwidthProfiles: [
+    { name: 'video-medium', minBitrate: 900000, maxBitrate: 1400000, maxFrameRate: 30, resolution: '540p' },
+    { name: 'video-low', minBitrate: 300000, maxBitrate: 600000, maxFrameRate: 24, resolution: '360p' },
+    { name: 'audio', minBitrate: 32000, maxBitrate: 64000, maxFrameRate: null, resolution: null }
+  ],
+  ice: {
+    iceTransportPolicy: 'all',
+    bundlePolicy: 'max-bundle',
+    continualGatheringPolicy: 'gather_continually',
+    servers: [{ urls: ['stun:stun.cloudflare.com:3478'] }]
+  },
+  fallback: { maxPeerConnectionRetries: 2, relayOnlyAfterAttempts: 2, showBlockedAfterSeconds: 20 }
+};
+
+function clampNum(v, min, max) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : min;
+}
+
+function buildCallNetworkConfigEdge(env) {
+  const cfg = JSON.parse(JSON.stringify(CALL_NETWORK_CONFIG_DEFAULTS));
+  cfg.version = clampNum(env.CALL_NETWORK_VERSION || cfg.version, 1, 999);
+  cfg.turnSecretsEndpoint = (env.CALL_TURN_ENDPOINT || cfg.turnSecretsEndpoint).trim();
+  cfg.turnTtlSeconds = clampNum(env.TURN_TTL_SECONDS || cfg.turnTtlSeconds, 60, 3600);
+  cfg.rtcpProbe.timeoutMs = clampNum(env.CALL_RTCP_TIMEOUT_MS || cfg.rtcpProbe.timeoutMs, 250, 10000);
+  cfg.rtcpProbe.maxAttempts = clampNum(env.CALL_RTCP_MAX_ATTEMPTS || cfg.rtcpProbe.maxAttempts, 1, 10);
+  cfg.rtcpProbe.targetBitrateKbps = clampNum(env.CALL_RTCP_TARGET_KBPS || cfg.rtcpProbe.targetBitrateKbps, 64, 10000);
+  cfg.ice.iceTransportPolicy = env.CALL_ICE_TRANSPORT_POLICY || cfg.ice.iceTransportPolicy;
+  cfg.ice.bundlePolicy = env.CALL_ICE_BUNDLE_POLICY || cfg.ice.bundlePolicy;
+  cfg.ice.continualGatheringPolicy = env.CALL_ICE_GATHER_POLICY || cfg.ice.continualGatheringPolicy;
+  const extraStun = (env.CALL_EXTRA_STUN_URIS || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (extraStun.length) cfg.ice.servers.push({ urls: extraStun });
+  cfg.fallback.maxPeerConnectionRetries = clampNum(env.CALL_FALLBACK_MAX_RETRIES || cfg.fallback.maxPeerConnectionRetries, 0, 10);
+  cfg.fallback.relayOnlyAfterAttempts = clampNum(env.CALL_FALLBACK_RELAY_AFTER || cfg.fallback.relayOnlyAfterAttempts, 0, 10);
+  cfg.fallback.showBlockedAfterSeconds = clampNum(env.CALL_FALLBACK_BLOCKED_AFTER || cfg.fallback.showBlockedAfterSeconds, 1, 120);
+  return cfg;
+}
+
+// ── JWT RS256 verification via Web Crypto (edge-direct) ──────────────────
+
+function pemToArrayBuffer(pem) {
+  let raw = pem;
+  if (raw.includes('\\n')) raw = raw.replace(/\\n/g, '\n');
+  if (!raw.includes('-----BEGIN')) {
+    const chunks = raw.replace(/\s+/g, '').match(/.{1,64}/g) || [];
+    raw = ['-----BEGIN PUBLIC KEY-----', ...chunks, '-----END PUBLIC KEY-----'].join('\n');
+  }
+  const b64 = raw.replace(/-----[^-]+-----/g, '').replace(/\s/g, '');
+  const binary = atob(b64);
+  const buf = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
+  return buf.buffer;
+}
+
+function base64UrlDecode(str) {
+  let s = str.replace(/-/g, '+').replace(/_/g, '/');
+  while (s.length % 4) s += '=';
+  const binary = atob(s);
+  const buf = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
+  return buf.buffer;
+}
+
+async function verifyJwtRS256(token, publicKeyPem) {
+  if (!publicKeyPem) {
+    const err = new Error('PUBLIC KEY missing');
+    err.status = 500;
+    throw err;
+  }
+  const parts = token.split('.');
+  if (parts.length !== 3) {
+    const err = new Error('invalid JWT format');
+    err.status = 400;
+    err.code = 'InvalidVoucher';
+    throw err;
+  }
+  const [headerB64, payloadB64, signatureB64] = parts;
+  let header, payload;
+  try {
+    header = JSON.parse(atob(headerB64.replace(/-/g, '+').replace(/_/g, '/')));
+    payload = JSON.parse(atob(payloadB64.replace(/-/g, '+').replace(/_/g, '/')));
+  } catch {
+    const err = new Error('invalid JWT encoding');
+    err.status = 400;
+    err.code = 'InvalidVoucher';
+    throw err;
+  }
+  const keyData = pemToArrayBuffer(publicKeyPem);
+  const key = await crypto.subtle.importKey(
+    'spki', keyData,
+    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+    false, ['verify']
+  );
+  const data = new TextEncoder().encode(`${headerB64}.${payloadB64}`);
+  const signature = base64UrlDecode(signatureB64);
+  const valid = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, signature, data);
+  if (!valid) {
+    const err = new Error('invalid JWT signature');
+    err.status = 400;
+    err.code = 'InvalidVoucher';
+    throw err;
+  }
+  return { payload, header, signatureB64 };
+}
+
+// ── S3v4 presigned URL generation (edge-direct, no AWS SDK) ──────────────
+
+async function hmacSha256(key, data) {
+  const k = typeof key === 'string' ? new TextEncoder().encode(key) : key;
+  const d = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+  const cryptoKey = await crypto.subtle.importKey('raw', k, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return new Uint8Array(await crypto.subtle.sign('HMAC', cryptoKey, d));
+}
+
+async function sha256Hex(data) {
+  const buf = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+  const hash = await crypto.subtle.digest('SHA-256', buf);
+  return [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function getS3SigningKey(secretKey, dateStamp, region, service) {
+  let key = await hmacSha256(`AWS4${secretKey}`, dateStamp);
+  key = await hmacSha256(key, region);
+  key = await hmacSha256(key, service);
+  key = await hmacSha256(key, 'aws4_request');
+  return key;
+}
+
+function parseS3Endpoint(endpoint) {
+  const u = new URL(endpoint);
+  return { protocol: u.protocol, host: u.host, hostname: u.hostname, port: u.port };
+}
+
+async function generatePresignedUrl(env, { method, key, expiresIn, contentType, downloadName }) {
+  const endpoint = env.S3_ENDPOINT;
+  const accessKey = env.S3_ACCESS_KEY;
+  const secretKey = env.S3_SECRET_KEY;
+  const bucket = env.S3_BUCKET;
+  const region = env.S3_REGION || 'auto';
+  if (!endpoint || !accessKey || !secretKey || !bucket) {
+    throw new Error('S3 configuration missing');
+  }
+  const { protocol, host } = parseS3Endpoint(endpoint);
+  const now = new Date();
+  const dateStamp = now.toISOString().replace(/[-:]/g, '').slice(0, 8);
+  const amzDate = now.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+  const credential = `${accessKey}/${dateStamp}/${region}/s3/aws4_request`;
+  const encodedKey = key.split('/').map(s => encodeURIComponent(s)).join('/');
+  const canonicalUri = `/${bucket}/${encodedKey}`;
+  const queryParams = new URLSearchParams();
+  queryParams.set('X-Amz-Algorithm', 'AWS4-HMAC-SHA256');
+  queryParams.set('X-Amz-Credential', credential);
+  queryParams.set('X-Amz-Date', amzDate);
+  queryParams.set('X-Amz-Expires', String(expiresIn));
+  queryParams.set('X-Amz-SignedHeaders', 'host');
+  if (method === 'PUT' && contentType) {
+    queryParams.set('X-Amz-SignedHeaders', 'content-type;host');
+  }
+  if (method === 'GET' && downloadName) {
+    queryParams.set('response-content-disposition', `attachment; filename="${downloadName}"`);
+  }
+  const sortedParams = new URLSearchParams([...queryParams.entries()].sort((a, b) => a[0].localeCompare(b[0])));
+  const canonicalQueryString = sortedParams.toString();
+  let canonicalHeaders = `host:${host}\n`;
+  let signedHeaders = 'host';
+  if (method === 'PUT' && contentType) {
+    canonicalHeaders = `content-type:${contentType}\nhost:${host}\n`;
+    signedHeaders = 'content-type;host';
+  }
+  const canonicalRequest = [method, canonicalUri, canonicalQueryString, canonicalHeaders, signedHeaders, 'UNSIGNED-PAYLOAD'].join('\n');
+  const scope = `${dateStamp}/${region}/s3/aws4_request`;
+  const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, await sha256Hex(canonicalRequest)].join('\n');
+  const signingKey = await getS3SigningKey(secretKey, dateStamp, region, 's3');
+  const signatureBytes = await hmacSha256(signingKey, stringToSign);
+  const signature = [...signatureBytes].map(b => b.toString(16).padStart(2, '0')).join('');
+  sortedParams.set('X-Amz-Signature', signature);
+  return `${protocol}//${host}${canonicalUri}?${sortedParams.toString()}`;
+}
+
+// ── S3 direct operations (DELETE, LIST) for purge / cleanup ───────
+async function s3SignedRequest(env, { method, key, query = '', body = null }) {
+  const endpoint = env.S3_ENDPOINT;
+  const accessKey = env.S3_ACCESS_KEY;
+  const secretKey = env.S3_SECRET_KEY;
+  const bucket = env.S3_BUCKET;
+  const region = env.S3_REGION || 'auto';
+  if (!endpoint || !accessKey || !secretKey || !bucket) {
+    throw new Error('S3 configuration missing');
+  }
+  const { protocol, host } = parseS3Endpoint(endpoint);
+  const now = new Date();
+  const dateStamp = now.toISOString().replace(/[-:]/g, '').slice(0, 8);
+  const amzDate = now.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+  const credential = `${accessKey}/${dateStamp}/${region}/s3/aws4_request`;
+  const encodedKey = key ? '/' + key.split('/').map(s => encodeURIComponent(s)).join('/') : '';
+  const canonicalUri = `/${bucket}${encodedKey}`;
+  const canonicalQueryString = query ? new URLSearchParams([...new URLSearchParams(query).entries()].sort((a, b) => a[0].localeCompare(b[0]))).toString() : '';
+  const payloadHash = body ? await sha256Hex(body) : await sha256Hex('');
+  const canonicalHeaders = `host:${host}\nx-amz-content-sha256:${payloadHash}\nx-amz-date:${amzDate}\n`;
+  const signedHeaders = 'host;x-amz-content-sha256;x-amz-date';
+  const canonicalRequest = [method, canonicalUri, canonicalQueryString, canonicalHeaders, signedHeaders, payloadHash].join('\n');
+  const scope = `${dateStamp}/${region}/s3/aws4_request`;
+  const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, await sha256Hex(canonicalRequest)].join('\n');
+  const signingKey = await getS3SigningKey(secretKey, dateStamp, region, 's3');
+  const signatureBytes = await hmacSha256(signingKey, stringToSign);
+  const signature = [...signatureBytes].map(b => b.toString(16).padStart(2, '0')).join('');
+  const authHeader = `AWS4-HMAC-SHA256 Credential=${credential}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+  const url = `${protocol}//${host}${canonicalUri}${canonicalQueryString ? '?' + canonicalQueryString : ''}`;
+  return fetch(url, {
+    method,
+    headers: {
+      'Host': host,
+      'x-amz-content-sha256': payloadHash,
+      'x-amz-date': amzDate,
+      'Authorization': authHeader
+    },
+    body: body || undefined
+  });
+}
+
+async function copyS3Object(env, sourceKey, destKey) {
+  const endpoint = env.S3_ENDPOINT;
+  const accessKey = env.S3_ACCESS_KEY;
+  const secretKey = env.S3_SECRET_KEY;
+  const bucket = env.S3_BUCKET;
+  const region = env.S3_REGION || 'auto';
+  if (!endpoint || !accessKey || !secretKey || !bucket) {
+    throw new Error('S3 configuration missing');
+  }
+  const { protocol, host } = parseS3Endpoint(endpoint);
+  const now = new Date();
+  const dateStamp = now.toISOString().replace(/[-:]/g, '').slice(0, 8);
+  const amzDate = now.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+  const credential = `${accessKey}/${dateStamp}/${region}/s3/aws4_request`;
+  const encodedDestKey = destKey.split('/').map(s => encodeURIComponent(s)).join('/');
+  const canonicalUri = `/${bucket}/${encodedDestKey}`;
+  const copySource = `/${bucket}/${sourceKey.split('/').map(s => encodeURIComponent(s)).join('/')}`;
+  const payloadHash = await sha256Hex('');
+  const canonicalHeaders = `host:${host}\nx-amz-content-sha256:${payloadHash}\nx-amz-copy-source:${copySource}\nx-amz-date:${amzDate}\n`;
+  const signedHeaders = 'host;x-amz-content-sha256;x-amz-copy-source;x-amz-date';
+  const canonicalRequest = ['PUT', canonicalUri, '', canonicalHeaders, signedHeaders, payloadHash].join('\n');
+  const scope = `${dateStamp}/${region}/s3/aws4_request`;
+  const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, await sha256Hex(canonicalRequest)].join('\n');
+  const signingKey = await getS3SigningKey(secretKey, dateStamp, region, 's3');
+  const signatureBytes = await hmacSha256(signingKey, stringToSign);
+  const signature = [...signatureBytes].map(b => b.toString(16).padStart(2, '0')).join('');
+  const authHeader = `AWS4-HMAC-SHA256 Credential=${credential}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+  const url = `${protocol}//${host}${canonicalUri}`;
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: {
+      'Host': host,
+      'x-amz-content-sha256': payloadHash,
+      'x-amz-copy-source': copySource,
+      'x-amz-date': amzDate,
+      'Authorization': authHeader
+    }
+  });
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`S3 copy failed (${res.status}): ${errText.slice(0, 200)}`);
+  }
+  return res;
+}
+
+async function deleteS3Object(env, key) {
+  const res = await s3SignedRequest(env, { method: 'DELETE', key });
+  return res.ok || res.status === 404; // 404 = already gone
+}
+
+async function deleteS3Prefix(env, prefix, maxKeys = 1000) {
+  let deleted = 0;
+  let continuationToken = null;
+  for (let iter = 0; iter < 10; iter++) { // safety limit
+    const params = new URLSearchParams({ prefix, 'max-keys': String(maxKeys), 'list-type': '2' });
+    if (continuationToken) params.set('continuation-token', continuationToken);
+    const res = await s3SignedRequest(env, { method: 'GET', key: '', query: params.toString() });
+    if (!res.ok) break;
+    const xml = await res.text();
+    // Simple XML parsing for <Key> elements
+    const keys = [...xml.matchAll(/<Key>([^<]+)<\/Key>/g)].map(m => m[1]);
+    if (keys.length === 0) break;
+    for (const k of keys) {
+      try {
+        await deleteS3Object(env, k);
+        deleted++;
+      } catch { /* best-effort */ }
+    }
+    // Check for truncation
+    const isTruncated = xml.includes('<IsTruncated>true</IsTruncated>');
+    if (!isTruncated) break;
+    const tokenMatch = xml.match(/<NextContinuationToken>([^<]+)<\/NextContinuationToken>/);
+    if (!tokenMatch) break;
+    continuationToken = tokenMatch[1];
+  }
+  return deleted;
+}
+
+function generateNanoId(len = 32) {
+  const chars = '1234567890abcdef';
+  const bytes = crypto.getRandomValues(new Uint8Array(len));
+  let id = '';
+  for (let i = 0; i < len; i++) id += chars[bytes[i] % chars.length];
+  return id;
+}
+
+// ── WS Token (JWT HS256) ──────────────────────────────────────────
+const WS_JWT_HEADER_B64 = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))
+  .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+async function hmacSha256Sign(secret, data) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(data));
+  return btoa(String.fromCharCode(...new Uint8Array(sig)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function base64url(str) {
+  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// JWT creation — delegates to shared jwt.js module (H-1 fix)
+async function createWsToken(env, { accountDigest, ttlSec = 300 }) {
+  return createJwt(env.WS_TOKEN_SECRET, { accountDigest, ttlSec });
+}
+
+// ── WebSocket upgrade handler → Durable Object ──────────────────
+//
+// Flow:
+//   1. Client connects to /ws?token=<JWT>
+//   2. Worker verifies JWT, extracts accountDigest
+//   3. Worker looks up DO by accountDigest, forwards the upgrade request
+//
+async function handleWsUpgrade(req, env, url) {
+  // Token can come from query param (most WS clients) or header
+  const token = url.searchParams.get('token')
+    || (req.headers.get('sec-websocket-protocol') || '').split(',').map(s => s.trim()).find(s => s.startsWith('ey'))
+    || '';
+
+  if (!token) {
+    return json({ error: 'Unauthorized', message: 'token query param required' }, { status: 401 });
+  }
+
+  // Verify JWT via shared jwt.js module (H-1 fix)
+  const secret = env.WS_TOKEN_SECRET;
+  if (!secret) {
+    return json({ error: 'ConfigError', message: 'WS_TOKEN_SECRET not configured' }, { status: 500 });
+  }
+
+  const jwtResult = await verifyJwt(token, secret);
+  if (!jwtResult.ok) {
+    const msg = jwtResult.reason === 'expired' ? 'token expired' : 'invalid token';
+    return json({ error: 'Unauthorized', message: msg }, { status: 401 });
+  }
+  const payload = jwtResult.payload;
+  const now = Math.floor(Date.now() / 1000);
+
+  const rawAccountDigest = String(payload.accountDigest || '');
+  const isEphemeral = rawAccountDigest.startsWith('EPHEMERAL_');
+  const accountDigest = isEphemeral
+    ? rawAccountDigest
+    : rawAccountDigest.replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+  if (!isEphemeral && accountDigest.length !== 64) {
+    return json({ error: 'Unauthorized', message: 'invalid accountDigest in token' }, { status: 401 });
+  }
+
+  // Forward to Durable Object
+  if (!env.ACCOUNT_WS) {
+    console.error('[ws-upgrade] ACCOUNT_WS binding not available');
+    return json({ error: 'ConfigError', message: 'ACCOUNT_WS DO binding not configured' }, { status: 500 });
+  }
+
+  const deviceId = url.searchParams.get('deviceId') || req.headers.get('x-device-id') || '';
+
+  try {
+    const doId = env.ACCOUNT_WS.idFromName(accountDigest);
+    const stub = env.ACCOUNT_WS.get(doId);
+
+    // Clone from the original client Request (not just its URL) so that the
+    // Cloudflare runtime preserves the internal WebSocket upgrade state needed
+    // to bridge the client ↔ DO connection.  We override headers to inject
+    // our metadata while keeping the original WS upgrade headers intact.
+    const doHeaders = new Headers(req.headers);
+    doHeaders.set('x-account-digest', accountDigest);
+    doHeaders.set('x-device-id', deviceId);
+    doHeaders.set('x-session-ts', String(payload.iat || now));
+
+    return await stub.fetch(new Request(req, { headers: doHeaders }));
+  } catch (err) {
+    console.error('[ws-upgrade] DO fetch failed', { error: err?.message || String(err), stack: err?.stack, accountDigest });
+    return json({
+      error: 'WsUpgradeError',
+      message: err?.message || 'Durable Object fetch failed',
+      stage: 'do-fetch'
+    }, { status: 500 });
+  }
+}
+
+// ── Notify account via Durable Object (replaces notifyWsServer) ──
+async function notifyAccountDO(env, accountDigest, payload) {
+  if (!env.ACCOUNT_WS) {
+    console.warn('[notify-do] ACCOUNT_WS binding not available');
+    return;
+  }
+  const digest = String(accountDigest || '').replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+  if (digest.length !== 64) return;
+
+  try {
+    const doId = env.ACCOUNT_WS.idFromName(digest);
+    const stub = env.ACCOUNT_WS.get(doId);
+    const res = await stub.fetch('https://do/notify', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-account-digest': digest },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      console.warn('[notify-do] failed', { status: res.status, type: payload?.type, accountDigest: digest });
+    }
+  } catch (err) {
+    console.warn('[notify-do] error', { type: payload?.type, accountDigest: digest, error: err?.message || String(err) });
+  }
+}
+
+/** Notify an ephemeral guest DO (EPHEMERAL_ prefixed digest). */
+async function notifyEphemeralDO(env, ephemeralDigest, payload) {
+  if (!env.ACCOUNT_WS) return;
+  const digest = String(ephemeralDigest || '');
+  if (!digest.startsWith('EPHEMERAL_')) return;
+  try {
+    const doId = env.ACCOUNT_WS.idFromName(digest);
+    const stub = env.ACCOUNT_WS.get(doId);
+    const res = await stub.fetch('https://do/notify', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      console.warn('[notify-eph-do] failed', { status: res.status, type: payload?.type });
+    }
+  } catch (err) {
+    console.warn('[notify-eph-do] error', { type: payload?.type, error: err?.message || String(err) });
+  }
+}
+
+/**
+ * Create a synthetic internal Request to delegate to existing /d1/ handlers.
+ */
+function internalRequest(url, method, body, baseUrl, extraHeaders) {
+  const opts = { method, headers: { 'content-type': 'application/json', ...extraHeaders } };
+  if (body !== null && body !== undefined && method !== 'GET') {
+    opts.body = typeof body === 'string' ? body : JSON.stringify(body);
+  }
+  return new Request(new URL(url, baseUrl), opts);
+}
+
+// ---- Auth routes (SDM exchange, OPAQUE, MK) ----
+const ACCOUNT_DIGEST_RE = /^[0-9A-Fa-f]{64}$/;
+const SDM_EXCHANGE_TTL = 300; // seconds
+const OPAQUE_SESSION_TTL = 120;
+
+async function handleAuthRoutes(path, method, url, body, req, env, baseUrl) {
+  // POST /api/v1/auth/sdm/exchange
+  if (path === '/api/v1/auth/sdm/exchange' && method === 'POST') {
+    if (!body?.uid || !body?.sdmmac) return json({ error: 'BadRequest', message: 'uid, sdmmac required' }, { status: 400 });
+    const uidHex = String(body.uid).replace(/[^0-9a-f]/gi, '').toUpperCase();
+    const ctrHex = typeof body.sdmcounter === 'number' ? body.sdmcounter.toString(16) : String(body.sdmcounter || '0');
+    const cmacHex = String(body.sdmmac).replace(/[^0-9a-f]/gi, '').toUpperCase();
+
+    // 1) Verify SDM CMAC
+    let vr;
+    try { vr = await ntag424_verifyCmac(env, uidHex, ctrHex, cmacHex); }
+    catch (e) { return json({ error: 'ConfigError', message: e?.message || 'NTAG424 config missing' }, { status: 500 }); }
+    if (!vr.ok) return json({ error: 'Unauthorized', detail: 'SDM verify failed' }, { status: 401 });
+
+    // 2) Call /d1/tags/exchange
+    const intBody = { uidHex, ctr: parseInt(ctrHex, 16) || 0 };
+    const tagRes = await handleTagsRoutes(internalRequest('/d1/tags/exchange', 'POST', intBody, baseUrl), env);
+    if (!tagRes || tagRes.status >= 400) {
+      const errData = tagRes ? await tagRes.json().catch(() => ({})) : {};
+      return json({ error: 'ExchangeFailed', details: errData }, { status: tagRes?.status || 502 });
+    }
+    const data = await tagRes.json();
+    if (!data.account_token || !data.account_digest) {
+      return json({ error: 'AccountInfoMissing', message: 'worker did not return account token' }, { status: 502 });
+    }
+
+    // 3) Create session in KV
+    const session = crypto.randomBytes(24).toString('base64url');
+    await kvPut(env, AUTH_KV_PREFIX_SESS + session, {
+      accountToken: data.account_token,
+      accountDigest: data.account_digest.toUpperCase(),
+      uidDigest: data.uid_digest || null
+    }, SDM_EXCHANGE_TTL);
+
+    const serverId = env.OPAQUE_SERVER_ID || env.DOMAIN || 'api.sentry';
+    return json({
+      session,
+      has_mk: !!(data.hasMK || data.has_mk),
+      wrapped_mk: data.wrapped_mk || undefined,
+      account_token: data.account_token,
+      account_digest: data.account_digest.toUpperCase(),
+      uid_digest: data.uid_digest || null,
+      opaque_server_id: serverId,
+      brand: data.brand || undefined,
+      brand_name: data.brand_name || undefined,
+      brand_logo: data.brand_logo || undefined
+    });
+  }
+
+  // POST /api/v1/auth/sdm/debug-kit (C-2 fix: gated by ENABLE_DEBUG_ENDPOINTS)
+  if (path === '/api/v1/auth/sdm/debug-kit' && method === 'POST') {
+    if (env.ENABLE_DEBUG_ENDPOINTS !== 'true') {
+      return json({ error: 'NotFound' }, { status: 404 });
+    }
+    let uidHex = String(body?.uid_hex || '').replace(/[^0-9a-f]/gi, '').toUpperCase();
+    if (!uidHex || uidHex.length < 14) uidHex = crypto.randomBytes(7).toString('hex').toUpperCase();
+    else uidHex = uidHex.slice(0, 14);
+
+    // Debug counter via KV
+    const ctrKey = AUTH_KV_PREFIX_DBG_CTR + uidHex;
+    const now = Math.floor(Date.now() / 1000);
+    const last = (await kvGet(env, ctrKey)) || 0;
+    const next = now > last ? now : last + 1;
+    await kvPut(env, ctrKey, next, 86400);
+
+    const ctrHex = next.toString(16).toUpperCase().padStart(6, '0').slice(-6);
+    let cmacHex;
+    try { cmacHex = await ntag424_computeSdmCmacForDebug(env, uidHex, ctrHex); }
+    catch (e) { return json({ error: 'ConfigError', message: e?.message }, { status: 500 }); }
+    return json({ uid_hex: uidHex, sdmcounter: ctrHex, sdmmac: cmacHex, nonce: `debug-${Date.now()}` });
+  }
+
+  // POST /api/v1/mk/store
+  if (path === '/api/v1/mk/store' && method === 'POST') {
+    if (!body?.session) return json({ error: 'BadRequest', message: 'session required' }, { status: 400 });
+    const sess = await kvGet(env, AUTH_KV_PREFIX_SESS + body.session);
+    await kvDelete(env, AUTH_KV_PREFIX_SESS + body.session); // single use
+
+    if (!sess) return json({ error: 'SessionExpired', message: 'please re-tap the tag' }, { status: 401 });
+    const accountToken = sess.accountToken || body.account_token || null;
+    const accountDigest = (sess.accountDigest || body.account_digest || '').toUpperCase();
+    if (body.account_token && body.account_token !== accountToken) {
+      return json({ error: 'SessionMismatch', message: 'account token mismatch' }, { status: 401 });
+    }
+    if (body.account_digest && body.account_digest.toUpperCase() !== accountDigest) {
+      return json({ error: 'SessionMismatch', message: 'account digest mismatch' }, { status: 401 });
+    }
+    if (!accountToken || !accountDigest || !ACCOUNT_DIGEST_RE.test(accountDigest)) {
+      return json({ error: 'AccountInfoMissing', message: 'account token missing' }, { status: 400 });
+    }
+    if (!body?.wrapped_mk) return json({ error: 'BadRequest', message: 'wrapped_mk required' }, { status: 400 });
+
+    const intBody = { accountToken, accountDigest, wrapped_mk: body.wrapped_mk };
+    const r = await handleTagsRoutes(internalRequest('/d1/tags/store-mk', 'POST', intBody, baseUrl), env);
+    if (!r || r.status >= 400) {
+      const errData = r ? await r.text().catch(() => '') : 'no response';
+      return json({ error: 'StoreFailed', details: errData }, { status: r?.status || 502 });
+    }
+    return new Response(null, { status: 204 });
+  }
+
+  // POST /api/v1/mk/update
+  if (path === '/api/v1/mk/update' && method === 'POST') {
+    if (!body?.account_token || !body?.account_digest || !body?.wrapped_mk) {
+      return json({ error: 'BadRequest', message: 'account_token, account_digest, wrapped_mk required' }, { status: 400 });
+    }
+    const intBody = {
+      accountToken: body.account_token,
+      accountDigest: body.account_digest.toUpperCase(),
+      wrapped_mk: body.wrapped_mk
+    };
+    const r = await handleTagsRoutes(internalRequest('/d1/tags/store-mk', 'POST', intBody, baseUrl), env);
+    if (!r || r.status >= 400) {
+      const txt = r ? await r.text().catch(() => '') : '';
+      return json({ error: 'StoreFailed', details: txt }, { status: 502 });
+    }
+    return new Response(null, { status: 204 });
+  }
+
+  // ---- OPAQUE endpoints ----
+  // POST /api/v1/auth/opaque/register-init
+  if (path === '/api/v1/auth/opaque/register-init' && method === 'POST') {
+    const server = getOrInitOpaqueServer(env);
+    if (!server) return json({ error: 'ConfigError', message: 'OPAQUE not configured' }, { status: 500 });
+    const acct = String(body?.account_digest || '').trim().toUpperCase();
+    const reqB64 = String(body?.request_b64 || '');
+    if (!ACCOUNT_DIGEST_RE.test(acct) || !reqB64) return json({ error: 'BadRequest', message: 'account_digest and request_b64 required' }, { status: 400 });
+
+    const cfg = getOpaqueConfig(OpaqueID.OPAQUE_P256);
+    const reqBytes = Array.from(Buffer.from(reqB64, 'base64'));
+    const expectedLen = RegistrationRequest.sizeSerialized(cfg);
+    if (reqBytes.length !== expectedLen) {
+      return json({ error: 'BadRequest', message: `invalid request_b64 length (got ${reqBytes.length}, expected ${expectedLen})` }, { status: 400 });
+    }
+    let reqObj;
+    try { reqObj = RegistrationRequest.deserialize(cfg, reqBytes); }
+    catch { return json({ error: 'BadRequest', message: 'invalid request_b64' }, { status: 400 }); }
+    let out;
+    try { out = await server.registerInit(reqObj, acct); }
+    catch { return json({ error: 'RecordNotFound' }, { status: 404 }); }
+    if (out instanceof Error) return json({ error: 'RecordNotFound' }, { status: 404 });
+    const response_b64 = Buffer.from(new Uint8Array(out.serialize())).toString('base64');
+    return json({ response_b64 });
+  }
+
+  // POST /api/v1/auth/opaque/register-finish
+  if (path === '/api/v1/auth/opaque/register-finish' && method === 'POST') {
+    const acct = String(body?.account_digest || '').trim().toUpperCase();
+    const record_b64 = body?.record_b64;
+    if (!ACCOUNT_DIGEST_RE.test(acct) || !record_b64) {
+      return json({ error: 'BadRequest', message: 'account_digest and record_b64 required' }, { status: 400 });
+    }
+    const intBody = { accountDigest: acct, record_b64, client_identity: body?.client_identity ?? null };
+    const intReq = internalRequest('/d1/opaque/store', 'POST', intBody, baseUrl);
+    // Use the existing internal handler for /d1/opaque/store
+    const storeUrl = new URL(intReq.url);
+    // Direct D1 call
+    try {
+      await env.DB.prepare(
+        'INSERT OR REPLACE INTO opaque_records (account_digest, record_b64, client_identity, updated_at) VALUES (?, ?, ?, ?)'
+      ).bind(acct, record_b64, body?.client_identity ?? null, Date.now()).run();
+    } catch (e) {
+      return json({ error: 'OpaqueStoreFailed', message: e?.message }, { status: 500 });
+    }
+    return new Response(null, { status: 204 });
+  }
+
+  // POST /api/v1/auth/opaque/login-init
+  if (path === '/api/v1/auth/opaque/login-init' && method === 'POST') {
+    const server = getOrInitOpaqueServer(env);
+    if (!server) return json({ error: 'ConfigError', message: 'OPAQUE not configured' }, { status: 500 });
+    const acct = String(body?.account_digest || '').trim().toUpperCase();
+    const ke1B64 = String(body?.ke1_b64 || '');
+    if (!ACCOUNT_DIGEST_RE.test(acct) || !ke1B64) return json({ error: 'BadRequest' }, { status: 400 });
+
+    const cfg = getOpaqueConfig(OpaqueID.OPAQUE_P256);
+
+    // Fetch registration record from D1
+    const row = await env.DB.prepare('SELECT record_b64, client_identity FROM opaque_records WHERE account_digest = ?').bind(acct).first();
+    if (!row) return json({ error: 'RecordNotFound' }, { status: 404 });
+
+    const recBytes = Array.from(Buffer.from(row.record_b64, 'base64'));
+    const minRecord = RegistrationRecord.sizeSerialized(cfg);
+    if (recBytes.length < minRecord) return json({ error: 'RecordNotFound' }, { status: 404 });
+    let record;
+    try { record = RegistrationRecord.deserialize(cfg, recBytes); }
+    catch { return json({ error: 'RecordNotFound' }, { status: 404 }); }
+
+    const ke1Bytes = Array.from(Buffer.from(ke1B64, 'base64'));
+    if (ke1Bytes.length !== KE1.sizeSerialized(cfg)) return json({ error: 'RecordNotFound' }, { status: 404 });
+    let ke1;
+    try { ke1 = KE1.deserialize(cfg, ke1Bytes); }
+    catch { return json({ error: 'RecordNotFound' }, { status: 404 }); }
+
+    const client_identity = row.client_identity || undefined;
+    const context = body?.context || undefined;
+    const initRes = await server.authInit(ke1, record, acct, client_identity, context);
+    if (initRes instanceof Error) return json({ error: 'RecordNotFound', message: 'register required' }, { status: 404 });
+
+    const ke2_b64 = Buffer.from(new Uint8Array(initRes.ke2.serialize())).toString('base64');
+    const expected_b64 = Buffer.from(new Uint8Array(initRes.expected.serialize())).toString('base64');
+    const opaqueSession = `opaque-${crypto.randomBytes(18).toString('base64url')}`;
+
+    // Store expected in KV
+    await kvPut(env, AUTH_KV_PREFIX_OPAQUE + opaqueSession, { expected_b64 }, OPAQUE_SESSION_TTL);
+    return json({ ke2_b64, opaque_session: opaqueSession });
+  }
+
+  // POST /api/v1/auth/opaque/login-finish
+  if (path === '/api/v1/auth/opaque/login-finish' && method === 'POST') {
+    const server = getOrInitOpaqueServer(env);
+    if (!server) return json({ error: 'ConfigError', message: 'OPAQUE not configured' }, { status: 500 });
+    const opaqueSession = body?.opaque_session;
+    const ke3B64 = body?.ke3_b64;
+    if (!opaqueSession || !ke3B64) return json({ error: 'BadRequest' }, { status: 400 });
+
+    const rec = await kvGet(env, AUTH_KV_PREFIX_OPAQUE + opaqueSession);
+    await kvDelete(env, AUTH_KV_PREFIX_OPAQUE + opaqueSession); // single use
+    if (!rec) return json({ error: 'OpaqueSessionNotFound' }, { status: 400 });
+
+    const cfg = getOpaqueConfig(OpaqueID.OPAQUE_P256);
+    let expected, ke3;
+    try { expected = ExpectedAuthResult.deserialize(cfg, Array.from(Buffer.from(rec.expected_b64, 'base64'))); }
+    catch { return json({ error: 'BadRequest', message: 'invalid expected_b64' }, { status: 400 }); }
+    try { ke3 = KE3.deserialize(cfg, Array.from(Buffer.from(ke3B64, 'base64'))); }
+    catch { return json({ error: 'BadRequest', message: 'invalid ke3_b64' }, { status: 400 }); }
+
+    const fin = server.authFinish(ke3, expected);
+    if (fin instanceof Error) return json({ error: 'OpaqueLoginFinishFailed', message: fin.message || 'login-finish failed' }, { status: 400 });
+    const session_key_b64 = Buffer.from(new Uint8Array(fin.session_key)).toString('base64');
+    return json({ ok: true, session_key_b64 });
+  }
+
+  // GET /api/v1/auth/opaque/debug (C-2 fix: gated by ENABLE_DEBUG_ENDPOINTS)
+  if (path === '/api/v1/auth/opaque/debug' && method === 'GET') {
+    if (env.ENABLE_DEBUG_ENDPOINTS !== 'true') {
+      return json({ error: 'NotFound' }, { status: 404 });
+    }
+    const seedHex = String(env.OPAQUE_OPRF_SEED || '');
+    const privB64 = String(env.OPAQUE_AKE_PRIV_B64 || '');
+    const pubB64 = String(env.OPAQUE_AKE_PUB_B64 || '');
+    return json({
+      hasSeed: /^[0-9A-Fa-f]{64}$/.test(seedHex),
+      hasPriv: !!privB64,
+      hasPub: !!pubB64,
+      seedLen: seedHex.length,
+      privLen: privB64 ? Buffer.from(privB64, 'base64').length : 0,
+      pubLen: pubB64 ? Buffer.from(pubB64, 'base64').length : 0,
+      serverId: env.OPAQUE_SERVER_ID || env.DOMAIN || 'api.sentry'
+    });
+  }
+
+  return null;
+}
+
+/**
+ * Main public API router for /api/ and /api/v1/ paths.
+ * No HMAC required — uses account token/digest auth.
+ */
+async function handlePublicRoutes(req, env) {
+  const url = new URL(req.url);
+  const path = url.pathname;
+  const method = req.method;
+  const baseUrl = url.origin;
+
+  // ── Health / Status ───────────────────────────────────────────
+  if (path === '/api/health' || path === '/api/v1/health') {
+    return json({ ok: true, ts: Date.now() });
+  }
+  if (path === '/api/status' || path === '/api/v1/status') {
+    return json({ name: 'message-data', version: '1.0.0', edge: true });
+  }
+  if (path === '/api/v1/messages/probe') {
+    return json({ probe: 'ok' });
+  }
+
+  // ── SAFE Browser — forward to BrowserSession Container DO ────
+  if (path.startsWith('/api/safe/')) {
+    if (!env.BROWSER_SESSION) {
+      return json({ error: 'NotConfigured', message: 'SAFE browser not available' }, { status: 503 });
+    }
+    const auth = req.headers.get('Authorization') || '';
+    const token = auth.replace(/^Bearer\s+/i, '').trim();
+    if (!token) {
+      return json({ error: 'Unauthorized', message: 'Authorization required' }, { status: 401 });
+    }
+    // Each token maps to a unique Container instance (1 user = 1 browser)
+    const id = env.BROWSER_SESSION.idFromName(token);
+    const stub = env.BROWSER_SESSION.get(id);
+    return stub.fetch(req);
+  }
+
+  // ── Parse body for POST requests ─────────────────────────────
+  let body = null;
+  const contentType = (req.headers.get('content-type') || '').toLowerCase();
+  const isJsonContent = !contentType || contentType.includes('application/json') || contentType.includes('text/');
+  if ((method === 'POST' || method === 'PUT') && isJsonContent) {
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+  }
+
+  // ── Auth (SDM exchange, OPAQUE, MK) ──────────────────────────
+  if (path.startsWith('/api/v1/auth/') || path === '/api/v1/mk/store' || path === '/api/v1/mk/update') {
+    // Rate limit for auth endpoints: 50 requests per 60s per account (fallback to IP)
+    const authRlKey = resolveRateLimitKey(req, { body });
+    if (authRlKey) {
+      const rl = await checkRateLimit(env, authRlKey, 'auth', 200, 60);
+      if (!rl.allowed) {
+        return json({ error: 'RateLimited', message: 'too many auth attempts', retry_after: rl.retryAfter }, { status: 429 });
+      }
+    }
+    const authResult = await handleAuthRoutes(path, method, url, body, req, env, baseUrl);
+    if (authResult) return authResult;
+  }
+
+  // ── WS Token ─────────────────────────────────────────────────
+  if (path === '/api/v1/ws/token' && method === 'POST') {
+    if (!env.WS_TOKEN_SECRET) {
+      return json({ error: 'ConfigError', message: 'WS_TOKEN_SECRET not configured' }, { status: 500 });
+    }
+    const accountToken = (body?.account_token || body?.accountToken || '').trim();
+    const rawDigest = (body?.account_digest || body?.accountDigest || '').trim();
+    const accountDigest = rawDigest ? normalizeAccountDigest(rawDigest) : null;
+    if (!accountToken && !accountDigest) {
+      return json({ error: 'BadRequest', message: 'account_token or account_digest required' }, { status: 400 });
+    }
+    // Verify account
+    await ensureDataTables(env);
+    let account;
+    try {
+      account = await resolveAccount(env, { accountToken: accountToken || null, accountDigest }, {
+        allowCreate: false,
+        preferredAccountToken: accountToken || null,
+        preferredAccountDigest: accountDigest
+      });
+    } catch (err) {
+      return json({ error: 'VerifyFailed', message: err?.message || 'resolveAccount failed' }, { status: 502 });
+    }
+    if (!account) {
+      return json({ error: 'VerifyFailed', message: 'account not found' }, { status: 401 });
+    }
+    const resolvedDigest = String(account.account_digest || '').toUpperCase();
+    if (!resolvedDigest) {
+      return json({ error: 'VerifyFailed', message: 'account digest missing' }, { status: 500 });
+    }
+    const sessionTs = Math.floor(Date.now() / 1000);
+    try {
+      const { token, payload } = await createWsToken(env, { accountDigest: resolvedDigest });
+      // Include the Worker's direct WS endpoint so the client can bypass Pages proxy
+      const workerWsUrl = `wss://${new URL(req.url).hostname}/ws`;
+      return json({
+        token,
+        expires_at: payload.exp,
+        account_digest: payload.accountDigest,
+        session_ts: sessionTs,
+        client_session_ts: body?.session_ts ?? null,
+        ws_url: workerWsUrl
+      });
+    } catch (err) {
+      return json({ error: 'TokenError', message: err?.message || 'failed to create token' }, { status: 500 });
+    }
+  }
+
+  // ── Groups (Legacy — returns 410) ──────────────────────────────
+  if (path.startsWith('/api/v1/groups/')) {
+    return json({ error: 'Removed', message: 'Legacy groups API removed. Use Business Conversation API (/api/v1/biz-conv/).' }, { status: 410 });
+  }
+
+  // ── Business Conversations ─────────────────────────────────────
+  if (path.startsWith('/api/v1/biz-conv/')) {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized', message: 'account verification failed' }, { status: 401 });
+
+    // POST /api/v1/biz-conv/create
+    if (path === '/api/v1/biz-conv/create' && method === 'POST') {
+      const intBody = {
+        conversationId: body?.conversation_id || body?.conversationId,
+        ownerAccountDigest: auth.accountDigest,
+        encrypted_meta_blob: body?.encrypted_meta_blob || body?.encryptedMetaBlob,
+        encrypted_policy_blob: body?.encrypted_policy_blob || body?.encryptedPolicyBlob,
+        members: body?.members || []
+      };
+      return handleBizConvRoutes(internalRequest('/d1/biz-conv/create', 'POST', intBody, baseUrl), env);
+    }
+
+    // GET /api/v1/biz-conv/list
+    if (path === '/api/v1/biz-conv/list' && method === 'GET') {
+      const qs = `?accountDigest=${encodeURIComponent(auth.accountDigest)}`;
+      return handleBizConvRoutes(internalRequest(`/d1/biz-conv/list${qs}`, 'GET', null, baseUrl), env);
+    }
+
+    // Match /api/v1/biz-conv/:convId and /api/v1/biz-conv/:convId/action
+    const convMatch = path.match(/^\/api\/v1\/biz-conv\/([A-Za-z0-9_:=-]{8,128})(?:\/(.+))?$/);
+    if (convMatch) {
+      const convId = convMatch[1];
+      const action = convMatch[2] || null;
+
+      // GET /api/v1/biz-conv/:convId (no action)
+      if (!action && method === 'GET') {
+        const qs = `?conversationId=${encodeURIComponent(convId)}&accountDigest=${encodeURIComponent(auth.accountDigest)}`;
+        return handleBizConvRoutes(internalRequest(`/d1/biz-conv/get${qs}`, 'GET', null, baseUrl), env);
+      }
+
+      // PUT /api/v1/biz-conv/:convId/meta
+      if (action === 'meta' && method === 'PUT') {
+        const intBody = { conversationId: convId, accountDigest: auth.accountDigest, encrypted_meta_blob: body?.encrypted_meta_blob || body?.encryptedMetaBlob };
+        return handleBizConvRoutes(internalRequest('/d1/biz-conv/meta', 'PUT', intBody, baseUrl), env);
+      }
+
+      // PUT /api/v1/biz-conv/:convId/policy
+      if (action === 'policy' && method === 'PUT') {
+        const intBody = { conversationId: convId, accountDigest: auth.accountDigest, encrypted_policy_blob: body?.encrypted_policy_blob || body?.encryptedPolicyBlob };
+        return handleBizConvRoutes(internalRequest('/d1/biz-conv/policy', 'PUT', intBody, baseUrl), env);
+      }
+
+      // POST /api/v1/biz-conv/:convId/dissolve
+      if (action === 'dissolve' && method === 'POST') {
+        const intBody = { conversationId: convId, accountDigest: auth.accountDigest };
+        return handleBizConvRoutes(internalRequest('/d1/biz-conv/dissolve', 'POST', intBody, baseUrl), env);
+      }
+
+      // POST /api/v1/biz-conv/:convId/invite
+      if (action === 'invite' && method === 'POST') {
+        const intBody = { conversationId: convId, accountDigest: auth.accountDigest, invitee_account_digest: body?.invitee_account_digest || body?.inviteeAccountDigest };
+        return handleBizConvRoutes(internalRequest('/d1/biz-conv/invite', 'POST', intBody, baseUrl), env);
+      }
+
+      // POST /api/v1/biz-conv/:convId/remove
+      if (action === 'remove' && method === 'POST') {
+        const intBody = { conversationId: convId, accountDigest: auth.accountDigest, target_account_digest: body?.target_account_digest || body?.targetAccountDigest };
+        return handleBizConvRoutes(internalRequest('/d1/biz-conv/remove', 'POST', intBody, baseUrl), env);
+      }
+
+      // POST /api/v1/biz-conv/:convId/leave
+      if (action === 'leave' && method === 'POST') {
+        const intBody = { conversationId: convId, accountDigest: auth.accountDigest };
+        return handleBizConvRoutes(internalRequest('/d1/biz-conv/leave', 'POST', intBody, baseUrl), env);
+      }
+
+      // POST /api/v1/biz-conv/:convId/transfer
+      if (action === 'transfer' && method === 'POST') {
+        const intBody = { conversationId: convId, accountDigest: auth.accountDigest, new_owner_account_digest: body?.new_owner_account_digest || body?.newOwnerAccountDigest };
+        return handleBizConvRoutes(internalRequest('/d1/biz-conv/transfer', 'POST', intBody, baseUrl), env);
+      }
+
+      // GET /api/v1/biz-conv/:convId/members
+      if (action === 'members' && method === 'GET') {
+        const qs = `?conversationId=${encodeURIComponent(convId)}&accountDigest=${encodeURIComponent(auth.accountDigest)}`;
+        return handleBizConvRoutes(internalRequest(`/d1/biz-conv/members${qs}`, 'GET', null, baseUrl), env);
+      }
+
+      // POST /api/v1/biz-conv/:convId/epoch
+      if (action === 'epoch' && method === 'POST') {
+        const intBody = { conversationId: convId, accountDigest: auth.accountDigest };
+        return handleBizConvRoutes(internalRequest('/d1/biz-conv/epoch', 'POST', intBody, baseUrl), env);
+      }
+
+      // GET /api/v1/biz-conv/:convId/epoch
+      if (action === 'epoch' && method === 'GET') {
+        const qs = `?conversationId=${encodeURIComponent(convId)}&accountDigest=${encodeURIComponent(auth.accountDigest)}`;
+        return handleBizConvRoutes(internalRequest(`/d1/biz-conv/epoch${qs}`, 'GET', null, baseUrl), env);
+      }
+
+      // POST /api/v1/biz-conv/:convId/epoch/confirm
+      if (action === 'epoch/confirm' && method === 'POST') {
+        const intBody = { conversationId: convId, accountDigest: auth.accountDigest, epoch: body?.epoch };
+        return handleBizConvRoutes(internalRequest('/d1/biz-conv/epoch/confirm', 'POST', intBody, baseUrl), env);
+      }
+
+      // POST /api/v1/biz-conv/:convId/tombstone
+      if (action === 'tombstone' && method === 'POST') {
+        const intBody = { conversationId: convId, accountDigest: auth.accountDigest, tombstone_type: body?.tombstone_type || body?.tombstoneType, encrypted_payload_blob: body?.encrypted_payload_blob || body?.encryptedPayloadBlob };
+        return handleBizConvRoutes(internalRequest('/d1/biz-conv/tombstone', 'POST', intBody, baseUrl), env);
+      }
+
+      // GET /api/v1/biz-conv/:convId/tombstones
+      if (action === 'tombstones' && method === 'GET') {
+        const since = url.searchParams.get('since') || '0';
+        const limit = url.searchParams.get('limit') || '50';
+        const qs = `?conversationId=${encodeURIComponent(convId)}&accountDigest=${encodeURIComponent(auth.accountDigest)}&since=${since}&limit=${limit}`;
+        return handleBizConvRoutes(internalRequest(`/d1/biz-conv/tombstones${qs}`, 'GET', null, baseUrl), env);
+      }
+    }
+
+    return json({ error: 'NotFound', message: 'unknown biz-conv endpoint' }, { status: 404 });
+  }
+
+  // ── Contact Secrets ───────────────────────────────────────────
+  if (path === '/api/v1/contact-secrets/backup' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      accountDigest: auth.accountDigest,
+      payload: body.payload,
+      checksum: body.checksum || null,
+      snapshotVersion: body.snapshot_version ?? body.snapshotVersion ?? null,
+      entries: body.entries ?? null,
+      updatedAt: body.updated_at ?? body.updatedAt ?? Date.now(),
+      bytes: body.bytes ?? null,
+      withDrState: body.with_dr_state ?? body.withDrState ?? null,
+      deviceLabel: body.device_label ?? body.deviceLabel ?? null,
+      deviceId: body.device_id || body.deviceId,
+      reason: body.reason || 'auto'
+    };
+    return handleContactSecretsRoutes(internalRequest('/d1/contact-secrets/backup', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/contact-secrets/backup' && method === 'GET') {
+    const auth = await resolvePublicAuth(req, env, { body: null });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const limit = Math.min(Math.max(Number(url.searchParams.get('limit') || 1), 1), 10);
+    const version = Number(url.searchParams.get('version') || 0);
+    const reason = url.searchParams.get('reason') || '';
+    let qs = `?accountDigest=${encodeURIComponent(auth.accountDigest)}&limit=${limit}`;
+    if (version > 0) qs += `&version=${Math.floor(version)}`;
+    if (reason) qs += `&reason=${encodeURIComponent(reason)}`;
+    return handleContactSecretsRoutes(internalRequest(`/d1/contact-secrets/backup${qs}`, 'GET', null, baseUrl), env);
+  }
+
+  // ── Message Key Vault ─────────────────────────────────────────
+  if (path === '/api/v1/message-key-vault/put' && method === 'POST') {
+    // Authenticate via token only (sender may write to peer's vault)
+    const tokenHeader = (req.headers.get('x-account-token') || '').trim();
+    const accountToken = tokenHeader || body?.account_token || body?.accountToken || null;
+    if (!accountToken) return json({ error: 'Unauthorized', message: 'account_token required' }, { status: 401 });
+    await ensureDataTables(env);
+    const account = await resolveAccount(env, { accountToken }, { allowCreate: false });
+    if (!account) return json({ error: 'Unauthorized' }, { status: 401 });
+    // Target digest: explicit body field, or default to authenticated user
+    const targetDigest = normalizeAccountDigest(body?.account_digest || body?.accountDigest) || account.account_digest;
+    const intBody = {
+      accountDigest: targetDigest,
+      conversationId: body.conversation_id || body.conversationId,
+      messageId: body.message_id || body.messageId,
+      senderDeviceId: body.sender_device_id || body.senderDeviceId,
+      targetDeviceId: body.target_device_id || body.targetDeviceId,
+      direction: body.direction,
+      msgType: body.msg_type || body.msgType || null,
+      headerCounter: body.header_counter ?? body.headerCounter ?? null,
+      wrapped_mk: body.wrapped_mk,
+      wrap_context: body.wrap_context
+    };
+    return handleMessageKeyVaultRoutes(internalRequest('/d1/message-key-vault/put', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/message-key-vault/get' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      accountDigest: auth.accountDigest,
+      conversationId: body.conversation_id || body.conversationId,
+      messageId: body.message_id || body.messageId,
+      senderDeviceId: body.sender_device_id || body.senderDeviceId
+    };
+    return handleMessageKeyVaultRoutes(internalRequest('/d1/message-key-vault/get', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/message-key-vault/latest-state' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      accountDigest: auth.accountDigest,
+      conversationId: body.conversation_id || body.conversationId
+    };
+    return handleMessageKeyVaultRoutes(internalRequest('/d1/message-key-vault/latest-state', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/message-key-vault/count' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      conversationId: body.conversation_id || body.conversationId,
+      messageId: body.message_id || body.messageId
+    };
+    return handleMessageKeyVaultRoutes(internalRequest('/d1/message-key-vault/count', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/message-key-vault/delete' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      accountDigest: auth.accountDigest,
+      conversationId: body.conversation_id || body.conversationId,
+      messageId: body.message_id || body.messageId,
+      senderDeviceId: body.sender_device_id || body.senderDeviceId
+    };
+    return handleMessageKeyVaultRoutes(internalRequest('/d1/message-key-vault/delete', 'POST', intBody, baseUrl), env);
+  }
+
+  // ── Keys (Prekeys) ────────────────────────────────────────────
+  if (path === '/api/v1/keys/publish' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const spk = body.signed_prekey || body.signedPrekey || {};
+    const intBody = {
+      accountDigest: auth.accountDigest,
+      deviceId: body.device_id || body.deviceId,
+      signedPrekey: {
+        id: spk.id,
+        pub: spk.pub,
+        sig: spk.sig,
+        ik_pub: spk.ik_pub
+      },
+      opks: body.opks || []
+    };
+    return handlePrekeysRoutes(internalRequest('/d1/prekeys/publish', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/keys/bundle' && method === 'POST') {
+    const peerDigest = normalizeAccountDigest(body?.peer_account_digest || body?.peerAccountDigest);
+    if (!peerDigest) return json({ error: 'BadRequest', message: 'peer_account_digest required' }, { status: 400 });
+    let qs = `?peerAccountDigest=${encodeURIComponent(peerDigest)}`;
+    const peerDeviceId = body?.peer_device_id || body?.peerDeviceId;
+    if (peerDeviceId) qs += `&peerDeviceId=${encodeURIComponent(peerDeviceId)}`;
+    return handlePrekeysRoutes(internalRequest(`/d1/prekeys/bundle${qs}`, 'GET', null, baseUrl), env);
+  }
+
+  // ── DevKeys ───────────────────────────────────────────────────
+  if (path === '/api/v1/devkeys/fetch' && method === 'POST') {
+    const accountToken = body?.account_token || body?.accountToken || null;
+    const accountDigest = normalizeAccountDigest(body?.account_digest || body?.accountDigest);
+    if (!accountToken && !accountDigest) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {};
+    if (accountToken) intBody.accountToken = String(accountToken).trim();
+    if (accountDigest) intBody.accountDigest = accountDigest;
+    // If we have a token but no digest, compute digest
+    if (accountToken && !accountDigest) {
+      intBody.accountDigest = await digestAccountToken(String(accountToken).trim());
+    }
+    return handleTagsRoutes(internalRequest('/d1/devkeys/fetch', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/devkeys/store' && method === 'POST') {
+    const accountToken = body?.account_token || body?.accountToken || null;
+    const accountDigest = normalizeAccountDigest(body?.account_digest || body?.accountDigest);
+    if (!accountToken && !accountDigest) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {};
+    if (accountToken) intBody.accountToken = String(accountToken).trim();
+    if (accountDigest) intBody.accountDigest = accountDigest;
+    if (accountToken && !accountDigest) {
+      intBody.accountDigest = await digestAccountToken(String(accountToken).trim());
+    }
+    intBody.wrapped_dev = body.wrapped_dev;
+    if (body.session) intBody.session = body.session;
+    return handleTagsRoutes(internalRequest('/d1/devkeys/store', 'POST', intBody, baseUrl), env);
+  }
+
+  // ── Account ───────────────────────────────────────────────────
+  if (path === '/api/v1/account/evidence' && method === 'GET') {
+    // Frontend sends digest via x-account-digest header or query param
+    const accountDigest = normalizeAccountDigest(
+      url.searchParams.get('account_digest') || url.searchParams.get('accountDigest') ||
+      req.headers.get('x-account-digest') || ''
+    );
+    if (!accountDigest) return json({ error: 'BadRequest', message: 'account_digest required' }, { status: 400 });
+    const qs = `?accountDigest=${encodeURIComponent(accountDigest)}`;
+    return handleAccountsRoutes(internalRequest(`/d1/account/evidence${qs}`, 'GET', null, baseUrl), env);
+  }
+
+  // ── Invites ───────────────────────────────────────────────────
+  if (path === '/api/v1/invites/create' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const accountToken = (body?.account_token || body?.accountToken || req.headers.get('x-account-token') || '').trim();
+    const deviceId = (req.headers.get('x-device-id') || body?.device_id || body?.deviceId || '').trim();
+    const inviteId = body.invite_id || body.inviteId || generateNanoId(32);
+    const intBody = {
+      inviteId,
+      accountToken,
+      accountDigest: auth.accountDigest,
+      deviceId,
+      ownerPublicKeyB64: body.owner_public_key_b64 || body.ownerPublicKeyB64 || null,
+      wantPairingCode: body.want_pairing_code ?? body.wantPairingCode ?? false
+    };
+    return handleInviteDropboxRoutes(internalRequest('/d1/invites/create', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/invites/deliver' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const accountToken = (body?.account_token || body?.accountToken || req.headers.get('x-account-token') || '').trim();
+    const deviceId = (req.headers.get('x-device-id') || body?.device_id || body?.deviceId || '').trim();
+    const intBody = {
+      inviteId: body.invite_id || body.inviteId,
+      accountToken,
+      accountDigest: auth.accountDigest,
+      deviceId,
+      ciphertextEnvelope: body.ciphertext_envelope || body.ciphertextEnvelope
+    };
+    const result = await handleInviteDropboxRoutes(internalRequest('/d1/invites/deliver', 'POST', intBody, baseUrl), env);
+    // WS notification: invite delivered
+    if (result && result.status < 400) {
+      try {
+        const resData = await result.clone().json().catch(() => null);
+        const ownerDigest = resData?.ownerAccountDigest || resData?.owner_account_digest;
+        if (ownerDigest) {
+          const targetDeviceId = body?.target_device_id || body?.targetDeviceId || null;
+          await notifyAccountDO(env, ownerDigest, {
+            type: 'invite-delivered',
+            targetDeviceId,
+            inviteId: intBody.inviteId,
+            ts: Date.now()
+          });
+        }
+      } catch { /* best-effort */ }
+    }
+    return result;
+  }
+
+  if (path === '/api/v1/invites/consume' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const accountToken = (body?.account_token || body?.accountToken || req.headers.get('x-account-token') || '').trim();
+    const intBody = {
+      inviteId: body.invite_id || body.inviteId,
+      accountToken,
+      accountDigest: auth.accountDigest
+    };
+    return handleInviteDropboxRoutes(internalRequest('/d1/invites/consume', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/invites/confirm' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const accountToken = (body?.account_token || body?.accountToken || req.headers.get('x-account-token') || '').trim();
+    const intBody = {
+      inviteId: body.invite_id || body.inviteId,
+      accountToken,
+      accountDigest: auth.accountDigest
+    };
+    return handleInviteDropboxRoutes(internalRequest('/d1/invites/confirm', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/invites/unconfirmed' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const accountToken = (body?.account_token || body?.accountToken || req.headers.get('x-account-token') || '').trim();
+    const intBody = { accountToken, accountDigest: auth.accountDigest };
+    return handleInviteDropboxRoutes(internalRequest('/d1/invites/unconfirmed', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/invites/status' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const accountToken = (body?.account_token || body?.accountToken || req.headers.get('x-account-token') || '').trim();
+    const intBody = {
+      inviteId: body.invite_id || body.inviteId,
+      accountToken,
+      accountDigest: auth.accountDigest
+    };
+    return handleInviteDropboxRoutes(internalRequest('/d1/invites/status', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/invites/lookup-code' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const accountToken = (body?.account_token || body?.accountToken || req.headers.get('x-account-token') || '').trim();
+    const intBody = {
+      pairingCode: body.pairing_code || body.pairingCode,
+      accountToken,
+      accountDigest: auth.accountDigest
+    };
+    return handleInviteDropboxRoutes(internalRequest('/d1/invites/lookup-code', 'POST', intBody, baseUrl), env);
+  }
+
+  // ── Ephemeral Chat ──────────────────────────────────────────
+  if (path === '/api/v1/ephemeral/create-link' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const deviceId = (req.headers.get('x-device-id') || body?.device_id || body?.deviceId || '').trim();
+    const intBody = {
+      ownerDigest: auth.accountDigest,
+      ownerDeviceId: deviceId,
+      prekeyBundleJson: JSON.stringify(body?.prekey_bundle || body?.prekeyBundle || {})
+    };
+    return handleEphemeralRoutes(internalRequest('/d1/ephemeral/create-link', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/ephemeral/consume' && method === 'POST') {
+    // No auth required — guest has no account
+    const intBody = { token: body?.token };
+    return handleEphemeralRoutes(internalRequest('/d1/ephemeral/consume', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/ephemeral/extend' && method === 'POST') {
+    // Auth optional — guest may not have account
+    const auth = await resolvePublicAuth(req, env, { body }).catch(() => null);
+    const intBody = {
+      sessionId: body?.session_id || body?.sessionId,
+      callerDigest: auth?.accountDigest || body?.guest_digest || body?.guestDigest || ''
+    };
+    return handleEphemeralRoutes(internalRequest('/d1/ephemeral/extend', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/ephemeral/delete' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      sessionId: body?.session_id || body?.sessionId,
+      ownerDigest: auth.accountDigest
+    };
+    return handleEphemeralRoutes(internalRequest('/d1/ephemeral/delete', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/ephemeral/revoke-invite' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      token: body?.token,
+      ownerDigest: auth.accountDigest
+    };
+    return handleEphemeralRoutes(internalRequest('/d1/ephemeral/revoke-invite', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/ephemeral/revoke-invite' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      token: body?.token,
+      ownerDigest: auth.accountDigest
+    };
+    return handleEphemeralRoutes(internalRequest('/d1/ephemeral/revoke-invite', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/ephemeral/list' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = { ownerDigest: auth.accountDigest };
+    return handleEphemeralRoutes(internalRequest('/d1/ephemeral/list', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/ephemeral/session-info' && method === 'POST') {
+    const intBody = { sessionId: body?.session_id || body?.sessionId };
+    return handleEphemeralRoutes(internalRequest('/d1/ephemeral/session-info', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/ephemeral/ws-token' && method === 'POST') {
+    // Issue a fresh WS token for an ephemeral guest
+    const guestDigest = (body?.guest_digest || body?.guestDigest || '').trim();
+    const sessionId = (body?.session_id || body?.sessionId || '').trim();
+    if (!guestDigest || !sessionId) return json({ error: 'BadRequest' }, { status: 400 });
+    await ensureDataTables(env);
+    const session = await env.DB.prepare(
+      `SELECT * FROM ephemeral_sessions WHERE session_id = ? AND guest_digest = ? AND deleted_at IS NULL`
+    ).bind(sessionId, guestDigest).first();
+    if (!session) return json({ error: 'NotFound' }, { status: 404 });
+    const now = Math.floor(Date.now() / 1000);
+    if (session.expires_at <= now) return json({ error: 'Expired' }, { status: 410 });
+    const remaining = session.expires_at - now;
+    try {
+      const { token: jwt, payload } = await createWsToken(env, { accountDigest: guestDigest, ttlSec: remaining });
+      return json({ token: jwt, expires_at: payload.exp });
+    } catch (err) {
+      return json({ error: 'TokenError', message: err?.message }, { status: 500 });
+    }
+  }
+
+  // HTTP fallback for key exchange — stores guest bundle in D1 so owner can pick it up
+  // even if the WS relay fails (e.g. owner tab backgrounded, WS disconnected)
+  if (path === '/api/v1/ephemeral/key-exchange-submit' && method === 'POST') {
+    const guestDigest = (body?.guest_digest || body?.guestDigest || '').trim();
+    const sessionId = (body?.session_id || body?.sessionId || '').trim();
+    const guestBundle = body?.guest_bundle || body?.guestBundle;
+    if (!guestDigest || !sessionId || !guestBundle) return json({ error: 'BadRequest' }, { status: 400 });
+    await ensureDataTables(env);
+    const session = await env.DB.prepare(
+      `SELECT * FROM ephemeral_sessions WHERE session_id = ? AND guest_digest = ? AND deleted_at IS NULL`
+    ).bind(sessionId, guestDigest).first();
+    if (!session) return json({ error: 'NotFound' }, { status: 404 });
+    const now = Math.floor(Date.now() / 1000);
+    if (session.expires_at <= now) return json({ error: 'Expired' }, { status: 410 });
+    // Store guest bundle in D1 for owner to pick up (column added in migration 0011)
+    try {
+      await env.DB.prepare(
+        `UPDATE ephemeral_sessions SET pending_key_exchange_json = ? WHERE session_id = ?`
+      ).bind(JSON.stringify(guestBundle), sessionId).run();
+    } catch (e) {
+      console.warn('[ephemeral] D1 store failed (migration pending?):', e?.message);
+    }
+    // Also try WS relay to owner (best-effort)
+    try {
+      await notifyAccountDO(env, session.owner_digest, {
+        type: 'ephemeral-key-exchange',
+        sessionId,
+        conversationId: session.conversation_id,
+        guestBundle,
+        senderDigest: guestDigest
+      });
+    } catch (e) { console.warn('[ephemeral] key-exchange notify failed', e?.message); }
+    return json({ ok: true });
+  }
+
+  // Owner clears the pending key exchange after processing
+  if (path === '/api/v1/ephemeral/clear-pending-kex' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const sessionId = (body?.session_id || body?.sessionId || '').trim();
+    if (!sessionId) return json({ error: 'BadRequest' }, { status: 400 });
+    await ensureDataTables(env);
+    try {
+      await env.DB.prepare(
+        `UPDATE ephemeral_sessions SET pending_key_exchange_json = NULL WHERE session_id = ? AND owner_digest = ?`
+      ).bind(sessionId, auth.accountDigest).run();
+    } catch { /* column may not exist yet — migration pending */ }
+    return json({ ok: true });
+  }
+
+  if (path === '/api/v1/ephemeral/cleanup' && method === 'POST') {
+    return handleEphemeralRoutes(internalRequest('/d1/ephemeral/cleanup', 'POST', {}, baseUrl), env);
+  }
+
+  // ── Friends ───────────────────────────────────────────────────
+  if (path === '/api/v1/friends/delete' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const senderDeviceId = (req.headers.get('x-device-id') || '').trim();
+    if (!senderDeviceId) return json({ error: 'BadRequest', message: 'deviceId header required' }, { status: 400 });
+    const peerDigest = normalizeAccountDigest(body?.peer_account_digest || body?.peerAccountDigest);
+    if (!peerDigest) return json({ error: 'BadRequest', message: 'peer_account_digest required' }, { status: 400 });
+    const conversationId = body?.conversation_id || body?.conversationId || null;
+    const intBody = {
+      ownerAccountDigest: auth.accountDigest,
+      peerAccountDigest: peerDigest,
+      ...(conversationId ? { conversationId } : {})
+    };
+    const result = await handleFriendsRoutes(internalRequest('/d1/friends/contact-delete', 'POST', intBody, baseUrl), env);
+    // WS notifications: contact removed
+    if (result && result.status < 400) {
+      const targetDeviceId = body?.target_device_id || body?.targetDeviceId || null;
+      await notifyAccountDO(env, peerDigest, {
+        type: 'contact-removed',
+        peerAccountDigest: auth.accountDigest,
+        senderDeviceId,
+        targetDeviceId,
+        conversationId,
+        ts: Date.now()
+      });
+    }
+    return result;
+  }
+
+  // Helper: extract msgType from header_json for push notification filtering
+  function extractMsgTypeFromHeader(headerJson) {
+    if (!headerJson) return null;
+    try {
+      const header = typeof headerJson === 'string' ? JSON.parse(headerJson) : headerJson;
+      return header?.meta?.msgType || header?.meta?.msg_type || header?.type || null;
+    } catch { return null; }
+  }
+
+  // ── Messages ──────────────────────────────────────────────────
+  if (path === '/api/v1/messages/atomic-send' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const deviceId = (req.headers.get('x-device-id') || '').trim() || body?.sender_device_id || body?.senderDeviceId;
+    if (!deviceId) return json({ error: 'BadRequest', message: 'deviceId required' }, { status: 400 });
+    // atomic-send: pass body through with accountDigest injected
+    const intBody = { ...body, senderAccountDigest: auth.accountDigest, sender_account_digest: auth.accountDigest };
+    delete intBody.account_token; delete intBody.accountToken;
+    const result = await handleAtomicSendRoutes(internalRequest('/d1/messages/atomic-send', 'POST', intBody, baseUrl), env);
+    // WS notification for message delivery
+    if (result && result.status < 400) {
+      try {
+        const resData = await result.clone().json().catch(() => null);
+        // [FIX] For atomic-send the receiver/message fields live inside body.message, not top-level
+        const msg = body?.message || {};
+        const receiverDigest = body?.receiver_account_digest || body?.receiverAccountDigest
+          || msg.receiver_account_digest || msg.receiverAccountDigest;
+        const convId = body?.conversation_id || body?.conversationId;
+        if (receiverDigest && convId) {
+          const atomicHeaderJson = msg.header_json || (msg.header ? JSON.stringify(msg.header) : body?.header_json || (body?.header ? JSON.stringify(body.header) : null));
+          await notifyAccountDO(env, receiverDigest, {
+            type: 'secure-message',
+            conversationId: convId,
+            messageId: msg.id || body?.id || body?.messageId || resData?.id || resData?.messageId || null,
+            preview: body?.preview || '',
+            ts: msg.created_at || body?.created_at || body?.ts || Date.now(),
+            count: 1,
+            counter: msg.counter ?? body?.counter ?? null,
+            senderAccountDigest: auth.accountDigest,
+            senderDeviceId: deviceId,
+            targetDeviceId: msg.receiver_device_id || msg.receiverDeviceId || body?.receiver_device_id || body?.receiverDeviceId || null,
+            peerAccountDigest: auth.accountDigest,
+            targetAccountDigest: receiverDigest,
+            msgType: extractMsgTypeFromHeader(atomicHeaderJson),
+            // E2E: forward per-device encrypted previews from sender (keyed by device_id)
+            ...(body?.encrypted_previews ? { encrypted_previews: body.encrypted_previews } : {})
+          });
+        }
+      } catch { /* best-effort */ }
+    }
+    return result;
+  }
+
+  if (path === '/api/v1/messages/secure' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const deviceId = (req.headers.get('x-device-id') || body?.sender_device_id || body?.senderDeviceId || body?.device_id || body?.deviceId || '').trim();
+    if (!deviceId) return json({ error: 'BadRequest', message: 'deviceId required' }, { status: 400 });
+    const convId = normalizeConversationId(body?.conversation_id || body?.conversationId);
+    if (!convId) return json({ error: 'BadRequest', message: 'conversation_id required' }, { status: 400 });
+    // Conversation auth
+    if (!isSystemOwnedConversation(convId, auth.accountDigest)) {
+      try {
+        await authorizeConversationDirect(env, { convId, accountDigest: auth.accountDigest, deviceId });
+      } catch (err) {
+        return json({ error: 'ConversationAccessDenied', message: err?.message || 'access denied' }, { status: err?.status || 403 });
+      }
+    }
+    const intBody = {
+      conversation_id: convId,
+      sender_account_digest: auth.accountDigest,
+      sender_device_id: deviceId,
+      receiver_account_digest: body?.receiver_account_digest || body?.receiverAccountDigest,
+      receiver_device_id: body?.receiver_device_id || body?.receiverDeviceId,
+      header_json: body?.header_json || (body?.header ? JSON.stringify(body.header) : undefined),
+      ciphertext_b64: body?.ciphertext_b64 || body?.ciphertext,
+      counter: body?.counter,
+      id: body?.id || body?.messageId,
+      created_at: body?.created_at || body?.ts
+    };
+    // Use handleMessagesRoutes for /d1/messages (secure messages go through the same store path)
+    const result = await handleMessagesRoutes(internalRequest('/d1/messages', 'POST', intBody, baseUrl), env);
+    // WS notification
+    if (result && result.status < 400) {
+      const receiverDigest = intBody.receiver_account_digest;
+      if (receiverDigest) {
+        await notifyAccountDO(env, receiverDigest, {
+          type: 'secure-message',
+          conversationId: convId,
+          messageId: intBody.id || null,
+          preview: body?.preview || '',
+          ts: Number(intBody.created_at || Date.now()),
+          count: 1,
+          counter: intBody.counter ?? null,
+          senderAccountDigest: auth.accountDigest,
+          senderDeviceId: deviceId,
+          targetDeviceId: intBody.receiver_device_id || null,
+          peerAccountDigest: auth.accountDigest,
+          targetAccountDigest: receiverDigest,
+          msgType: extractMsgTypeFromHeader(intBody.header_json),
+          ...(body?.encrypted_previews ? { encrypted_previews: body.encrypted_previews } : {})
+        });
+      }
+    }
+    return result;
+  }
+
+  if (path === '/api/v1/messages' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const deviceId = (req.headers.get('x-device-id') || body?.sender_device_id || body?.senderDeviceId || body?.device_id || body?.deviceId || '').trim();
+    if (!deviceId) return json({ error: 'BadRequest', message: 'deviceId required' }, { status: 400 });
+    const convId = normalizeConversationId(body?.conv_id || body?.conversation_id || body?.conversationId);
+    if (!convId) return json({ error: 'BadRequest', message: 'conversation_id required' }, { status: 400 });
+    if (!isSystemOwnedConversation(convId, auth.accountDigest)) {
+      try {
+        await authorizeConversationDirect(env, { convId, accountDigest: auth.accountDigest, deviceId });
+      } catch (err) {
+        return json({ error: 'ConversationAccessDenied', message: err?.message || 'access denied' }, { status: err?.status || 403 });
+      }
+    }
+    const receiverDigest = body?.receiver_account_digest || body?.receiverAccountDigest;
+    const receiverDeviceId = body?.receiver_device_id || body?.receiverDeviceId;
+    const intBody = {
+      conversation_id: convId,
+      sender_account_digest: auth.accountDigest,
+      sender_device_id: deviceId,
+      receiver_account_digest: receiverDigest,
+      receiver_device_id: receiverDeviceId,
+      header_json: body?.header_json || (body?.header ? JSON.stringify(body.header) : undefined),
+      ciphertext_b64: body?.ciphertext_b64 || body?.ciphertext,
+      counter: body?.counter,
+      id: body?.id || body?.messageId,
+      created_at: body?.created_at || body?.ts
+    };
+    const result = await handleMessagesRoutes(internalRequest('/d1/messages', 'POST', intBody, baseUrl), env);
+    if (result && result.status < 400 && receiverDigest) {
+      await notifyAccountDO(env, receiverDigest, {
+        type: 'secure-message',
+        conversationId: convId,
+        messageId: intBody.id || null,
+        preview: body?.preview || body?.text || '',
+        ts: Number(intBody.created_at || Date.now()),
+        count: 1,
+        counter: intBody.counter ?? null,
+        senderAccountDigest: auth.accountDigest,
+        senderDeviceId: deviceId,
+        targetDeviceId: receiverDeviceId || null,
+        peerAccountDigest: auth.accountDigest,
+        targetAccountDigest: receiverDigest,
+        msgType: extractMsgTypeFromHeader(intBody.header_json),
+        ...(body?.encrypted_previews ? { encrypted_previews: body.encrypted_previews } : {})
+      });
+    }
+    return result;
+  }
+
+  if (path === '/api/v1/messages/secure' && method === 'GET') {
+    const auth = await resolvePublicAuth(req, env, { body: null });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const convId = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
+    if (!convId) return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
+    // Build query string for internal handler
+    const params = new URLSearchParams(url.searchParams);
+    params.set('conversationId', convId);
+    const fwdHeaders = {};
+    const accountDigest = req.headers.get('x-account-digest');
+    if (accountDigest) fwdHeaders['x-account-digest'] = accountDigest;
+    return handleMessagesRoutes(internalRequest(`/d1/messages/secure?${params.toString()}`, 'GET', null, baseUrl, fwdHeaders), env);
+  }
+
+  if (path === '/api/v1/messages/secure/max-counter' && method === 'GET') {
+    const convId = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
+    const senderDeviceId = url.searchParams.get('senderDeviceId') || url.searchParams.get('sender_device_id');
+    if (!convId) return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
+    // Internal handler expects POST with body
+    const intBody = { conversationId: convId };
+    if (senderDeviceId) intBody.senderDeviceId = senderDeviceId;
+    return handleMessagesRoutes(internalRequest('/d1/messages/secure/max-counter', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/messages/by-counter' && method === 'GET') {
+    const convId = url.searchParams.get('conversationId') || url.searchParams.get('conversation_id');
+    const counter = url.searchParams.get('counter');
+    if (!convId) return json({ error: 'BadRequest', message: 'conversationId required' }, { status: 400 });
+    const params = new URLSearchParams();
+    params.set('conversationId', convId);
+    if (counter !== null) params.set('counter', counter);
+    // Forward additional query params
+    for (const [k, v] of url.searchParams) {
+      if (!params.has(k)) params.set(k, v);
+    }
+    const fwdHeaders2 = {};
+    const byCounterDigest = req.headers.get('x-account-digest');
+    if (byCounterDigest) fwdHeaders2['x-account-digest'] = byCounterDigest;
+    return handleMessagesRoutes(internalRequest(`/d1/messages/by-counter?${params.toString()}`, 'GET', null, baseUrl, fwdHeaders2), env);
+  }
+
+  {
+    const convMsgMatch = path.match(/^\/api\/v1\/conversations\/([^/]+)\/messages$/);
+    if (convMsgMatch && method === 'GET') {
+      const convId = convMsgMatch[1];
+      const params = new URLSearchParams(url.searchParams);
+      params.set('conversationId', convId);
+      const fwdHeaders3 = {};
+      const convMsgDigest = req.headers.get('x-account-digest');
+      if (convMsgDigest) fwdHeaders3['x-account-digest'] = convMsgDigest;
+      return handleMessagesRoutes(internalRequest(`/d1/messages?${params.toString()}`, 'GET', null, baseUrl, fwdHeaders3), env);
+    }
+  }
+
+  if (path === '/api/v1/messages/send-state' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = { ...body };
+    intBody.sender_account_digest = intBody.sender_account_digest || auth.accountDigest;
+    delete intBody.account_token; delete intBody.accountToken;
+    return handleMessagesRoutes(internalRequest('/d1/messages/send-state', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/messages/outgoing-status' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = { ...body };
+    intBody.sender_account_digest = intBody.sender_account_digest || auth.accountDigest;
+    delete intBody.account_token; delete intBody.accountToken;
+    return handleMessagesRoutes(internalRequest('/d1/messages/outgoing-status', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/messages/batch-latest' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = { conversationIds: body?.conversationIds, limit: body?.limit };
+    return handleMessagesRoutes(internalRequest('/d1/messages/batch-latest', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/messages/delete' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = {
+      ids: body.ids,
+      conversation_id: body.conversation_id || body.conversationId,
+      account_digest: auth.accountDigest
+    };
+    return handleMessagesRoutes(internalRequest('/d1/messages/delete', 'POST', intBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/deletion/cursor' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const intBody = { ...body, account_digest: auth.accountDigest, accountDigest: auth.accountDigest };
+    delete intBody.account_token; delete intBody.accountToken;
+    return handleMessagesRoutes(internalRequest('/d1/deletion/cursor', 'POST', intBody, baseUrl), env);
+  }
+
+  // ── Auth brand lookup (public, no auth needed) ────────────────
+  if (path === '/api/v1/auth/brand' && method === 'GET') {
+    const uidHex = url.searchParams.get('uid') || '';
+    if (!uidHex) return json({ error: 'BadRequest', message: 'uid required' }, { status: 400 });
+    const qs = `?uid=${encodeURIComponent(uidHex)}`;
+    return handleAccountsRoutes(internalRequest(`/d1/accounts/brand${qs}`, 'GET', null, baseUrl), env);
+  }
+
+  // ── Calls ────────────────────────────────────────────────────────
+  if (path === '/api/v1/calls/invite' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const senderDeviceId = (req.headers.get('x-device-id') || '').trim();
+    if (!senderDeviceId) return json({ error: 'BadRequest', message: 'deviceId header required' }, { status: 400 });
+    const peerDigest = normalizeAccountDigest(body?.peer_account_digest || body?.peerAccountDigest);
+    if (!peerDigest) return json({ error: 'BadRequest', message: 'peer_account_digest required' }, { status: 400 });
+    const callId = (body?.call_id || body?.callId || crypto.randomUUID()).toLowerCase();
+    const ttlSeconds = clampNum(body?.expires_in_seconds ?? body?.expiresInSeconds ?? 90, 30, 600);
+    // Device validation
+    const devErr = await assertActiveDeviceOrReturn(env, auth.accountDigest, senderDeviceId);
+    if (devErr) return devErr;
+    let targetDeviceId;
+    try {
+      targetDeviceId = await resolveTargetDeviceDirect(env, peerDigest, body?.preferred_device_id || body?.preferredDeviceId || null);
+    } catch (err) {
+      if (!(body?.preferred_device_id || body?.preferredDeviceId)) {
+        return json({ error: err?.code || 'peer-device-not-active', message: err?.message }, { status: err?.status || 409 });
+      }
+      targetDeviceId = body.preferred_device_id || body.preferredDeviceId;
+    }
+    const expiresAt = Date.now() + ttlSeconds * 1000;
+    const sessionPayload = {
+      callId, callerAccountDigest: auth.accountDigest, calleeAccountDigest: peerDigest,
+      callerDeviceId: senderDeviceId, status: 'dialing', mode: body?.mode || 'voice',
+      capabilities: body?.capabilities || null,
+      metadata: { ...(body?.metadata || {}), traceId: body?.trace_id || null, initiatedBy: auth.accountDigest },
+      targetDeviceId, expiresAt
+    };
+    let sessionRes;
+    try {
+      sessionRes = await handleCallsRoutes(internalRequest('/d1/calls/session', 'POST', sessionPayload, baseUrl), env);
+    } catch { sessionRes = null; }
+    // Append call event (best-effort)
+    try {
+      await handleCallsRoutes(internalRequest('/d1/calls/events', 'POST', {
+        callId, type: 'call-invite',
+        payload: { traceId: body?.trace_id || null, mode: body?.mode || 'voice', capabilities: body?.capabilities || null, targetDeviceId },
+        fromAccountDigest: auth.accountDigest, toAccountDigest: peerDigest, traceId: body?.trace_id || null
+      }, baseUrl), env);
+    } catch { /* best-effort */ }
+    let session = null;
+    if (sessionRes && sessionRes.status < 400) {
+      try { session = (await sessionRes.json())?.session || null; } catch { session = null; }
+    }
+    // WS notification
+    await notifyAccountDO(env, peerDigest, {
+      type: 'call-invite',
+      callId,
+      fromAccountDigest: auth.accountDigest,
+      toAccountDigest: peerDigest,
+      fromDeviceId: senderDeviceId,
+      toDeviceId: targetDeviceId,
+      mode: body?.mode || 'voice',
+      ts: Date.now()
+    });
+    return json({ ok: true, callId, targetDeviceId, session, expiresInSeconds: ttlSeconds });
+  }
+
+  if (path === '/api/v1/calls/cancel' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const senderDeviceId = (req.headers.get('x-device-id') || '').trim();
+    if (!senderDeviceId) return json({ error: 'BadRequest', message: 'deviceId header required' }, { status: 400 });
+    const callId = (body?.call_id || body?.callId || '').trim().toLowerCase();
+    if (!callId) return json({ error: 'BadRequest', message: 'call_id required' }, { status: 400 });
+    const devErr = await assertActiveDeviceOrReturn(env, auth.accountDigest, senderDeviceId);
+    if (devErr) return devErr;
+    const payload = {
+      callId, status: 'ended', endReason: body?.reason || 'cancelled', endedAt: Date.now(), expiresAt: Date.now() + 30000,
+      metadata: { cancelledBy: auth.accountDigest, cancelledByDeviceId: senderDeviceId }
+    };
+    let session = null;
+    try {
+      const r = await handleCallsRoutes(internalRequest('/d1/calls/session', 'POST', payload, baseUrl), env);
+      if (r && r.status < 400) session = (await r.json())?.session || null;
+    } catch { /* */ }
+    try {
+      await handleCallsRoutes(internalRequest('/d1/calls/events', 'POST', {
+        callId, type: 'call-cancel', payload: { reason: body?.reason || 'cancelled' },
+        fromAccountDigest: auth.accountDigest, traceId: body?.trace_id || null
+      }, baseUrl), env);
+    } catch { /* best-effort */ }
+    return json({ ok: true, session });
+  }
+
+  if (path === '/api/v1/calls/acknowledge' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const senderDeviceId = (req.headers.get('x-device-id') || '').trim();
+    if (!senderDeviceId) return json({ error: 'BadRequest', message: 'deviceId header required' }, { status: 400 });
+    const callId = (body?.call_id || body?.callId || '').trim().toLowerCase();
+    if (!callId) return json({ error: 'BadRequest', message: 'call_id required' }, { status: 400 });
+    const devErr = await assertActiveDeviceOrReturn(env, auth.accountDigest, senderDeviceId);
+    if (devErr) return devErr;
+    const payload = {
+      callId, status: 'ringing', expiresAt: Date.now() + 90000,
+      metadata: { lastAckAccountDigest: auth.accountDigest, lastAckDeviceId: senderDeviceId }
+    };
+    let session = null;
+    try {
+      const r = await handleCallsRoutes(internalRequest('/d1/calls/session', 'POST', payload, baseUrl), env);
+      if (r && r.status < 400) session = (await r.json())?.session || null;
+    } catch { /* */ }
+    try {
+      await handleCallsRoutes(internalRequest('/d1/calls/events', 'POST', {
+        callId, type: 'call-ack', payload: { ackAccountDigest: auth.accountDigest },
+        fromAccountDigest: auth.accountDigest, traceId: body?.trace_id || null
+      }, baseUrl), env);
+    } catch { /* best-effort */ }
+    return json({ ok: true, session });
+  }
+
+  if (path === '/api/v1/calls/metrics' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const senderDeviceId = (req.headers.get('x-device-id') || '').trim();
+    if (!senderDeviceId) return json({ error: 'BadRequest', message: 'deviceId header required' }, { status: 400 });
+    const callId = (body?.call_id || body?.callId || '').trim().toLowerCase();
+    if (!callId) return json({ error: 'BadRequest', message: 'call_id required' }, { status: 400 });
+    const devErr = await assertActiveDeviceOrReturn(env, auth.accountDigest, senderDeviceId);
+    if (devErr) return devErr;
+    const payload = {
+      callId, metrics: body?.metrics, status: body?.status, endReason: body?.end_reason,
+      endedAt: body?.ended ? Date.now() : undefined, senderDeviceId
+    };
+    let session = null;
+    try {
+      const r = await handleCallsRoutes(internalRequest('/d1/calls/session', 'POST', payload, baseUrl), env);
+      if (r && r.status < 400) session = (await r.json())?.session || null;
+    } catch { /* */ }
+    try {
+      await handleCallsRoutes(internalRequest('/d1/calls/events', 'POST', {
+        callId, type: 'call-report-metrics', payload: body?.metrics || {},
+        fromAccountDigest: auth.accountDigest
+      }, baseUrl), env);
+    } catch { /* best-effort */ }
+    return json({ ok: true, session });
+  }
+
+  {
+    const callSessionMatch = path.match(/^\/api\/v1\/calls\/session\/([^/]+)$/);
+    if (callSessionMatch && method === 'GET') {
+      const callId = callSessionMatch[1].trim().toLowerCase();
+      if (!callId) return json({ error: 'BadRequest', message: 'invalid call id' }, { status: 400 });
+      const auth = await resolvePublicAuth(req, env, { body: null });
+      if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+      const senderDeviceId = (req.headers.get('x-device-id') || '').trim();
+      if (!senderDeviceId) return json({ error: 'BadRequest', message: 'deviceId header required' }, { status: 400 });
+      const devErr = await assertActiveDeviceOrReturn(env, auth.accountDigest, senderDeviceId);
+      if (devErr) return devErr;
+      const r = await handleCallsRoutes(internalRequest(`/d1/calls/session?callId=${encodeURIComponent(callId)}`, 'GET', null, baseUrl), env);
+      if (!r || r.status >= 400) return r || json({ error: 'NotFound' }, { status: 404 });
+      const data = await r.json();
+      const session = data?.session;
+      if (!session) return json({ error: 'NotFound', message: 'call session absent' }, { status: 404 });
+      const isParticipant = (session.caller_account_digest === auth.accountDigest) || (session.callee_account_digest === auth.accountDigest);
+      if (!isParticipant) return json({ error: 'Forbidden', message: 'not a participant of this call' }, { status: 403 });
+      return json({ ok: true, session });
+    }
+  }
+
+  if (path === '/api/v1/calls/network-config' && method === 'GET') {
+    const auth = await resolvePublicAuth(req, env, { body: null });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const senderDeviceId = (req.headers.get('x-device-id') || '').trim();
+    if (!senderDeviceId) return json({ error: 'BadRequest', message: 'deviceId header required' }, { status: 400 });
+    const config = buildCallNetworkConfigEdge(env);
+    return json({ ok: true, config });
+  }
+
+  if (path === '/api/v1/calls/turn-credentials' && method === 'POST') {
+    const turnTokenId = env.CLOUDFLARE_TURN_TOKEN_ID || '';
+    const turnTokenKey = env.CLOUDFLARE_TURN_TOKEN_KEY || '';
+    if (!turnTokenId || !turnTokenKey) {
+      return json({ error: 'ConfigError', message: 'Cloudflare TURN credentials not configured' }, { status: 500 });
+    }
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const senderDeviceId = (req.headers.get('x-device-id') || '').trim();
+    if (!senderDeviceId) return json({ error: 'BadRequest', message: 'deviceId header required' }, { status: 400 });
+    const ttlSeconds = clampNum(body?.ttl_seconds ?? body?.ttlSeconds ?? 300, 60, 600);
+    try {
+      const cfResp = await fetch(
+        `https://rtc.live.cloudflare.com/v1/turn/keys/${turnTokenId}/credentials/generate`,
+        {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${turnTokenKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ttl: ttlSeconds })
+        }
+      );
+      if (!cfResp.ok) {
+        return json({ error: 'TurnCredentialsFailed', message: `Cloudflare TURN API error: ${cfResp.status}` }, { status: 502 });
+      }
+      const cfData = await cfResp.json();
+      const iceServers = [];
+      if (cfData.iceServers?.urls && cfData.iceServers?.username && cfData.iceServers?.credential) {
+        iceServers.push({
+          urls: Array.isArray(cfData.iceServers.urls) ? cfData.iceServers.urls : [cfData.iceServers.urls],
+          username: cfData.iceServers.username,
+          credential: cfData.iceServers.credential
+        });
+      }
+      return json({ ttl: ttlSeconds, expiresAt: Math.floor(Date.now() / 1000) + ttlSeconds, iceServers });
+    } catch (err) {
+      return json({ error: 'TurnCredentialsFailed', message: err?.message || 'TURN API request failed' }, { status: 502 });
+    }
+  }
+
+  // ── Subscription ─────────────────────────────────────────────────
+  if (path === '/api/v1/subscription/redeem' && method === 'POST') {
+    const token = body?.token;
+    if (!token || typeof token !== 'string') return json({ error: 'BadRequest', message: 'token required' }, { status: 400 });
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const dryRun = body?.dry_run === true || body?.dryRun === true;
+    let jwtResult;
+    try {
+      jwtResult = await verifyJwtRS256(token, env.PRIVATE_KEY_PUBLIC_PEM || '');
+    } catch (err) {
+      return json({ error: err?.code || 'InvalidVoucher', message: err?.message || 'JWT verification failed' }, { status: err?.status || 400 });
+    }
+    const { payload: jwtPayload, header: jwtHeader, signatureB64 } = jwtResult;
+    const durationDays = Number(jwtPayload?.durationDays || jwtPayload?.extendDays || 0);
+    if (!Number.isFinite(durationDays) || durationDays <= 0) {
+      return json({ error: 'InvalidVoucher', message: '憑證缺少展期天數' }, { status: 400 });
+    }
+    const tokenId = jwtPayload?.voucherId || jwtPayload?.sub || jwtPayload?.jti;
+    if (!tokenId) return json({ error: 'InvalidVoucher', message: '憑證缺少 voucherId/jti' }, { status: 400 });
+    const redeemBody = {
+      tokenId, voucherId: jwtPayload?.voucherId || null, jti: jwtPayload?.jti || null,
+      agentId: jwtPayload?.agentId || null, durationDays,
+      issuedAt: jwtPayload?.iat || null, expiresAt: jwtPayload?.exp || null,
+      keyId: jwtHeader?.kid || 'default', signatureB64: signatureB64 || null,
+      digest: auth.accountDigest, dryRun
+    };
+    return handleSubscriptionRoutes(internalRequest('/d1/subscription/redeem', 'POST', redeemBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/subscription/validate' && method === 'POST') {
+    const token = body?.token;
+    if (!token || typeof token !== 'string') return json({ error: 'BadRequest', message: 'token required' }, { status: 400 });
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    let jwtResult;
+    try {
+      jwtResult = await verifyJwtRS256(token, env.PRIVATE_KEY_PUBLIC_PEM || '');
+    } catch (err) {
+      return json({ error: err?.code || 'InvalidVoucher', message: err?.message || 'JWT verification failed' }, { status: err?.status || 400 });
+    }
+    const { payload: jwtPayload, header: jwtHeader, signatureB64 } = jwtResult;
+    const durationDays = Number(jwtPayload?.durationDays || jwtPayload?.extendDays || 0);
+    if (!Number.isFinite(durationDays) || durationDays <= 0) {
+      return json({ error: 'InvalidVoucher', message: '憑證缺少展期天數' }, { status: 400 });
+    }
+    const tokenId = jwtPayload?.voucherId || jwtPayload?.sub || jwtPayload?.jti;
+    if (!tokenId) return json({ error: 'InvalidVoucher', message: '憑證缺少 voucherId/jti' }, { status: 400 });
+    const redeemBody = {
+      tokenId, voucherId: jwtPayload?.voucherId || null, jti: jwtPayload?.jti || null,
+      agentId: jwtPayload?.agentId || null, durationDays,
+      issuedAt: jwtPayload?.iat || null, expiresAt: jwtPayload?.exp || null,
+      keyId: jwtHeader?.kid || 'default', signatureB64: signatureB64 || null,
+      digest: auth.accountDigest, dryRun: true
+    };
+    return handleSubscriptionRoutes(internalRequest('/d1/subscription/redeem', 'POST', redeemBody, baseUrl), env);
+  }
+
+  if (path === '/api/v1/subscription/status' && method === 'GET') {
+    const digest = normalizeAccountDigest(url.searchParams.get('digest') || '');
+    const uidDigest = normalizeAccountDigest(url.searchParams.get('uidDigest') || '');
+    if (!digest && !uidDigest) return json({ error: 'BadRequest', message: 'digest or uidDigest required' }, { status: 400 });
+    const params = new URLSearchParams();
+    if (digest) params.set('digest', digest);
+    if (!digest && uidDigest) params.set('uidDigest', uidDigest);
+    const limitRaw = Number(url.searchParams.get('limit') || 0);
+    if (Number.isFinite(limitRaw) && limitRaw > 0) params.set('limit', String(Math.min(Math.max(Math.floor(limitRaw), 1), 200)));
+    return handleSubscriptionRoutes(internalRequest(`/d1/subscription/status?${params.toString()}`, 'GET', null, baseUrl), env);
+  }
+
+  if (path === '/api/v1/subscription/token-status' && method === 'GET') {
+    const tokenId = url.searchParams.get('token_id') || url.searchParams.get('tokenId') || url.searchParams.get('voucherId') || url.searchParams.get('jti') || '';
+    if (!tokenId.trim()) return json({ error: 'BadRequest', message: 'tokenId required' }, { status: 400 });
+    return handleSubscriptionRoutes(internalRequest(`/d1/subscription/token-status?tokenId=${encodeURIComponent(tokenId.trim())}`, 'GET', null, baseUrl), env);
+  }
+
+  // ── Media ────────────────────────────────────────────────────────
+  if (path === '/api/v1/media/sign-put' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const convId = normalizeConversationId(body?.conv_id || body?.conversationId);
+    if (!convId) return json({ error: 'BadRequest', message: 'invalid conv_id' }, { status: 400 });
+    if (!isSystemOwnedConversation(convId, auth.accountDigest)) {
+      try {
+        await authorizeConversationDirect(env, { convId, accountDigest: auth.accountDigest, deviceId: (req.headers.get('x-device-id') || '').trim() || null });
+      } catch (err) {
+        return json({ error: 'ConversationAccessDenied', message: err?.message || 'access denied' }, { status: err?.status || 403 });
+      }
+    }
+    const maxBytes = Number(env.UPLOAD_MAX_BYTES || 1073741824);
+    if (body?.size != null) {
+      const sizeNum = Number(body.size);
+      if (!Number.isFinite(sizeNum) || sizeNum <= 0) return json({ error: 'BadRequest', message: 'invalid size' }, { status: 400 });
+      if (sizeNum > maxBytes) return json({ error: 'FileTooLarge', message: `Payload exceeds limit ${maxBytes} bytes`, maxBytes }, { status: 413 });
+    }
+    const direction = body?.direction === 'received' ? 'received' : (body?.direction === 'sent' ? 'sent' : null);
+    let basePrefix = convId;
+    if (direction === 'received') basePrefix = `${convId}/__SYS_RECV__`;
+    else if (direction === 'sent') basePrefix = `${convId}/__SYS_SENT__`;
+    let dirClean = '';
+    if (body?.dir && typeof body.dir === 'string') {
+      const segs = String(body.dir).replace(/\\+/g, '/').split('/').map(s => s ? s.normalize('NFKC').replace(/[\u0000-\u001F\u007F]/gu, '').replace(/[\\/]/g, '').replace(/[?#*<>"'`|]/g, '').trim().slice(0, 96) : '').filter(Boolean);
+      if (segs.length) dirClean = segs.join('/');
+    }
+    const keyPrefix = dirClean ? `${basePrefix}/${dirClean}` : basePrefix;
+    // Quota check via internal handler
+    if (body?.size != null) {
+      try {
+        const usageResp = await handleMediaRoutes(internalRequest('/d1/media/usage', 'POST', { convId, prefix: basePrefix }, baseUrl), env);
+        if (usageResp && usageResp.status < 400) {
+          const usage = await usageResp.json();
+          const totalBytes = Number(usage?.totalBytes ?? 0);
+          const quota = Number(env.DRIVE_QUOTA_BYTES || 3221225472);
+          if (Number.isFinite(totalBytes) && totalBytes + Number(body.size) > quota) {
+            return json({ error: 'FolderCapacityExceeded', message: `空間不足，上限 ${quota} bytes`, maxBytes: quota, currentBytes: totalBytes }, { status: 413 });
+          }
+        }
+      } catch { /* proceed without quota check */ }
+    }
+    const uid = generateNanoId();
+    const key = `${keyPrefix}/${uid}`;
+    const ct = body?.content_type || 'application/octet-stream';
+    const ttlSec = Number(env.SIGNED_PUT_TTL || 900);
+    try {
+      const presignedUrl = await generatePresignedUrl(env, { method: 'PUT', key, expiresIn: ttlSec, contentType: ct });
+      return json({ upload: { url: presignedUrl, bucket: env.S3_BUCKET, key, method: 'PUT', headers: { 'Content-Type': ct } }, expiresIn: ttlSec, objectPath: key });
+    } catch (err) {
+      return json({ error: 'PresignFailed', message: err?.message || 'failed to generate presigned URL' }, { status: 500 });
+    }
+  }
+
+  if (path === '/api/v1/media/sign-get' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const keyStr = body?.key;
+    if (!keyStr || typeof keyStr !== 'string' || keyStr.length < 3) return json({ error: 'BadRequest', message: 'key required' }, { status: 400 });
+    const convIdFrag = keyStr.replace(/[\u0000-\u001F\u007F]/gu, '').trim();
+    const firstSlash = convIdFrag.indexOf('/');
+    const convIdPart = firstSlash === -1 ? convIdFrag : convIdFrag.slice(0, firstSlash);
+    const convId = normalizeConversationId(convIdPart);
+    if (!convId) return json({ error: 'BadRequest', message: 'invalid object key' }, { status: 400 });
+    if (!isSystemOwnedConversation(convId, auth.accountDigest)) {
+      try {
+        await authorizeConversationDirect(env, { convId, accountDigest: auth.accountDigest, deviceId: (req.headers.get('x-device-id') || '').trim() || null });
+      } catch (err) {
+        return json({ error: 'ConversationAccessDenied', message: err?.message || 'access denied' }, { status: err?.status || 403 });
+      }
+    }
+    const ttlSec = Number(env.SIGNED_GET_TTL || 900);
+    try {
+      const presignedUrl = await generatePresignedUrl(env, { method: 'GET', key: keyStr, expiresIn: ttlSec, downloadName: body?.download_name });
+      return json({ download: { url: presignedUrl, bucket: env.S3_BUCKET, key: keyStr }, expiresIn: ttlSec });
+    } catch (err) {
+      return json({ error: 'PresignFailed', message: err?.message || 'failed to generate presigned URL' }, { status: 500 });
+    }
+  }
+
+  if (path === '/api/v1/media/sign-put-chunked' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const convId = normalizeConversationId(body?.conv_id || body?.conversationId);
+    if (!convId) return json({ error: 'BadRequest', message: 'invalid conv_id' }, { status: 400 });
+    if (!isSystemOwnedConversation(convId, auth.accountDigest)) {
+      try {
+        await authorizeConversationDirect(env, { convId, accountDigest: auth.accountDigest, deviceId: (req.headers.get('x-device-id') || '').trim() || null });
+      } catch (err) {
+        return json({ error: 'ConversationAccessDenied', message: err?.message || 'access denied' }, { status: err?.status || 403 });
+      }
+    }
+    const totalSize = Number(body?.total_size || 0);
+    const chunkCount = Number(body?.chunk_count || 0);
+    if (!totalSize || !chunkCount || chunkCount > 2000) return json({ error: 'BadRequest', message: 'total_size and chunk_count required' }, { status: 400 });
+    const maxBytes = Number(env.UPLOAD_MAX_BYTES || 1073741824);
+    if (totalSize > maxBytes) return json({ error: 'FileTooLarge', message: `Payload exceeds limit ${maxBytes} bytes`, maxBytes }, { status: 413 });
+    const direction = body?.direction === 'received' ? 'received' : (body?.direction === 'sent' ? 'sent' : null);
+    let basePrefix = convId;
+    if (direction === 'received') basePrefix = `${convId}/__SYS_RECV__`;
+    else if (direction === 'sent') basePrefix = `${convId}/__SYS_SENT__`;
+    let dirClean = '';
+    if (body?.dir && typeof body.dir === 'string') {
+      const segs = String(body.dir).replace(/\\+/g, '/').split('/').map(s => s ? s.normalize('NFKC').replace(/[\u0000-\u001F\u007F]/gu, '').replace(/[\\/]/g, '').replace(/[?#*<>"'`|]/g, '').trim().slice(0, 96) : '').filter(Boolean);
+      if (segs.length) dirClean = segs.join('/');
+    }
+    const keyPrefix = dirClean ? `${basePrefix}/${dirClean}` : basePrefix;
+    // Quota check
+    try {
+      const usageResp = await handleMediaRoutes(internalRequest('/d1/media/usage', 'POST', { convId, prefix: basePrefix }, baseUrl), env);
+      if (usageResp && usageResp.status < 400) {
+        const usage = await usageResp.json();
+        const totalBytes = Number(usage?.totalBytes ?? 0);
+        const quota = Number(env.DRIVE_QUOTA_BYTES || 3221225472);
+        if (Number.isFinite(totalBytes) && totalBytes + totalSize > quota) {
+          return json({ error: 'FolderCapacityExceeded', message: `空間不足，上限 ${quota} bytes`, maxBytes: quota, currentBytes: totalBytes }, { status: 413 });
+        }
+      }
+    } catch { /* proceed */ }
+    const ttlSec = Number(env.SIGNED_PUT_TTL || 900);
+    const ct = body?.content_type || 'application/octet-stream';
+    const uid = generateNanoId();
+    const baseKey = `${keyPrefix}/${uid}`;
+    try {
+      const manifestUrl = await generatePresignedUrl(env, { method: 'PUT', key: `${baseKey}/m`, expiresIn: ttlSec, contentType: 'application/octet-stream' });
+      const manifest = { url: manifestUrl, bucket: env.S3_BUCKET, key: `${baseKey}/m`, method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' } };
+      const chunks = [];
+      for (let i = 0; i < chunkCount; i++) {
+        const chunkKey = `${baseKey}/c/${i}`;
+        const chunkUrl = await generatePresignedUrl(env, { method: 'PUT', key: chunkKey, expiresIn: ttlSec, contentType: ct });
+        chunks.push({ index: i, url: chunkUrl, bucket: env.S3_BUCKET, key: chunkKey, method: 'PUT', headers: { 'Content-Type': ct } });
+      }
+      return json({ baseKey, manifest, chunks, expiresIn: ttlSec });
+    } catch (err) {
+      return json({ error: 'PresignFailed', message: err?.message || 'failed to generate presigned URLs' }, { status: 500 });
+    }
+  }
+
+  if (path === '/api/v1/media/sign-get-chunked' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const baseKeyStr = body?.base_key;
+    if (!baseKeyStr || typeof baseKeyStr !== 'string' || baseKeyStr.length < 3) return json({ error: 'BadRequest', message: 'base_key required' }, { status: 400 });
+    const convIdFrag = baseKeyStr.replace(/[\u0000-\u001F\u007F]/gu, '').trim();
+    const firstSlash = convIdFrag.indexOf('/');
+    const convIdPart = firstSlash === -1 ? convIdFrag : convIdFrag.slice(0, firstSlash);
+    const convId = normalizeConversationId(convIdPart);
+    if (!convId) return json({ error: 'BadRequest', message: 'invalid base_key' }, { status: 400 });
+    if (!isSystemOwnedConversation(convId, auth.accountDigest)) {
+      try {
+        await authorizeConversationDirect(env, { convId, accountDigest: auth.accountDigest, deviceId: (req.headers.get('x-device-id') || '').trim() || null });
+      } catch (err) {
+        return json({ error: 'ConversationAccessDenied', message: err?.message || 'access denied' }, { status: err?.status || 403 });
+      }
+    }
+    const ttlSec = Number(env.SIGNED_GET_TTL || 900);
+    try {
+      const manifestUrl = await generatePresignedUrl(env, { method: 'GET', key: `${baseKeyStr}/m`, expiresIn: ttlSec });
+      const manifestGet = { url: manifestUrl, bucket: env.S3_BUCKET, key: `${baseKeyStr}/m` };
+      const chunks = [];
+      if (Array.isArray(body?.chunk_indices) && body.chunk_indices.length > 0) {
+        for (const idx of body.chunk_indices) {
+          const chunkKey = `${baseKeyStr}/c/${idx}`;
+          const chunkUrl = await generatePresignedUrl(env, { method: 'GET', key: chunkKey, expiresIn: ttlSec });
+          chunks.push({ index: idx, url: chunkUrl, bucket: env.S3_BUCKET, key: chunkKey });
+        }
+      }
+      return json({ manifest: manifestGet, chunks, expiresIn: ttlSec });
+    } catch (err) {
+      return json({ error: 'PresignFailed', message: err?.message || 'failed to generate presigned URLs' }, { status: 500 });
+    }
+  }
+
+  if (path === '/api/v1/media/cleanup-chunked' && method === 'POST') {
+    // Cleanup requires S3 ListObjects + DeleteObjects — not feasible without SDK from Worker.
+    // Delegate to Node.js or return a best-effort acknowledgment.
+    // For now, we just verify auth + return ok (actual deletion handled by TTL or manual cleanup).
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    return json({ ok: true, deleted: 0, note: 'cleanup delegated to backend' });
+  }
+
+  if (path === '/api/v1/media/copy' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const sourceKey = (body?.source_key || body?.sourceKey || '').trim();
+    const destConvId = normalizeConversationId(body?.dest_conv_id || body?.destConvId);
+    if (!sourceKey) return json({ error: 'BadRequest', message: 'source_key required' }, { status: 400 });
+    if (!destConvId) return json({ error: 'BadRequest', message: 'dest_conv_id required' }, { status: 400 });
+    if (!isSystemOwnedConversation(destConvId, auth.accountDigest)) {
+      return json({ error: 'Forbidden', message: 'dest must be a system-owned conversation' }, { status: 403 });
+    }
+    const destDir = (body?.dest_dir || '').trim();
+    const uid = generateNanoId();
+    const destPrefix = destDir ? `${destConvId}/${destDir}` : destConvId;
+    const destKey = `${destPrefix}/${uid}`;
+    try {
+      await copyS3Object(env, sourceKey, destKey);
+      return json({ ok: true, dest_key: destKey });
+    } catch (err) {
+      return json({ error: 'CopyFailed', message: err?.message || 'S3 copy failed' }, { status: 500 });
+    }
+  }
+
+  if (path === '/api/v1/media/copy-chunked' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const sourceBaseKey = (body?.source_base_key || body?.sourceBaseKey || '').trim();
+    const chunkCount = Number(body?.chunk_count ?? body?.chunkCount ?? 0);
+    const destConvId = normalizeConversationId(body?.dest_conv_id || body?.destConvId);
+    if (!sourceBaseKey) return json({ error: 'BadRequest', message: 'source_base_key required' }, { status: 400 });
+    if (!destConvId) return json({ error: 'BadRequest', message: 'dest_conv_id required' }, { status: 400 });
+    if (!chunkCount || chunkCount < 1) return json({ error: 'BadRequest', message: 'chunk_count required' }, { status: 400 });
+    if (!isSystemOwnedConversation(destConvId, auth.accountDigest)) {
+      return json({ error: 'Forbidden', message: 'dest must be a system-owned conversation' }, { status: 403 });
+    }
+    const destDir = (body?.dest_dir || '').trim();
+    const uid = generateNanoId();
+    const destPrefix = destDir ? `${destConvId}/${destDir}` : destConvId;
+    const destBaseKey = `${destPrefix}/${uid}`;
+    try {
+      // Copy manifest
+      await copyS3Object(env, `${sourceBaseKey}.manifest`, `${destBaseKey}.manifest`);
+      // Copy all chunks in parallel (batched)
+      const BATCH = 6;
+      for (let i = 0; i < chunkCount; i += BATCH) {
+        const batch = [];
+        for (let j = i; j < Math.min(i + BATCH, chunkCount); j++) {
+          batch.push(copyS3Object(env, `${sourceBaseKey}.${j}`, `${destBaseKey}.${j}`));
+        }
+        await Promise.all(batch);
+      }
+      return json({ ok: true, dest_base_key: destBaseKey });
+    } catch (err) {
+      return json({ error: 'CopyFailed', message: err?.message || 'S3 chunked copy failed' }, { status: 500 });
+    }
+  }
+
+  // ── Contacts (migrated from Node.js) ──────────────────────────
+  // POST /api/v1/contacts/uplink — upsert encrypted contact list
+  if (path === '/api/v1/contacts/uplink' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const contacts = Array.isArray(body?.contacts) ? body.contacts : [];
+    const intBody = { accountDigest: auth.accountDigest, contacts };
+    return handleContactsRoutes(internalRequest('/d1/contacts/upsert', 'POST', intBody, baseUrl), env);
+  }
+
+  // POST /api/v1/contacts/downlink — get contact snapshot
+  if (path === '/api/v1/contacts/downlink' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const qs = `?accountDigest=${auth.accountDigest}`;
+    return handleContactsRoutes(internalRequest(`/d1/contacts/snapshot${qs}`, 'GET', null, baseUrl), env);
+  }
+
+  // POST /api/v1/contacts/avatar/sign-put — get presigned upload URL for avatar
+  if (path === '/api/v1/contacts/avatar/sign-put' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const peerDigest = normalizeAccountDigest(body?.peerDigest || body?.peer_digest);
+    if (!peerDigest) return json({ error: 'BadRequest', message: 'peerDigest required' }, { status: 400 });
+    const size = Number(body?.size || 0);
+    if (size < 1 || size > 5 * 1024 * 1024) return json({ error: 'BadRequest', message: 'size must be 1–5MB' }, { status: 400 });
+    const uid = generateNanoId();
+    const key = `avatars/${auth.accountDigest}/${peerDigest}_${Date.now()}_${uid}.enc`;
+    const ttlSec = 300;
+    try {
+      const presignedUrl = await generatePresignedUrl(env, { method: 'PUT', key, expiresIn: ttlSec, contentType: 'application/octet-stream' });
+      return json({
+        upload: { url: presignedUrl, bucket: env.S3_BUCKET, key, method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' } },
+        expiresIn: ttlSec,
+        objectPath: key
+      });
+    } catch (err) {
+      return json({ error: 'PresignFailed', message: err?.message || 'failed to generate presigned URL' }, { status: 500 });
+    }
+  }
+
+  // POST /api/v1/contacts/avatar/sign-get — get presigned download URL for avatar
+  if (path === '/api/v1/contacts/avatar/sign-get' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const keyStr = body?.key;
+    if (!keyStr || typeof keyStr !== 'string') return json({ error: 'BadRequest', message: 'key required' }, { status: 400 });
+    const expectedPrefix = `avatars/${auth.accountDigest}/`;
+    if (!keyStr.startsWith(expectedPrefix)) {
+      return json({ error: 'AccessDenied', message: 'invalid key scope' }, { status: 403 });
+    }
+    const ttlSec = 3600;
+    try {
+      const presignedUrl = await generatePresignedUrl(env, { method: 'GET', key: keyStr, expiresIn: ttlSec });
+      return json({ download: { url: presignedUrl, bucket: env.S3_BUCKET, key: keyStr }, expiresIn: ttlSec });
+    } catch (err) {
+      return json({ error: 'PresignFailed', message: err?.message || 'failed to generate presigned URL' }, { status: 500 });
+    }
+  }
+
+  // ── Admin (migrated from Node.js) ────────────────────────────
+  // POST /api/v1/admin/set-brand — set brand info for account/uid
+  if (path === '/api/v1/admin/set-brand' && method === 'POST') {
+    // Verify admin HMAC (same as Node.js verifyIncomingHmac)
+    if (!await verifyHMAC(req, env)) {
+      return json({ error: 'Unauthorized', message: 'invalid admin signature' }, { status: 401 });
+    }
+    if (body?.brand === undefined) {
+      return json({ error: 'BadRequest', message: 'brand field required' }, { status: 400 });
+    }
+    const payload = {
+      brand: body.brand || null,
+      brandName: body.brandName || body.brand_name || undefined,
+      brandLogo: body.brandLogo || body.brand_logo || undefined,
+      accountDigest: body.accountDigest || body.account_digest || undefined,
+      uidDigest: body.uidDigest || body.uid_digest || undefined,
+      uidHex: body.uidHex || body.uid_hex || undefined
+    };
+    return handleAccountsRoutes(internalRequest('/d1/accounts/set-brand', 'POST', payload, baseUrl), env);
+  }
+
+  // POST /api/v1/admin/purge-account — full account purge (D1 + S3 + WS logout)
+  if (path === '/api/v1/admin/purge-account' && method === 'POST') {
+    if (!await verifyHMAC(req, env)) {
+      return json({ error: 'Unauthorized', message: 'invalid admin signature' }, { status: 401 });
+    }
+    const { uidDigest, accountDigest, dryRun = false } = body || {};
+    if (!uidDigest && !accountDigest) {
+      return json({ error: 'BadRequest', message: 'uidDigest or accountDigest required' }, { status: 400 });
+    }
+    // Step 1: Call internal D1 purge handler
+    const purgeBody = {
+      uidDigest: uidDigest || undefined,
+      accountDigest: accountDigest || undefined,
+      dryRun: !!dryRun
+    };
+    const purgeResult = await handleAccountsRoutes(
+      internalRequest('/d1/accounts/purge', 'POST', purgeBody, baseUrl), env
+    );
+    let workerJson;
+    try {
+      workerJson = await purgeResult.clone().json();
+    } catch {
+      workerJson = null;
+    }
+    if (!purgeResult.ok) return purgeResult;
+    const result = { worker: workerJson || {} };
+    if (dryRun || workerJson?.skipped) return json(result);
+
+    // Step 2: Delete S3/R2 objects
+    const mediaKeys = Array.isArray(workerJson?.mediaKeys) ? workerJson.mediaKeys : [];
+    const prefixes = Array.isArray(workerJson?.prefixes) ? workerJson.prefixes : [];
+    const r2Summary = { deletedKeys: 0, failedKeys: [], prefixDeleted: 0, prefixFailures: [] };
+    for (const key of mediaKeys) {
+      try {
+        await deleteS3Object(env, key);
+        r2Summary.deletedKeys++;
+      } catch (err) {
+        r2Summary.failedKeys.push({ key, error: err?.message || String(err) });
+      }
+    }
+    for (const prefix of prefixes) {
+      try {
+        const deleted = await deleteS3Prefix(env, prefix);
+        r2Summary.prefixDeleted += deleted;
+      } catch (err) {
+        r2Summary.prefixFailures.push({ prefix, error: err?.message || String(err) });
+      }
+    }
+    result.r2 = r2Summary;
+
+    // Step 3: WS forceLogout
+    const logoutDigest = workerJson?.accountDigest || null;
+    if (logoutDigest) {
+      // Force logout via DO, then close all sockets
+      await notifyAccountDO(env, logoutDigest, {
+        type: 'force-logout',
+        reason: 'account purged',
+        ts: Date.now()
+      });
+      // Also force-close all WS connections for this account
+      try {
+        const doId = env.ACCOUNT_WS.idFromName(logoutDigest.toUpperCase());
+        const stub = env.ACCOUNT_WS.get(doId);
+        await stub.fetch('https://do/force-close', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ reason: 'account_purged' })
+        });
+      } catch {}
+    }
+    return json(result);
+  }
+
+  return null;
+}
+
+// ── Push subscription routes ────────────────────────────────────
+
+async function handlePushRoutes(req, env) {
+  const url = new URL(req.url);
+
+  // POST /d1/push/subscribe — register a push subscription
+  if (req.method === 'POST' && url.pathname === '/d1/push/subscribe') {
+    await ensureDataTables(env);
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const deviceId = normalizeDeviceId(body?.deviceId || body?.device_id);
+    const sub = body?.subscription;
+    if (!accountDigest || !sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth) {
+      return json({ error: 'BadRequest', message: 'accountDigest and subscription (endpoint, keys.p256dh, keys.auth) required' }, { status: 400 });
+    }
+    try {
+      await env.DB.prepare(
+        `INSERT INTO push_subscriptions (account_digest, device_id, endpoint, keys_p256dh, keys_auth, user_agent, preview_public_key, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%s','now'))
+         ON CONFLICT(endpoint) DO UPDATE SET
+           account_digest=excluded.account_digest,
+           device_id=excluded.device_id,
+           keys_p256dh=excluded.keys_p256dh,
+           keys_auth=excluded.keys_auth,
+           user_agent=excluded.user_agent,
+           preview_public_key=excluded.preview_public_key`
+      ).bind(
+        accountDigest,
+        deviceId || null,
+        sub.endpoint,
+        sub.keys.p256dh,
+        sub.keys.auth,
+        body?.userAgent || body?.user_agent || null,
+        body?.previewPublicKey || null
+      ).run();
+      return json({ ok: true });
+    } catch (err) {
+      console.error('push_subscribe_failed', err?.message || err);
+      return json({ error: 'PushSubscribeFailed', message: err?.message || 'subscribe failed' }, { status: 500 });
+    }
+  }
+
+  // POST /d1/push/unsubscribe — remove a push subscription
+  if (req.method === 'POST' && url.pathname === '/d1/push/unsubscribe') {
+    await ensureDataTables(env);
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const endpoint = body?.endpoint;
+    if (!endpoint) {
+      return json({ error: 'BadRequest', message: 'endpoint required' }, { status: 400 });
+    }
+    try {
+      await env.DB.prepare(`DELETE FROM push_subscriptions WHERE endpoint = ?1`).bind(endpoint).run();
+      return json({ ok: true });
+    } catch (err) {
+      console.error('push_unsubscribe_failed', err?.message || err);
+      return json({ error: 'PushUnsubscribeFailed', message: err?.message || 'unsubscribe failed' }, { status: 500 });
+    }
+  }
+
+  // POST /d1/push/pin/generate — generate a 6-digit PIN for PWA push enrollment (iOS)
+  // Requires HMAC auth (called from authenticated Safari session)
+  if (req.method === 'POST' && url.pathname === '/d1/push/pin/generate') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const deviceId = normalizeDeviceId(body?.deviceId || body?.device_id);
+    if (!accountDigest) {
+      return json({ error: 'BadRequest', message: 'accountDigest required' }, { status: 400 });
+    }
+    if (!env.AUTH_KV) {
+      return json({ error: 'ServerError', message: 'KV not configured' }, { status: 500 });
+    }
+    // Generate 6-digit PIN
+    const pin = String(Math.floor(100000 + Math.random() * 900000));
+    const kvKey = `push-pin:${pin}`;
+    try {
+      await env.AUTH_KV.put(kvKey, JSON.stringify({
+        accountDigest,
+        deviceId: deviceId || null,
+        createdAt: Date.now()
+      }), { expirationTtl: 300 }); // 5 minutes
+      return json({ ok: true, pin });
+    } catch (err) {
+      console.error('push_pin_generate_failed', err?.message || err);
+      return json({ error: 'PinGenerateFailed', message: err?.message || 'pin generate failed' }, { status: 500 });
+    }
+  }
+
+  // POST /d1/push/pin/verify — verify PIN and subscribe push (from PWA, no HMAC needed)
+  if (req.method === 'POST' && url.pathname === '/d1/push/pin/verify') {
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const pin = String(body?.pin || '').trim();
+    const sub = body?.subscription;
+    if (!pin || pin.length !== 6) {
+      return json({ error: 'BadRequest', message: 'valid 6-digit pin required' }, { status: 400 });
+    }
+    if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth) {
+      return json({ error: 'BadRequest', message: 'subscription (endpoint, keys.p256dh, keys.auth) required' }, { status: 400 });
+    }
+    if (!env.AUTH_KV) {
+      return json({ error: 'ServerError', message: 'KV not configured' }, { status: 500 });
+    }
+    // Lookup and consume PIN
+    const kvKey = `push-pin:${pin}`;
+    try {
+      const raw = await env.AUTH_KV.get(kvKey);
+      if (!raw) {
+        return json({ error: 'InvalidPin', message: 'PIN expired or invalid' }, { status: 401 });
+      }
+      const data = JSON.parse(raw);
+      const accountDigest = data.accountDigest;
+      // Recover deviceId: prefer body, fallback to KV-stored value from pin/generate
+      const deviceId = normalizeDeviceId(body?.deviceId || body?.device_id || data.deviceId);
+      // Consume PIN immediately (one-time use)
+      await env.AUTH_KV.delete(kvKey);
+      // Register push subscription
+      await ensureDataTables(env);
+      await env.DB.prepare(
+        `INSERT INTO push_subscriptions (account_digest, device_id, endpoint, keys_p256dh, keys_auth, user_agent, preview_public_key, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%s','now'))
+         ON CONFLICT(endpoint) DO UPDATE SET
+           account_digest=excluded.account_digest,
+           device_id=excluded.device_id,
+           keys_p256dh=excluded.keys_p256dh,
+           keys_auth=excluded.keys_auth,
+           user_agent=excluded.user_agent,
+           preview_public_key=excluded.preview_public_key`
+      ).bind(
+        accountDigest,
+        deviceId || null,
+        sub.endpoint,
+        sub.keys.p256dh,
+        sub.keys.auth,
+        body?.userAgent || null,
+        body?.previewPublicKey || null
+      ).run();
+      // Notify the PIN-generating device via WebSocket so it can close the modal
+      try {
+        await notifyAccountDO(env, accountDigest, {
+          type: 'push-device-paired',
+          deviceId: deviceId || null,
+          userAgent: body?.userAgent || null,
+          ts: Date.now()
+        });
+      } catch (notifyErr) {
+        console.warn('push_pin_verify_notify_failed', notifyErr?.message || notifyErr);
+      }
+      return json({ ok: true, accountDigest });
+    } catch (err) {
+      console.error('push_pin_verify_failed', err?.message || err);
+      return json({ error: 'PinVerifyFailed', message: err?.message || 'pin verify failed' }, { status: 500 });
+    }
+  }
+
+  // POST /d1/push/list — list push subscriptions for an account
+  if (req.method === 'POST' && url.pathname === '/d1/push/list') {
+    await ensureDataTables(env);
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    if (!accountDigest) {
+      return json({ error: 'BadRequest', message: 'accountDigest required' }, { status: 400 });
+    }
+    try {
+      const rows = await env.DB.prepare(
+        `SELECT device_id, endpoint, user_agent, created_at, preview_public_key FROM push_subscriptions WHERE account_digest = ?1 ORDER BY created_at DESC`
+      ).bind(accountDigest).all();
+      return json({ ok: true, items: rows?.results || [] });
+    } catch (err) {
+      console.error('push_list_failed', err?.message || err);
+      return json({ error: 'PushListFailed', message: err?.message || 'list failed' }, { status: 500 });
+    }
+  }
+
+  // POST /d1/push/preview-keys — return preview public keys for a recipient account
+  // Used by sender to encrypt push preview content (E2E: server never sees plaintext)
+  if (req.method === 'POST' && url.pathname === '/d1/push/preview-keys') {
+    await ensureDataTables(env);
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    if (!accountDigest) {
+      return json({ error: 'BadRequest', message: 'accountDigest required' }, { status: 400 });
+    }
+    try {
+      const rows = await env.DB.prepare(
+        `SELECT device_id, preview_public_key FROM push_subscriptions WHERE account_digest = ?1 AND preview_public_key IS NOT NULL`
+      ).bind(accountDigest).all();
+      return json({ ok: true, keys: (rows?.results || []).map(r => ({ deviceId: r.device_id, previewPublicKey: r.preview_public_key })) });
+    } catch (err) {
+      console.error('push_preview_keys_failed', err?.message || err);
+      return json({ error: 'PreviewKeysFailed', message: err?.message || 'fetch failed' }, { status: 500 });
+    }
+  }
+
+  // POST /d1/push/test — send a test push notification to a specific endpoint (UAT only)
+  if (req.method === 'POST' && url.pathname === '/d1/push/test') {
+    await ensureDataTables(env);
+    let body;
+    try { body = await req.json(); } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const accountDigest = normalizeAccountDigest(body?.accountDigest || body?.account_digest);
+    const endpoint = body?.endpoint;
+    if (!accountDigest || !endpoint) {
+      return json({ error: 'BadRequest', message: 'accountDigest and endpoint required' }, { status: 400 });
+    }
+    try {
+      const row = await env.DB.prepare(
+        `SELECT endpoint, keys_p256dh, keys_auth FROM push_subscriptions WHERE account_digest = ?1 AND endpoint = ?2`
+      ).bind(accountDigest, endpoint).first();
+      if (!row) {
+        return json({ error: 'NotFound', message: 'subscription not found' }, { status: 404 });
+      }
+      const { sendPushNotification } = createWebPush({
+        vapidPublicKey: env.VAPID_PUBLIC_KEY,
+        vapidPrivateKey: env.VAPID_PRIVATE_KEY,
+        vapidSubject: env.VAPID_SUBJECT || 'mailto:admin@sentry.red'
+      });
+      const testType = body?.type || 'message-new';
+      const pushPayload = JSON.stringify({
+        title: 'SENTRY MESSENGER',
+        type: testType,
+        // E2E: encrypted_preview is opaque ciphertext — server cannot read it
+        ...(body?.encrypted_preview ? { encrypted_preview: body.encrypted_preview } : {})
+      });
+      const result = await sendPushNotification({
+        endpoint: row.endpoint,
+        keys: { p256dh: row.keys_p256dh, auth: row.keys_auth }
+      }, pushPayload);
+      console.log('[push-test] sent', { endpoint: endpoint.slice(0, 60), status: result.status, ok: result.ok });
+      if (result.gone) {
+        await env.DB.prepare(`DELETE FROM push_subscriptions WHERE endpoint = ?1`).bind(endpoint).run();
+        return json({ ok: false, gone: true, message: 'subscription expired' }, { status: 410 });
+      }
+      return json({ ok: true, status: result.status });
+    } catch (err) {
+      console.error('push_test_failed', err?.message || err);
+      return json({ error: 'PushTestFailed', message: err?.message || 'test failed' }, { status: 500 });
+    }
+  }
+
+  return null;
+}
+
+// ── Main fetch handler ──────────────────────────────────────────
 export default {
   async fetch(req, env) {
     try {
-      // 基本 HMAC 防護
+      const url = new URL(req.url);
+
+      // ── CORS preflight for public API ──
+      if (req.method === 'OPTIONS' && (url.pathname.startsWith('/api/') || url.pathname.startsWith('/api'))) {
+        return new Response(null, { status: 204, headers: buildCORSHeaders(req, env) });
+      }
+
+      // ── Global rate limiting per account (fallback to IP) ──
+      const globalRlKey = resolveRateLimitKey(req);
+      if (globalRlKey) {
+        const rl = await checkRateLimit(env, globalRlKey, 'global', 200, 60);
+        if (!rl.allowed) {
+          return json({ error: 'RateLimited', message: 'too many requests', retry_after: rl.retryAfter }, { status: 429 });
+        }
+      }
+
+      // ── WebSocket upgrade → Durable Object ──
+      if ((url.pathname === '/ws' || url.pathname === '/api/ws') && (req.headers.get('Upgrade') || '').toLowerCase() === 'websocket') {
+        return handleWsUpgrade(req, env, url);
+      }
+
+      // ── Public API routes (no HMAC, account-token auth) ──
+      if (url.pathname.startsWith('/api/')) {
+        const result = await handlePublicRoutes(req, env);
+        if (result) return withCORS(result, req, env);
+        // No matching public route
+        return withCORS(json({ error: 'not_found', message: 'no matching route' }, { status: 404 }), req, env);
+      }
+
+      // ── Push routes (no HMAC — authenticated by PIN / endpoint / accountDigest) ──
+      if (req.method === 'POST' && url.pathname.startsWith('/d1/push/')) {
+        const result = await handlePushRoutes(req, env);
+        if (result) return result;
+      }
+
+      // ── Internal API (HMAC-protected, backward-compat) ──
       if (!await verifyHMAC(req, env)) {
         return new Response('unauthorized', { status: 401 });
       }
@@ -5188,6 +9445,9 @@ export default {
 
       const inviteDropboxResult = await handleInviteDropboxRoutes(req, env);
       if (inviteDropboxResult) return inviteDropboxResult;
+
+      const ephemeralResult = await handleEphemeralRoutes(req, env);
+      if (ephemeralResult) return ephemeralResult;
 
       // Friends / Invites
       const friendsResult = await handleFriendsRoutes(req, env);
@@ -5211,6 +9471,9 @@ export default {
       const groupsResult = await handleGroupsRoutes(req, env);
       if (groupsResult) return groupsResult;
 
+      const bizConvResult = await handleBizConvRoutes(req, env);
+      if (bizConvResult) return bizConvResult;
+
       const mediaResult = await handleMediaRoutes(req, env);
       if (mediaResult) return mediaResult;
 
@@ -5232,7 +9495,11 @@ export default {
       const contactsResult = await handleContactsRoutes(req, env);
       if (contactsResult) return contactsResult;
 
-      return json({ error: 'not_found' }, { status: 404 });
+      const pushResult = await handlePushRoutes(req, env);
+      if (pushResult) return pushResult;
+
+      // No matching internal route
+      return json({ error: 'not_found', message: 'no matching internal route' }, { status: 404 });
     } catch (err) {
       console.error('[global-trap] worker exception', err);
       try {

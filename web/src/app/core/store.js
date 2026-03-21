@@ -33,7 +33,13 @@ const _DEVICE_PRIV_WAITERS = new Set();
 const _DR_SESS = new Map(); // peerKey (accountDigest::deviceId) -> { rk, ckS, ckR, Ns, Nr, PN, myRatchetPriv, myRatchetPub, theirRatchetPub }
 const _DR_PEER_ALIASES = null; // legacy unused
 let _OPAQUE_SERVER_ID = null;
+let _BRAND_KEY = null;
+let _BRAND_NAME = null;
+let _BRAND_LOGO = null;
 const DEVICE_ID_STORAGE_KEY = 'device_id';
+const BRAND_STORAGE_KEY = 'brand';
+const BRAND_NAME_STORAGE_KEY = 'brand_name';
+const BRAND_LOGO_STORAGE_KEY = 'brand_logo';
 const DEVICE_COUNTER_PREFIX = 'device_counter::';
 
 function ensureDrHolderDebugId(holder) {
@@ -221,7 +227,10 @@ export function normalizeAccountDigest(value) {
   if (!value) return null;
   // Handle wrapped object if passed by mistake
   const raw = (typeof value === 'object') ? (value.peerAccountDigest ?? value.accountDigest ?? value.digest ?? String(value)) : value;
-  const cleaned = String(raw).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+  const str = String(raw).trim();
+  // Ephemeral guest digests: EPHEMERAL_<hex> — pass through as-is
+  if (str.startsWith('EPHEMERAL_')) return str;
+  const cleaned = str.replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
   return cleaned && cleaned.length === 64 ? cleaned : null;
 }
 export function normalizePeerUid(value) {
@@ -378,7 +387,13 @@ function writeDeviceCounter(deviceId, value) {
 }
 export function setDeviceCounter(value) {
   const deviceId = ensureDeviceId();
-  writeDeviceCounter(deviceId, Number(value));
+  const num = Number(value);
+  if (!Number.isFinite(num) || num < 0) return;
+  // Only advance — never regress the counter to prevent CounterTooLow errors
+  const current = readDeviceCounter(deviceId);
+  if (num > current) {
+    writeDeviceCounter(deviceId, num);
+  }
 }
 /**
  * Allocate next counter for current device, but only persist on commit().
@@ -606,3 +621,66 @@ export function getOpaqueServerId() { return _OPAQUE_SERVER_ID; }
 export function setOpaqueServerId(v) {
   _OPAQUE_SERVER_ID = v ? String(v) : null;
 }
+
+export function getBrandKey() { return _BRAND_KEY; }
+export function getBrandName() { return _BRAND_NAME; }
+export function getBrandLogo() { return _BRAND_LOGO; }
+export function setBrandKey(v) {
+  _BRAND_KEY = v ? String(v) : null;
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      if (_BRAND_KEY) {
+        sessionStorage.setItem(BRAND_STORAGE_KEY, _BRAND_KEY);
+      } else {
+        sessionStorage.removeItem(BRAND_STORAGE_KEY);
+      }
+    }
+  } catch { /* ignore */ }
+}
+export function setBrandName(v) {
+  _BRAND_NAME = v ? String(v) : null;
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      if (_BRAND_NAME) {
+        sessionStorage.setItem(BRAND_NAME_STORAGE_KEY, _BRAND_NAME);
+      } else {
+        sessionStorage.removeItem(BRAND_NAME_STORAGE_KEY);
+      }
+    }
+  } catch { /* ignore */ }
+}
+export function setBrandLogo(v) {
+  _BRAND_LOGO = v ? String(v) : null;
+  try {
+    if (typeof sessionStorage !== 'undefined') {
+      if (_BRAND_LOGO) {
+        sessionStorage.setItem(BRAND_LOGO_STORAGE_KEY, _BRAND_LOGO);
+      } else {
+        sessionStorage.removeItem(BRAND_LOGO_STORAGE_KEY);
+      }
+    }
+  } catch { /* ignore */ }
+}
+
+// Restore brand from sessionStorage on module load.
+// This only matters for the login→app page transition within the same tab:
+// SDM exchange sets brand in sessionStorage on login.html, then app.html
+// picks it up here. On login.html itself this is always empty (cleared on
+// logout, and we assume each login may be on a different device).
+(function restoreBrandFromStorage() {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    const stored = sessionStorage.getItem(BRAND_STORAGE_KEY);
+    if (stored && typeof stored === 'string' && stored.trim()) {
+      _BRAND_KEY = stored.trim();
+    }
+    const storedName = sessionStorage.getItem(BRAND_NAME_STORAGE_KEY);
+    if (storedName && typeof storedName === 'string' && storedName.trim()) {
+      _BRAND_NAME = storedName.trim();
+    }
+    const storedLogo = sessionStorage.getItem(BRAND_LOGO_STORAGE_KEY);
+    if (storedLogo && typeof storedLogo === 'string' && storedLogo.trim()) {
+      _BRAND_LOGO = storedLogo.trim();
+    }
+  } catch { /* ignore */ }
+})();

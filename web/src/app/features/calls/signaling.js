@@ -1,6 +1,6 @@
 import { log } from '../../core/log.js';
 import { normalizeAccountDigest, normalizePeerDeviceId, ensureDeviceId } from '../../core/store.js';
-import { emitCallEvent, CALL_EVENT } from './events.js';
+import { emitCallEvent, CALL_EVENT, subscribeCallEvent } from './events.js';
 import {
   CALL_SESSION_STATUS,
   CALL_REQUEST_KIND,
@@ -16,9 +16,24 @@ import {
 } from './state.js';
 
 let wsSend = null;
+let rekeyUnsub = null;
 
 export function setCallSignalSender(fn) {
   wsSend = typeof fn === 'function' ? fn : null;
+  // Subscribe to rekey events from key-manager epoch rotation (M-8)
+  if (wsSend && !rekeyUnsub) {
+    rekeyUnsub = subscribeCallEvent(CALL_EVENT.REKEY, handleRekeyEvent);
+  }
+  if (!wsSend && rekeyUnsub) {
+    rekeyUnsub();
+    rekeyUnsub = null;
+  }
+}
+
+function handleRekeyEvent({ envelope, callId } = {}) {
+  if (!envelope || !callId) return;
+  log({ callEpochRekey: true, callId, epoch: envelope.epoch });
+  sendCallSignal('call-rekey', { callId, envelope });
 }
 
 function applyPeerIdentityFromSignal(msg) {
@@ -162,13 +177,32 @@ function handleIncomingInvite(msg) {
     log({ callIncomingInviteIgnored: true, reason: result?.error || 'state-conflict' });
     // Notify the caller that we are busy so they see "對方忙線" instead of endless ringing
     if (result?.error === 'CALL_ALREADY_IN_PROGRESS' && fromAccountDigest && fromDeviceId) {
-      emitSignal({
-        type: 'call-busy',
-        callId: msg.callId,
-        targetAccountDigest: fromAccountDigest,
-        senderDeviceId: ensureDeviceId(),
-        targetDeviceId: fromDeviceId
-      });
+      // Check if this is a duplicate invite for the SAME call (the server
+      // sends an HTTP notification AND the caller sends a WS signal — both
+      // arrive as call-invite).  Only send call-busy for genuinely different
+      // calls; for duplicates, apply any envelope / capabilities that the
+      // first (HTTP-originated) invite didn't carry.
+      const currentSession = getCallSessionSnapshot();
+      if (currentSession?.callId && currentSession.callId === msg.callId) {
+        log({ callIncomingInviteDuplicate: true, callId: msg.callId });
+        // Apply envelope from the duplicate invite (the HTTP notification
+        // doesn't carry it, but the WS relay does).
+        if (envelope) {
+          try {
+            applyCallEnvelope(envelope);
+          } catch (err) {
+            log({ callDuplicateEnvelopeError: err?.message || err, callId: msg.callId });
+          }
+        }
+      } else {
+        emitSignal({
+          type: 'call-busy',
+          callId: msg.callId,
+          targetAccountDigest: fromAccountDigest,
+          senderDeviceId: ensureDeviceId(),
+          targetDeviceId: fromDeviceId
+        });
+      }
     }
   }
 }
@@ -201,7 +235,7 @@ function applySignalToState(msg) {
 }
 
 function maybeApplyEnvelopeFromSignal(msg) {
-  const envelope = msg?.payload?.envelope;
+  const envelope = msg?.payload?.envelope || msg?.envelope;
   if (!envelope || !msg?.callId) return;
   const session = getCallSessionSnapshot();
   if (!session?.callId || session.callId !== msg.callId) return;

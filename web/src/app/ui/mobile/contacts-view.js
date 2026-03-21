@@ -21,6 +21,7 @@ import {
   contactCoreReadyCount,
   getContactCore
 } from './contact-core-store.js';
+import { t } from '/locales/index.js';
 const contactCoreVerbose = DEBUG.contactCoreVerbose === true;
 
 export function initContactsView(options) {
@@ -137,7 +138,7 @@ export function initContactsView(options) {
       presenceManager.clearPresenceState();
       const empty = document.createElement('li');
       empty.className = 'contact-empty';
-      empty.textContent = '尚未新增好友';
+      empty.textContent = t('contacts.noFriends');
       contactsListEl.appendChild(empty);
       updateStats?.();
       updateContactCount();
@@ -153,8 +154,8 @@ export function initContactsView(options) {
       pendingInvites.forEach((entry) => {
         const expiresAt = Number(entry?.expiresAt || 0);
         const isExpired = Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= now / 1000;
-        const titleText = isExpired ? '已過期' : '同步中，等待對方完成建立';
-        const metaText = isExpired ? '已過期' : '同步中，等待對方完成建立';
+        const titleText = isExpired ? t('contacts.expired') : t('contacts.syncingWaitForPeer');
+        const metaText = isExpired ? t('contacts.expired') : t('contacts.syncingWaitForPeer');
         const li = document.createElement('li');
         li.className = 'contact-item pending-invite';
         li.dataset.inviteId = String(entry.inviteId);
@@ -179,7 +180,7 @@ export function initContactsView(options) {
       const key = contactKey(c);
       if (!key) return;
       if (selfDigest && key === selfDigest) return;
-      const name = normalizeNickname(c.nickname || '') || c.nickname || `好友 ${key.slice(-4)}`;
+      const name = normalizeNickname(c.nickname || '') || c.nickname || `${t('contacts.friendPrefix')}${key.slice(-4)}`;
       const avatarSrc = c.avatar?.thumbDataUrl || c.avatar?.previewDataUrl || '';
       const initials = name ? name.slice(0, 2) : key.slice(-2);
       const tsSeconds = Number(c.addedAt || 0) || Math.floor(Date.now() / 1000);
@@ -191,8 +192,8 @@ export function initContactsView(options) {
       const corruptInfo = corruptMap ? (corruptMap.get(key) || corruptMap.get(digestOnly)) : null;
       const pendingInfo = pendingMap ? (pendingMap.get(key) || pendingMap.get(digestOnly)) : null;
       const metaText = pendingInfo
-        ? '同步中，請稍候'
-        : (corruptInfo ? '狀態損壞，需要重新同步/重新邀請' : `最近同步：${lastStr}`);
+        ? t('contacts.syncingPleaseWait')
+        : (corruptInfo ? t('contacts.corruptNeedResync') : t('contacts.lastSync', { time: lastStr }));
 
       const li = document.createElement('li');
       li.className = 'contact-item';
@@ -209,7 +210,7 @@ export function initContactsView(options) {
             <div class="meta">${escapeHtml(metaText)}</div>
           </div>
         </div>
-        <button type="button" class="item-delete" aria-label="刪除好友"><i class='bx bx-trash'></i></button>`;
+        <button type="button" class="item-delete" aria-label="${t('contacts.deleteAriaLabel')}"><i class='bx bx-trash'></i></button>`;
 
       const deleteBtn = li.querySelector('.item-delete');
       deleteBtn?.addEventListener('click', (e) => {
@@ -369,9 +370,9 @@ export function initContactsView(options) {
     const key = contactKey(peerAccountDigest);
     if (!key) return;
     modal.showConfirmModal({
-      title: '刪除好友',
-      message: `確定要刪除「${escapeHtml(name || key)}」？`,
-      confirmLabel: '刪除',
+      title: t('contacts.deleteConfirmTitle'),
+      message: t('contacts.confirmDelete', { name: escapeHtml(name || key) }),
+      confirmLabel: t('common.delete'),
       onConfirm: async () => {
         try {
           const contactEntry = getContactCore(key);
@@ -391,7 +392,7 @@ export function initContactsView(options) {
           log({ contactDeleted: key });
         } catch (err) {
           log({ contactDeleteError: err?.message || err });
-          modal.showAlertModal({ title: '刪除失敗', message: '刪除失敗，請稍後再試。' });
+          modal.showAlertModal({ title: t('errors.deleteFailed'), message: t('contacts.deleteConfirmFailed') });
         }
       }
     });
@@ -420,17 +421,17 @@ export function initContactsView(options) {
       if (spinner && labelEl) {
         if (contactsRefreshing) {
           spinner.classList.add('spin');
-          labelEl.textContent = '刷新聯絡人清單中';
+          labelEl.textContent = t('contacts.refreshingList');
         } else {
           spinner.classList.remove('spin');
-          labelEl.textContent = clamped >= 10 ? '放開重整聯絡人列表' : '下拉更新聯絡人';
+          labelEl.textContent = clamped >= 10 ? t('contacts.releaseToRefresh') : t('contacts.pullToRefresh');
         }
       }
     }
     if (contactsScrollEl) {
       contactsScrollEl.style.transform = clamped > 0 ? `translateY(${clamped}px)` : '';
     }
-    if (contactsRefreshLabel) contactsRefreshLabel.textContent = progress >= 1 ? '鬆開更新聯絡人' : '下拉更新聯絡人';
+    if (contactsRefreshLabel) contactsRefreshLabel.textContent = progress >= 1 ? t('contacts.releaseToRefresh') : t('contacts.pullToRefresh');
   }
 
   function resetContactsPull({ animate = true } = {}) {
@@ -488,7 +489,7 @@ export function initContactsView(options) {
     if (pullDistance >= PULL_THRESHOLD && !pullInvalid) {
       contactsRefreshing = true;
       updateContactsPull(PULL_THRESHOLD);
-      if (contactsRefreshLabel) contactsRefreshLabel.textContent = '載入中…';
+      if (contactsRefreshLabel) contactsRefreshLabel.textContent = t('common.loading');
       try {
         await loadInitialContacts();
       } finally {
@@ -1195,7 +1196,7 @@ export function initContactsView(options) {
     };
 
     const now = Date.now();
-    const isPlaceholderNickname = (name) => typeof name === 'string' && name.startsWith('好友 ');
+    const isPlaceholderNickname = (name) => typeof name === 'string' && name.startsWith(t('contacts.friendPrefix'));
     const incomingAddedAt = Number.isFinite(addedAt) ? Number(addedAt) : now;
     const incomingUpdatedAt = Number.isFinite(updatedAt) ? Number(updatedAt) : incomingAddedAt;
     const existing = getContactCore(key);
@@ -1222,7 +1223,7 @@ export function initContactsView(options) {
     const nicknameToStore = takeIncomingProfile
       ? normalizedIncomingNickname
       : (existing?.nickname || normalizedIncomingNickname || null);
-    const resolvedNickname = nicknameToStore || `好友 ${key.slice(-4)}`;
+    const resolvedNickname = nicknameToStore || `${t('contacts.friendPrefix')}${key.slice(-4)}`;
 
     const contact = {
       peerAccountDigest: key,

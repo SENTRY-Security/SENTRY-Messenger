@@ -8,6 +8,7 @@ import { log, logCapped, logForensicsEvent, setLogSink } from '../core/log.js';
 
 console.info('[App] Version: 2026-01-14T10:55:00Z (Round 11 Fix + Debug)');
 import { AUDIO_PERMISSION_KEY } from './login-ui.js';
+import * as safeBrowser from '../features/safe-browser.js';
 import { DEBUG } from './mobile/debug-flags.js';
 import { flushOutbox } from '../features/queue/outbox.js';
 import { setMessagesWsSender } from '../features/messages-support/ws-sender-adapter.js';
@@ -30,7 +31,10 @@ import {
   getDeviceId,
   ensureDeviceId,
   clearDrState,
-  setBeforeClearDrStateHook
+  setBeforeClearDrStateHook,
+  getBrandKey,
+  getBrandName,
+  getBrandLogo
 } from '../core/store.js';
 import {
   persistContactSecrets,
@@ -91,7 +95,7 @@ import { createToastController } from './mobile/controllers/toast-controller.js'
 import { createNotificationAudioManager } from './mobile/notification-audio.js';
 import { initMessagesPane } from './mobile/messages-pane.js';
 import { initDrivePane } from './mobile/drive-pane.js';
-import { hydrateDrStatesFromContactSecrets, persistDrSnapshot } from '../features/dr-session.js';
+import { hydrateDrStatesFromContactSecrets, persistDrSnapshot, sendDrPlaintext } from '../features/dr-session.js';
 import { resetAllProcessedMessages } from '../features/messages-support/processed-messages-store.js';
 import { resetReceiptStore } from '../features/messages-support/receipt-store.js';
 import { messagesFlowFacade, setMessagesFlowFacadeWsSend } from '../features/messages-flow-facade.js';
@@ -107,7 +111,9 @@ import {
   sendCallSignal,
   initCallKeyManager,
   initCallMediaSession,
-  disposeCallMediaSession
+  disposeCallMediaSession,
+  isCallActive,
+  recoverCallMediaOnResume
 } from '../features/calls/index.js';
 import { initCallOverlay } from './mobile/call-overlay.js';
 import {
@@ -116,6 +122,10 @@ import {
   getLastBackupHydrateResult,
   getLatestBackupMeta
 } from '../features/contact-backup.js';
+import { hydrateBizConvFromBackup, triggerBizConvBackupIfDirty, clearBizConvOnLogout, flushBizConvBackupBeforeLogout, syncBizConvListFromServer, flushBizConvBackupBeacon, fetchActiveServerGroupIds } from '../features/biz-conv-backup.js';
+import { replayAllBizConvMessages } from '../features/biz-conv-replay.js';
+import { createBizConvCreateModal } from './mobile/modals/biz-conv-create-modal.js';
+import { createBizConvInfoModal } from './mobile/modals/biz-conv-info-modal.js';
 import { subscriptionStatus, redeemSubscription, uploadSubscriptionQr } from '../api/subscription.js';
 import { showVersionModal } from './version-info.js';
 import QrScanner from '../lib/vendor/qr-scanner.min.js';
@@ -125,11 +135,18 @@ import { createConnectionIndicator } from './mobile/connection-indicator.js';
 import { createSubscriptionModule } from './mobile/modals/subscription-modal.js';
 import { createSettingsModule } from './mobile/modals/settings-modal.js';
 import { createPasswordModal } from './mobile/modals/password-modal.js';
+import { createPushModal } from './mobile/modals/push-modal.js';
 import { createWsIntegration } from './mobile/ws-integration.js';
 import { isIosWebKitLikeBrowser } from './mobile/browser-detection.js';
+import { initI18n, t, applyDOMTranslations, setLang, getCurrentLang, onLangChange } from '/locales/index.js';
 
 // --- Loading Modal: report JS modules loaded ---
 window.__updateLoadingProgress?.('scripts');
+
+// --- i18n: load language pack early (non-blocking) ---
+const i18nReady = initI18n().catch(err => {
+  console.warn('[i18n] Init failed, using fallback keys:', err);
+});
 
 function summarizeMkForLog(mkRaw) {
   const summary = { mkLen: mkRaw instanceof Uint8Array ? mkRaw.length : 0, mkHash12: null };
@@ -199,12 +216,22 @@ const MODAL_VARIANTS = [
   'avatar-preview-modal',
   'settings-modal',
   'subscription-modal-shell',
-  'change-password-modal'
+  'change-password-modal',
+  'biz-conv-create-modal',
+  'biz-conv-info-modal',
+  'push-modal'
 ];
 
 let settingsInitPromise = null;
 
 const { showToast, hideToast } = createToastController(document.getElementById('appToast'));
+// Global toast event listener (for modules that don't have direct access to showToast)
+if (typeof document !== 'undefined') {
+  document.addEventListener('sentry:toast', (e) => {
+    const msg = e?.detail?.message;
+    if (msg) showToast(msg);
+  });
+}
 const rootStyle = typeof document !== 'undefined' ? document.documentElement?.style || null : null;
 
 const navbarEl = document.querySelector('.navbar');
@@ -470,16 +497,23 @@ function clearAllBrowserStorage(logoutMessage) {
   try { localStorage.clear?.(); } catch (err) { log({ secureLogoutLocalClearError: err?.message || err }); }
   try { sessionStorage.clear?.(); } catch (err) { log({ secureLogoutSessionClearError: err?.message || err }); }
 
-  try { sessionStorage.setItem(LOGOUT_MESSAGE_KEY, logoutMessage || '已登出'); } catch { }
+  try { sessionStorage.setItem(LOGOUT_MESSAGE_KEY, logoutMessage || t('auth.loggedOut')); } catch { }
 }
 
-async function secureLogout(message = '已登出', { auto = false } = {}) {
+async function secureLogout(message = t('auth.loggedOut'), { auto = false } = {}) {
   if (logoutInProgress) return;
   logoutInProgress = true;
   _autoLoggedOut = true;
 
-  const safeMessage = message || '已登出';
+  const safeMessage = message || t('auth.loggedOut');
   let logoutRedirectTarget = '/pages/logout.html';
+
+  // Capture brand info before storage is cleared so it can be forwarded
+  // to the logout page via query parameters.
+  const _bk = getBrandKey();
+  const _bn = getBrandName();
+  const _bl = getBrandLogo();
+
   try {
     const settingsSnapshot = getEffectiveSettingsState();
     const logoutRedirectInfo = getLogoutRedirectInfo(settingsSnapshot);
@@ -520,6 +554,14 @@ async function secureLogout(message = '已登出', { auto = false } = {}) {
       log({ contactSecretsLockError: err?.message || err });
     }
   }
+
+  // Flush biz-conv backup before clearing in-memory state
+  try {
+    await flushBizConvBackupBeforeLogout();
+  } catch (err) {
+    log({ bizConvLogoutFlushError: err?.message || err });
+  }
+  clearBizConvOnLogout();
 
   wsIntegration.close();
   presenceManager?.clearPresenceState?.();
@@ -643,12 +685,24 @@ async function secureLogout(message = '已登出', { auto = false } = {}) {
     try { showToast?.(safeMessage); } catch { }
   }
 
+  // Append brand info as query params so the logout page can display
+  // the correct brand even though all storage has been cleared.
+  if (logoutRedirectTarget === '/pages/logout.html' && (_bk || _bn || _bl)) {
+    try {
+      const u = new URL(logoutRedirectTarget, location.origin);
+      if (_bk) u.searchParams.set('bk', _bk);
+      if (_bn) u.searchParams.set('bn', _bn);
+      if (_bl) u.searchParams.set('bl', _bl);
+      logoutRedirectTarget = u.pathname + u.search;
+    } catch { /* keep original target */ }
+  }
+
   setTimeout(() => {
     try { location.replace(logoutRedirectTarget); } catch { location.href = logoutRedirectTarget; }
   }, 60);
 }
 
-function showForcedLogoutModal(message = '帳號已在其他裝置登入') {
+function showForcedLogoutModal(message = t('auth.accountLoggedInElsewhere')) {
   try {
     if (forcedLogoutOverlay && forcedLogoutOverlay.parentElement) {
       forcedLogoutOverlay.parentElement.removeChild(forcedLogoutOverlay);
@@ -677,13 +731,13 @@ function showForcedLogoutModal(message = '帳號已在其他裝置登入') {
     });
     const title = document.createElement('div');
     Object.assign(title.style, { fontSize: '16px', fontWeight: '700', marginBottom: '8px' });
-    title.textContent = '安全提示';
+    title.textContent = t('auth.securityAlert');
     const msg = document.createElement('div');
     Object.assign(msg.style, { fontSize: '14px', lineHeight: '1.6', marginBottom: '16px' });
     msg.textContent = message;
     const hint = document.createElement('div');
     Object.assign(hint.style, { fontSize: '12px', color: '#475569' });
-    hint.textContent = '將登出此裝置，請重新感應晶片登入。';
+    hint.textContent = t('auth.willLogoutDevice');
     panel.appendChild(title);
     panel.appendChild(msg);
     panel.appendChild(hint);
@@ -742,7 +796,7 @@ function isReloadNavigation() {
   return reloadNavigationMemo;
 }
 
-function forceReloadLogout(message = '重新整理後已自動登出') {
+function forceReloadLogout(message = t('auth.reloadAutoLogout')) {
   if (reloadLogoutTriggered) return;
   reloadLogoutTriggered = true;
   try {
@@ -1052,14 +1106,23 @@ function flushContactSecretsLocal(reason = 'manual') {
     // secureLogout may be blocked if logoutInProgress is already true
     // (e.g. from enforceReloadLogoutOnLoad). Use a direct redirect as fallback.
     if (logoutInProgress) {
+      let _guardTarget = '/pages/logout.html';
+      try {
+        const u = new URL(_guardTarget, location.origin);
+        const _gbk = getBrandKey(); const _gbn = getBrandName(); const _gbl = getBrandLogo();
+        if (_gbk) u.searchParams.set('bk', _gbk);
+        if (_gbn) u.searchParams.set('bn', _gbn);
+        if (_gbl) u.searchParams.set('bl', _gbl);
+        _guardTarget = u.pathname + u.search;
+      } catch { /* keep default */ }
       try { resetAll(); } catch { try { clearSecrets(); } catch { } }
       try { sessionStorage.clear(); } catch { }
-      try { sessionStorage.setItem(LOGOUT_MESSAGE_KEY, '登入資訊已失效，請重新感應晶片'); } catch { }
+      try { sessionStorage.setItem(LOGOUT_MESSAGE_KEY, t('auth.loginInfoExpired')); } catch { }
       setTimeout(() => {
-        try { location.replace('/pages/logout.html'); } catch { location.href = '/pages/logout.html'; }
+        try { location.replace(_guardTarget); } catch { location.href = _guardTarget; }
       }, 60);
     } else {
-      secureLogout('登入資訊已失效，請重新感應晶片', { auto: true });
+      secureLogout(t('auth.loginInfoExpired'), { auto: true });
     }
   }
 })();
@@ -1067,6 +1130,223 @@ function flushContactSecretsLocal(reason = 'manual') {
 // Navigation
 const tabs = ['contacts', 'messages', 'drive', 'profile'];
 let currentTab = 'drive';
+
+// SAFE tab – shown only when sentryLab is enabled
+function setSafeTabVisible(visible) {
+  const btn = document.getElementById('nav-safe');
+  if (btn) btn.style.display = visible ? '' : 'none';
+  if (visible && !tabs.includes('safe')) {
+    tabs.push('safe');
+    btn?.addEventListener('click', () => switchTab('safe'));
+    initSafeBrowser();
+  } else if (!visible && tabs.includes('safe')) {
+    tabs.splice(tabs.indexOf('safe'), 1);
+    if (currentTab === 'safe') switchTab('drive');
+    safeBrowser.disconnect();
+  }
+}
+
+// ── SAFE Browser integration ─────────────────────────────────────
+// Zero-config: auto-starts a browser container when the SAFE tab is opened.
+let _safeInitialized = false;
+let _safeAutoStarted = false;
+
+function initSafeBrowser() {
+  if (_safeInitialized) return;
+  _safeInitialized = true;
+
+  // ── DOM refs ───────────────────────────────────────────────────
+  const statusBadge = document.getElementById('safe-status-badge');
+  const statusText = document.getElementById('safe-status-text');
+  const elapsedText = document.getElementById('safe-elapsed-text');
+  const errorEl = document.getElementById('safe-error');
+  const errorMsg = document.getElementById('safe-error-msg');
+  const btnStart = document.getElementById('safe-btn-start');
+  const btnStop = document.getElementById('safe-btn-stop');
+  const btnOpen = document.getElementById('safe-btn-open');
+  const btnDeleteRef = document.getElementById('safe-btn-delete');
+
+  // ── Status badge colors ────────────────────────────────────────
+  const badgeStyles = {
+    stopped:    { bg: 'var(--bg-hover)', color: 'var(--muted)' },
+    running:    { bg: '#fef3c7',         color: '#92400e' },
+    healthy:    { bg: '#d1fae5',         color: '#065f46' },
+    stopping:   { bg: '#fef3c7',         color: '#92400e' },
+    error:      { bg: '#fee2e2',         color: '#991b1b' },
+  };
+
+  function statusI18nKey(s) {
+    switch (s) {
+      case 'stopped':          return 'safe.statusStopped';
+      case 'stopped_with_code': return 'safe.statusStopped';
+      case 'running':          return 'safe.statusReady';
+      case 'stopping':         return 'safe.statusStopping';
+      case 'healthy':          return 'safe.statusHealthy';
+      default:                 return 'safe.statusDefault';
+    }
+  }
+
+  function formatElapsed(totalSeconds) {
+    const d = Math.floor(totalSeconds / 86400);
+    const h = Math.floor((totalSeconds % 86400) / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = totalSeconds % 60;
+    const parts = [];
+    if (d > 0) parts.push(d + t('safe.unitDay'));
+    if (h > 0 || d > 0) parts.push(h + t('safe.unitHour'));
+    if (m > 0 || h > 0 || d > 0) parts.push(m + t('safe.unitMinute'));
+    parts.push(s + t('safe.unitSecond'));
+    return parts.join(' ');
+  }
+
+  function updatePanel(containerStatus, elapsed) {
+    const s = containerStatus || 'stopped';
+    const label = t(statusI18nKey(s));
+
+    if (statusText) statusText.textContent = label;
+    if (elapsedText) elapsedText.textContent = elapsed != null ? formatElapsed(elapsed) : '--';
+
+    // Badge
+    if (statusBadge) {
+      statusBadge.textContent = label;
+      const style = badgeStyles[s] || badgeStyles.stopped;
+      statusBadge.style.background = style.bg;
+      statusBadge.style.color = style.color;
+    }
+
+    // Button states
+    const isRunning = s === 'running' || s === 'healthy';
+    const isStopped = s === 'stopped' || s === 'stopped_with_code';
+    if (btnStart) btnStart.disabled = !isStopped;
+    if (btnStop) btnStop.disabled = isStopped;
+    if (btnOpen) btnOpen.disabled = !(s === 'healthy' || s === 'running');
+    if (btnDeleteRef) btnDeleteRef.disabled = isStopped;
+
+    // Error
+    if (errorEl) errorEl.style.display = 'none';
+  }
+
+  // ── SAFE modal (same pattern as PDF viewer) ─────────────────────
+  let _safeModalCleanup = null;
+
+  function openSafeModal(url) {
+    const modalEl = document.getElementById('modal');
+    const body = document.getElementById('modalBody');
+    if (!modalEl || !body) return;
+
+    _safeModalCleanup?.();
+
+    modalEl.classList.add('safe-modal');
+    document.getElementById('modalTitle').textContent = '';
+    body.innerHTML = `
+      <div class="safe-viewer">
+        <iframe sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+                allow="fullscreen *; clipboard-read; clipboard-write"
+                src="${url}"
+                allowfullscreen="true"></iframe>
+        <button type="button" class="safe-exit-btn" id="safeExitBtn"
+                aria-label="${t('viewer.close')}">
+          <i class='bx bx-x'></i>
+        </button>
+      </div>`;
+
+    modalEl.style.display = 'flex';
+    modalEl.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('modal-open');
+
+    const cleanup = () => {
+      const iframe = body.querySelector('iframe');
+      if (iframe) iframe.src = 'about:blank';
+      modalEl.classList.remove('safe-modal');
+      modalEl.style.display = 'none';
+      modalEl.setAttribute('aria-hidden', 'true');
+      document.body.classList.remove('modal-open');
+      body.innerHTML = '';
+      _safeModalCleanup = null;
+    };
+
+    body.querySelector('#safeExitBtn')?.addEventListener('click', () => {
+      cleanup();
+      safeBrowser.stop();
+    });
+
+    _safeModalCleanup = cleanup;
+  }
+
+  function closeSafeModal() {
+    _safeModalCleanup?.();
+  }
+
+  // ── State machine ─────────────────────────────────────────────
+  safeBrowser.onStateChange((state, detail) => {
+    switch (state) {
+      case 'idle':
+        updatePanel('stopped', null);
+        break;
+
+      case 'starting':
+        if (detail?.containerStatus) {
+          updatePanel(detail.containerStatus, detail.elapsed);
+        } else {
+          updatePanel('running', detail?.elapsed ?? null);
+        }
+
+        // When container is healthy and iframeUrl is ready → auto-mark connected after delay
+        if (detail?.iframeUrl && detail?.containerStatus !== 'running') {
+          updatePanel('healthy', detail?.elapsed);
+          setTimeout(() => {
+            if (safeBrowser.getState() === 'starting') safeBrowser.markConnected();
+          }, 5000);
+        }
+        break;
+
+      case 'connected':
+        updatePanel('healthy', safeBrowser.getElapsed());
+        break;
+
+      case 'stopped':
+        closeSafeModal();
+        updatePanel('stopped', null);
+        break;
+
+      case 'error':
+        closeSafeModal();
+        updatePanel('stopped', null);
+        if (errorEl) errorEl.style.display = '';
+        if (errorMsg) errorMsg.textContent = detail?.error || 'Connection error';
+        break;
+    }
+  });
+
+  // ── Button handlers ─────────────────────────────────────────────
+  btnStart?.addEventListener('click', () => safeBrowser.autoStart());
+  btnStop?.addEventListener('click', () => safeBrowser.stop());
+  btnOpen?.addEventListener('click', () => {
+    const url = safeBrowser.getIframeUrl();
+    if (url) openSafeModal(url);
+  });
+
+  const btnDelete = document.getElementById('safe-btn-delete');
+  btnDelete?.addEventListener('click', async () => {
+    if (!confirm(t('safe.deleteEnvConfirm'))) return;
+    btnDelete.disabled = true;
+    try {
+      await safeBrowser.destroy();
+    } catch (e) {
+      log({ safeDeleteError: e?.message });
+    } finally {
+      btnDelete.disabled = false;
+    }
+  });
+
+  // Initial state
+  updatePanel('stopped', null);
+}
+
+// Called when SAFE tab becomes active — no longer auto-starts
+function onSafeTabActivated() {
+  // Panel shows current state; user clicks Start manually
+}
 let _restoreContactsBars = null;
 function switchTab(name, options = {}) {
   currentTab = name;
@@ -1084,6 +1364,11 @@ function switchTab(name, options = {}) {
 
   if (name === 'drive') {
     drivePane.refreshDriveList().catch((err) => log({ driveListError: String(err?.message || err) }));
+  }
+
+  // SAFE tab: auto-start browser
+  if (name === 'safe') {
+    onSafeTabActivated();
   }
 
   if (name === 'messages') {
@@ -1178,7 +1463,7 @@ userMenuSettingsBtn?.addEventListener('click', (event) => {
 userMenuLogoutBtn?.addEventListener('click', (event) => {
   event.preventDefault();
   setUserMenuOpen(false);
-  secureLogout('已登出');
+  secureLogout(t('auth.loggedOut'));
 });
 
 document.addEventListener('click', (event) => {
@@ -1288,6 +1573,7 @@ const initMediaPermissionPrompt = () => {
 };
 
 const connIndicator = createConnectionIndicator(connectionIndicator);
+onLangChange(() => connIndicator.refresh());
 let _lastDegradedToastAt = 0;
 const _DEGRADED_TOAST_COOLDOWN = 60000; // 1 min — avoid spamming toast on flapping RTT
 const updateConnectionIndicator = (state) => {
@@ -1296,7 +1582,7 @@ const updateConnectionIndicator = (state) => {
     const now = Date.now();
     if (now - _lastDegradedToastAt >= _DEGRADED_TOAST_COOLDOWN) {
       _lastDegradedToastAt = now;
-      showToast?.('網路連線不穩定', { variant: 'warning' });
+      showToast?.(t('status.unstableNetwork'), { variant: 'warning' });
     }
   }
 };
@@ -1331,16 +1617,30 @@ const passwordModal = createPasswordModal({
 });
 const openChangePasswordModal = () => passwordModal.open();
 
+// openPushModal is a lazy reference — pushModal created after settingsMod
+let openPushModal;
+
 const settingsMod = createSettingsModule({
   deps: {
     log, showToast, sessionStore, openModal, closeModal, resetModalVariants,
     DEFAULT_SETTINGS, saveSettings, loadSettings,
     getMkRaw, getAccountDigest,
-    openChangePasswordModal,
-    showAlertModal
+    openChangePasswordModal, openPushModal: () => openPushModal?.(),
+    showAlertModal,
+    onLabToggle: (enabled) => setSafeTabVisible(enabled)
   }
 });
 const getEffectiveSettingsState = () => settingsMod.getEffective();
+
+const pushModal = createPushModal({
+  deps: {
+    log, showToast, openModal, closeModal, resetModalVariants, showAlertModal,
+    getAccountDigest,
+    getEffectiveSettings: () => settingsMod.getEffective(),
+    persistSettingsPatch: (patch) => settingsMod.persistPatch(patch)
+  }
+});
+openPushModal = () => pushModal.open();
 const bootLoadSettings = () => settingsMod.bootLoad();
 const isSettingsConversationId = (convId) => settingsMod.isSettingsConvId(convId);
 const handleSettingsSecureMessage = () => settingsMod.handleSecureMessage();
@@ -1360,6 +1660,98 @@ const showSubscriptionGateModal = () => subscriptionMod.showGateModal();
 
 document.addEventListener('subscription:gate', showSubscriptionGateModal);
 
+// --- Business Conversation Create Modal ---
+async function sendBizConvKDM(peerAccountDigest, peerDeviceId, kdmPayload) {
+  if (!peerAccountDigest) {
+    log({ bizConvKdmSkip: 'missing peer digest' });
+    return;
+  }
+  // Resolve device ID from DR session map if not provided
+  let deviceId = peerDeviceId || null;
+  if (!deviceId) {
+    const drMap = getDrSessMap?.();
+    if (drMap) {
+      for (const [key] of drMap) {
+        if (typeof key === 'string' && key.toUpperCase().startsWith(peerAccountDigest.toUpperCase() + '::')) {
+          deviceId = key.split('::')[1] || null;
+          break;
+        }
+      }
+    }
+  }
+  if (!deviceId) {
+    log({ bizConvKdmSkip: 'no device ID', peer: peerAccountDigest?.slice(-8) });
+    return;
+  }
+  const result = await sendDrPlaintext({
+    text: JSON.stringify(kdmPayload),
+    peerAccountDigest,
+    peerDeviceId: deviceId,
+    messageId: `kdm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    metaOverrides: { msgType: 'biz-conv-kdm' }
+  });
+
+  // Insert tombstone in the 1:1 conversation on sender side
+  try {
+    const oneOnOneConvId = result?.convId || null;
+    if (oneOnOneConvId && kdmPayload?.meta?.name) {
+      const { appendUserMessage } = await import('../features/timeline-store.js');
+      const { getConversationThreads } = await import('../features/conversation-updates.js');
+      const groupName = kdmPayload.meta.name;
+      const threads = getConversationThreads();
+      const thread = threads.get(oneOnOneConvId);
+      const peerName = thread?.nickname || null;
+      const tombstoneText = t('messages.bizConvGroupInviteTombstoneSender', {
+        receiver: peerName || t('messages.bizConvGroupInviteSenderUnknown'),
+        group: groupName
+      });
+      const tombstoneId = `kdm-invite-${kdmPayload?.conversation_id || ''}-epoch-${kdmPayload?.epoch || 0}`;
+      appendUserMessage(oneOnOneConvId, {
+        messageId: tombstoneId,
+        msgType: 'system',
+        subtype: 'system',
+        text: tombstoneText,
+        ts: Math.floor(Date.now() / 1000),
+        direction: 'outgoing'
+      });
+    }
+  } catch (err) {
+    console.warn('[sendBizConvKDM] tombstone insert failed', err?.message);
+  }
+}
+const bizConvCreateModal = createBizConvCreateModal({
+  deps: {
+    openModal, closeModal, resetModalVariants, showToast,
+    renderConversationList: () => messagesPane.renderConversationList(),
+    getDrSessMap,
+    sendBizConvKDM
+  }
+});
+const bizConvInfoModal = createBizConvInfoModal({
+  deps: {
+    openModal, closeModal, resetModalVariants, showToast, showConfirmModal,
+    renderConversationList: () => messagesPane.renderConversationList(),
+    sendBizConvKDM,
+    navigateToList: () => {
+      const state = messagesPane.getMessageState();
+      state.activeBizConv = false;
+      state.conversationId = null;
+      state.viewMode = 'list';
+      messagesPane.applyMessagesLayout();
+    }
+  }
+});
+
+// Re-render conversation list when a new biz-conv thread is added via KDM
+// (safety net in case message-flow-controller doesn't trigger it)
+window.addEventListener('biz-conv:thread-added', () => {
+  try { messagesPane.renderConversationList(); } catch (_) { /* ignore */ }
+});
+// Re-render after server sync restores group name/avatar into threads
+window.addEventListener('biz-conv:threads-synced', () => {
+  try { messagesPane.renderConversationList(); } catch (_) { /* ignore */ }
+});
+
 disableZoom();
 
 settingsInitPromise = bootLoadSettings()
@@ -1368,8 +1760,13 @@ settingsInitPromise = bootLoadSettings()
     const fallback = { ...DEFAULT_SETTINGS, updatedAt: Date.now() };
     if (!sessionStore.settingsState) sessionStore.settingsState = fallback;
     return sessionStore.settingsState || fallback;
-  });
+  })
+  .then(() => { setSafeTabVisible(!!getEffectiveSettingsState().sentryLab); });
 settingsMod.initPromise = settingsInitPromise;
+
+// Register Service Worker for push notifications (registration only, no auto-subscribe)
+import { registerServiceWorker } from '../features/push-subscription.js';
+registerServiceWorker();
 
 initVersionInfoButton({
   buttonId: 'userMenuVersionBtn',
@@ -1428,6 +1825,8 @@ initCallMediaSession({
 });
 initMediaPermissionPrompt();
 
+messagesPane.setBizConvCreateModal(() => bizConvCreateModal.open());
+messagesPane.setBizConvInfoModal((convId) => bizConvInfoModal.open(convId));
 messagesPane.attachDomEvents();
 messagesPane.ensureConversationIndex();
 messagesPane.renderConversationList();
@@ -1482,6 +1881,22 @@ document.addEventListener('contacts:entry-updated', (event) => {
 });
 document.addEventListener('contacts:removed', () => {
   updateProfileStats();
+});
+// Business conversation: add friend from group member list
+document.addEventListener('biz-conv:add-friend', async (event) => {
+  const { peerAccountDigest, peerDeviceId } = event?.detail || {};
+  if (!peerAccountDigest) return;
+  try {
+    await addContactEntry({
+      peerAccountDigest,
+      peerDeviceId: peerDeviceId || null,
+      source: 'biz-conv-group'
+    });
+    log({ bizConvAddFriend: { peer: peerAccountDigest?.slice(-8) } });
+  } catch (err) {
+    log({ bizConvAddFriendError: err?.message });
+    showToast?.(err?.message || 'Failed to add friend');
+  }
 });
 document.addEventListener('subscription:state', () => {
   if (typeof messagesPane.updateComposerAvailability === 'function') {
@@ -1743,18 +2158,6 @@ async function runPostLoginContactHydrate() {
     // Fake a success result for logging consistency
     remoteResult = { ok: true, status: 'skipped-login', entries: secrets.size, corruptCount: 0 };
   } else if (willFetchRemote) {
-    // [FIX] Optimistic Local Hydration:
-    // Load local secrets into memory IMMEDIATELY before awaiting network.
-    // This prevents the "Hydration Gap" where _DR_SESS is empty during the network request.
-    if (hasLocalSecrets) {
-      try {
-        await hydrateDrSnapshotsAfterBackup();
-        if (contactCoreVerbose) console.log('[contact-core] hydrate:optimistic-local-done');
-      } catch (err) {
-        log({ drSnapshotHydrateError: err?.message || err, source: 'optimistic-local-hydrate' });
-      }
-    }
-
     try {
       remoteResult = await hydrateContactSecretsFromBackup({ reason: 'post-login-hydrate' });
     } catch (err) {
@@ -1762,7 +2165,7 @@ async function runPostLoginContactHydrate() {
     }
   }
   if (remoteResult?.corrupt || remoteResult?.corruptBackup) {
-    showToast?.('備份損壞，需重新同步/重新邀請', { variant: 'error' });
+    showToast?.(t('share.backupCorruptResync'), { variant: 'error' });
   }
   if (contactCoreVerbose) {
     try {
@@ -1774,11 +2177,37 @@ async function runPostLoginContactHydrate() {
       }));
     } catch { }
   }
+  // Single DR hydrate after remote backup is available (replaces previous duplicate calls)
   try {
     await hydrateDrSnapshotsAfterBackup();
   } catch (err) {
     log({ drSnapshotHydrateError: err?.message || err, source: 'post-login-hydrate' });
   }
+  // Hydrate biz-conv (business conversation) state from encrypted server backup.
+  // Fetch active group IDs from server FIRST so stale (left/dissolved) groups
+  // in the old backup are filtered out and never appear in the UI.
+  let activeGroupIds = null;
+  try {
+    activeGroupIds = await fetchActiveServerGroupIds();
+  } catch (err) {
+    log({ bizConvActiveIdsFetchError: err?.message || err, source: 'post-login-hydrate' });
+  }
+  try {
+    await hydrateBizConvFromBackup(activeGroupIds);
+  } catch (err) {
+    log({ bizConvHydrateError: err?.message || err, source: 'post-login-hydrate' });
+  }
+  // Sync group list from server to rebuild threads and purge any remaining stale groups.
+  // Blocking: ensures cleanup completes before UI renders the conversation list.
+  try {
+    await syncBizConvListFromServer();
+  } catch (err) {
+    log({ bizConvListSyncError: err?.message || err, source: 'post-login-hydrate' });
+  }
+  // Replay recent group messages from server (non-blocking — runs in background)
+  replayAllBizConvMessages().catch(err => {
+    log({ bizConvReplayError: err?.message || err, source: 'post-login-hydrate' });
+  });
   let loadError = null;
   try {
     await loadInitialContacts();
@@ -2023,9 +2452,15 @@ profileInitPromise
 
 
 
-function handleBackgroundAutoLogout(reason = '畫面已移至背景，已自動登出', { skipVisibilityCheck = false } = {}) {
+function handleBackgroundAutoLogout(reason = t('auth.backgroundAutoLogout'), { skipVisibilityCheck = false } = {}) {
   if (logoutInProgress || _autoLoggedOut) {
     log({ autoLogoutSkip: 'logout-in-progress', logoutInProgress, _autoLoggedOut });
+    return;
+  }
+  // Never auto-logout while a call is active (incoming/outgoing/connecting/in-call).
+  // Backgrounding the tab during a call must not destroy the session.
+  if (isCallActive()) {
+    log({ autoLogoutSkip: 'call-active' });
     return;
   }
   if (isReloadNavigation()) {
@@ -2093,8 +2528,8 @@ function isFallbackProfileName(name, digest = null) {
   const normalized = normalizeProfileNickname(name);
   if (!normalized) return true;
   const trimmed = String(name).trim();
-  if (trimmed.startsWith('好友')) return true;
-  if (digest && trimmed === `好友 ${digest.slice(-4)}`) return true;
+  if (trimmed.startsWith(t('contacts.friendPrefix'))) return true;
+  if (digest && trimmed === `${t('contacts.friendPrefix')} ${digest.slice(-4)}`) return true;
   return false;
 }
 
@@ -2144,7 +2579,7 @@ function resolveLocalProfileSnapshot(peerDigest) {
 function applyProfileSnapshotToStores(peerDigest, profile) {
   const digest = toProfileDigest(peerDigest);
   if (!digest) return;
-  const nickname = normalizeProfileNickname(profile?.nickname || '') || `好友 ${digest.slice(-4)}`;
+  const nickname = normalizeProfileNickname(profile?.nickname || '') || `${t('contacts.friendPrefix')} ${digest.slice(-4)}`;
   const avatar = profile?.avatar || null;
   const updatedAt =
     Number.isFinite(profile?.updatedAt) ? Number(profile.updatedAt)
@@ -2423,14 +2858,14 @@ postLoginInitPromise
             log({ splashPermissionError: err?.message || err });
             window.__setSplashAuthorizing?.(false);
             window.__setSplashStatus?.(mediaPermissionMgr.describeError(err));
-            showToast?.('授權失敗，請再試一次', { variant: 'warning' });
+            showToast?.(t('mediaPermission.authFailed'), { variant: 'warning' });
             splashBusy = false;
           }
         };
         const handleSkip = () => {
           mediaPermissionMgr.warmUpAudio();
           try { sessionStorage.setItem(AUDIO_PERMISSION_KEY, 'granted'); } catch { }
-          showToast?.('未啟用麥克風，通話可能無法使用', { variant: 'warning' });
+          showToast?.(t('mediaPermission.micNotEnabled'), { variant: 'warning' });
           window.__hideLoadingModal?.();
         };
         enterBtn?.addEventListener('click', handleEnter);
@@ -2469,10 +2904,10 @@ function updateProfileStats() {
 // Grace period before background auto-logout fires (milliseconds).
 // iOS Safari can briefly set document.hidden = true during transient system
 // events (keyboard dismiss, share sheet, Control Center swipe, app-switcher
-// peek gesture).  A 2-second grace period allows these transient states to
+// peek gesture).  A 0.5-second grace period allows these transient states to
 // resolve without false-positive logouts.  The handler also re-checks
 // document.hidden before executing.
-const BACKGROUND_LOGOUT_DELAY_MS = 2000;
+const BACKGROUND_LOGOUT_DELAY_MS = 500;
 const _isIOS = isIosWebKitLikeBrowser();
 
 if (typeof document !== 'undefined') {
@@ -2493,12 +2928,22 @@ if (typeof document !== 'undefined') {
           reconcileOutgoingStatusNow: messagesPane?.reconcileOutgoingStatusNow
         })
       });
+      // Recover call media if a call is active — re-attempt audio/video
+      // playback and ICE restart if the connection degraded while hidden.
+      if (isCallActive()) {
+        try { recoverCallMediaOnResume(); } catch (err) {
+          log({ callMediaResumeError: err?.message || err });
+        }
+      }
     }
     if (document.hidden) {
-      // Pause WebSocket timers to save battery while backgrounded
-      wsIntegration.pause();
+      // Pause WebSocket timers to save battery while backgrounded,
+      // but keep the heartbeat alive during active calls so that
+      // ICE candidates and call signals continue to flow.
+      if (!isCallActive()) wsIntegration.pause();
       flushDrSnapshotsBeforeLogout('visibilitychange');
       flushContactSecretsLocal('visibilitychange');
+      triggerBizConvBackupIfDirty().catch(err => log({ bizConvBackupFlushError: err?.message }));
       backgroundLogoutTimer = setTimeout(() => {
         backgroundLogoutTimer = null;
         handleBackgroundAutoLogout();
@@ -2518,6 +2963,12 @@ if (typeof window !== 'undefined') {
           reconcileOutgoingStatusNow: messagesPane?.reconcileOutgoingStatusNow
         })
       });
+      // Recover call media on bfcache restore (same logic as visibilitychange)
+      if (isCallActive()) {
+        try { recoverCallMediaOnResume(); } catch (err) {
+          log({ callMediaResumeError: err?.message || err });
+        }
+      }
     }
   });
   window.addEventListener('pagehide', (event) => {
@@ -2525,6 +2976,7 @@ if (typeof window !== 'undefined') {
     if (event && event.persisted) return;
     flushDrSnapshotsBeforeLogout('pagehide');
     flushContactSecretsLocal('pagehide');
+    flushBizConvBackupBeacon();
     if (isReloadNavigation()) {
       forceReloadLogout();
       return;
@@ -2556,10 +3008,11 @@ if (typeof window !== 'undefined') {
     }
     backgroundLogoutTimer = setTimeout(() => {
       backgroundLogoutTimer = null;
-      handleBackgroundAutoLogout('視窗失去焦點，已自動登出', { skipVisibilityCheck: true });
+      handleBackgroundAutoLogout(t('auth.windowBlurAutoLogout'), { skipVisibilityCheck: true });
     }, BACKGROUND_LOGOUT_DELAY_MS);
   });
   window.addEventListener('beforeunload', () => {
+    flushBizConvBackupBeacon();
     disposeCallMediaSession();
   });
 }
@@ -2569,7 +3022,7 @@ import { unwrapDevicePrivWithMK } from '../crypto/prekeys.js';
 if (typeof document !== 'undefined') {
   document.addEventListener('sentry:outbox-fatal', (e) => {
     try {
-      const errorMsg = e.detail?.error || '連線發生嚴重錯誤';
+      const errorMsg = e.detail?.error || t('errors.fatalConnectionError');
       console.error('[App] Outbox Fatal Error:', errorMsg);
       showFatalErrorModal(errorMsg);
     } catch (err) {
@@ -2582,7 +3035,7 @@ if (typeof document !== 'undefined') {
  * Show a non-closable modal for fatal errors (e.g., persistent network failure).
  * User must re-login to restore consistency.
  */
-function showFatalErrorModal(message = '連線發生錯誤') {
+function showFatalErrorModal(message = t('errors.connectionError')) {
   try {
     // Reuse or replace existing overlay
     if (forcedLogoutOverlay && forcedLogoutOverlay.parentElement) {
@@ -2623,16 +3076,16 @@ function showFatalErrorModal(message = '連線發生錯誤') {
     // Title
     const title = document.createElement('div');
     Object.assign(title.style, { fontSize: '18px', fontWeight: '800', color: '#b91c1c' });
-    title.textContent = '無法傳送訊息';
+    title.textContent = t('modal.cannotSendMessage');
 
     // Body
     const msg = document.createElement('div');
     Object.assign(msg.style, { fontSize: '15px', lineHeight: '1.5', color: '#334155' });
-    msg.textContent = `偵測到持續性的連線或加密錯誤，為確保安全，請重新登入以修復連線。\n\n錯誤詳情: ${message}`;
+    msg.textContent = t('errors.persistentConnectionError', { message });
 
     // Action Button
     const btn = document.createElement('button');
-    btn.textContent = '重新登入';
+    btn.textContent = t('modal.reLogin');
     Object.assign(btn.style, {
       padding: '12px',
       borderRadius: '12px',
@@ -2649,7 +3102,7 @@ function showFatalErrorModal(message = '連線發生錯誤') {
     // Force logout on click
     btn.onclick = () => {
       btn.disabled = true;
-      btn.textContent = '正在登出...';
+      btn.textContent = t('modal.loggingOut');
       secureLogout('Fatal Error Reset', { auto: false });
     };
 

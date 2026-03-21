@@ -21,7 +21,9 @@ import {
   getAccountToken, setAccountToken,
   getAccountDigest, setAccountDigest,
   getOpaqueServerId, setOpaqueServerId,
-  getDeviceId, setDeviceId
+  getDeviceId, setDeviceId,
+  getBrandKey, setBrandKey,
+  setBrandName, setBrandLogo
 } from '../core/store.js';
 
 // crypto deps
@@ -37,6 +39,7 @@ import {
   generateOpksFrom
 } from '../crypto/prekeys.js';
 import { ensureOpaque } from './opaque.js';
+import { t } from '/locales/index.js';
 
 /** Convert any error to a readable message */
 function asMsg(e, fallback) {
@@ -209,6 +212,15 @@ export async function exchangeSDM(p) {
   } else {
     setOpaqueServerId(null);
   }
+  if (data.brand) {
+    setBrandKey(data.brand);
+  }
+  if (data.brand_name) {
+    setBrandName(data.brand_name);
+  }
+  if (data.brand_logo) {
+    setBrandLogo(data.brand_logo);
+  }
 
   emitIdentityTrace({
     sourceTag: 'sdm-exchange',
@@ -223,7 +235,8 @@ export async function exchangeSDM(p) {
     hasMK: getHasMK(),
     wrapped_mk: getWrappedMK() || undefined,
     accountToken: getAccountToken() || data.account_token || null,
-    accountDigest: getAccountDigest() || data.account_digest || null
+    accountDigest: getAccountDigest() || data.account_digest || null,
+    brand: getBrandKey() || null
   };
 }
 
@@ -293,7 +306,7 @@ export async function unlockAndInit({ password, onProgress, onMkReady, preBundle
   report('devkeys-fetch', 'start');
   const devkeysPromise = fetchDevkeys().then(
     (result) => {
-      if (!result) report('devkeys-fetch', 'info', '未找到裝置備份');
+      if (!result) report('devkeys-fetch', 'info', t('bootstrap.deviceBackupNotFound'));
       else report('devkeys-fetch', 'success');
       return result;
     },

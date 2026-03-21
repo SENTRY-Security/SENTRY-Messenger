@@ -2,7 +2,7 @@
 // Manage E2EE contacts list stored in contacts-<account_digest> conversation (UID fallback).
 
 import { fetchJSON } from '../core/http.js';
-import { createSecureMessage } from '../api/messages.js';
+import { createSecureMessage, fetchSecureMaxCounter } from '../api/messages.js';
 import { createMessage } from '../api/media.js';
 import {
   getMkRaw,
@@ -723,11 +723,19 @@ export async function saveContact(contact) {
 
     if (!r.ok) {
       if (r.status === 409 && data?.error === 'CounterTooLow') {
-        const maxCounter = Number.isFinite(data?.max_counter)
+        let maxCounter = Number.isFinite(data?.max_counter)
           ? Number(data.max_counter)
           : Number.isFinite(data?.details?.max_counter)
             ? Number(data.details.max_counter)
             : null;
+        if (maxCounter === null) {
+          try {
+            const probe = await fetchSecureMaxCounter({ conversationId: convIds[0], senderDeviceId: deviceId });
+            if (probe?.r?.ok && Number.isFinite(probe?.data?.maxCounter)) {
+              maxCounter = probe.data.maxCounter;
+            }
+          } catch {}
+        }
         const seed = maxCounter === null ? 1 : maxCounter + 1;
         setDeviceCounter(seed);
         log({
@@ -737,7 +745,7 @@ export async function saveContact(contact) {
             seed
           }
         });
-        return false; // Caller should retry? saveContact doesn't retry automatically here, but simple return false is safer than throw loop.
+        return false;
       }
       const msg = typeof data === 'string' ? data : data?.error || data?.message || 'contact save failed';
       throw new Error(msg);
@@ -777,24 +785,47 @@ async function deriveContactStorageKey(mkRaw) {
   );
 }
 
+const CONTACT_BLOB_AAD = new TextEncoder().encode('contact-storage-v1');
+
 async function encryptContactBlob(storageKey, data) {
   if (!storageKey || !data) return null;
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const encoded = new TextEncoder().encode(JSON.stringify(data));
-  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, storageKey, encoded);
-  // Format: iv_b64:ct_b64
-  return `${bytesToBase64Url(iv)}:${bytesToBase64Url(new Uint8Array(ct))}`;
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: CONTACT_BLOB_AAD }, storageKey, encoded);
+  // Format: v2:iv_b64:ct_b64 (v2 = with AAD)
+  return `v2:${bytesToBase64Url(iv)}:${bytesToBase64Url(new Uint8Array(ct))}`;
 }
 
 async function decryptContactBlob(storageKey, blobStr) {
   if (!storageKey || !blobStr) return null;
   const parts = blobStr.split(':');
-  if (parts.length !== 2) return null;
-  const iv = b64ToU8(parts[0]);
-  const ct = b64ToU8(parts[1]);
+  // v2 format: v2:iv_b64:ct_b64 (with AAD)
+  // legacy format: iv_b64:ct_b64 (no AAD)
+  let iv, ct, useAad;
+  if (parts.length === 3 && parts[0] === 'v2') {
+    iv = b64ToU8(parts[1]);
+    ct = b64ToU8(parts[2]);
+    useAad = true;
+  } else if (parts.length === 2) {
+    iv = b64ToU8(parts[0]);
+    ct = b64ToU8(parts[1]);
+    useAad = false;
+  } else {
+    return null;
+  }
   if (!iv || !ct) return null;
   try {
-    const dec = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, storageKey, ct);
+    const params = { name: 'AES-GCM', iv };
+    if (useAad) params.additionalData = CONTACT_BLOB_AAD;
+    let dec;
+    try {
+      dec = await crypto.subtle.decrypt(params, storageKey, ct);
+    } catch {
+      // Fallback: retry with opposite AAD for transition-window data
+      const fallbackParams = { name: 'AES-GCM', iv };
+      if (!useAad) fallbackParams.additionalData = CONTACT_BLOB_AAD;
+      dec = await crypto.subtle.decrypt(fallbackParams, storageKey, ct);
+    }
     return JSON.parse(new TextDecoder().decode(dec));
   } catch {
     return null;

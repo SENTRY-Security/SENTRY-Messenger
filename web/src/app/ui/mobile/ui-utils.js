@@ -79,6 +79,9 @@ export function shouldNotifyForMessage({ computedIsHistoryReplay = false, silent
   return true;
 }
 
+// Re-export i18n utilities for convenience
+export { t, getCurrentLang, setLang, applyDOMTranslations } from '/locales/index.js';
+
 export async function blobToDataURL(blob) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -97,31 +100,38 @@ export function buildConversationSnippet(text) {
   return cleaned.length > SNIPPET_MAX_LEN ? `${cleaned.slice(0, SNIPPET_MAX_LEN - 1)}…` : cleaned;
 }
 
-const MSG_TYPE_LABELS = {
-  'call-log': '通話紀錄',
-  'call_log': '通話紀錄',
-  'conversation-deleted': '',
-  'conversation_deleted': '',
-  'session-init': '安全連線已建立',
-  'session_init': '安全連線已建立',
-  'session-ack': '安全連線已建立',
-  'session_ack': '安全連線已建立',
-  'system': '系統訊息'
-};
+import { t } from '/locales/index.js';
 
-const CONTACT_SHARE_REASON_LABELS = {
-  nickname: '已更新暱稱',
-  avatar: '已更新頭像',
-  profile: '已更新個人資料',
-  update: '已更新個人資料',
-  manual: '已更新個人資料'
-};
+function getMsgTypeLabels() {
+  return {
+    'call-log': t('calls.callLog'),
+    'call_log': t('calls.callLog'),
+    'conversation-deleted': '',
+    'conversation_deleted': '',
+    'session-init': t('messages.secureConnectionEstablished'),
+    'session_init': t('messages.secureConnectionEstablished'),
+    'session-ack': t('messages.secureConnectionEstablished'),
+    'session_ack': t('messages.secureConnectionEstablished'),
+    'system': t('messages.systemMessage')
+  };
+}
+
+function getContactShareReasonLabels() {
+  return {
+    nickname: t('profile.updatedNickname'),
+    avatar: t('profile.updatedAvatar'),
+    profile: t('profile.updatedProfile'),
+    update: t('profile.updatedProfile'),
+    manual: t('profile.updatedProfile')
+  };
+}
 
 function resolveContactSharePreview(item) {
+  const labels = getContactShareReasonLabels();
   // 1. Try reason from spread content fields (live-decrypt path)
   const directReason = item?.reason;
-  if (directReason && CONTACT_SHARE_REASON_LABELS[directReason]) {
-    return CONTACT_SHARE_REASON_LABELS[directReason];
+  if (directReason && labels[directReason]) {
+    return labels[directReason];
   }
   // 2. Try parsing text JSON (formatThreadPreview path — text is raw JSON)
   const text = typeof item?.text === 'string' ? item.text : '';
@@ -129,12 +139,12 @@ function resolveContactSharePreview(item) {
     try {
       const parsed = JSON.parse(text);
       const reason = parsed?.reason;
-      if (reason && CONTACT_SHARE_REASON_LABELS[reason]) {
-        return CONTACT_SHARE_REASON_LABELS[reason];
+      if (reason && labels[reason]) {
+        return labels[reason];
       }
     } catch { /* not JSON */ }
   }
-  return '已建立安全連線';
+  return t('messages.secureConnectionEstablished');
 }
 
 /**
@@ -144,8 +154,9 @@ function resolveContactSharePreview(item) {
  * Accepts either a timeline message object or a plain { text, msgType, media, callLog } bag.
  */
 export function resolveMessagePreview(item) {
-  if (!item) return '有新訊息';
+  if (!item) return t('messages.newMessage');
   const msgType = item.msgType || item.type || item.subtype || null;
+  const msgTypeLabels = getMsgTypeLabels();
 
   // 1a. Contact-share — reason-aware preview
   if (msgType === 'contact-share' || msgType === 'contact_share') {
@@ -153,29 +164,34 @@ export function resolveMessagePreview(item) {
   }
 
   // 1b. Static type labels (non-media)
-  if (msgType && MSG_TYPE_LABELS[msgType] !== undefined) {
-    return MSG_TYPE_LABELS[msgType] || '';
+  if (msgType && msgTypeLabels[msgType] !== undefined) {
+    return msgTypeLabels[msgType] || '';
   }
 
   // 2. Media — resolve by MIME when available
   if (msgType === 'media' || item.media) {
     const media = item.media || item;
     const mime = (media.contentType || media.mimeType || '').toLowerCase();
-    if (mime.startsWith('image/')) return '[圖片]';
-    if (mime.startsWith('video/')) return '[影片]';
-    const name = media.name || media.filename || '附件';
-    return `[檔案] ${name}`;
+    if (mime.startsWith('image/')) return `[${t('common.image')}]`;
+    if (mime.startsWith('video/')) return `[${t('common.video')}]`;
+    const name = media.name || media.filename || t('common.attachment');
+    return `${t('fileSending.filePrefix')}${name}`;
   }
 
   // 3. Call log
   if (msgType === 'call-log' || msgType === 'call_log') {
-    const kind = item.callLog?.kind || item.kind || '';
-    return kind === 'video' ? '[視訊通話]' : '[語音通話]';
+    let kind = item.callLog?.kind || item.kind || '';
+    // When called from preview context, callLog/kind may be absent.
+    // Parse the JSON text payload to extract the kind field.
+    if (!kind && typeof item.text === 'string' && item.text.trim().startsWith('{')) {
+      try { kind = JSON.parse(item.text)?.kind || ''; } catch { /* ignore */ }
+    }
+    return kind === 'video' ? `[${t('calls.videoCall')}]` : `[${t('calls.voiceCall')}]`;
   }
 
   // 4. Plain text — check for raw JSON payloads
   const text = typeof item.text === 'string' ? item.text : '';
-  if (text === 'CONTROL_SKIP') return '系統訊息';
+  if (text === 'CONTROL_SKIP') return t('messages.systemMessage');
   if (text.startsWith('{') || text.startsWith('[')) {
     try {
       const parsed = JSON.parse(text);
@@ -183,32 +199,34 @@ export function resolveMessagePreview(item) {
       if (innerType === 'contact-share' || innerType === 'contact_share') {
         return resolveContactSharePreview(parsed);
       }
-      if (innerType && MSG_TYPE_LABELS[innerType] !== undefined) {
-        return MSG_TYPE_LABELS[innerType];
+      if (innerType && msgTypeLabels[innerType] !== undefined) {
+        return msgTypeLabels[innerType];
       }
       if (innerType === 'media') {
         const mime = (parsed.contentType || parsed.mimeType || '').toLowerCase();
-        if (mime.startsWith('image/')) return '[圖片]';
-        if (mime.startsWith('video/')) return '[影片]';
-        return `[檔案] ${parsed.name || parsed.filename || '附件'}`;
+        if (mime.startsWith('image/')) return `[${t('common.image')}]`;
+        if (mime.startsWith('video/')) return `[${t('common.video')}]`;
+        return `${t('fileSending.filePrefix')}${parsed.name || parsed.filename || t('common.attachment')}`;
       }
-      return '有新訊息';
+      return t('messages.newMessage');
     } catch { /* not JSON, fall through */ }
   }
-  return buildConversationSnippet(text) || '有新訊息';
+  return buildConversationSnippet(text) || t('messages.newMessage');
 }
 
 /**
  * Degraded preview strings that should not overwrite a good decrypted preview.
  */
-const DEGRADED_PREVIEWS = new Set([
-  '訊息尚未解密🔐',
-  '(載入失敗)',
-  '🔒 加密訊息'
-]);
+function getDegradedPreviews() {
+  return new Set([
+    t('messages.notDecrypted'),
+    t('messages.loadFailed'),
+    t('messages.encryptedMessage')
+  ]);
+}
 
 export function isDegradedPreview(text) {
-  return !text || DEGRADED_PREVIEWS.has(text);
+  return !text || getDegradedPreviews().has(text);
 }
 
 /**
@@ -253,27 +271,27 @@ export function updateThreadPreview(thread, { text, ts, messageId, direction, ms
  * Single formatThreadPreview — render a thread object into a display snippet.
  */
 export function formatThreadPreview(thread) {
-  if (!thread) return '尚無訊息';
+  if (!thread) return t('messages.noMessages');
   if (thread.lastMsgType === 'conversation-deleted' || thread.lastMsgType === 'conversation_deleted') {
-    return '尚無訊息';
+    return t('messages.noMessages');
   }
   // contact-share preview is already reason-resolved when stored; re-resolving
   // would lose the reason field and fall back to the generic label.
   if ((thread.lastMsgType === 'contact-share' || thread.lastMsgType === 'contact_share')
       && thread.lastMessageText && !isDegradedPreview(thread.lastMessageText)) {
     const csPreview = thread.lastMessageText;
-    if (thread.lastDirection === 'outgoing') return `你：${csPreview}`;
+    if (thread.lastDirection === 'outgoing') return `${t('common.you')}：${csPreview}`;
     return csPreview;
   }
   const preview = resolveMessagePreview({
     text: thread.lastMessageText || '',
     msgType: thread.lastMsgType || null
   });
-  if (!preview || preview === '有新訊息') {
-    return thread.lastMessageTs ? '' : '尚無訊息';
+  if (!preview || preview === t('messages.newMessage')) {
+    return thread.lastMessageTs ? '' : t('messages.noMessages');
   }
   if (thread.lastDirection === 'outgoing') {
-    return `你：${preview}`;
+    return `${t('common.you')}：${preview}`;
   }
   return preview;
 }

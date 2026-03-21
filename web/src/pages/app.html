@@ -13,6 +13,15 @@
   <meta name="theme-color" content="#0f172a" media="(prefers-color-scheme: light)" />
   <title>SENTRY MESSENGER — App</title>
   <link rel="icon" href="/assets/favicon.ico" type="image/x-icon" />
+  <link rel="manifest" href="/manifest.json" />
+  <script>
+    // PWA standalone detection: redirect to push management page
+    // (PWA cannot login — requires NTAG424 physical chip)
+    try {
+      var isPWA = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+      if (isPWA) { location.replace('/pages/pwa-push.html'); }
+    } catch (e) {}
+  </script>
   <!-- Loading Modal inline styles — renders before any external CSS -->
   <style>
     #appLoadingModal{position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#050a14;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;overflow:hidden}
@@ -29,6 +38,9 @@
     #appLoadingModal .loading-bar-scan{position:absolute;top:0;height:100%;width:40px;background:linear-gradient(90deg,transparent,rgba(56,189,248,0.6),transparent);animation:app-scan 2s linear infinite}
     #appLoadingModal .loading-label{font-size:12px;color:rgba(148,163,184,0.7);letter-spacing:1px}
     @keyframes app-pulse{0%,100%{filter:brightness(0) invert(1) drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25))}50%{filter:brightness(0) invert(1) drop-shadow(0 0 28px rgba(56,189,248,0.7)) drop-shadow(0 0 60px rgba(99,102,241,0.4))}}
+    @keyframes app-pulse-mono{0%,100%{filter:drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25))}50%{filter:drop-shadow(0 0 28px rgba(56,189,248,0.7)) drop-shadow(0 0 60px rgba(99,102,241,0.4))}}
+    #appLoadingModal .loading-logo.mono-done{filter:drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25));animation-name:app-pulse-mono}
+    #appLoadingModal .loading-logo.color-logo{filter:drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25));animation-name:app-pulse-mono}
     @keyframes app-scan{0%{left:-40px}100%{left:calc(100% + 40px)}}
     /* ── Morph: progress bar → enter button ── */
     #appLoadingModal .loading-bar-track{transition:width .6s cubic-bezier(.4,0,.2,1),height .6s cubic-bezier(.4,0,.2,1),border-radius .6s ease,box-shadow .6s ease,transform .15s ease}
@@ -50,12 +62,16 @@
     #appLoadingModal.morph-authorizing .loading-enter-label{letter-spacing:2px}
     #appLoadingModal.morph-success .loading-bar-fill{background:linear-gradient(90deg,#22c55e,#15803d)!important}
     #appLoadingModal.morph-success .loading-bar-track{animation:none;box-shadow:0 0 25px rgba(34,197,94,0.5),0 0 60px rgba(34,197,94,0.2)}
+    /* ── UAT Environment Badge ── */
+    .uat-badge{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:100000;display:none;padding:4px 18px;border-radius:6px;font-size:13px;font-weight:800;letter-spacing:3px;color:#000;background:linear-gradient(90deg,#facc15,#fb923c);box-shadow:0 0 16px rgba(250,204,21,0.5),0 2px 8px rgba(0,0,0,0.4);animation:uat-pulse 2s ease-in-out infinite;pointer-events:none;user-select:none;font-family:system-ui,sans-serif}
+    .uat-badge.visible{display:block}
+    @keyframes uat-pulse{0%,100%{box-shadow:0 0 16px rgba(250,204,21,0.5),0 2px 8px rgba(0,0,0,0.4)}50%{box-shadow:0 0 28px rgba(250,204,21,0.8),0 2px 12px rgba(0,0,0,0.5)}}
   </style>
   <!-- Async CSS — non-render-blocking -->
   <link rel="stylesheet" href="/assets/app-bundle.css" media="print" onload="this.media='all'" />
   <noscript><link rel="stylesheet" href="/assets/app-bundle.css" /></noscript>
-  <link rel="stylesheet" href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css" integrity="sha384-42kyIPf7HDYLkGffmxDhSx/3Z/53wGBs3nD6wEFxsbeDc7rMO6mkYbkAcpRsnMU2" crossorigin="anonymous" media="print" onload="this.media='all'" />
-  <noscript><link rel="stylesheet" href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css" integrity="sha384-42kyIPf7HDYLkGffmxDhSx/3Z/53wGBs3nD6wEFxsbeDc7rMO6mkYbkAcpRsnMU2" crossorigin="anonymous" /></noscript>
+  <link rel="stylesheet" href="/assets/libs/boxicons/boxicons.min.css" media="print" onload="this.media='all'" />
+  <noscript><link rel="stylesheet" href="/assets/libs/boxicons/boxicons.min.css" /></noscript>
   <script>
     // 防止未初始化時的全域 ReferenceError（Safari 會因 inviteBtn 未宣告而中斷）
     if (typeof inviteBtn === 'undefined') {
@@ -65,29 +81,185 @@
   </script>
   <script>
     window.APP_VERSION = '0.1.21-atomic-fix';
+    window.APP_ENV = 'uat';
     window.APP_BUILD_AT = (function () { try { return new Date(document.lastModified).toISOString(); } catch { return new Date().toISOString(); } })();
+  </script>
+  <script>
+    // Inline i18n bootstrap — loads locale JSON synchronously so splash text is translated on first paint.
+    // Uses browser language ONLY (no localStorage) to prevent nationality metadata leakage before login.
+    // After login, encrypted settings will override language via setLang().
+    (function(){
+      var lang = 'en';
+      try { lang = navigator.language || 'en'; } catch {}
+      var tag = lang.toLowerCase();
+      if (tag==='zh-hant'||tag==='zh-tw'||tag==='zh-hk'||tag.indexOf('zh-hant')===0) tag='zh-Hant';
+      else if (tag==='zh-hans'||tag==='zh-cn'||tag==='zh-sg'||tag.indexOf('zh-hans')===0||tag==='zh') tag='zh-Hans';
+      else tag = tag.split('-')[0];
+      var supported = {en:1,'zh-Hant':1,'zh-Hans':1,ja:1,ko:1,th:1,vi:1};
+      if (!supported[tag]) tag = 'en';
+      var msgs = {}, fb = {};
+      function loadSync(url) {
+        try { var x = new XMLHttpRequest(); x.open('GET', url, false); x.send(); return x.status===200 ? JSON.parse(x.responseText) : {}; } catch { return {}; }
+      }
+      fb = loadSync('/locales/en.json');
+      if (tag !== 'en') msgs = loadSync('/locales/' + tag + '.json');
+      function resolve(o, p) { return p.split('.').reduce(function(a,k){ return a&&a[k]; }, o); }
+      window.__t = function(key, params) {
+        var val = resolve(msgs, key) || resolve(fb, key) || key;
+        if (!params || typeof val !== 'string') return val;
+        return val.replace(/\{(\w+)\}/g, function(_, k) { return params[k] != null ? params[k] : '{'+k+'}'; });
+      };
+      window.__i18nApply = function() {
+        document.querySelectorAll('[data-i18n]').forEach(function(el) {
+          var k = el.getAttribute('data-i18n'); if (k) el.textContent = window.__t(k);
+        });
+        document.querySelectorAll('[data-i18n-placeholder]').forEach(function(el) {
+          var k = el.getAttribute('data-i18n-placeholder'); if (k) el.placeholder = window.__t(k);
+        });
+        document.querySelectorAll('[data-i18n-aria-label]').forEach(function(el) {
+          var k = el.getAttribute('data-i18n-aria-label'); if (k) el.setAttribute('aria-label', window.__t(k));
+        });
+        document.querySelectorAll('[data-i18n-title]').forEach(function(el) {
+          var k = el.getAttribute('data-i18n-title'); if (k) el.title = window.__t(k);
+        });
+        document.querySelectorAll('[data-i18n-alt]').forEach(function(el) {
+          var k = el.getAttribute('data-i18n-alt'); if (k) el.alt = window.__t(k);
+        });
+      };
+      document.documentElement.lang = tag;
+    })();
   </script>
 </head>
 
 <body>
+  <div id="uatBadge" class="uat-badge">U A T</div>
+  <script>if(window.APP_ENV&&window.APP_ENV!=='production'){document.getElementById('uatBadge').classList.add('visible')}</script>
+  <script>
+  // Early brand hydration: read brand info from sessionStorage before modules load.
+  // This only works for the login→app same-tab transition: SDM exchange on login.html
+  // writes brand_name/brand_logo to sessionStorage, and app.html reads them here.
+  // On a fresh tab or after logout this will be empty — applyBrand() handles it later.
+  (function(){
+    try {
+      var bk = sessionStorage.getItem('brand');
+      if (!bk) return;
+      var bn = sessionStorage.getItem('brand_name');
+      var bl = sessionStorage.getItem('brand_logo');
+      // Fall back to built-in brand config if no dynamic name/logo
+      if (!bn && !bl) {
+        var brands = {
+          sentry: { name: 'SENTRY MESSENGER', logo: '/assets/images/logo.svg', favicon: '/assets/favicon.ico' }
+        };
+        var b = brands[bk];
+        if (!b) return;
+        bn = b.name;
+        bl = b.logo;
+      }
+      if (bn) window.__BRAND_NAME = bn;
+      if (bl) {
+        window.__BRAND_LOGO = bl;
+        window.__BRAND_LOGO_SVG = /\.svg(?:[?#]|$)/i.test(bl);
+        // Legacy compat — external means "not a local monochrome SVG"
+        window.__BRAND_LOGO_EXTERNAL = !window.__BRAND_LOGO_SVG;
+      }
+      if (bn && document.title) document.title = document.title.replace(/SENTRY MESSENGER/g, bn);
+      var fav = document.querySelector('link[rel="icon"]');
+      if (fav) {
+        var brands2 = { sentry: { favicon: '/assets/favicon.ico' } };
+        var bf = brands2[bk];
+        if (bf && bf.favicon) fav.href = bf.favicon;
+      }
+    } catch(e){}
+  })();
+  // Shared inline helper: fetch an SVG, rewrite all colors to white, set as data URI.
+  // Used by early hydration scripts before ES modules are available.
+  window.__monoLogo = function(img, url, shadow) {
+    try {
+      fetch(url).then(function(r) {
+        if (!r.ok) return;
+        var ct = r.headers.get('content-type') || '';
+        if (!ct.match(/svg|xml/i)) { img.classList.add('color-logo'); return; }
+        return r.text();
+      }).then(function(txt) {
+        if (!txt) return;
+        var doc = new DOMParser().parseFromString(txt, 'image/svg+xml');
+        if (doc.querySelector('parsererror')) return;
+        var svg = doc.documentElement;
+        // Rewrite inline fill/stroke attributes
+        var els = svg.querySelectorAll('*');
+        for (var i = 0; i < els.length; i++) {
+          var attrs = ['fill', 'stroke'];
+          for (var j = 0; j < attrs.length; j++) {
+            if (els[i].hasAttribute(attrs[j])) {
+              var v = els[i].getAttribute(attrs[j]).trim().toLowerCase();
+              if (v === 'none' || v === 'transparent' || v.indexOf('url(') === 0) continue;
+              els[i].setAttribute(attrs[j], '#ffffff');
+            }
+          }
+        }
+        // Rewrite <style> blocks
+        var styles = svg.querySelectorAll('style');
+        for (var i = 0; i < styles.length; i++) {
+          styles[i].textContent = styles[i].textContent
+            .replace(/fill\s*:\s*(?!none|transparent|url\()[^;}\s]+/gi, 'fill: #ffffff')
+            .replace(/stroke\s*:\s*(?!none|transparent|url\()[^;}\s]+/gi, 'stroke: #ffffff');
+        }
+        if (!svg.hasAttribute('fill') && !(svg.style && svg.style.fill)) svg.setAttribute('fill', '#ffffff');
+        var out = new XMLSerializer().serializeToString(doc);
+        img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(out);
+        img.classList.add('mono-done');
+      }).catch(function(){});
+    } catch(e){}
+  };
+  </script>
   <!-- Loading Modal — visible instantly, dismissed after hydration -->
   <div id="appLoadingModal">
     <canvas class="app-tm-canvas" id="appTmCanvas"></canvas>
     <div class="app-tm-overlay"></div>
     <div class="app-tm-content">
-      <img class="loading-logo" src="/assets/images/logo.svg" alt="" />
-      <div class="loading-brand">SENTRY MESSENGER</div>
-      <div class="loading-sublabel">END-TO-END ENCRYPTED</div>
+      <img class="loading-logo" id="appLoadingLogo" src="/assets/images/logo.svg" alt="" />
+      <div class="loading-brand" id="appLoadingBrand">SENTRY MESSENGER</div>
+      <div class="loading-sublabel" data-i18n="auth.e2eeEncrypted"></div>
       <div class="loading-bar-track" id="appEnterBtn">
         <div id="appLoadingBar" class="loading-bar-fill"></div>
         <div class="loading-bar-scan"></div>
-        <span id="appEnterLabel" class="loading-enter-label">進 入</span>
+        <span id="appEnterLabel" class="loading-enter-label" data-i18n="auth.enterButton"></span>
       </div>
-      <div id="appLoadingLabel" class="loading-label">LOADING SECURE SESSION...</div>
+      <div id="appLoadingLabel" class="loading-label" data-i18n="auth.loadingSecureSession"></div>
       <div id="appLoadingStatus" class="loading-status"></div>
-      <button id="appLoadingSkip" class="loading-skip">稍後再說</button>
+      <button id="appLoadingSkip" class="loading-skip" data-i18n="auth.skipForNow"></button>
     </div>
   </div>
+  <script>if (window.__i18nApply) window.__i18nApply();</script>
+  <script>
+  // Apply brand to loading modal elements.
+  // SVG logos: sync brightness(0) invert(1) first, then async fetch+rewrite to white.
+  // Non-SVG logos: show as-is (no filter).
+  (function(){
+    var bn = window.__BRAND_NAME;
+    var bl = window.__BRAND_LOGO;
+    var isSvg = window.__BRAND_LOGO_SVG;
+    var GLOW = 'drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25))';
+    if (bn) {
+      var e = document.getElementById('appLoadingBrand');
+      if (e) e.textContent = bn;
+    }
+    if (bl) {
+      var img = document.getElementById('appLoadingLogo');
+      if (img) {
+        img.src = bl;
+        if (isSvg) {
+          // Sync: CSS brightness(0) invert(1) already from stylesheet @keyframes.
+          // Async: fetch SVG, rewrite fills to white, replace as data URI.
+          window.__monoLogo(img, bl, GLOW);
+        } else {
+          // Non-SVG: assume full-color, use glow-only animation
+          img.classList.add('color-logo');
+        }
+      }
+    }
+  })();
+  </script>
   <script>
   /* ── App Loading: Matrix Rain ── */
   (function(){
@@ -160,13 +332,14 @@
   </script>
   <script>
     (function () {
+      function _t(k, p) { return typeof window.__t === 'function' ? window.__t(k, p) : k; }
       var stages = {
-        styles:        { label: 'LOADING INTERFACE...',       progress: 74 },
-        scripts:       { label: 'LOADING MODULES...',         progress: 80 },
-        account:       { label: 'SYNCING ACCOUNT DATA...',    progress: 86 },
-        contacts:      { label: 'SYNCING CONTACTS...',        progress: 92 },
-        conversations: { label: 'SYNCING CONVERSATIONS...',   progress: 96 },
-        ready:         { label: 'SYSTEM READY',               progress: 100 }
+        styles:        { label: _t('auth.loadingInterface'),       progress: 74 },
+        scripts:       { label: _t('auth.loadingModules'),         progress: 80 },
+        account:       { label: _t('auth.syncingAccountData'),     progress: 86 },
+        contacts:      { label: _t('auth.syncingContacts'),        progress: 92 },
+        conversations: { label: _t('auth.syncingConversations'),   progress: 96 },
+        ready:         { label: _t('auth.systemReady'),            progress: 100 }
       };
       var bar   = document.getElementById('appLoadingBar');
       var label = document.getElementById('appLoadingLabel');
@@ -223,10 +396,10 @@
         stopSlowFill();
         current = 100;
         setBarWidth(100);
-        if (label) label.textContent = 'SYSTEM READY';
+        if (label) label.textContent = _t('auth.systemReady');
         setTimeout(function () {
           if (modal) modal.classList.add('morph-enter');
-          if (label) { label.textContent = '點擊以啟用安全通訊'; label.style.letterSpacing = '1.5px'; }
+          if (label) { label.textContent = _t('auth.clickToEnableSecureComm'); label.style.letterSpacing = '1.5px'; }
         }, 600);
       };
       window.__setSplashStatus = function (msg) {
@@ -238,12 +411,12 @@
         var enterLabel = document.getElementById('appEnterLabel');
         if (active) {
           modal.classList.add('morph-authorizing');
-          if (enterLabel) enterLabel.textContent = '授權中\u2026';
-          if (label) label.textContent = '請在系統視窗中按下「允許」';
+          if (enterLabel) enterLabel.textContent = _t('auth.authorizing');
+          if (label) label.textContent = _t('auth.promptAllowInSystemWindow');
         } else {
           modal.classList.remove('morph-authorizing');
-          if (enterLabel) enterLabel.textContent = '進 入';
-          if (label) { label.textContent = '點擊以啟用安全通訊'; label.style.letterSpacing = '1.5px'; }
+          if (enterLabel) enterLabel.textContent = _t('auth.enterButton');
+          if (label) { label.textContent = _t('auth.clickToEnableSecureComm'); label.style.letterSpacing = '1.5px'; }
         }
       };
       window.__setSplashSuccess = function () {
@@ -252,7 +425,7 @@
         modal.classList.remove('morph-authorizing');
         var enterLabel = document.getElementById('appEnterLabel');
         if (enterLabel) enterLabel.textContent = '\u2713';
-        if (label) label.textContent = '授權成功';
+        if (label) label.textContent = _t('auth.authSuccess');
         setTimeout(function () { window.__hideLoadingModal(); }, 800);
       };
       // Auto-advance to 'styles' when all async CSS is loaded
@@ -284,71 +457,97 @@
 
   <div id="orientationOverlay" class="orientation-overlay" aria-hidden="true">
     <span class="icon" aria-hidden="true">📱</span>
-    <strong>請以直立模式使用</strong>
-    <span>為確保最佳體驗，請將裝置轉回直立方向。</span>
+    <strong data-i18n="orientation.usePortrait"></strong>
+    <span data-i18n="orientation.rotateBackMessage"></span>
   </div>
   <header class="topbar">
     <div class="title">
-      <img class="brand" src="/assets/images/logo.svg" alt="SENTRY MESSENGER" />
-      <span>SENTRY</span>
+      <img class="brand" id="appHeaderLogo" src="/assets/images/logo.svg" alt="SENTRY MESSENGER" />
+      <span id="appHeaderBrandName">SENTRY</span>
       <span id="connectionIndicator" class="connection-indicator" aria-live="polite" data-ws-path="/api/ws"
-        data-ws-host="api.message.sentry.red"><span class="dot" aria-hidden="true"></span>離線</span>
+        data-ws-host=""><span class="dot" aria-hidden="true"></span><span data-i18n="status.offline"></span></span>
     </div>
     <div class="actions">
       <div id="userMenu" class="user-menu">
         <button id="btnUserMenu" class="user-avatar-btn" type="button" aria-haspopup="true" aria-expanded="false"
-          aria-label="開啟使用者選單">
+          data-i18n-aria-label="nav.openUserMenu">
           <span class="user-avatar-wrap" id="userAvatarWrap">
-            <img id="headerAvatarImg" src="/assets/images/avatar.png" alt="使用者頭像" />
+            <img id="headerAvatarImg" src="/assets/images/avatar.png" data-i18n-alt="nav.userAvatar" alt="User avatar" />
             <span class="user-menu-badge" id="userMenuBadge" aria-hidden="true">!</span>
           </span>
         </button>
         <div id="userMenuDropdown" class="user-menu-dropdown" role="menu" aria-hidden="true">
-          <button class="user-menu-item" type="button" data-action="settings" role="menuitem">系統設定</button>
+          <button class="user-menu-item" type="button" data-action="settings" role="menuitem" data-i18n="settings.title"></button>
           <button class="user-menu-item" type="button" data-action="subscription" id="userMenuSubscriptionBtn"
             role="menuitem">
-            <span>訂閱狀態</span>
+            <span data-i18n="subscription.subscriptionStatusTab"></span>
             <span class="menu-item-badge" aria-hidden="true">!</span>
           </button>
           <button class="user-menu-item" type="button" data-action="version-info" id="userMenuVersionBtn"
-            role="menuitem">版本資訊</button>
+            role="menuitem" data-i18n="versionInfo.title"></button>
           <div class="version-info-menu" id="versionInfoPopupAppMenu" aria-hidden="true"></div>
           <div class="user-menu-divider" role="presentation"></div>
-          <button class="user-menu-item logout" type="button" data-action="logout" role="menuitem">登出</button>
+          <button class="user-menu-item logout" type="button" data-action="logout" role="menuitem" data-i18n="auth.logout"></button>
         </div>
       </div>
     </div>
   </header>
+  <script>
+  // Apply brand to app header (runs after header is in DOM)
+  (function(){
+    var bn = window.__BRAND_NAME;
+    var bl = window.__BRAND_LOGO;
+    var isSvg = window.__BRAND_LOGO_SVG;
+    if (bn) {
+      var h = document.getElementById('appHeaderBrandName');
+      if (h) h.textContent = bn.split(' ')[0];
+      var logo = document.getElementById('appHeaderLogo');
+      if (logo) logo.alt = bn;
+    }
+    if (bl) {
+      var logo = document.getElementById('appHeaderLogo');
+      if (logo) {
+        logo.src = bl;
+        if (isSvg) {
+          logo.style.filter = 'brightness(0) invert(1)';
+          window.__monoLogo(logo, bl, '');
+        } else {
+          logo.style.filter = 'none';
+        }
+      }
+    }
+  })();
+  </script>
 
   <main class="content">
     <section id="tab-contacts" class="tab">
       <div class="card contacts-card">
         <div id="contactsRefreshHint" class="contacts-refresh">
           <i class='bx bx-refresh icon' aria-hidden="true"></i>
-          <span class="label">下拉更新聯絡人</span>
+          <span class="label" data-i18n="contacts.pullToRefresh"></span>
         </div>
         <div id="contactsScroll" class="contacts-scroll">
           <div class="contact-list-header">
-            <span><strong id="contactsCount">0</strong> 個好友</span>
+            <span><strong id="contactsCount">0</strong> <span data-i18n="contacts.friendCount"></span></span>
             <div class="add-friend-wrapper">
-              <button id="btnContactsAddFriend" class="contacts-add-btn" type="button" aria-label="新增好友" title="新增好友">
+              <button id="btnContactsAddFriend" class="contacts-add-btn" type="button" data-i18n-aria-label="contacts.addFriend" data-i18n-title="contacts.addFriend">
                 <i class='bx bx-user-plus'></i>
               </button>
               <div id="contactsAddFriendMenu" class="add-friend-menu add-friend-menu--below" style="display:none">
                 <button id="btnContactsAddFriendQr" class="add-friend-menu-item" type="button">
                   <i class='bx bx-qr'></i>
-                  <span>QRCode 加好友</span>
+                  <span data-i18n="contacts.qrAddFriend"></span>
                 </button>
                 <button id="btnContactsAddFriendCode" class="add-friend-menu-item" type="button">
                   <i class='bx bx-dialpad'></i>
-                  <span>使用配對碼</span>
+                  <span data-i18n="contacts.usePairingCode"></span>
                 </button>
               </div>
             </div>
           </div>
           <div class="contacts-search-wrap">
             <i class='bx bx-search' aria-hidden="true"></i>
-            <input id="contactsSearch" type="text" class="contacts-search" placeholder="搜尋好友名稱…" autocomplete="off" />
+            <input id="contactsSearch" type="text" class="contacts-search" data-i18n-placeholder="contacts.searchPlaceholder" placeholder="Search friends…" autocomplete="off" />
           </div>
           <ul id="contactsList" class="contact-list"></ul>
         </div>
@@ -360,38 +559,58 @@
           <aside class="messages-sidebar">
             <div id="conversationRefresh" class="conversation-refresh">
               <i class='bx bx-refresh icon' aria-hidden="true"></i>
-              <span class="label">下拉更新對話</span>
-            </div>
-            <div class="conversation-actions" style="display:none" aria-hidden="true">
-              <button id="btnCreateGroup" type="button" class="secondary" aria-label="建立群組" title="建立群組">
-                <i class='bx bx-group'></i> 建立群組
-              </button>
+              <span class="label" data-i18n="messages.pullToRefreshConversations"></span>
             </div>
             <div id="groupDrafts" class="conversation-group-drafts" aria-live="polite" style="display:none"
               aria-hidden="true"></div>
+            <div id="quickActionsToggle" class="quick-actions-toggle" aria-label="展開快速操作">
+              <svg class="quick-actions-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </div>
+            <div class="conversation-quick-actions collapsed" id="conversationQuickActions">
+              <button id="btnCreateEphemeralLink" type="button" class="quick-action-btn quick-action-ephemeral" aria-label="建立臨時對話連結">
+                <span class="quick-action-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="3 2">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                  </svg>
+                </span>
+                <span class="quick-action-label" data-i18n="ephemeral.quickAction">Temp Chat</span>
+              </button>
+              <!-- Business conversation button hidden for now -->
+              <button id="btnCreateBusinessChat" type="button" class="quick-action-btn quick-action-business" aria-label="建立商業對話" style="display:none">
+                <span class="quick-action-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/><line x1="12" y1="12" x2="12" y2="12.01"/>
+                  </svg>
+                </span>
+                <span class="quick-action-label" data-i18n="ephemeral.businessChat">Business</span>
+              </button>
+            </div>
             <ul id="conversationList" class="conversation-list"></ul>
           </aside>
           <div class="messages-thread">
             <div class="messages-header">
-              <button id="messagesBackBtn" type="button" class="messages-back hidden" aria-label="返回對話列表"><i
+              <button id="messagesBackBtn" type="button" class="messages-back hidden" data-i18n-aria-label="misc.backToConversationList"><i
                   class='bx bx-chevron-left'></i></button>
               <div id="messagesPeerAvatar" class="messages-peer-avatar"></div>
               <div class="messages-header-meta">
-                <strong id="messagesPeerName">選擇好友開始聊天</strong>
+                <strong id="messagesPeerName" data-i18n="contacts.selectToChat"></strong>
                 <span id="messagesStatus" class="status"></span>
               </div>
               <div class="messages-actions">
                 <span id="messagesWsIndicator" class="connection-indicator messages-ws-indicator"
                   aria-hidden="true"><span class="dot" aria-hidden="true"></span></span>
+                <button id="bizConvSettingsBtn" type="button" class="messages-action-btn biz-conv-settings-btn hidden" aria-label="Group Settings"><i class='bx bx-cog'></i></button>
                 <div class="call-menu-wrapper">
-                  <button id="messagesCallBtn" type="button" class="messages-action-btn" aria-label="通話" title="通話"
+                  <button id="messagesCallBtn" type="button" class="messages-action-btn" data-i18n-aria-label="calls.title" data-i18n-title="calls.title"
                     disabled><i class='bx bx-phone'></i></button>
                   <div id="callSubmenu" class="call-submenu hidden">
                     <button type="button" class="call-submenu-item" data-call-type="voice">
-                      <i class='bx bx-phone'></i><span>語音通話</span>
+                      <i class='bx bx-phone'></i><span data-i18n="calls.voiceCall"></span>
                     </button>
                     <button type="button" class="call-submenu-item" data-call-type="video">
-                      <i class='bx bx-video'></i><span>視訊通話</span>
+                      <i class='bx bx-video'></i><span data-i18n="calls.videoCall"></span>
                     </button>
                   </div>
                 </div>
@@ -399,23 +618,23 @@
             </div>
             <div id="messagesScroll" class="messages-scroll">
               <div id="messagesLoadMore" class="messages-load-more hidden" role="status">
-                <span class="label">載入更多</span>
+                <span class="label" data-i18n="common.loadMore"></span>
                 <span class="spinner" aria-hidden="true"></span>
               </div>
               <div id="messagesEmpty" class="messages-empty">
                 <i class='bx bx-message-dots' aria-hidden="true"></i>
-                <p class="messages-empty-title">尚未選擇任何對話</p>
-                <p class="messages-empty-hint">選擇一個對話開始聊天</p>
+                <p class="messages-empty-title" data-i18n="messages.noConversationSelected"></p>
+                <p class="messages-empty-hint" data-i18n="messages.selectConversationToChat"></p>
               </div>
               <ul id="messagePlaceholders" class="messages-list messages-placeholders"></ul>
               <ul id="messagesList" class="messages-list"></ul>
             </div>
             <form id="messageComposer" class="messages-composer">
-              <button id="composerAttach" type="button" class="composer-attach" aria-label="附加檔案"><i
+              <button id="composerAttach" type="button" class="composer-attach" data-i18n-aria-label="messages.attachFile"><i
                   class='bx bx-paperclip'></i></button>
               <input id="messageFileInput" type="file" class="sr-only" style="display:none" />
-              <textarea id="messageInput" placeholder="輸入訊息…" rows="1" maxlength="1024"></textarea>
-              <button id="messageSend" type="submit" class="composer-send" aria-label="送出訊息"><i
+              <textarea id="messageInput" data-i18n-placeholder="messages.inputPlaceholder" placeholder="Enter message…" rows="1" maxlength="1024"></textarea>
+              <button id="messageSend" type="submit" class="composer-send" data-i18n-aria-label="messages.sendMessage"><i
                   class='bx bx-send'></i></button>
             </form>
           </div>
@@ -425,15 +644,15 @@
     <section id="tab-drive" class="tab">
       <div id="driveRefreshHint" class="drive-refresh">
         <i class='bx bx-refresh icon' aria-hidden="true"></i>
-        <span class="label">下拉更新檔案</span>
+        <span class="label" data-i18n="drive.pullToRefresh"></span>
       </div>
       <div class="drive-usage" aria-live="polite">
-        <span class="drive-usage-label">雲端空間</span>
+        <span class="drive-usage-label" data-i18n="drive.cloudSpace"></span>
         <span class="drive-usage-amount">
           <span id="driveUsageValue">0 B</span>
           <span id="driveUsageTotal" class="drive-usage-total">/ 3 GB</span>
         </span>
-        <div id="driveUsageProgress" class="drive-usage-bar" role="progressbar" aria-label="加密雲端使用率" aria-valuemin="0"
+        <div id="driveUsageProgress" class="drive-usage-bar" role="progressbar" data-i18n-aria-label="drive.encryptedCloudUsage" aria-label="Encrypted cloud usage" aria-valuemin="0"
           aria-valuemax="100" aria-valuenow="0" aria-valuetext="0 B / 3 GB">
           <div id="driveUsageBar" class="drive-usage-bar-fill"></div>
         </div>
@@ -442,11 +661,11 @@
       <div class="card">
         <div class="list-header">
           <div style="display:flex;flex-direction:column;gap:6px;">
-            <h3 style="margin:0">檔案列表</h3>
+            <h3 style="margin:0" data-i18n="drive.fileList"></h3>
             <nav id="driveCrumb" class="crumb" style="font-size:13px"></nav>
           </div>
           <div class="list-actions">
-            <button id="btnUp" type="button" class="secondary" style="display:none" aria-label="上一層" title="上一層"
+            <button id="btnUp" type="button" class="secondary" style="display:none" data-i18n-aria-label="drive.goUp" data-i18n-title="drive.goUp"
               aria-live="polite">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"
                 aria-hidden="true">
@@ -455,13 +674,72 @@
                 <path d="M9 9L12 12" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
               </svg>
             </button>
-            <button id="btnUploadOpen" type="button" class="secondary" aria-label="上傳檔案" title="上傳檔案"><i
+            <button id="btnUploadOpen" type="button" class="secondary" data-i18n-aria-label="drive.uploadFile" data-i18n-title="drive.uploadFile"><i
                 class='bx bx-cloud-upload'></i></button>
-            <button id="btnNewFolder" type="button" class="secondary" aria-label="新建資料夾" title="新建資料夾"><i
+            <button id="btnNewFolder" type="button" class="secondary" data-i18n-aria-label="drive.newFolder" data-i18n-title="drive.newFolder"><i
                 class='bx bx-folder-plus'></i></button>
           </div>
         </div>
         <ul id="driveList" class="list"></ul>
+      </div>
+    </section>
+    <section id="tab-safe" class="tab" style="display:none">
+      <div style="padding:16px;">
+        <!-- Header -->
+        <div style="text-align:center;margin-bottom:20px;">
+          <div style="font-size:22px;font-weight:700;letter-spacing:1px;" data-i18n="safe.brand">SAFE™</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px;" data-i18n="safe.tagline">Secure Application Frontend Environment</div>
+        </div>
+
+        <!-- Status card -->
+        <div class="card" style="padding:16px;margin-bottom:16px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+            <span style="font-size:13px;font-weight:600;" data-i18n="safe.containerStatus">Instance Status</span>
+            <span id="safe-status-badge" style="font-size:11px;padding:3px 10px;border-radius:12px;font-weight:600;background:var(--bg-hover);color:var(--muted);">--</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px;font-size:12px;color:var(--muted);">
+            <div style="display:flex;justify-content:space-between;">
+              <span data-i18n="safe.statusLabel">Status</span>
+              <span id="safe-status-text">--</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;">
+              <span data-i18n="safe.elapsedLabel">Uptime</span>
+              <span id="safe-elapsed-text">--</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;">
+              <span data-i18n="safe.port">Port</span>
+              <span id="safe-port-text">6901</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Actions -->
+        <div style="display:flex;gap:8px;margin-bottom:16px;">
+          <button id="safe-btn-start" type="button" class="primary" style="flex:1;padding:10px;border-radius:8px;font-size:13px;font-weight:600;">
+            <i class='bx bx-play'></i>
+            <span data-i18n="safe.start">Start</span>
+          </button>
+          <button id="safe-btn-stop" type="button" class="secondary" style="flex:1;padding:10px;border-radius:8px;font-size:13px;font-weight:600;" disabled>
+            <i class='bx bx-stop'></i>
+            <span data-i18n="safe.stop">Stop</span>
+          </button>
+        </div>
+
+        <button id="safe-btn-open" type="button" class="primary" style="width:100%;padding:14px;border-radius:8px;font-size:15px;font-weight:700;margin-bottom:16px;letter-spacing:0.5px;" disabled>
+          <i class='bx bx-log-in'></i>
+          <span data-i18n="safe.enterSafe">Enter SAFE™</span>
+        </button>
+
+        <button id="safe-btn-delete" type="button" style="width:100%;padding:10px;border-radius:8px;font-size:13px;font-weight:600;margin-bottom:16px;background:#fee2e2;color:#dc2626;border:1px solid #fca5a5;cursor:pointer;" disabled>
+          <i class='bx bx-trash'></i>
+          <span data-i18n="safe.deleteEnv">Delete Environment</span>
+        </button>
+
+        <!-- Error display -->
+        <div id="safe-error" style="display:none;text-align:center;padding:12px;margin-top:8px;">
+          <i class='bx bx-error-circle' style="font-size:28px;color:var(--danger);"></i>
+          <p id="safe-error-msg" style="color:var(--danger);margin:8px 0;font-size:12px;"></p>
+        </div>
       </div>
     </section>
     <section id="tab-profile" class="tab">
@@ -469,34 +747,34 @@
         <div class="profile-header">
           <div class="profile-avatar">
             <img id="profileAvatarImg" src="/assets/images/avatar.png" alt="Avatar" />
-            <button id="btnProfileEdit" class="avatar-edit-btn" type="button" aria-label="編輯頭像"><i
+            <button id="btnProfileEdit" class="avatar-edit-btn" type="button" data-i18n-aria-label="profile.editAvatar"><i
                 class='bx bx-camera'></i></button>
           </div>
           <div class="profile-main">
             <div class="profile-nickname">
               <strong id="profileNickname">……</strong>
-              <button id="btnProfileNickEdit" class="profile-edit-btn" type="button" aria-label="編輯暱稱">
+              <button id="btnProfileNickEdit" class="profile-edit-btn" type="button" data-i18n-aria-label="profile.editNickname">
                 <i class='bx bx-pencil'></i>
-                <span>修改暱稱</span>
+                <span data-i18n="profile.editNickname"></span>
               </button>
             </div>
             <div class="profile-stats">
               <div class="stat">
                 <div id="statContacts" class="stat-value">0</div>
-                <div class="stat-label">好友</div>
+                <div class="stat-label" data-i18n="common.friend"></div>
               </div>
               <div class="add-friend-wrapper">
-                <button id="btnShareModal" class="profile-share-btn" type="button" aria-label="新增好友" title="新增好友">
+                <button id="btnShareModal" class="profile-share-btn" type="button" data-i18n-aria-label="contacts.addFriend" data-i18n-title="contacts.addFriend">
                   <i class='bx bx-user-plus'></i>
                 </button>
                 <div id="addFriendMenu" class="add-friend-menu" style="display:none">
                   <button id="btnAddFriendQr" class="add-friend-menu-item" type="button">
                     <i class='bx bx-qr'></i>
-                    <span>QRCode 加好友</span>
+                    <span data-i18n="contacts.qrAddFriend"></span>
                   </button>
                   <button id="btnAddFriendCode" class="add-friend-menu-item" type="button">
                     <i class='bx bx-dialpad'></i>
-                    <span>使用配對碼</span>
+                    <span data-i18n="contacts.usePairingCode"></span>
                   </button>
                 </div>
               </div>
@@ -513,18 +791,18 @@
     <div class="modal-panel share-modal-panel" role="dialog" aria-modal="true" aria-labelledby="shareModalTitle">
       <div id="shareFlip" class="share-flip">
         <div class="share-face share-front">
-          <span id="shareModalTitle" class="sr-only">好友分享</span>
+          <span id="shareModalTitle" class="sr-only" data-i18n="contacts.addFriend"></span>
           <header class="share-head">
-            <button type="button" class="share-close" data-share-close-btn aria-label="關閉">×</button>
+            <button type="button" class="share-close" data-share-close-btn data-i18n-aria-label="common.close" aria-label="Close">×</button>
             <button id="btnShareSwitchScan" class="share-corner-toggle share-corner-toggle--scan" type="button"
-              aria-label="切換為掃描模式">
+              data-i18n-aria-label="share.switchToScanMode" aria-label="Switch to scan mode">
               <i class='bx bx-camera' aria-hidden="true"></i>
             </button>
           </header>
           <div class="share-body share-body-qr">
             <div class="share-countdown">
               <span id="inviteCountdown"></span>
-              <button id="inviteRefreshBtn" class="invite-refresh-btn" type="button" aria-label="手動刷新交友邀請">
+              <button id="inviteRefreshBtn" class="invite-refresh-btn" type="button" data-i18n-aria-label="share.manualRefreshInvites" aria-label="Refresh friend invite">
                 <i class='bx bx-refresh' aria-hidden="true"></i>
               </button>
               <!-- inviteConsumeBtn removed: WS auto-consume is sufficient -->
@@ -535,9 +813,9 @@
         </div>
         <div class="share-face share-back">
           <header class="share-head">
-            <button type="button" class="share-close" data-share-close-btn aria-label="關閉">×</button>
+            <button type="button" class="share-close" data-share-close-btn data-i18n-aria-label="common.close" aria-label="Close">×</button>
             <button id="btnShareSwitchQr" class="share-corner-toggle share-corner-toggle--qr" type="button"
-              aria-label="切換回 QR 模式">
+              data-i18n-aria-label="share.switchToQRMode" aria-label="Switch to QR mode">
               <span class="share-corner-qr" aria-hidden="true"></span>
             </button>
           </header>
@@ -555,28 +833,28 @@
     <div class="modal-backdrop" data-pairing-close></div>
     <div class="modal-panel pairing-code-panel" role="dialog" aria-modal="true" aria-labelledby="pairingCodeTitle">
       <header class="pairing-code-head">
-        <button type="button" class="share-close" data-pairing-close-btn aria-label="關閉">×</button>
-        <span id="pairingCodeTitle" class="pairing-code-title">配對碼</span>
+        <button type="button" class="share-close" data-pairing-close-btn data-i18n-aria-label="common.close" aria-label="Close">×</button>
+        <span id="pairingCodeTitle" class="pairing-code-title" data-i18n="share.pairingCode"></span>
       </header>
       <div class="pairing-code-body">
         <div class="pairing-code-countdown">
           <span id="pairingCountdown"></span>
-          <button id="pairingRefreshBtn" class="invite-refresh-btn" type="button" aria-label="刷新配對碼">
+          <button id="pairingRefreshBtn" class="invite-refresh-btn" type="button" data-i18n-aria-label="share.refreshPairingCode" aria-label="Refresh pairing code">
             <i class='bx bx-refresh' aria-hidden="true"></i>
           </button>
         </div>
         <div id="pairingDigits" class="pairing-code-digits">
-          <input type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" readonly aria-label="配對碼第1碼" />
-          <input type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" readonly aria-label="配對碼第2碼" />
-          <input type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" readonly aria-label="配對碼第3碼" />
-          <input type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" readonly aria-label="配對碼第4碼" />
-          <input type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" readonly aria-label="配對碼第5碼" />
-          <input type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" readonly aria-label="配對碼第6碼" />
+          <input type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" readonly aria-label="Pairing code digit 1" />
+          <input type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" readonly aria-label="Pairing code digit 2" />
+          <input type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" readonly aria-label="Pairing code digit 3" />
+          <input type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" readonly aria-label="Pairing code digit 4" />
+          <input type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" readonly aria-label="Pairing code digit 5" />
+          <input type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" readonly aria-label="Pairing code digit 6" />
         </div>
         <div id="pairingStatus" class="pairing-code-status"></div>
         <div class="pairing-code-actions">
-          <button id="btnPairingToggle" class="pairing-toggle-btn" type="button">輸入對方配對碼</button>
-          <button id="btnPairingConfirm" class="pairing-confirm-btn" type="button" style="display:none">確認</button>
+          <button id="btnPairingToggle" class="pairing-toggle-btn" type="button" data-i18n="share.enterPeerPairingCode"></button>
+          <button id="btnPairingConfirm" class="pairing-confirm-btn" type="button" style="display:none" data-i18n="common.confirm"></button>
         </div>
       </div>
     </div>
@@ -599,14 +877,14 @@
     <div class="modal-backdrop" id="customLogoutBackdrop"></div>
     <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="customLogoutTitle">
       <div class="modal-head">
-        <div id="customLogoutTitle" class="modal-title">設定客製化登出頁面</div>
-        <button id="customLogoutClose" class="modal-close" aria-label="關閉">×</button>
+        <div id="customLogoutTitle" class="modal-title" data-i18n="settings.customLogoutPage"></div>
+        <button id="customLogoutClose" class="modal-close" data-i18n-aria-label="common.close" aria-label="Close">×</button>
       </div>
       <div class="modal-body">
         <div class="custom-logout-body">
-          <p class="custom-logout-desc">僅接受 HTTPS（https://）網址，登出時會導向此頁面，請確認為可信任的網址。</p>
+          <p class="custom-logout-desc" data-i18n="settings.customLogoutHint"></p>
           <label class="custom-logout-field" for="customLogoutInput">
-            HTTPS 網址
+            <span data-i18n="settings.setUrl"></span>
             <input type="url" id="customLogoutInput" list="customLogoutOptions" placeholder="https://example.com/logout"
               inputmode="url" autocomplete="off" spellcheck="false" />
           </label>
@@ -619,9 +897,65 @@
           </datalist>
           <div id="customLogoutError" class="custom-logout-error" role="status" aria-live="polite"></div>
           <div class="custom-logout-actions">
-            <button type="button" class="secondary" id="customLogoutCancel">取消</button>
-            <button type="button" class="primary" id="customLogoutSave">儲存</button>
+            <button type="button" class="secondary" id="customLogoutCancel" data-i18n="common.cancel"></button>
+            <button type="button" class="primary" id="customLogoutSave" data-i18n="common.save"></button>
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Ephemeral Auto-Logout Warning Modal -->
+  <div id="ephAutoLogoutWarnModal" class="modal eph-autologout-warn-modal" aria-hidden="true" style="display:none">
+    <div class="modal-backdrop" data-eph-warn-close></div>
+    <div class="modal-panel eph-autologout-warn-panel" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <div class="modal-title" data-i18n="ephemeral.autoLogoutWarnTitle">Auto-Logout Warning</div>
+        <button class="modal-close" data-eph-warn-close aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="eph-autologout-warn-desc" data-i18n="ephemeral.autoLogoutWarnDesc">You have auto logout on background enabled. Switching to another app to share the link may trigger auto-logout.</p>
+        <div class="eph-autologout-warn-toggle">
+          <div class="settings-text">
+            <strong data-i18n="settings.autoLogoutOnBackground">Auto logout on background</strong>
+          </div>
+          <label class="settings-switch">
+            <input type="checkbox" id="ephAutoLogoutToggle" checked />
+            <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+          </label>
+        </div>
+        <div class="eph-autologout-warn-actions">
+          <button type="button" class="secondary" data-eph-warn-close data-i18n="common.cancel">Cancel</button>
+          <button type="button" class="primary" id="ephAutoLogoutWarnContinue" data-i18n="ephemeral.continueShare">Continue sharing</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Ephemeral Chat Link Modal -->
+  <div id="ephemeralLinkModal" class="modal ephemeral-link-modal" aria-hidden="true" style="display:none">
+    <div class="modal-backdrop" data-eph-close></div>
+    <div class="modal-panel ephemeral-link-panel" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <div class="modal-title" data-i18n="ephemeral.createLinkTitle">Create Temporary Chat Link</div>
+        <button class="modal-close" data-eph-close aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="ephemeral-link-desc" data-i18n="ephemeral.createLinkDesc">Generate a one-time link for someone without this app to start a temporary encrypted conversation. The link can only be used once and the conversation is limited to 10 minutes.</p>
+        <div id="ephLinkSessionList" class="eph-session-list" style="display:none"></div>
+        <div id="ephLinkError" class="ephemeral-link-error" style="display:none"></div>
+        <div id="ephLinkLoading" class="ephemeral-link-loading">
+          <div class="ephemeral-link-spinner"></div>
+          <span data-i18n="ephemeral.creatingLink">Generating link…</span>
+        </div>
+        <div id="ephLinkResult" class="ephemeral-link-result" style="display:none">
+          <div class="ephemeral-link-url-box">
+            <input id="ephLinkUrl" type="text" readonly class="ephemeral-link-url" />
+            <button id="ephLinkCopy" type="button" class="ephemeral-link-copy" data-i18n="ephemeral.copyBtn">Copy</button>
+            <button id="ephLinkShare" type="button" class="ephemeral-link-share" data-i18n="ephemeral.shareBtn">Share</button>
+          </div>
+          <div id="ephLinkCopied" class="ephemeral-link-copied" style="display:none"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><circle cx="12" cy="12" r="10" stroke-width="2"/><path d="m9 12 2 2 4-4"/></svg><span data-i18n="ephemeral.copiedToast">Copied to clipboard</span></div>
+          <p class="ephemeral-link-note" data-i18n="ephemeral.linkOneTimeNote">This link can only be used once — do not share it repeatedly</p>
         </div>
       </div>
     </div>
@@ -631,28 +965,33 @@
 
   <nav class="navbar">
     <div class="navbar-pill">
-      <button id="nav-contacts" class="navbtn" aria-label="聯絡人">
+      <button id="nav-contacts" class="navbtn" data-i18n-aria-label="nav.contacts">
         <span class="nav-badge" data-tab="contacts"></span>
         <i class='bx bx-user-circle'></i>
-        <span>聯絡人</span>
+        <span data-i18n="nav.contacts"></span>
       </button>
-      <button id="nav-messages" class="navbtn" aria-label="訊息">
+      <button id="nav-messages" class="navbtn" data-i18n-aria-label="nav.messages">
         <span class="nav-badge" data-tab="messages"></span>
         <i class='bx bx-message-dots'></i>
-        <span>訊息</span>
+        <span data-i18n="nav.messages"></span>
       </button>
-      <button id="nav-drive" class="navbtn active" aria-label="加密雲端">
+      <button id="nav-drive" class="navbtn active" data-i18n-aria-label="nav.encryptedCloud">
         <span class="nav-badge" data-tab="drive"></span>
         <span class="nav-icon-stack" aria-hidden="true">
           <i class='bx bxs-cloud nav-icon-base'></i>
           <i class='bx bx-lock-alt nav-icon-lock'></i>
         </span>
-        <span>加密雲端</span>
+        <span data-i18n="nav.encryptedCloud"></span>
       </button>
-      <button id="nav-profile" class="navbtn" aria-label="我的檔案">
+      <button id="nav-profile" class="navbtn" data-i18n-aria-label="nav.myFiles">
         <span class="nav-badge" data-tab="profile"></span>
         <i class='bx bx-user'></i>
-        <span>我的檔案</span>
+        <span data-i18n="nav.myFiles"></span>
+      </button>
+      <button id="nav-safe" class="navbtn" style="display:none" aria-label="SAFE ™">
+        <span class="nav-badge" data-tab="safe"></span>
+        <i class='bx bxl-chrome'></i>
+        <span>SAFE ™</span>
       </button>
     </div>
   </nav>
@@ -660,23 +999,20 @@
   <div id="mediaPermissionOverlay" class="media-permission-overlay" aria-hidden="true" style="display:none">
     <div class="media-permission-card" role="dialog" aria-modal="true" aria-labelledby="mediaPermissionTitle">
       <i class='bx bxs-lock-shield icon' aria-hidden="true"></i>
-      <h2 id="mediaPermissionTitle">啟用語音通話</h2>
-      <p>點擊下方按鈕，一鍵授權麥克風並解鎖音訊播放，確保來電正常響鈴。</p>
+      <h2 id="mediaPermissionTitle" data-i18n="mediaPermission.enableVoiceCall"></h2>
+      <p data-i18n="mediaPermission.clickBelowToAuth"></p>
       <ul>
-        <li><i class='bx bx-microphone'></i><span>允許麥克風才能建立端到端加密語音通話。</span></li>
-        <li><i class='bx bx-volume-full'></i><span>同時解鎖音訊播放，避免來電鈴聲被瀏覽器阻擋。</span></li>
+        <li><i class='bx bx-microphone'></i><span data-i18n="mediaPermission.micRequiredForE2ee"></span></li>
+        <li><i class='bx bx-volume-full'></i><span data-i18n="mediaPermission.unlockAudioPlayback"></span></li>
       </ul>
       <div id="mediaPermissionStatus" class="media-permission-status" role="status" aria-live="polite"></div>
-      <p class="media-permission-hints">
-        若未彈出瀏覽器授權視窗，請按「取消重試」後再試一次，或稍後到 Safari 設定 > 網站進階設定 > 麥克風重新允許。
-      </p>
+      <p class="media-permission-hints" data-i18n="mediaPermission.safariRetryHint"></p>
       <div class="media-permission-actions">
         <button id="mediaPermissionAllowBtn" type="button" class="media-permission-btn">
-          <i class='bx bx-check-shield'></i><span id="mediaPermissionAllowLabel">允許麥克風</span>
+          <i class='bx bx-check-shield'></i><span id="mediaPermissionAllowLabel" data-i18n="mediaPermission.allowMicrophone"></span>
         </button>
-        <button id="mediaPermissionDebugBtn" type="button" class="media-permission-skip" style="display:none">查詢
-          Debug</button>
-        <button id="mediaPermissionSkipBtn" type="button" class="media-permission-skip">稍後再說</button>
+        <button id="mediaPermissionDebugBtn" type="button" class="media-permission-skip" style="display:none">Debug</button>
+        <button id="mediaPermissionSkipBtn" type="button" class="media-permission-skip" data-i18n="mediaPermission.later"></button>
       </div>
     </div>
   </div>
@@ -684,8 +1020,18 @@
   <div id="logoutRedirectCover" class="logout-redirect-cover" aria-hidden="true">
     <div class="cover-spinner" aria-hidden="true"></div>
   </div>
+  <script>if (window.__i18nApply) window.__i18nApply();</script>
   <script>
-    window.API_ORIGIN = 'https://api.message.sentry.red';
+    // Route all API requests through the Cloudflare Pages proxy (relative paths).
+    // The [[path]].ts proxy function handles CORS, error wrapping, and path rewriting.
+    // For local dev, override via ?api=https://... query parameter.
+    // Use same-origin so requests go through Pages proxy,
+    // which routes migrated endpoints to Worker and legacy to Node.js.
+    // For local dev, override via ?api=https://... query parameter.
+    window.API_ORIGIN = new URLSearchParams(location.search).get('api') || '';
+    // SAFE Browser Worker URL — set to the deployed safe-worker origin.
+    // Empty string = same origin (Pages Function proxy or Service Binding).
+    window.SAFE_WORKER_URL = new URLSearchParams(location.search).get('safe') || '';
     (function () {
       const overlay = document.getElementById('orientationOverlay');
       const docEl = document.documentElement;

@@ -131,7 +131,9 @@
     </main>
 
     <script>
-      window.API_ORIGIN = 'https://api.message.sentry.red';
+      // Use same-origin (empty) so requests go through Pages proxy,
+      // which routes migrated endpoints to Worker and legacy to Node.js.
+      window.API_ORIGIN = '';
       (function loadDebugModule(){
         const stamp = window.APP_BUILD_AT || window.APP_VERSION || String(Date.now());
         const script = document.createElement('script');

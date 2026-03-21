@@ -1,5 +1,6 @@
 import { log } from '../../../core/log.js';
 import { escapeHtml } from '../ui-utils.js';
+import { t } from '/locales/index.js';
 
 export function createToastController(element) {
   const toastEl = element ?? (typeof document !== 'undefined' ? document.getElementById('appToast') : null);
@@ -72,7 +73,7 @@ export function createToastController(element) {
     } else if (avatarUrl || avatarInitials) {
       const avatarContent = avatarUrl
         ? `<img src="${escapeHtml(avatarUrl)}" alt="avatar" />`
-        : escapeHtml((avatarInitials || '').slice(0, 2) || '好友');
+        : escapeHtml((avatarInitials || '').slice(0, 2) || t('common.friend'));
       contentParts.push(`<div class="toast-avatar">${avatarContent}</div>`);
     }
     const body = [`<div class="toast-text">${escapeHtml(text)}</div>`];

@@ -3,7 +3,7 @@ import { bytesToB64, b64ToBytes } from '../../shared/utils/base64.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
 
 const INFO_TAG = 'contact-init/dropbox/v1';
-const SALT_BYTES = new TextEncoder().encode('invite-dropbox-salt');
+const SALT_LENGTH = 16;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -27,37 +27,40 @@ export function assertInviteEnvelope(envelope) {
     if (!allowedKeys.has(key)) throw new Error('invalid envelope field');
   }
   const v = Number(envelope.v ?? 0);
-  if (!Number.isFinite(v) || v !== 1) throw new Error('invalid envelope version');
+  if (!Number.isFinite(v) || (v !== 1 && v !== 2)) throw new Error('invalid envelope version');
   const aead = requireNonEmptyString(envelope.aead, 'aead');
   if (aead !== 'aes-256-gcm') throw new Error('invalid envelope aead');
   const info = requireNonEmptyString(envelope.info, 'info');
   if (info !== INFO_TAG) throw new Error('invalid envelope info');
   const sealed = envelope.sealed;
   if (!sealed || typeof sealed !== 'object') throw new Error('invalid envelope sealed');
-  const sealedAllowed = new Set(['eph_pub_b64', 'iv_b64', 'ct_b64']);
+  const sealedAllowed = new Set(['eph_pub_b64', 'iv_b64', 'ct_b64', 'salt_b64']);
   for (const key of Object.keys(sealed)) {
     if (!sealedAllowed.has(key)) throw new Error('invalid sealed field');
   }
   const ephPub = requireNonEmptyString(sealed.eph_pub_b64, 'sealed.eph_pub_b64');
   const iv = requireNonEmptyString(sealed.iv_b64, 'sealed.iv_b64');
   const ct = requireNonEmptyString(sealed.ct_b64, 'sealed.ct_b64');
+  const saltB64 = sealed.salt_b64 ? requireNonEmptyString(sealed.salt_b64, 'sealed.salt_b64') : null;
   const createdAt = requirePositiveInt(envelope.createdAt, 'createdAt');
   const expiresAt = requirePositiveInt(envelope.expiresAt, 'expiresAt');
+  const normalizedSealed = {
+    eph_pub_b64: ephPub,
+    iv_b64: iv,
+    ct_b64: ct
+  };
+  if (saltB64) normalizedSealed.salt_b64 = saltB64;
   return {
     v,
     aead,
     info,
-    sealed: {
-      eph_pub_b64: ephPub,
-      iv_b64: iv,
-      ct_b64: ct
-    },
+    sealed: normalizedSealed,
     createdAt,
     expiresAt
   };
 }
 
-async function deriveAesKey(sharedSecret, infoTag) {
+async function deriveAesKey(sharedSecret, infoTag, salt) {
   const key = await crypto.subtle.importKey(
     'raw',
     toU8Strict(sharedSecret, 'web/src/app/crypto/invite-dropbox.js:48:deriveAesKey'),
@@ -66,7 +69,7 @@ async function deriveAesKey(sharedSecret, infoTag) {
     ['deriveKey']
   );
   return crypto.subtle.deriveKey(
-    { name: 'HKDF', hash: 'SHA-256', salt: SALT_BYTES, info: encoder.encode(infoTag) },
+    { name: 'HKDF', hash: 'SHA-256', salt, info: encoder.encode(infoTag) },
     key,
     { name: 'AES-GCM', length: 256 },
     false,
@@ -83,18 +86,21 @@ export async function sealInviteEnvelope({ ownerPublicKeyB64, payload, expiresAt
   const expires = requirePositiveInt(expiresAt, 'expiresAt');
   const ek = await genX25519Keypair();
   const shared = await scalarMult(ek.secretKey, ownerPub);
-  const key = await deriveAesKey(shared, INFO_TAG);
+  const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH));
+  const key = await deriveAesKey(shared, INFO_TAG, salt);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const plaintext = encoder.encode(JSON.stringify(payload));
-  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plaintext));
+  const aad = encoder.encode(INFO_TAG);
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad }, key, plaintext));
   return {
-    v: 1,
+    v: 2,
     aead: 'aes-256-gcm',
     info: INFO_TAG,
     sealed: {
       eph_pub_b64: b64(ek.publicKey),
       iv_b64: bytesToB64(iv),
-      ct_b64: bytesToB64(ciphertext)
+      ct_b64: bytesToB64(ciphertext),
+      salt_b64: bytesToB64(salt)
     },
     createdAt: Date.now(),
     expiresAt: expires
@@ -112,9 +118,28 @@ export async function openInviteEnvelope({ ownerPrivateKeyB64, envelope }) {
     throw new Error('eph_pub_b64 invalid');
   }
   const shared = await scalarMult(ownerPriv, ephPub);
-  const key = await deriveAesKey(shared, normalized.info);
+  const salt = normalized.sealed.salt_b64
+    ? b64ToBytes(normalized.sealed.salt_b64)
+    : new TextEncoder().encode('invite-dropbox-salt'); // legacy fallback
+  const key = await deriveAesKey(shared, normalized.info, salt);
   const iv = b64ToBytes(normalized.sealed.iv_b64);
   const ct = b64ToBytes(normalized.sealed.ct_b64);
-  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+  // v2+ / envelopes with salt_b64 use AAD; legacy envelopes do not
+  const useAad = (normalized.v ?? 1) >= 2 || !!normalized.sealed.salt_b64;
+  const params = { name: 'AES-GCM', iv };
+  if (useAad) params.additionalData = encoder.encode(normalized.info);
+  let plain;
+  try {
+    plain = await crypto.subtle.decrypt(params, key, ct);
+  } catch (firstErr) {
+    // Fallback: retry with opposite AAD for transition-window data
+    const fallbackParams = { name: 'AES-GCM', iv };
+    if (!useAad) fallbackParams.additionalData = encoder.encode(normalized.info);
+    try {
+      plain = await crypto.subtle.decrypt(fallbackParams, key, ct);
+    } catch {
+      throw firstErr;
+    }
+  }
   return JSON.parse(decoder.decode(new Uint8Array(plain)));
 }

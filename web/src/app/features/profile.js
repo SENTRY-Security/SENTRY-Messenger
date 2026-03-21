@@ -1,7 +1,7 @@
 // /app/features/profile.js
 // Manage encrypted profile control-state (nickname, avatar) stored per-account using MK.
 
-import { listSecureMessages, createSecureMessage } from '../api/messages.js';
+import { listSecureMessages, createSecureMessage, fetchSecureMaxCounter } from '../api/messages.js';
 import { encryptAndPutWithProgress, downloadAndDecrypt } from './media.js';
 import {
   getMkRaw,
@@ -15,6 +15,7 @@ import { wrapWithMK_JSON, unwrapWithMK_JSON, assertEnvelopeStrict } from '../cry
 import { log } from '../core/log.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';
 import { buildIdenticonImage } from '../lib/identicon.js';
+import { t } from '/locales/index.js';
 
 const PROFILE_INFO_TAG = 'profile/v1';
 const PROFILE_ALLOWED_INFO_TAGS = new Set([PROFILE_INFO_TAG]);
@@ -452,7 +453,7 @@ async function persistProfileControlState(profile, { accountDigest } = {}) {
   const { counter, commit } = allocateDeviceCounter();
   const header = {
     profile: 1,
-    v: 1,
+    v: normalizedEnvelope.v || 2,
     ts: obj.updatedAt,
     // Optimized: envelope removed to reduce header size; reconstructed on load
     iv_b64: normalizedEnvelope.iv_b64,
@@ -480,11 +481,19 @@ async function persistProfileControlState(profile, { accountDigest } = {}) {
   });
   if (!r.ok) {
     if (r.status === 409 && data?.error === 'CounterTooLow') {
-      const maxCounter = Number.isFinite(data?.max_counter)
+      let maxCounter = Number.isFinite(data?.max_counter)
         ? Number(data.max_counter)
         : Number.isFinite(data?.details?.max_counter)
           ? Number(data.details.max_counter)
           : null;
+      if (maxCounter === null) {
+        try {
+          const probe = await fetchSecureMaxCounter({ conversationId: convId, senderDeviceId: deviceId });
+          if (probe?.r?.ok && Number.isFinite(probe?.data?.maxCounter)) {
+            maxCounter = probe.data.maxCounter;
+          }
+        } catch {}
+      }
       const seed = maxCounter === null ? 1 : maxCounter + 1;
       setDeviceCounter(seed);
       logProfileCounter({
@@ -642,10 +651,10 @@ export async function initProfileDefaultsOnce({ uidHex, evidence, sourceTag = PR
 }
 
 export async function uploadAvatar({ file, onProgress, thumbDataUrl } = {}) {
-  if (!file) throw new Error('請先選擇圖片');
-  if (!file.type || !file.type.startsWith('image/')) throw new Error('只支援圖片格式');
+  if (!file) throw new Error(t('profile.selectImageFirst'));
+  if (!file.type || !file.type.startsWith('image/')) throw new Error(t('profile.imageFormatOnlyError'));
   const sizeLimit = 6 * 1024 * 1024;
-  if (file.size > sizeLimit) throw new Error('圖片超過 6MB，請選擇較小的檔案');
+  if (file.size > sizeLimit) throw new Error(t('profile.imageTooLarge'));
   const acct = (getAccountDigest() || '').toUpperCase();
   if (!acct) throw new Error('Account missing');
   const convId = `${AVATAR_CONV_PREFIX}${acct}`;

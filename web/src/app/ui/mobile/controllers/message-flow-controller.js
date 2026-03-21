@@ -66,6 +66,7 @@ import { USE_MESSAGES_FLOW_UNIFIED } from '../../../features/messages-flow/flags
 import { hideContactSecret } from '../../../core/contact-secrets.js';
 import { getConversationThreads } from '../../../features/conversation-updates.js';
 import { sessionStore as globalSessionStore } from '../session-store.js';
+import { t } from '/locales/index.js';
 
 export class MessageFlowController extends BaseController {
     constructor(deps) {
@@ -118,8 +119,15 @@ export class MessageFlowController extends BaseController {
                 this.updateMessagesUI({ preserveScroll: true, forceFullRender: true });
             }
         };
+        // [FIX] Listen for KDM events dispatched by facade when live job path is bypassed
+        this._onBizConvKdm = (e) => {
+            if (e?.detail) {
+                this.handleIncomingSecureMessage(e.detail);
+            }
+        };
         document.addEventListener('sentry:conversation-deleted', this._onConversationDeleted);
         document.addEventListener('sentry:receipt', this._onReceipt);
+        document.addEventListener('sentry:biz-conv-kdm', this._onBizConvKdm);
     }
 
     /**
@@ -158,21 +166,21 @@ export class MessageFlowController extends BaseController {
         if (next === 'hidden') {
             this.elements.loadMoreBtn.classList.add('hidden');
             this.elements.loadMoreBtn.classList.remove('loading');
-            if (this.elements.loadMoreLabel) this.elements.loadMoreLabel.textContent = '載入更多';
+            if (this.elements.loadMoreLabel) this.elements.loadMoreLabel.textContent = t('messages.loadMore');
             return;
         }
 
         this.elements.loadMoreBtn.classList.remove('hidden');
         if (next === 'loading') {
             this.elements.loadMoreBtn.classList.add('loading');
-            if (this.elements.loadMoreLabel) this.elements.loadMoreLabel.textContent = '載入中…';
+            if (this.elements.loadMoreLabel) this.elements.loadMoreLabel.textContent = t('common.loading');
         } else if (next === 'armed') {
             this.elements.loadMoreBtn.classList.remove('loading');
-            if (this.elements.loadMoreLabel) this.elements.loadMoreLabel.textContent = '載入更多';
+            if (this.elements.loadMoreLabel) this.elements.loadMoreLabel.textContent = t('messages.loadMore');
         } else if (next === 'reached_top') {
             this.elements.loadMoreBtn.classList.remove('hidden');
             this.elements.loadMoreBtn.classList.remove('loading');
-            if (this.elements.loadMoreLabel) this.elements.loadMoreLabel.textContent = '沒有更多訊息了';
+            if (this.elements.loadMoreLabel) this.elements.loadMoreLabel.textContent = t('messages.noMoreMessages');
         }
     }
 
@@ -287,6 +295,12 @@ export class MessageFlowController extends BaseController {
             const result = await processIncoming(event, deps);
 
             if (result?.skipped) return;
+
+            // KDM processed — a new group thread was created, re-render the list
+            if (result?.processed && result?.reason === 'biz-conv-kdm') {
+                this.deps.renderConversationList?.();
+                return;
+            }
 
             if (result?.action === 'conversation_deleted') {
                 if (result.isActive) {
@@ -528,13 +542,13 @@ export class MessageFlowController extends BaseController {
         const lockKey = peerDevice ? `${peerKey}::${peerDevice}` : peerKey;
         if (isDrSessionLocked(lockKey)) {
             console.warn('[MessageFlow] Load aborted: Session Locked (Decryption in Progress)', lockKey);
-            this.deps.showToast?.('尚有訊息解密中，請稍候', { type: 'info', duration: 2000 });
+            this.deps.showToast?.(t('messages.decryptionInProgress'), { type: 'info', duration: 2000 });
 
             // Allow retry after short delay but abort current fetch
             state.loading = false;
             this.updateLoadMoreVisibility();
             this.setLoadMoreState('hidden'); // Or show "Decrypting..."
-            if (this.elements.loadMoreLabel) this.elements.loadMoreLabel.textContent = '解密中...';
+            if (this.elements.loadMoreLabel) this.elements.loadMoreLabel.textContent = t('messages.decrypting');
             this.deps.updateComposerAvailability?.();
             return;
         }
@@ -603,7 +617,7 @@ export class MessageFlowController extends BaseController {
         this.gapFillInProgress.add(conversationId);
 
         console.log(`[MessageFlow] Auto-Resolving Gap: Local=${localMax} -> Target=${newTarget}`);
-        this.deps.showToast?.('正在補齊歷史訊息...', { type: 'loading', duration: 2000 });
+        this.deps.showToast?.(t('messages.syncingHistory'), { type: 'loading', duration: 2000 });
 
         // [FIX] Force UI Update to show "Pending Live Placeholder" immediately
         // The placeholder was added to the store by coordinator, but UI doesn't know until we tell it.
@@ -661,10 +675,10 @@ export class MessageFlowController extends BaseController {
                 await new Promise(r => setTimeout(r, 100));
             }
 
-            this.deps.showToast?.('歷史訊息同步完成', { type: 'success', duration: 1500 });
+            this.deps.showToast?.(t('messages.historySyncComplete'), { type: 'success', duration: 1500 });
         } catch (err) {
             console.warn('[MessageFlow] Gap Auto-Fill Failed', err);
-            this.deps.showToast?.('歷史訊息同步失敗', { type: 'error', duration: 2000 });
+            this.deps.showToast?.(t('messages.historySyncFailed'), { type: 'error', duration: 2000 });
         } finally {
             this.gapFillInProgress.delete(conversationId);
             if (this.gapTargets) this.gapTargets.delete(conversationId);
@@ -715,7 +729,7 @@ export class MessageFlowController extends BaseController {
             const peerDigest = this.resolvePeerForConversation(convId, lastEntry?.peerAccountDigest || lastEntry?.senderDigest || null);
 
             const contactEntry = peerDigest ? this.sessionStore.contactIndex?.get?.(peerDigest) || null : null;
-            const nickname = contactEntry?.nickname || existingThread?.nickname || (peerDigest ? `好友 ${peerDigest.slice(-4)}` : '好友');
+            const nickname = contactEntry?.nickname || existingThread?.nickname || (peerDigest ? `${t('common.friend')} ${peerDigest.slice(-4)}` : t('common.friend'));
             const avatar = contactEntry?.avatar || existingThread?.avatar || null;
             const peerDevice = existingThread?.peerDeviceId || convEntry?.peerDeviceId || lastEntry?.peerDeviceId || lastEntry?.senderDeviceId || null;
 
@@ -752,7 +766,7 @@ export class MessageFlowController extends BaseController {
                     const dummyThread = {
                         conversationId: convId,
                         peerAccountDigest: peerDigest || state.activePeerDigest,
-                        nickname: nickname || '未知',
+                        nickname: nickname || t('common.unknown'),
                         unreadCount: 0
                     };
                     this._proceedWithAppend(batchEntries, dummyThread, state, isActiveConversationId, convId, peerDigest, directionalOrder);
@@ -934,7 +948,7 @@ export class MessageFlowController extends BaseController {
                     }
 
                     const contactEntry = peerDigest ? this.sessionStore.contactIndex?.get?.(peerDigest) || null : null;
-                    const nickname = thread.nickname || '新訊息';
+                    const nickname = thread.nickname || t('messages.newMessage');
                     const previewText = resolveMessagePreview(item);
                     const avatarUrlToast = thread.avatar?.thumbDataUrl || thread.avatar?.previewDataUrl || thread.avatar?.url || null;
                     const initialsToast = this.deps.controllers?.conversationList?.getInitials(nickname, peerDigest || '').slice(0, 2);
@@ -997,7 +1011,7 @@ export class MessageFlowController extends BaseController {
 
         const timelineMessages = this.deps.refreshTimelineState?.(state.conversationId);
         const contactEntry = this.sessionStore.contactIndex?.get?.(state.activePeerDigest) || null;
-        const nickname = contactEntry?.nickname || `好友 ${state.activePeerDigest.slice(-4)}`;
+        const nickname = contactEntry?.nickname || `${t('common.friend')} ${state.activePeerDigest.slice(-4)}`;
         const avatar = contactEntry?.avatar || null;
         const tokenB64 = state.conversationToken || contactEntry?.conversation?.token_b64 || null;
 
@@ -1123,7 +1137,9 @@ export class MessageFlowController extends BaseController {
                     onDownloadVideo: (media, msgId) => this.deps.controllers?.mediaHandling?.downloadVideoInline(media, msgId),
                     onPlayVideo: (media, msgId) => this.deps.controllers?.mediaHandling?.downloadVideoInline(media, msgId),
                     onSaveToDrive: (media) => this.deps.controllers?.mediaHandling?.saveToDrive(media),
-                    onAvatarClick: ({ avatarUrl, name }) => this.openAvatarPreview(avatarUrl, name)
+                    onAvatarClick: ({ avatarUrl, name }) => this.openAvatarPreview(avatarUrl, name),
+                    onEphImageClick: ({ url, name }) => this.openAvatarPreview(url, name),
+                    onCallLogRedial: ({ kind }) => this.deps.controllers?.composer?.handleConversationAction?.(kind === 'video' ? 'video' : 'call')
                 }
             });
         }
@@ -1307,13 +1323,13 @@ export class MessageFlowController extends BaseController {
                 if (state.activePeerDigest) {
                     this.elements.messagesEmpty.innerHTML =
                         '<i class="bx bx-message-detail" aria-hidden="true"></i>' +
-                        '<p class="messages-empty-title">尚無訊息</p>' +
-                        '<p class="messages-empty-hint">發送第一則訊息開始對話</p>';
+                        '<p class="messages-empty-title">' + t('messages.noMessages') + '</p>' +
+                        '<p class="messages-empty-hint">' + t('messages.sendFirstMessage') + '</p>';
                 } else {
                     this.elements.messagesEmpty.innerHTML =
                         '<i class="bx bx-message-dots" aria-hidden="true"></i>' +
-                        '<p class="messages-empty-title">尚未選擇任何對話</p>' +
-                        '<p class="messages-empty-hint">選擇一個對話開始聊天</p>';
+                        '<p class="messages-empty-title">' + t('messages.noConversationSelected') + '</p>' +
+                        '<p class="messages-empty-hint">' + t('messages.selectConversationToChat') + '</p>';
                 }
             }
         }
@@ -1344,11 +1360,11 @@ export class MessageFlowController extends BaseController {
         const overlay = document.createElement('div');
         overlay.className = 'avatar-fullscreen-overlay';
         overlay.setAttribute('role', 'dialog');
-        overlay.setAttribute('aria-label', name || '頭像預覽');
+        overlay.setAttribute('aria-label', name || t('common.avatarPreview'));
 
         const img = document.createElement('img');
         img.src = avatarUrl;
-        img.alt = name || '頭像預覽';
+        img.alt = name || t('common.avatarPreview');
         overlay.appendChild(img);
 
         const onKey = (e) => {

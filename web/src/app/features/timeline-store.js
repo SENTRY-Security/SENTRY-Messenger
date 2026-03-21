@@ -9,7 +9,10 @@ const USER_MESSAGE_TYPES = new Set([
   MSG_SUBTYPE.PLACEHOLDER,
   MSG_SUBTYPE.SYSTEM,
   MSG_SUBTYPE.CONVERSATION_DELETED,
-  MSG_SUBTYPE.CONTACT_SHARE // [FIX] Allow contact-share in timeline (tombstones)
+  MSG_SUBTYPE.CONTACT_SHARE, // [FIX] Allow contact-share in timeline (tombstones)
+  MSG_SUBTYPE.BIZ_CONV_TEXT,
+  MSG_SUBTYPE.BIZ_CONV_MEDIA,
+  MSG_SUBTYPE.BIZ_CONV_TOMBSTONE
 ]);
 const timelineMap = new Map(); // conversationId -> Map(messageId -> entry)
 const appendListeners = new Set();

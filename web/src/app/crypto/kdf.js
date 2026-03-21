@@ -21,9 +21,7 @@ export function loadArgon2() {
   if (_argon2Loading) return _argon2Loading;
   _argon2Loading = new Promise((resolve, reject) => {
     const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/argon2-browser@1.18.0/dist/argon2-bundled.min.js';
-    s.integrity = 'sha384-XOR3aNvHciLPIf6r+2glkrmbBbLmIJ1EChMXjw8eBKBf8gE0rDq1TyUNuRdorOqi';
-    s.crossOrigin = 'anonymous';
+    s.src = '/assets/libs/argon2-bundled.min.js';
     s.onload = resolve;
     s.onerror = () => { _argon2Loading = null; reject(new Error('argon2 load failed')); };
     document.head.appendChild(s);
@@ -55,14 +53,16 @@ export async function deriveKEKFromPassword(pwd, saltU8, params = { m: 64, t: 3,
   return { kek, params: { m, t, p } };
 }
 
+const KDF_AAD = new TextEncoder().encode('sentry/mk-wrap');
+
 /** Wrap MK with password → argon2id KEK + AES-GCM */
 export async function wrapMKWithPasswordArgon2id(pwd, mkRawU8) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const { kek, params } = await deriveKEKFromPassword(pwd, salt);
-  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, kek, mkRawU8);
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: KDF_AAD }, kek, mkRawU8);
   return {
-    v: 1,
+    v: 2,
     kdf: 'argon2id',
     m: params.m, t: params.t, p: params.p,
     salt_b64: b64(salt),
@@ -81,8 +81,20 @@ export async function unwrapMKWithPasswordArgon2id(pwd, blob) {
     const { kek } = await deriveKEKFromPassword(pwd, salt, {
       m: blob.m ?? 64, t: blob.t ?? 3, p: blob.p ?? 1
     });
-    const mkBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, kek, ct);
-    return new Uint8Array(mkBuf);
+    // v2+ blobs use AAD; v1 legacy blobs do not
+    const useAad = (blob.v ?? 1) >= 2;
+    const params = { name: 'AES-GCM', iv };
+    if (useAad) params.additionalData = KDF_AAD;
+    try {
+      const mkBuf = await crypto.subtle.decrypt(params, kek, ct);
+      return new Uint8Array(mkBuf);
+    } catch {
+      // Fallback: retry with opposite AAD for transition-window data
+      const fallbackParams = { name: 'AES-GCM', iv };
+      if (!useAad) fallbackParams.additionalData = KDF_AAD;
+      const mkBuf = await crypto.subtle.decrypt(fallbackParams, kek, ct);
+      return new Uint8Array(mkBuf);
+    }
   } catch {
     return null;
   }

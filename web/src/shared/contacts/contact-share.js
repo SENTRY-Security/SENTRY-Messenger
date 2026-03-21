@@ -15,8 +15,9 @@ export async function encryptContactPayload({ sessionKey, secret, payload }) {
   const key = await deriveKey(keyInput, ['encrypt']);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const data = encoder.encode(JSON.stringify(payload || {}));
-  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, data));
-  return { iv: bytesToB64(iv), ct: bytesToB64(ct) };
+  const aad = encoder.encode(INFO);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad }, key, data));
+  return { v: 2, iv: bytesToB64(iv), ct: bytesToB64(ct) };
 }
 
 export async function decryptContactPayload({ sessionKey, secret, envelope }) {
@@ -26,7 +27,22 @@ export async function decryptContactPayload({ sessionKey, secret, envelope }) {
   const key = await deriveKey(keyInput, ['decrypt']);
   const iv = b64ToBytes(envelope.iv);
   const ct = b64ToBytes(envelope.ct);
-  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+  // v2+ envelopes use AAD; v1/legacy envelopes do not
+  const useAad = (envelope.v ?? 1) >= 2;
+  const params = { name: 'AES-GCM', iv };
+  if (useAad) params.additionalData = encoder.encode(INFO);
+  let plain;
+  try {
+    plain = await crypto.subtle.decrypt(params, key, ct);
+  } catch (firstErr) {
+    const fallbackParams = { name: 'AES-GCM', iv };
+    if (!useAad) fallbackParams.additionalData = encoder.encode(INFO);
+    try {
+      plain = await crypto.subtle.decrypt(fallbackParams, key, ct);
+    } catch {
+      throw firstErr;
+    }
+  }
   return JSON.parse(decoder.decode(new Uint8Array(plain)));
 }
 

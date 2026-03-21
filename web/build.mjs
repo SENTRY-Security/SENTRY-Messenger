@@ -22,9 +22,12 @@ const dist = resolve(__dirname, 'dist');
 const absolutePathPlugin = {
   name: 'absolute-paths',
   setup(b) {
-    b.onResolve({ filter: /^\/(shared|libs)\// }, (args) => ({
+    b.onResolve({ filter: /^\/(shared|libs|locales)\// }, (args) => ({
       path: resolve(src, args.path.slice(1))
     }));
+    // /assets/libs/* are runtime-only dynamic imports (self-hosted vendor bundles).
+    // Mark as external so esbuild doesn't try to resolve/bundle them.
+    b.onResolve({ filter: /^\/assets\// }, () => ({ external: true }));
   }
 };
 
@@ -37,8 +40,15 @@ const entryPoints = [
   'src/app/ui/app-mobile.js',      // main app (app.html)
   'src/app/ui/login-ui.js',        // login page (login.html)
   'src/app/ui/debug-page.js',      // debug page
-  'src/app/ui/media-permission-demo.js'  // mic-test page
+  'src/app/ui/media-permission-demo.js',  // mic-test page
+  'src/app/ui/ephemeral-ui.js'     // ephemeral chat guest page
 ];
+
+// H-3 fix: Inject __PRODUCTION__ flag — CI sets SENTRY_ENV=production on main branch deploys.
+// When true, debug-flags.js disables all debug switches at build time.
+const isProduction = (process.env.SENTRY_ENV || process.env.NODE_ENV || '').toLowerCase() === 'production'
+  || process.env.CF_PAGES_BRANCH === 'main';
+console.log(`[build] Production mode: ${isProduction}`);
 
 console.time('esbuild');
 const result = await build({
@@ -51,6 +61,9 @@ const result = await build({
   minify: true,
   sourcemap: true,
   target: ['es2022'],
+  define: {
+    '__PRODUCTION__': JSON.stringify(isProduction)
+  },
   plugins: [absolutePathPlugin],
   external: [
     'https://esm.sh/*',
@@ -99,13 +112,13 @@ if (cssResult.metafile) {
 }
 
 // --- Copy static assets ---
-const staticDirs = ['pages', 'assets', 'libs', 'shared'];
+const staticDirs = ['pages', 'assets', 'libs', 'shared', 'locales'];
 for (const dir of staticDirs) {
   cpSync(resolve(src, dir), resolve(dist, dir), { recursive: true });
 }
 
 // Copy top-level files
-const staticFiles = ['index.html', '_headers'];
+const staticFiles = ['index.html', '_headers', 'sw.js', 'manifest.json'];
 for (const file of staticFiles) {
   try {
     cpSync(resolve(src, file), resolve(dist, file));
@@ -139,7 +152,8 @@ const jsEntryFiles = [
   'dist/app/ui/app-mobile.js',
   'dist/app/ui/login-ui.js',
   'dist/app/ui/debug-page.js',
-  'dist/app/ui/media-permission-demo.js'
+  'dist/app/ui/media-permission-demo.js',
+  'dist/app/ui/ephemeral-ui.js'
 ];
 for (const f of jsEntryFiles) {
   const abs = resolve(__dirname, f);
@@ -251,6 +265,23 @@ try {
   console.warn('Warning: could not inject SRI into app.html for JS:', err.message);
 }
 
+// ephemeral.html: inject integrity for ephemeral-ui.js
+const ephHtmlPath = resolve(dist, 'pages/ephemeral.html');
+try {
+  let html = readFileSync(ephHtmlPath, 'utf8');
+  const jsIntegrity = bundledSRI['/app/ui/ephemeral-ui.js'];
+  if (jsIntegrity) {
+    html = html.replace(
+      '<script type="module" src="/app/ui/ephemeral-ui.js"></script>',
+      `<script type="module" src="/app/ui/ephemeral-ui.js" integrity="${jsIntegrity}" crossorigin="anonymous"></script>`
+    );
+  }
+  writeFileSync(ephHtmlPath, html);
+  console.log('SRI injected into ephemeral.html');
+} catch (err) {
+  console.warn('Warning: could not inject SRI into ephemeral.html:', err.message);
+}
+
 // ============================================================================
 // Build Manifest: commit hash + file hashes for auditing
 // ============================================================================
@@ -264,11 +295,20 @@ try {
   gitDirty = execSync('git status --porcelain', { encoding: 'utf8' }).trim().length > 0;
 } catch { /* not a git repo or git not available */ }
 
-// Inject commit hash into app.html and login.html for version display
+// Determine environment: main branch = production, everything else = uat
+const appEnv = gitBranch === 'main' ? 'production' : 'uat';
+console.log(`APP_ENV = '${appEnv}' (branch: ${gitBranch})`);
+
+// Inject commit hash + APP_ENV into app.html and login.html for version display
 // (must happen BEFORE manifest generation so hashes are final)
-for (const htmlPath of [appHtmlPath, loginHtmlPath]) {
+for (const htmlPath of [appHtmlPath, loginHtmlPath, ephHtmlPath]) {
   try {
     let html = readFileSync(htmlPath, 'utf8');
+    // Override APP_ENV with build-time value
+    html = html.replace(
+      /window\.APP_ENV\s*=\s*'[^']*'/,
+      `window.APP_ENV = '${appEnv}'`
+    );
     html = html.replace(
       /window\.APP_BUILD_AT\s*=/,
       `window.APP_BUILD_COMMIT = '${gitCommit.slice(0, 8)}';\n    window.APP_BUILD_AT =`

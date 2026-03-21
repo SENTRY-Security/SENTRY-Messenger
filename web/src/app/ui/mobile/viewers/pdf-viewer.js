@@ -1,17 +1,16 @@
 import { log } from '../../../core/log.js';
 import { escapeHtml } from '../ui-utils.js';
-import { importWithSRI } from '/shared/utils/sri.js';
-import { CDN_SRI } from '/shared/utils/cdn-integrity.js';
+import { t } from '/locales/index.js';
 
 let pdfJsLibPromise = null;
 let activePdfCleanup = null;
 
-const PDFJS_ESM_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/+esm';
-const PDFJS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.worker.min.mjs';
+const PDFJS_ESM_URL = '/assets/libs/pdfjs/pdf.mjs';
+const PDFJS_WORKER_URL = '/assets/libs/pdfjs/pdf.worker.min.mjs';
 
 async function getPdfJs() {
   if (pdfJsLibPromise) return pdfJsLibPromise;
-  pdfJsLibPromise = importWithSRI(PDFJS_ESM_URL, CDN_SRI[PDFJS_ESM_URL], { useNativeImport: true })
+  pdfJsLibPromise = import(/* webpackIgnore: true */ PDFJS_ESM_URL)
     .then((lib) => {
       try { lib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL; } catch (err) { log({ pdfWorkerInitError: err?.message || err }); }
       return lib;
@@ -70,10 +69,10 @@ export async function renderPdfViewer({ url, name, modalApi }) {
   body.innerHTML = `
     <div class="pdf-viewer">
       <div class="pdf-toolbar">
-        <button type="button" class="pdf-btn" id="pdfCloseBtn" aria-label="關閉"><svg viewBox="0 0 16 16" fill="none"><path d="M3 8h10M8 3l-5 5 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <button type="button" class="pdf-btn" id="pdfCloseBtn" aria-label="${t('viewer.close')}"><svg viewBox="0 0 16 16" fill="none"><path d="M3 8h10M8 3l-5 5 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         <div class="pdf-title" title="${escapeHtml(name || 'PDF')}">${escapeHtml(name || 'PDF')}</div>
         <div class="pdf-actions">
-          <button type="button" class="pdf-btn" id="pdfDownload" aria-label="下載 PDF">
+          <button type="button" class="pdf-btn" id="pdfDownload" aria-label="${t('viewer.downloadPdf')}">
             <svg viewBox="0 0 16 16" fill="none"><path d="M8 2v8m0 0l-3-3m3 3l3-3M3 11v2h10v-2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </button>
         </div>
@@ -81,15 +80,15 @@ export async function renderPdfViewer({ url, name, modalApi }) {
       <div class="pdf-stage">
         <div class="pdf-canvas-wrap">
           <canvas id="pdfCanvas" class="pdf-canvas"></canvas>
-          <div class="pdf-loading" id="pdfLoading">載入中…</div>
+          <div class="pdf-loading" id="pdfLoading">${t('common.loading')}</div>
         </div>
       </div>
       <div class="pdf-footer">
         <div class="pdf-actions-row">
           <div class="pdf-page-info">
-            <button type="button" class="pdf-btn" id="pdfPrev" aria-label="上一頁">‹</button>
+            <button type="button" class="pdf-btn" id="pdfPrev" aria-label="${t('viewer.prevPage')}">‹</button>
             <span id="pdfPageLabel">– / –</span>
-            <button type="button" class="pdf-btn" id="pdfNext" aria-label="下一頁">›</button>
+            <button type="button" class="pdf-btn" id="pdfNext" aria-label="${t('viewer.nextPage')}">›</button>
           </div>
         </div>
       </div>
@@ -132,7 +131,7 @@ export async function renderPdfViewer({ url, name, modalApi }) {
     canvas.height = viewport.height;
     canvas.style.width = `${viewport.width}px`;
     canvas.style.height = `${viewport.height}px`;
-    if (loadingEl) loadingEl.textContent = `載入第 ${num} 頁…`;
+    if (loadingEl) loadingEl.textContent = t('viewer.loadingPage', { num });
     await page.render({ canvasContext: ctx, viewport }).promise;
     rendering = false;
     updateLabels();
@@ -152,7 +151,7 @@ export async function renderPdfViewer({ url, name, modalApi }) {
     await renderPage(pageNum);
   } catch (err) {
     if (loadingEl) {
-      loadingEl.textContent = `PDF 載入失敗：${err?.message || err}`;
+      loadingEl.textContent = t('viewer.pdfLoadFailed', { error: err?.message || err });
       loadingEl.classList.add('pdf-error');
     }
     return true;
@@ -176,9 +175,9 @@ export async function renderPdfViewer({ url, name, modalApi }) {
     const proceed = () => triggerDownload(url, name || 'file.pdf');
     if (typeof showConfirmModal === 'function') {
       showConfirmModal({
-        title: '下載 PDF',
-        message: '下載後會在外部開啟，返回通訊軟體可能需要重新感應。確定要下載嗎？',
-        confirmLabel: '下載',
+        title: t('viewer.downloadPdf'),
+        message: t('drive.downloadPdfConfirm'),
+        confirmLabel: t('drive.download'),
         onConfirm: proceed
       });
       return;
@@ -189,11 +188,11 @@ export async function renderPdfViewer({ url, name, modalApi }) {
     overlay.className = 'pdf-confirm';
     overlay.innerHTML = `
       <div class="pdf-confirm-panel">
-        <div class="pdf-confirm-title">下載 PDF</div>
-        <div class="pdf-confirm-msg">下載後會在外部開啟，返回通訊軟體可能需要重新感應。確定要下載嗎？</div>
+        <div class="pdf-confirm-title">${t('viewer.downloadPdf')}</div>
+        <div class="pdf-confirm-msg">${t('drive.downloadPdfConfirm')}</div>
         <div class="pdf-confirm-actions">
-          <button type="button" class="secondary" id="pdfDlCancel">取消</button>
-          <button type="button" class="primary" id="pdfDlOk">下載</button>
+          <button type="button" class="secondary" id="pdfDlCancel">${t('viewer.close')}</button>
+          <button type="button" class="primary" id="pdfDlOk">${t('drive.download')}</button>
         </div>
       </div>`;
     const cleanupConfirm = () => overlay.remove();

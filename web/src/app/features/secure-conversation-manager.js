@@ -4,6 +4,7 @@
 import { drState, normalizePeerIdentity, ensureDeviceId } from '../core/store.js';
 import { getContactSecret, getCorruptContact } from '../core/contact-secrets.js';
 import { CONTROL_MESSAGE_TYPES, normalizeControlMessageType } from './secure-conversation-signals.js';
+import { t } from '/locales/index.js';
 
 // Re-export for consumers that already depend on manager namespace (e.g., messages.js)
 export { ensureDrReceiverState } from './dr-session.js';
@@ -37,9 +38,9 @@ function toErrorMessage(error) {
   if (error?.message) return error.message;
   try {
     const str = String(error);
-    return str === '[object Object]' ? '發生未知錯誤' : str;
+    return str === '[object Object]' ? t('common.unknownError') : str;
   } catch {
-    return '發生未知錯誤';
+    return t('common.unknownError');
   }
 }
 
@@ -197,7 +198,7 @@ export async function ensureSecureConversationReady({
 
   const corrupt = getCorruptContact({ peerAccountDigest: key, peerDeviceId: deviceId });
   if (corrupt) {
-    const error = new Error('此好友狀態損壞，需要重新同步/重新邀請');
+    const error = new Error(t('encryption.corruptNeedResync'));
     setStatus(key, STATUS_FAILED, { reason: 'contact-secrets-corrupt', source, attempts: entry.attempts || 0, error });
     throw error;
   }

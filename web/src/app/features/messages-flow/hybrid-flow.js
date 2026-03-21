@@ -132,6 +132,97 @@ export async function smartFetchMessages({
         return { items: [], errors: [], nextCursor };
     }
 
+    // ── Biz-Conv Message Interception ──
+    // Separate biz-conv messages from regular DR messages.
+    // Biz-conv uses Sender Key (not DR), so they bypass the vault/DR decrypt pipeline.
+    const bizConvItems = [];
+    const drItems = [];
+    for (const item of rawItems) {
+        let header = null;
+        try { header = item.header_json ? JSON.parse(item.header_json) : (item.header || null); } catch { }
+        if (header?.type === 'biz-conv-message') {
+            bizConvItems.push({ ...item, _parsedHeader: header });
+        } else {
+            drItems.push(item);
+        }
+    }
+
+    // Decrypt biz-conv items directly using BizConvStore
+    const bizConvDecrypted = [];
+    if (bizConvItems.length > 0) {
+        try {
+            const { BizConvStore } = await import('../biz-conv.js');
+            const { t } = await import('/locales/index.js');
+
+            // Pre-check: if BizConvStore has no state for this conversation,
+            // attempt a one-shot hydration from backup before giving up.
+            if (!BizConvStore.get(conversationId)) {
+                try {
+                    const { hydrateBizConvFromBackup, fetchActiveServerGroupIds } = await import('../biz-conv-backup.js');
+                    const activeIds = await fetchActiveServerGroupIds();
+                    await hydrateBizConvFromBackup(activeIds);
+                    console.warn('[hybrid-flow] biz-conv replay: triggered on-demand hydration for', conversationId.slice(0, 16));
+                } catch (hydrateErr) {
+                    console.warn('[hybrid-flow] biz-conv replay: on-demand hydration failed', hydrateErr?.message);
+                }
+            }
+
+            for (const item of bizConvItems) {
+                const h = item._parsedHeader;
+                const envelope = {
+                    epoch: h.epoch,
+                    sender_device_id: h.sender_device_id,
+                    counter: h.counter,
+                    iv_b64: h.iv_b64,
+                    ciphertext_b64: h.ciphertext_b64
+                };
+                try {
+                    const state = BizConvStore.get(conversationId);
+                    if (!state) {
+                        console.warn('[hybrid-flow] biz-conv replay: no session for', conversationId.slice(0, 16), '(even after hydration)');
+                        continue;
+                    }
+                    const plaintext = await BizConvStore.decryptMessage(conversationId, envelope);
+                    const messageId = item.id || item.messageId || `biz-${conversationId}:${h.counter}`;
+                    const ts = Number(item.created_at || item.createdAt || item.ts || 0);
+                    const senderDigest = item.sender_account_digest || item.senderAccountDigest || '';
+                    const isSelf = selfDigest && senderDigest &&
+                        senderDigest.toUpperCase() === selfDigest.toUpperCase();
+                    bizConvDecrypted.push({
+                        messageId,
+                        id: messageId,
+                        conversationId,
+                        msgType: 'biz-conv-text',
+                        subtype: 'biz-conv-text',
+                        text: typeof plaintext === 'string' ? plaintext : (plaintext?.text || JSON.stringify(plaintext)),
+                        senderAccountDigest: senderDigest,
+                        direction: isSelf ? 'outgoing' : 'incoming',
+                        ts: ts > 100000000000 ? Math.floor(ts / 1000) : ts,
+                        tsMs: ts > 100000000000 ? ts : ts * 1000,
+                        decrypted: true,
+                        counter: h.counter
+                    });
+                } catch (err) {
+                    console.warn('[hybrid-flow] biz-conv decrypt failed', {
+                        messageId: item.id?.slice(0, 12),
+                        counter: h.counter,
+                        error: err?.message
+                    });
+                }
+            }
+        } catch (err) {
+            console.warn('[hybrid-flow] biz-conv replay init failed', err?.message);
+        }
+    }
+
+    // If this conversation has ONLY biz-conv messages, return them directly
+    if (drItems.length === 0) {
+        return { items: bizConvDecrypted, errors: [], nextCursor };
+    }
+
+    // Continue with DR items only (biz-conv items already handled)
+    rawItems = drItems;
+
     // 3. Sort ASC for Sequential Processing
     // API returns DESC (Newest First). Reverse to process Oldest -> Newest.
     const sortedItems = [...rawItems].sort((a, b) => {
@@ -484,6 +575,54 @@ export async function smartFetchMessages({
                     }
                 }
 
+                // [FIX] Re-process KDM during vault replay so that:
+                // 1. Group state (name, avatar, seed) is restored even if backup was stale
+                // 2. The 1:1 tombstone ("XXX added you to group YYY") is re-created
+                if (subtype === 'biz-conv-kdm' && item.text) {
+                    try {
+                        const kdmText = typeof item.text === 'string' ? item.text : '';
+                        let kdmPayload = null;
+                        if (kdmText.trim().startsWith('{')) {
+                            try { kdmPayload = JSON.parse(kdmText); } catch { /* not JSON */ }
+                        }
+                        if (kdmPayload?.conversation_id || kdmPayload?.conversationId) {
+                            // Re-run handleEpochKdm to ensure group state is set up
+                            const { handleEpochKdm } = await import('../biz-conv-key-rotation.js');
+                            await handleEpochKdm(kdmPayload);
+
+                            // Re-create the 1:1 tombstone with a deterministic messageId
+                            const groupConvId = kdmPayload.conversation_id || kdmPayload.conversationId;
+                            const { t } = await import('/locales/index.js');
+                            const { getConversationThreads } = await import('../conversation-updates.js');
+                            const threads = getConversationThreads();
+                            const thread = threads.get(conversationId);
+                            const groupName = kdmPayload?.meta?.name || kdmPayload?.name || null;
+                            const senderName = thread?.nickname || kdmPayload?.meta?.owner_nickname || null;
+                            const tombstoneText = item.direction === 'outgoing'
+                                ? t('messages.bizConvGroupInviteTombstoneSender', {
+                                    receiver: senderName || t('messages.bizConvGroupInviteSenderUnknown'),
+                                    group: groupName || t('messages.bizConvGroupInviteGroupUnknown')
+                                  })
+                                : t('messages.bizConvGroupInviteTombstone', {
+                                    sender: senderName || t('messages.bizConvGroupInviteSenderUnknown'),
+                                    group: groupName || t('messages.bizConvGroupInviteGroupUnknown')
+                                  });
+                            // Deterministic ID: same KDM+epoch always produces the same tombstone
+                            const tombstoneId = `kdm-invite-${groupConvId}-epoch-${kdmPayload?.epoch || 0}`;
+                            appendUserMessage(conversationId, {
+                                messageId: tombstoneId,
+                                msgType: 'system',
+                                subtype: 'system',
+                                text: tombstoneText,
+                                ts: Number(item.ts || Math.floor(Date.now() / 1000)),
+                                direction: item.direction || 'incoming'
+                            });
+                        }
+                    } catch (err) {
+                        console.warn('[hybrid-flow] KDM replay processing failed', err?.message || err);
+                    }
+                }
+
                 // [FIX] Apply contact-share profile updates (Route A was missing this)
                 // Only apply for INCOMING — outgoing contact-shares have sender=self,
                 // processing them overwrites the real contact with self's profile.
@@ -677,7 +816,12 @@ export async function smartFetchMessages({
         decrypted: decryptedItems.length,
         errors: errors.length
     });
-    console.warn('[HybridVerify] Done. Total Decrypted:', decryptedItems.length);
+    // Merge biz-conv decrypted items into the result set
+    if (bizConvDecrypted.length > 0) {
+        decryptedItems.push(...bizConvDecrypted);
+    }
+
+    console.warn('[HybridVerify] Done. Total Decrypted:', decryptedItems.length, '(biz-conv:', bizConvDecrypted.length, ')');
 
     return { items: decryptedItems, errors, nextCursor };
 }

@@ -13,9 +13,10 @@
 //   phase='load'   → WebCodecs capability check (instant, no WASM to load)
 //   phase='encode' → streaming transcode progress (0-100%)
 
+import { t } from '/locales/index.js';
 import { mergeInitSegments } from './mp4-remuxer.js';
 
-const MP4BOX_CDN_URL = 'https://esm.sh/mp4box@0.5.3';
+const MP4BOX_CDN_URL = '/assets/libs/mp4box.mjs';
 
 let _mp4boxModule = null;
 
@@ -461,7 +462,7 @@ export async function transcodeToFmp4(file, { onProgress, encoderConstraints, on
   const probeResult = await probeFileTracks(file, mp4boxMod);
 
   if (probeResult.tracks.length === 0) {
-    throw new Error('影片不包含可播放的音視訊軌道');
+    throw new Error(t('video.videoNoPlayableTracks'));
   }
 
   // 3. Check if transcoding is actually needed — BEFORE extracting samples
@@ -511,7 +512,7 @@ export async function probeTranscode(file, encoderConstraints) {
   const mp4boxMod = await loadMp4box();
   const probeResult = await probeFileTracks(file, mp4boxMod);
   if (probeResult.tracks.length === 0) {
-    throw new Error('影片不包含可播放的音視訊軌道');
+    throw new Error(t('video.videoNoPlayableTracks'));
   }
 
   const codecNeeds = needsTranscode(probeResult.tracks);
@@ -542,7 +543,7 @@ function probeFileTracks(file, mp4boxMod) {
     let fileDuration = 0;
 
     mp4boxFile.onError = (err) => {
-      reject(new Error('影片解析失敗：' + (err?.message || err)));
+      reject(new Error(t('video.videoParsingFailed') + (err?.message || err)));
     };
 
     mp4boxFile.onReady = (info) => {
@@ -598,7 +599,7 @@ function probeFileTracks(file, mp4boxMod) {
         mp4boxFile.flush();
       }
     } catch (err) {
-      reject(new Error('無法解析此影片：' + (err?.message || err)));
+      reject(new Error(t('video.cannotParseVideoFile') + (err?.message || err)));
       return;
     }
 
@@ -742,7 +743,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
           setFatalError(err);
         }
       },
-      error: (err) => setFatalError(new Error('視訊編碼失敗：' + (err?.message || err))),
+      error: (err) => setFatalError(new Error(t('video.videoEncodeFailed') + (err?.message || err))),
     });
     videoEncoder.configure(config);
   }
@@ -808,7 +809,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
           setFatalError(err);
         }
       },
-      error: (err) => setFatalError(new Error('視訊解碼失敗：' + (err?.message || err))),
+      error: (err) => setFatalError(new Error(t('video.videoDecodeFailed') + (err?.message || err))),
     });
 
     const decoderConfig = {
@@ -868,7 +869,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
           setFatalError(err);
         }
       },
-      error: (err) => setFatalError(new Error('音訊編碼失敗：' + (err?.message || err))),
+      error: (err) => setFatalError(new Error(t('video.audioEncodeFailed') + (err?.message || err))),
     });
     audioEncoder.configure(aEncConfig);
 
@@ -882,7 +883,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
           setFatalError(err);
         }
       },
-      error: (err) => setFatalError(new Error('音訊解碼失敗：' + (err?.message || err))),
+      error: (err) => setFatalError(new Error(t('video.audioDecodeFailed') + (err?.message || err))),
     });
 
     const decoderConfig = {
@@ -1158,7 +1159,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
   let readyResolve, readyReject;
   const readyPromise = new Promise((res, rej) => { readyResolve = res; readyReject = rej; });
 
-  demuxer.onError = (err) => readyReject(new Error('影片解析失敗：' + (err?.message || err)));
+  demuxer.onError = (err) => readyReject(new Error(t('video.videoParsingFailed') + (err?.message || err)));
 
   demuxer.onReady = async (info) => {
     try {
@@ -1182,7 +1183,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
       }
 
       if (!videoTrack) {
-        readyReject(new Error('影片不包含視訊軌道'));
+        readyReject(new Error(t('video.videoNoVideoTrack')));
         return;
       }
 
@@ -1190,7 +1191,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
       vEncConfig = videoEncoderConfig(videoTrack, encoderConstraints);
       const vSupport = await VideoEncoder.isConfigSupported(vEncConfig);
       if (!vSupport.supported) {
-        readyReject(new Error('此裝置不支援 H.264 編碼'));
+        readyReject(new Error(t('video.h264NotSupported')));
         return;
       }
 
@@ -1274,7 +1275,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
     const chunk = await file.slice(readOffset, end).arrayBuffer();
     chunk.fileStart = readOffset;
     try { demuxer.appendBuffer(chunk); } catch (e) {
-      throw fatalError || new Error('影片解析失敗（記憶體不足？）：' + (e?.message || e));
+      throw fatalError || new Error(t('video.videoParsingFailedMemory') + (e?.message || e));
     }
     readOffset = end;
     if (videoTrack) { await readyPromise; ready = true; break; }
@@ -1290,7 +1291,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
       const chunk = await file.slice(endOffset, end).arrayBuffer();
       chunk.fileStart = endOffset;
       try { demuxer.appendBuffer(chunk); } catch (e) {
-        throw fatalError || new Error('影片解析失敗（記憶體不足？）：' + (e?.message || e));
+        throw fatalError || new Error(t('video.videoParsingFailedMemory') + (e?.message || e));
       }
       endOffset = end;
       if (videoTrack) { await readyPromise; ready = true; break; }
@@ -1323,7 +1324,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
     const chunk = await file.slice(readOffset, end).arrayBuffer();
     chunk.fileStart = readOffset;
     try { demuxer.appendBuffer(chunk); } catch (e) {
-      throw fatalError || new Error('影片解析失敗（記憶體不足？）：' + (e?.message || e));
+      throw fatalError || new Error(t('video.videoParsingFailedMemory') + (e?.message || e));
     }
     readOffset = end;
     await processPendingSamples();

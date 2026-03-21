@@ -10,6 +10,8 @@
 //   ws.send(payload);     // queue-safe send
 //   ws.close();           // teardown on logout
 
+import { t } from '/locales/index.js';
+
 export function createWsIntegration({ deps }) {
   const {
     log, logForensicsEvent, wsDebugEnabled,
@@ -68,7 +70,7 @@ export function createWsIntegration({ deps }) {
 
   async function getAuthToken({ force = false } = {}) {
     const accountDigest = getAccountDigest();
-    if (!accountDigest) throw new Error('缺少 accountDigest');
+    if (!accountDigest) throw new Error(t('errors.missingAccountDigest'));
     const nowSec = Math.floor(Date.now() / 1000);
     if (!force && wsAuthTokenInfo && wsAuthTokenInfo.token) {
       const exp = Number(wsAuthTokenInfo.expiresAt || 0);
@@ -87,7 +89,8 @@ export function createWsIntegration({ deps }) {
       throw err;
     }
     const expiresAt = Number(data.expires_at || data.expiresAt || data.exp || 0) || null;
-    wsAuthTokenInfo = { token: data.token, expiresAt };
+    const wsUrlDirect = typeof data.ws_url === 'string' ? data.ws_url.trim() : '';
+    wsAuthTokenInfo = { token: data.token, expiresAt, ws_url: wsUrlDirect || null };
     return wsAuthTokenInfo;
   }
 
@@ -123,34 +126,52 @@ export function createWsIntegration({ deps }) {
     } catch (err) {
       log({ wsTokenError: err?.message || err, status: err?.status, code: err?.code });
       if (err?.status === 409 || err?.code === 'StaleSession') {
-        showForcedLogoutModal('帳號已在其他裝置登入');
-        secureLogout('帳號已在其他裝置登入', { auto: true });
+        showForcedLogoutModal(t('auth.accountLoggedInElsewhere'));
+        secureLogout(t('auth.accountLoggedInElsewhere'), { auto: true });
         return;
       }
       scheduleReconnect(4000);
       return;
     }
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    let baseHost = connectionIndicatorEl?.dataset?.wsHost || '';
-    let path = connectionIndicatorEl?.dataset?.wsPath || '/api/ws';
-    const apiOriginRaw = typeof globalThis !== 'undefined' && typeof globalThis.API_ORIGIN === 'string'
-      ? globalThis.API_ORIGIN.trim()
-      : '';
-    if (apiOriginRaw) {
+    // If the token response includes a direct WS URL from the Worker, prefer it
+    // (bypasses the Pages proxy which may not forward WebSocket upgrades reliably).
+    const directWsUrl = tokenInfo?.ws_url || '';
+    const deviceId = getDeviceId() || ensureDeviceId() || '';
+    const tokenParam = encodeURIComponent(tokenInfo.token);
+    let wsUrl;
+    if (directWsUrl) {
       try {
-        const originUrl = new URL(apiOriginRaw);
-        baseHost = originUrl.host || baseHost;
-        const prefix = originUrl.pathname && originUrl.pathname !== '/' ? originUrl.pathname.replace(/\/$/, '') : '';
-        if (prefix) {
-          path = path.startsWith('/') ? `${prefix}${path}` : `${prefix}/${path}`;
-        }
-      } catch (err) {
-        log({ apiOriginParseError: err?.message || err });
+        const parsed = new URL(directWsUrl);
+        parsed.searchParams.set('token', tokenInfo.token);
+        if (deviceId) parsed.searchParams.set('deviceId', deviceId);
+        wsUrl = parsed.toString();
+      } catch {
+        // fall through to legacy URL construction
       }
     }
-    if (!baseHost) baseHost = location.host;
-    if (!path.startsWith('/')) path = `/${path}`;
-    const wsUrl = `${proto}//${baseHost}${path}`;
+    if (!wsUrl) {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      let baseHost = connectionIndicatorEl?.dataset?.wsHost || '';
+      let path = connectionIndicatorEl?.dataset?.wsPath || '/api/ws';
+      const apiOriginRaw = typeof globalThis !== 'undefined' && typeof globalThis.API_ORIGIN === 'string'
+        ? globalThis.API_ORIGIN.trim()
+        : '';
+      if (apiOriginRaw) {
+        try {
+          const originUrl = new URL(apiOriginRaw);
+          baseHost = originUrl.host || baseHost;
+          const prefix = originUrl.pathname && originUrl.pathname !== '/' ? originUrl.pathname.replace(/\/$/, '') : '';
+          if (prefix) {
+            path = path.startsWith('/') ? `${prefix}${path}` : `${prefix}/${path}`;
+          }
+        } catch (err) {
+          log({ apiOriginParseError: err?.message || err });
+        }
+      }
+      if (!baseHost) baseHost = location.host;
+      if (!path.startsWith('/')) path = `/${path}`;
+      wsUrl = `${proto}//${baseHost}${path}?token=${tokenParam}${deviceId ? `&deviceId=${encodeURIComponent(deviceId)}` : ''}`;
+    }
     if (wsDebugEnabled) {
       log({ wsConnectUrl: wsUrl });
     }
@@ -222,8 +243,8 @@ export function createWsIntegration({ deps }) {
       updateConnectionIndicator('offline');
       getPresenceManager()?.clearPresenceState?.();
       if (evt.code === 4409) {
-        showForcedLogoutModal('帳號已在其他裝置登入');
-        secureLogout('帳號已在其他裝置登入', { auto: true });
+        showForcedLogoutModal(t('auth.accountLoggedInElsewhere'));
+        secureLogout(t('auth.accountLoggedInElsewhere'), { auto: true });
         return;
       }
       if (evt.code === 4401) {
@@ -487,7 +508,7 @@ export function createWsIntegration({ deps }) {
 
   // --- Incoming message dispatch ---
 
-  function handleMessage(msg) {
+  async function handleMessage(msg) {
     const type = msg?.type;
     if (type === 'hello') return;
     if (type === 'pong') {
@@ -529,7 +550,7 @@ export function createWsIntegration({ deps }) {
       return;
     }
     if (type === 'force-logout') {
-      const reason = msg?.reason || '帳號已被清除';
+      const reason = msg?.reason || t('auth.accountCleared');
       showForcedLogoutModal(reason);
       secureLogout(reason, { auto: true });
       return;
@@ -642,6 +663,173 @@ export function createWsIntegration({ deps }) {
       getMessagesPane()?.handleVaultAckEvent?.(msg);
       return;
     }
+    if (type === 'push-device-paired') {
+      document.dispatchEvent(new CustomEvent('sentry:push-device-paired', { detail: msg }));
+      return;
+    }
+    // ── Buffered message markers (ephemeral DO buffer) ──
+    if (type === 'buffered-messages-start') {
+      log({ wsBufferedMessagesStart: true, ts: msg?.ts });
+      return;
+    }
+    if (type === 'buffered-messages-end') {
+      log({ wsBufferedMessagesEnd: true, count: msg?.count, ts: msg?.ts });
+      return;
+    }
+    // ── Ephemeral chat events ──
+    if (type === 'ephemeral_session_started' || type === 'ephemeral-extended' || type === 'ephemeral-deleted'
+        || type === 'ephemeral-message' || type === 'ephemeral-key-exchange' || type === 'ephemeral-key-exchange-ack'
+        || type === 'ephemeral-guest-leave'
+        || type === 'ephemeral-peer-reconnected' || type === 'ephemeral-peer-disconnected'
+        || type.startsWith('ephemeral-call-')) {
+      const mp = getMessagesPane();
+      console.log('[ws] ephemeral event received:', type, msg?.sessionId?.slice(0, 8) || '',
+        'controller:', !!mp?.ephemeralController);
+      if (!mp?.ephemeralController) {
+        console.warn('[ws] ephemeral event dropped — controller not ready', { type, sessionId: msg?.sessionId?.slice(0, 8) });
+      }
+      const handled = mp?.ephemeralController?.handleWsMessage?.(msg);
+      if (type === 'ephemeral-message' && msg?.conversationId) {
+        // Decrypt and render directly via ephemeral controller.
+        // Cannot use handleIncomingSecureMessage — it requires targetDeviceId/senderDeviceId
+        // which ephemeral WS relay messages don't carry.
+        const ctrl = mp?.ephemeralController;
+        if (ctrl && msg.header && msg.ciphertext_b64) {
+          ctrl.decryptAndRender(msg).catch(err => {
+            console.warn('[ws] ephemeral decrypt failed', err?.message);
+          });
+        }
+      }
+      return;
+    }
+    // ── Business Conversation events ───────────────────────────────
+    if (type === 'biz-conv-message') {
+      const convId = String(msg?.conversation_id || '').trim();
+      if (!convId) return;
+      log({ bizConvMessage: convId.slice(0, 16), sender: msg?.sender_account_digest?.slice(0, 12) });
+      // Dispatch to BizConvStore for decryption and timeline insertion
+      try {
+        const { BizConvStore } = await import('../../features/biz-conv.js');
+        const { appendUserMessage } = await import('../../features/timeline-store.js');
+        const { upsertBizConvThread } = await import('../../features/conversation-updates.js');
+        const state = BizConvStore.get(convId);
+        if (!state) {
+          console.warn('[ws] biz-conv-message: no session for', convId.slice(0, 16));
+          return;
+        }
+        const plaintext = await BizConvStore.decryptMessage(convId, msg);
+        const messageId = msg.message_id || crypto.randomUUID();
+        appendUserMessage(convId, {
+          messageId,
+          msgType: 'biz-conv-text',
+          text: typeof plaintext === 'string' ? plaintext : plaintext?.text || JSON.stringify(plaintext),
+          senderAccountDigest: msg.sender_account_digest,
+          ts: msg.ts || Date.now(),
+          decrypted: true
+        });
+        upsertBizConvThread(convId, {
+          lastMessageText: typeof plaintext === 'string' ? plaintext : plaintext?.text || '',
+          lastMessageTs: msg.ts || Date.now(),
+          lastMessageId: messageId
+        });
+        // 標記備份為 dirty
+        const { markBizConvBackupDirty } = await import('../../features/biz-conv-backup.js');
+        markBizConvBackupDirty();
+      } catch (err) {
+        console.warn('[ws] biz-conv-message decrypt failed', err?.message);
+      }
+      return;
+    }
+    if (type === 'biz-conv-member-changed') {
+      log({ bizConvMemberChanged: msg?.conversation_id?.slice(0, 16), change: msg?.change });
+      try {
+        const { BizConvStore } = await import('../../features/biz-conv.js');
+        const state = BizConvStore.get(msg?.conversation_id);
+        if (state) {
+          state.lastSyncTs = Date.now();
+          // If we are the owner and a member left, trigger key rotation
+          const change = msg?.change || msg?.action;
+          const removedDigest = msg?.account_digest || msg?.target_account_digest;
+          const selfDigest = getAccountDigest();
+          if ((change === 'left' || change === 'removed') && state.owner_account_digest === selfDigest) {
+            try {
+              const { rotateGroupKey } = await import('../../features/biz-conv-key-rotation.js');
+              await rotateGroupKey(msg.conversation_id, {
+                reason: change === 'left' ? 'member-left' : 'member-removed',
+                removedDigest
+              });
+            } catch (rotErr) {
+              log({ bizConvAutoRotateError: rotErr?.message });
+            }
+          }
+        }
+      } catch {}
+      return;
+    }
+    if (type === 'biz-conv-dissolved' || type === 'biz-conv-removed-notification') {
+      const convId = String(msg?.conversation_id || '').trim();
+      const isDissolved = type === 'biz-conv-dissolved';
+      log({ [isDissolved ? 'bizConvDissolved' : 'bizConvRemoved']: convId?.slice(0, 16) });
+      try {
+        const { BizConvStore } = await import('../../features/biz-conv.js');
+        const { getConversationThreads } = await import('../../features/conversation-updates.js');
+        const { markBizConvBackupDirty } = await import('../../features/biz-conv-backup.js');
+
+        // Get group name before removing (for notification)
+        const thread = getConversationThreads().get(convId);
+        const groupName = thread?.bizConvName || BizConvStore.get(convId)?.meta?.name || t('messages.bizConvDefault');
+
+        // Hard-delete from store and threads
+        BizConvStore.remove(convId);
+        getConversationThreads().delete(convId);
+        markBizConvBackupDirty();
+
+        const mp = getMessagesPane();
+        const state = mp?.getMessageState?.();
+
+        // If user is currently viewing this group, kick back to list
+        if (state && state.activeBizConv && state.conversationId === convId) {
+          state.activeBizConv = false;
+          state.conversationId = null;
+          state.viewMode = 'list';
+          mp?.clearMessagesView?.();
+          mp?.renderConversationList?.();
+        } else {
+          mp?.renderConversationList?.();
+        }
+
+        // Show notification via custom event (picked up by toast controller)
+        const msgText = isDissolved
+          ? (t('messages.bizConvDissolvedNotice') || '"{name}" has been dissolved.').replace('{name}', groupName)
+          : (t('messages.bizConvRemovedNotice') || 'You have been removed from "{name}".').replace('{name}', groupName);
+        if (typeof document !== 'undefined') {
+          document.dispatchEvent(new CustomEvent('sentry:toast', { detail: { message: msgText } }));
+        }
+      } catch (err) {
+        log({ bizConvDissolveHandleError: err?.message });
+      }
+      return;
+    }
+    if (type === 'biz-conv-ownership-transferred') {
+      log({ bizConvOwnershipTransferred: msg?.conversation_id?.slice(0, 16), newOwner: msg?.new_owner?.slice(0, 12) });
+      try {
+        const { BizConvStore } = await import('../../features/biz-conv.js');
+        const state = BizConvStore.get(msg?.conversation_id);
+        if (state) state.owner_account_digest = msg?.new_owner;
+      } catch {}
+      return;
+    }
+    if (type === 'biz-conv-policy-updated') {
+      log({ bizConvPolicyUpdated: msg?.conversation_id?.slice(0, 16) });
+      // Policy will be re-fetched on next conversation open
+      return;
+    }
+    if (type === 'biz-conv-key-rotated') {
+      log({ bizConvKeyRotated: msg?.conversation_id?.slice(0, 16), newEpoch: msg?.new_epoch });
+      // Client will receive new KDM via DR session with the updated group_seed
+      return;
+    }
+
     if (type === 'secure-message' || type === 'message-new') {
       if (!isTargetingThisDevice(msg)) return;
       if (!msg?.senderDeviceId || !msg?.targetDeviceId) {

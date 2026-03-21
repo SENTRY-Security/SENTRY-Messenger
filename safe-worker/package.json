@@ -1,0 +1,8 @@
+{
+  "name": "safe-browser-worker",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@cloudflare/containers": "^0.1.0"
+  }
+}

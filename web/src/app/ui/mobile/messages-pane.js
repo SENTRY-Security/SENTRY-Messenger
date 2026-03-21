@@ -34,6 +34,7 @@ import { setDeletionCursor, setPeerDeletionCursor } from '../../features/soft-de
 import { clearDrState, drState } from '../../core/store.js';
 import { sendDrPlaintext } from '../../features/dr-session.js';
 import { escapeHtml, fmtSize, shouldNotifyForMessage, escapeSelector } from './ui-utils.js';
+import { t } from '/locales/index.js';
 import {
   getContactCore,
   findContactCoreByAccountDigest,
@@ -125,18 +126,19 @@ import { ConversationListController } from './controllers/conversation-list-cont
 import { SecureStatusController } from './controllers/secure-status-controller.js';
 import { CallLogController } from './controllers/call-log-controller.js';
 import { MessageFlowController } from './controllers/message-flow-controller.js';
-import { GroupBuilderController } from './controllers/group-builder-controller.js';
+
 import { LayoutController } from './controllers/layout-controller.js';
 import { ComposerController } from './controllers/composer-controller.js';
 import { MessageStatusController } from './controllers/message-status-controller.js';
 import { ActiveConversationController } from './controllers/active-conversation-controller.js';
 import { MessageSendingController } from './controllers/message-sending-controller.js';
 import { MediaHandlingController } from './controllers/media-handling-controller.js';
+import { EphemeralController } from './controllers/ephemeral-controller.js';
 
 // sentCallLogIds, callLogPlaceholders removed (managed by CallLogController)
 
 // Moved PLACEHOLDER_* constants to renderer.js
-const GROUPS_ENABLED = false;
+
 const decryptBannerLogDedup = new Set();
 const setActiveFailLogKeys = new Set();
 const renderState = { conversationId: null, renderedIds: [], placeholderCount: 0 };
@@ -310,8 +312,6 @@ function stopActivePoll() {
   }
 }
 
-const LOCAL_GROUP_STORAGE_KEY = 'groups-drafts-v1';
-// localGroups and groupBuilderEl removed (managed by GroupBuilderController)
 
 // Removed loadLocalGroups and persistLocalGroups
 export function initMessagesPane({
@@ -343,8 +343,7 @@ export function initMessagesPane({
     conversationList: dom.conversationListEl ?? document.querySelector('.conversation-list'),
     conversationRefreshEl: dom.conversationRefreshEl ?? document.querySelector('.conversation-refresh'),
     conversationRefreshLabelEl: dom.conversationRefreshLabelEl ?? document.querySelector('.conversation-refresh .label'),
-    createGroupBtn: dom.createGroupBtn ?? document.getElementById('btnCreateGroup'),
-    groupDraftsEl: dom.groupDraftsEl ?? document.getElementById('groupDrafts'),
+    conversationQuickActions: dom.conversationQuickActionsEl ?? document.querySelector('.conversation-quick-actions'),
     messagesWsIndicator: dom.messagesWsIndicatorEl ?? document.querySelector('.messages-ws-indicator'),
     messagesPlaceholders: dom.messagesPlaceholdersEl ?? document.getElementById('messagePlaceholders'),
     messagesList: dom.messagesListEl ?? document.getElementById('messagesList'),
@@ -356,7 +355,8 @@ export function initMessagesPane({
     loadMoreLabel: dom.messagesLoadMoreLabel ?? document.querySelector('.messages-load-more .label'),
     loadMoreSpinner: dom.messagesLoadMoreSpinner ?? document.querySelector('.messages-load-more .spinner'),
     callBtn: dom.messagesCallBtn ?? document.getElementById('messagesCallBtn'),
-    callSubmenu: document.getElementById('callSubmenu')
+    callSubmenu: document.getElementById('callSubmenu'),
+    bizConvSettingsBtn: document.getElementById('bizConvSettingsBtn')
   };
 
   console.log('[messages-pane] init elements check:', {
@@ -374,7 +374,7 @@ export function initMessagesPane({
       scrollEl: !!elements.scrollEl
     });
     try {
-      if (typeof showAlertModal === 'function') showAlertModal({ title: '系統錯誤', message: 'Message UI Elements Missing. Please screenshot console.' });
+      if (typeof showAlertModal === 'function') showAlertModal({ title: t('errors.operationFailed'), message: 'Message UI Elements Missing. Please screenshot console.' });
     } catch { }
   }
 
@@ -419,6 +419,7 @@ export function initMessagesPane({
     get pendingSecureReadyPeer() { return controllers.secureStatus.pendingSecureReadyPeer; },
     // [FIX] Pass conversationId and token args
     setActiveConversation: (...args) => controllers.activeConversation.setActiveConversation(...args), // Route via controller if poss, or keep local
+    setActiveBizConv: (...args) => controllers.activeConversation.setActiveBizConv(...args),
     // MessageFlow facade deps:
     loadActiveConversationMessages: (args) => controllers.messageFlow.loadActiveConversationMessages(args),
     handleTimelineAppend: (args) => controllers.messageFlow.handleTimelineAppend(args),
@@ -455,6 +456,8 @@ export function initMessagesPane({
     updateComposerAvailability: () => controllers.composer.updateComposerAvailability(),
     focusComposerInput: () => controllers.composer.focusInput(),
     applyMessagesLayout: () => controllers.layout.applyMessagesLayout(),
+    // [FIX] Pass ensureDeviceId for ephemeral E2EE AAD
+    ensureDeviceId: () => ensureDeviceId(),
     // [FIX] Pass wsSend for Receipts
     wsSend: (data) => wsSendFn(data),
     navbarEl,
@@ -462,7 +465,6 @@ export function initMessagesPane({
   });
 
   const controllers = {
-    groupBuilder: new GroupBuilderController(deps),
     secureStatus: new SecureStatusController(deps),
     layout: new LayoutController(deps),
     conversationList: new ConversationListController(deps),
@@ -472,7 +474,8 @@ export function initMessagesPane({
     messageFlow: new MessageFlowController(deps), // Note: internal logic updated, bumping main dep later if needed, but import is static in module scope
     activeConversation: new ActiveConversationController(deps),
     messageSending: new MessageSendingController(deps),
-    mediaHandling: new MediaHandlingController(deps)
+    mediaHandling: new MediaHandlingController(deps),
+    ephemeral: new EphemeralController(deps)
   };
 
   // Inject circular dependencies into deps
@@ -718,19 +721,19 @@ export function initMessagesPane({
     if (next === 'hidden') {
       elements.loadMoreBtn.classList.add('hidden');
       elements.loadMoreBtn.classList.remove('loading');
-      if (elements.loadMoreLabel) elements.loadMoreLabel.textContent = '載入更多';
+      if (elements.loadMoreLabel) elements.loadMoreLabel.textContent = t('common.loadMore');
       return;
     }
     elements.loadMoreBtn.classList.remove('hidden');
     if (next === 'loading') {
       elements.loadMoreBtn.classList.add('loading');
-      if (elements.loadMoreLabel) elements.loadMoreLabel.textContent = '載入中…';
+      if (elements.loadMoreLabel) elements.loadMoreLabel.textContent = t('common.loading');
     } else if (next === 'armed') {
       elements.loadMoreBtn.classList.remove('loading');
-      if (elements.loadMoreLabel) elements.loadMoreLabel.textContent = '釋放以載入更多';
+      if (elements.loadMoreLabel) elements.loadMoreLabel.textContent = t('common.loadMore');
     } else {
       elements.loadMoreBtn.classList.remove('loading');
-      if (elements.loadMoreLabel) elements.loadMoreLabel.textContent = '載入更多';
+      if (elements.loadMoreLabel) elements.loadMoreLabel.textContent = t('common.loadMore');
     }
   }
 
@@ -1138,7 +1141,7 @@ export function initMessagesPane({
     const key = normalizePeerKey(peerAccountDigest);
     if (!key) return;
     const contactEntry = getContactCore(key);
-    const nickname = contactEntry?.nickname || `好友 ${key.slice(-4)}`;
+    const nickname = contactEntry?.nickname || t('contacts.friendFallback', { id: key.slice(-4) });
     const threadEntry = getConversationThreads().get(conversationId) || null;
     const convIndexEntry = sessionStore.conversationIndex?.get?.(conversationId) || null;
     const peerDeviceId =
@@ -1147,12 +1150,12 @@ export function initMessagesPane({
       contactEntry?.peerDeviceId ||
       null;
     showConfirmModal({
-      title: '刪除對話',
-      message: `確定要刪除與「${escapeHtml(nickname)}」的對話？此操作也會從對方的對話列表中移除。`,
-      confirmLabel: '刪除',
+      title: t('messages.deleteConversation'),
+      message: t('messages.confirmDeleteConversation', { name: escapeHtml(nickname) }),
+      confirmLabel: t('common.delete'),
       onConfirm: async () => {
         try {
-          if (!peerDeviceId) throw new Error('缺少對方 deviceId，請重新同步好友後再試');
+          if (!peerDeviceId) throw new Error(t('messages.missingPeerDeviceId'));
 
           const state = getMessageState();
           const lastMsg = state.messages && state.messages.length > 0 ? state.messages[state.messages.length - 1] : null;
@@ -1249,7 +1252,7 @@ export function initMessagesPane({
               sourceTag: 'messages-pane:delete-conversation'
             });
             resetMessageStateWithPlaceholders();
-            if (elements.peerName) elements.peerName.textContent = '選擇好友開始聊天';
+            if (elements.peerName) elements.peerName.textContent = t('contacts.selectToChat');
             clearMessagesView();
             hideSecurityModal();
             deps.updateComposerAvailability();
@@ -1262,7 +1265,7 @@ export function initMessagesPane({
           // We already sent the encrypted signal via sendDrPlaintext above.
         } catch (err) {
           log({ conversationDeleteError: err?.message || err });
-          if (typeof showAlertModal === 'function') showAlertModal({ title: '刪除失敗', message: err?.message || '刪除對話失敗，請稍後再試。' });
+          if (typeof showAlertModal === 'function') showAlertModal({ title: t('errors.deleteFailed'), message: err?.message || t('messages.deleteConversationFailed') });
         }
       },
       onCancel: () => { if (element) closeSwipe?.(element); }
@@ -1288,6 +1291,10 @@ export function initMessagesPane({
 
     elements.attachBtn?.addEventListener('click', () => {
       if (!requireSubscriptionActive()) return;
+      // Restrict to images in ephemeral chat
+      const msgState = getMessageState();
+      const isEph = msgState.conversationId && controllers.ephemeral?.isEphemeralConversation?.(msgState.conversationId);
+      if (elements.fileInput) elements.fileInput.accept = isEph ? 'image/*' : '';
       elements.fileInput.click();
     });
 
@@ -1328,8 +1335,6 @@ export function initMessagesPane({
         controllers.composer.handleConversationAction(callType);
       }
     });
-    elements.createGroupBtn?.addEventListener('click', () => controllers.groupBuilder.handleCreateGroup());
-
     if (elements.scrollEl) {
       elements.scrollEl.addEventListener('scroll', handleMessagesScroll, { passive: true });
       elements.scrollEl.addEventListener('touchend', handleMessagesTouchEnd, { passive: true });
@@ -1349,19 +1354,18 @@ export function initMessagesPane({
         // Trigger manual retry
         controllers.messageSending.retryMessage(msgId).catch(err => {
           console.error('Retry failed', err);
-          showToast?.('重試失敗', { variant: 'error' });
+          showToast?.(t('messages.retryFailed'), { variant: 'error' });
         });
         return;
       }
 
-      showToast?.('訊息傳送失敗，請重新發送', { variant: 'warning' });
+      showToast?.(t('messages.sendFailedPleaseResend'), { variant: 'warning' });
     });
 
     elements.loadMoreBtn?.addEventListener('click', () => {
       controllers.messageFlow.loadActiveConversationMessages({ append: true, reason: 'scroll' });
     });
 
-    elements.createGroupBtn?.addEventListener('click', () => controllers.groupBuilder.handleCreateGroup());
 
 
 
@@ -1426,7 +1430,7 @@ export function initMessagesPane({
           });
         } catch (err) {
           console.error('[messages-pane] onSent:apply_error', err);
-          controllers.messageStatus.applyOutgoingFailure(message, err, '傳送失敗', 'OUTBOX_SENT_HOOK_ERROR');
+          controllers.messageStatus.applyOutgoingFailure(message, err, t('messages.sendFailed'), 'OUTBOX_SENT_HOOK_ERROR');
         }
 
         const state = getMessageState();
@@ -1462,7 +1466,7 @@ export function initMessagesPane({
         const reasonCode = isCounterTooLow
           ? 'COUNTER_TOO_LOW_REPLACED'
           : 'OUTBOX_FAILED_HOOK';
-        controllers.messageStatus.applyOutgoingFailure(message, failureErr, '傳送失敗', reasonCode);
+        controllers.messageStatus.applyOutgoingFailure(message, failureErr, t('messages.sendFailed'), reasonCode);
         const state = getMessageState();
         if (state.conversationId === convId) controllers.messageFlow.updateMessagesUI({ preserveScroll: true, forceFullRender: true });
       }
@@ -1519,7 +1523,6 @@ export function initMessagesPane({
 
   registerOutboxHooks();
   ensureSetup();
-  controllers.groupBuilder.renderGroupDrafts();
 
 
   // [DEBUG-TOOL] Long Press for Debug Modal
@@ -1585,7 +1588,7 @@ export function initMessagesPane({
         <div class="version-section-title">Header Payload</div>
         <div style="margin-top:8px;">
           <details style="border: 1px solid rgba(15, 23, 42, 0.1); border-radius: 10px; background: #f8fafc;">
-             <summary style="padding: 10px 12px; cursor:pointer; font-weight:700; font-size:13px; color:#0f172a;">檢視 Header JSON</summary>
+             <summary style="padding: 10px 12px; cursor:pointer; font-weight:700; font-size:13px; color:#0f172a;">${t('debug.viewHeaderJson')}</summary>
              <div style="padding: 0 12px 12px 12px;">
                <pre style="margin:0; padding:10px; color:#334155; word-break:break-all; white-space:pre-wrap; font-family:monospace; font-size:12px; background:#f1f5f9; border-radius:8px; overflow-x: auto;">${escapeHtml(headerJson)}</pre>
              </div>
@@ -1608,7 +1611,7 @@ export function initMessagesPane({
         <div style="margin: 16px 0; border-top: 1px dashed rgba(0,0,0,0.1);"></div>
         
         <div class="version-section-title">Session State (Global)</div>
-        <div style="font-size: 11px; color: #64748b; margin-bottom: 8px;">當前最新的加密會話狀態</div>
+        <div style="font-size: 11px; color: #64748b; margin-bottom: 8px;">${t('encryption.currentSessionState')}</div>
         ${drData.map(renderRow).join('')}
         
         <div style="margin: 16px 0; border-top: 1px dashed rgba(0,0,0,0.1);"></div>
@@ -1698,6 +1701,7 @@ export function initMessagesPane({
     },
     updateLayoutMode: (args) => controllers.layout.updateLayoutMode(args),
     renderConversationList: () => controllers.conversationList.renderConversationList(),
+    ephemeralController: controllers.ephemeral,
     refreshConversationPreviews: (args) => controllers.conversationList.refreshPreviews(args),
     syncConversationThreadsFromContacts: () => controllers.conversationList.syncFromContacts(),
     refreshContactsUnreadBadges: () => controllers.conversationList.refreshUnreadBadges(),
@@ -1719,6 +1723,12 @@ export function initMessagesPane({
     applyMessagesLayout: (args) => controllers.layout.applyMessagesLayout(args),
     triggerAutoLoadOlder: () => controllers.messageFlow.triggerAutoLoadOlder(),
     setLoadMoreState: (state) => controllers.messageFlow.setLoadMoreState(state),
-    showDeleteForPeer: (d) => controllers.activeConversation.showDeleteForPeer(d)
+    showDeleteForPeer: (d) => controllers.activeConversation.showDeleteForPeer(d),
+    setBizConvCreateModal(openFn) {
+      deps.openBizConvCreateModal = typeof openFn === 'function' ? openFn : null;
+    },
+    setBizConvInfoModal(openFn) {
+      deps.openBizConvInfoModal = typeof openFn === 'function' ? openFn : null;
+    }
   };
 }

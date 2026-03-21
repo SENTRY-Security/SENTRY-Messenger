@@ -210,18 +210,7 @@ export async function x3dhInitiate(devicePriv, peerBundle, overrideEk = null) {
     pendingSendRatchet: false,
     __bornReason: 'x3dh-initiate'
   };
-  if (drDebugLogsEnabled) {
-    try {
-      console.log('[msg] state:init-transport-counter', JSON.stringify({
-        peerDigest: peerBundle?.account_digest || null,
-        peerDeviceId: peerBundle?.device_id || null,
-        conversationId: null,
-        NsTotal: state.NsTotal,
-        NrTotal: state.NrTotal,
-        reason: state.__bornReason
-      }));
-    } catch { }
-  }
+  // [H-2 fix] Key-hash debug logging removed — leaked cryptographic state to console
   return state;
 }
 
@@ -290,18 +279,7 @@ export async function x3dhRespond(devicePriv, guestBundle) {
     pendingSendRatchet: true,
     __bornReason: 'x3dh-respond'
   };
-  if (drDebugLogsEnabled) {
-    try {
-      console.log('[msg] state:init-transport-counter', JSON.stringify({
-        peerDigest: guestBundle?.account_digest || null,
-        peerDeviceId: guestBundle?.device_id || null,
-        conversationId: null,
-        NsTotal: state.NsTotal,
-        NrTotal: state.NrTotal,
-        reason: state.__bornReason
-      }));
-    } catch { }
-  }
+  // [H-2 fix] Key-hash debug logging removed — leaked cryptographic state to console
   return state;
 }
 
@@ -319,8 +297,6 @@ export async function drRatchet(st, theirRatchetPubU8) {
   const dh = await scalarMult(st.myRatchetPriv.slice(0, 32), theirRatchetPubU8);
   const rkOut = await kdfRK(st.rk, dh);
   const { a: newRoot, b: chainSeed } = split64(rkOut);
-  const dhOutHash = await hashPrefix(dh);
-  const ckRSeedHash = await hashPrefix(chainSeed);
   const myNew = await genX25519Keypair();
   st.rk = newRoot;
   st.ckR = chainSeed;
@@ -334,16 +310,8 @@ export async function drRatchet(st, theirRatchetPubU8) {
   // st.myRatchetPub = myNew.publicKey;
   st.theirRatchetPub = theirRatchetPubU8;
   st.pendingSendRatchet = false;
-  try {
-    if (drDebugLogsEnabled) {
-      console.warn('[dr-debug:ratchet-dh]', {
-        dhOutHash,
-        ckRSeedHash,
-        headerEk: theirRatchetPubU8 ? b64(theirRatchetPubU8).slice(0, 12) : null
-      });
-    }
-  } catch { }
-  return { ckR: chainSeed, theirRatchetPub: theirRatchetPubU8, dhOutHash, ckRSeedHash };
+  // [H-2 fix] Key-hash ratchet diagnostics removed — leaked cryptographic state to console
+  return { ckR: chainSeed, theirRatchetPub: theirRatchetPubU8 };
 }
 
 export async function drEncryptText(st, plaintext, opts = {}) {
@@ -374,17 +342,10 @@ export async function drEncryptText(st, plaintext, opts = {}) {
       st.Ns = 0;
       st.myRatchetPriv = myNew.secretKey;
       st.myRatchetPub = myNew.publicKey;
-      try {
-        if (drDebugLogsEnabled) {
-          console.warn('[dr-debug:ratchet-dh:send]', {
-            dhOutHash: await hashPrefix(dh),
-            ckSSeedHash: await hashPrefix(chainSeed),
-            headerEk: st?.theirRatchetPub ? b64(st.theirRatchetPub).slice(0, 12) : null
-          });
-        }
-      } catch { }
+      // [H-2 fix] Send-side ratchet diagnostics removed — leaked cryptographic state
     }
   }
+  // [H-2 fix] encrypt-pre-mk debug logging removed — leaked key hashes
   const mkOut = await kdfCK(st.ckS);
   const { a: mk, b: nextCkS } = split64(mkOut);
   const mkB64 = b64(mk);
@@ -403,26 +364,7 @@ export async function drEncryptText(st, plaintext, opts = {}) {
   const aad = buildDrAad({ version, deviceId, counter: st.Ns });
   const cipherParams = aad ? { name: 'AES-GCM', iv, additionalData: aad } : { name: 'AES-GCM', iv };
   const ctBuf = await crypto.subtle.encrypt(cipherParams, key, new TextEncoder().encode(plaintext));
-  try {
-    encIvHash = await hashPrefix(iv);
-    encCtHash = await hashPrefix(new Uint8Array(ctBuf));
-    encAadHash = aad ? await hashPrefix(aad) : null;
-    encMkHash = await hashPrefix(mk);
-    const encLine = JSON.stringify({
-      ivLen: iv?.byteLength ?? null,
-      ivHash: encIvHash,
-      ctLen: ctBuf?.byteLength ?? null,
-      ctHash: encCtHash,
-      aadLen: aad?.byteLength ?? null,
-      aadHash: encAadHash,
-      mkHash: encMkHash,
-      nUsed: st?.Ns ?? null,
-      ek: st?.myRatchetPub ? b64(st.myRatchetPub).slice(0, 12) : null
-    });
-    if (drDebugLogsEnabled) {
-      console.warn('[dr-debug:aead-encrypt]', encLine);
-    }
-  } catch { }
+  // [H-2 fix] Encrypt diagnostics with key hashes removed
 
   const header = {
     dr: 1,
@@ -456,18 +398,7 @@ export async function drDecryptText(st, packet, opts = {}) {
     if (Number.isFinite(headerN) && headerN <= 0) {
       throw new Error('invalid message counter');
     }
-    // [DEBUG-TRACE]
-    console.log('[drDecryptText] Start', {
-      headerN,
-      pn: packet?.header?.pn,
-      ek: packet?.header?.ek_pub_b64 ? String(packet.header.ek_pub_b64).slice(0, 8) : null,
-      role: typeof st?.baseKey?.role === 'string' ? st.baseKey.role : 'unknown',
-      stateNs: st?.Ns,
-      stateNr: st?.Nr,
-      hasRk: !!(st?.rk && st.rk.length),
-      hasCkR: !!(st?.ckR && st.ckR.length),
-      hasTheirPub: !!(st?.theirRatchetPub && st.theirRatchetPub.length)
-    });
+    // [H-2 fix] Decrypt start debug trace with key hashes removed
     const resolveStateKey = () => {
       const base = st?.baseKey || {};
       if (base.stateKey) return base.stateKey;
@@ -568,26 +499,7 @@ export async function drDecryptText(st, packet, opts = {}) {
     };
     const fingerprintBaseline = await fingerprintState(holderSnapshot);
     const beforeAttempt = fingerprintBaseline;
-    try {
-      const preRatchetFp = await fingerprintState(st);
-      if (drDebugLogsEnabled) {
-        console.warn('[dr-fingerprint:pre-ratchet]', {
-          ...preRatchetFp,
-          msgType: msgType || null,
-          packetKey: packetKey || null
-        });
-      }
-    } catch { }
-    try {
-      if (drDebugLogsEnabled) {
-        console.warn('[dr-attempt:holder]', {
-          stateKey,
-          holderId,
-          packetKey: packetKey || null,
-          msgType: msgType || null
-        });
-      }
-    } catch { }
+    // [H-2 fix] Pre-ratchet fingerprint and holder debug logs removed
     nUsed = headerN;
     nrAfterRatchet = Number(st.Nr);
     let nrAtDerive = null;
@@ -685,25 +597,13 @@ export async function drDecryptText(st, packet, opts = {}) {
     chainId = prevChainId;
 
     if (!working.theirRatchetPub || b64(working.theirRatchetPub) !== packet.header.ek_pub_b64) {
-      try {
-        if (drDebugLogsEnabled) {
-          console.warn('[dr-ratchet:pre]', {
-            headerEk: packet?.header?.ek_pub_b64 ? String(packet.header.ek_pub_b64).slice(0, 12) : null,
-            stateTheirPub: working?.theirRatchetPub ? b64(working.theirRatchetPub).slice(0, 12) : null,
-            hasCkR: !!(working?.ckR && working.ckR.length),
-            hasCkS: !!(working?.ckS && working.ckS.length),
-            Nr: working?.Nr ?? null,
-            Ns: working?.Ns ?? null,
-            PN: working?.PN ?? null
-          });
-        }
-      } catch { }
+        // [H-2 fix] Pre-ratchet debug log removed
       // Before switching to the new ratchet key, fill skipped message keys on the previous receiving chain up to pn.
       if (prevChainId && working.ckR && Number.isFinite(pn) && pn > working.Nr) {
         const gap = pn - working.Nr;
         if (gap > SKIPPED_KEYS_PER_CHAIN_MAX) {
           if (drDebugLogsEnabled) {
-            console.warn('[dr] skipped-key gap too large', { gap, pn, nr: working.Nr, chain: prevChainId });
+            console.warn('[dr] skipped-key gap too large', { gap });
           }
         }
         let ckR = working.ckR;
@@ -731,13 +631,7 @@ export async function drDecryptText(st, packet, opts = {}) {
     } else {
       working.theirRatchetPub = theirPub;
     }
-    // [DEBUG-TRACE]
-    if (ratchetPerformed) {
-      console.log('[drDecryptText] Ratchet Performed', {
-        newNr: working.Nr,
-        hasCkR: !!(working.ckR && working.ckR.length)
-      });
-    }
+    // [H-2 fix] Ratchet performed debug trace removed
     nrAfterRatchet = Number.isFinite(working?.Nr) ? Number(working.Nr) : null;
     postRatchetTheirPubPrefix = working?.theirRatchetPub ? b64(working.theirRatchetPub).slice(0, 12) : null;
     chainId = packet?.header?.ek_pub_b64 || null;
@@ -774,37 +668,13 @@ export async function drDecryptText(st, packet, opts = {}) {
       const derivation = split64(mkOut);
       mk = derivation.a;
       working.ckR = derivation.b;
-      mkHash = await hashPrefix(mk);
-      chainHash = await hashPrefix(working.ckR);
     }
-    if (!mkHash && mk) {
-      mkHash = await hashPrefix(mk);
-    }
+    // [H-2 fix] mkHash/chainHash computation removed — leaked key material
     let decryptIv = null;
     let decryptCt = null;
-    try {
-      decryptIv = b64u8(packet.iv_b64);
-      decryptCt = b64u8(packet.ciphertext_b64);
-      const aad = buildDrAadFromHeader(packet.header);
-      const aadHash = aad ? await hashPrefix(aad) : null;
-      decIvHash = decryptIv ? await hashPrefix(decryptIv) : null;
-      decCtHash = decryptCt ? await hashPrefix(decryptCt) : null;
-      decAadHash = aadHash;
-      const decLine = JSON.stringify({
-        ivLen: decryptIv?.byteLength ?? null,
-        ivHash: decIvHash,
-        ctLen: decryptCt?.byteLength ?? null,
-        ctHash: decCtHash,
-        aadLen: aad?.byteLength ?? null,
-        aadHash,
-        mkHash,
-        nUsed: Number.isFinite(nUsed) ? nUsed : null,
-        ek: packet?.header?.ek_pub_b64 ? String(packet.header.ek_pub_b64).slice(0, 12) : null
-      });
-      if (drDebugLogsEnabled) {
-        console.warn('[dr-debug:aead-decrypt]', decLine);
-      }
-    } catch { }
+    decryptIv = b64u8(packet.iv_b64);
+    decryptCt = b64u8(packet.ciphertext_b64);
+    // [H-2 fix] AEAD decrypt diagnostics with key/iv/ct hashes removed
     if (onMessageKey) {
       try {
         onMessageKey(b64(mk));
@@ -820,42 +690,7 @@ export async function drDecryptText(st, packet, opts = {}) {
       working.NrTotal = Number.isFinite(working?.NrTotal) ? Number(working.NrTotal) + 1 : working.Nr;
     }
 
-    if (ratchetPerformed) {
-      try {
-        if (drDebugLogsEnabled) {
-          console.warn('[dr-ratchet:post]', {
-            headerEk: packet?.header?.ek_pub_b64 ? String(packet.header.ek_pub_b64).slice(0, 12) : null,
-            stateTheirPub: working?.theirRatchetPub ? b64(working.theirRatchetPub).slice(0, 12) : null,
-            hasCkR: !!(working?.ckR && working.ckR.length),
-            hasCkS: !!(working?.ckS && working.ckS.length),
-            Nr: working?.Nr ?? null,
-            Ns: working?.Ns ?? null,
-            PN: working?.PN ?? null
-          });
-        }
-      } catch { }
-    }
-
-    if (ratchetPerformed || usedStoredKey) {
-      try {
-        if (drDebugLogsEnabled) {
-          console.warn('[dr-log:decrypt-ratchet]', {
-            headerN,
-            pn,
-            usedStoredKey,
-            ratchetPerformed,
-            chainId: chainId ? chainId.slice(0, 12) : null,
-            stateNr: working?.Nr ?? null,
-            stateNs: working?.Ns ?? null,
-            hasCkS: !!(working?.ckS && working.ckS.length),
-            hasCkR: !!(working?.ckR && working.ckR.length),
-            theirPubHash: working?.theirRatchetPub ? b64(working.theirRatchetPub).slice(0, 12) : null
-          });
-        }
-      } catch {
-        // ignore log errors
-      }
-    }
+    // [H-2 fix] Post-ratchet and decrypt-ratchet debug logs removed
 
     fingerprintBeforeDecrypt = await fingerprintState(holderSnapshot, mkHash, decCtHash);
     const key = await crypto.subtle.importKey(
@@ -866,6 +701,7 @@ export async function drDecryptText(st, packet, opts = {}) {
       ['decrypt']
     );
     const aad = buildDrAadFromHeader(packet.header);
+    // [H-2 fix] Pre-decrypt detail diagnostics with key hashes removed
     const decryptPayload = await crypto.subtle.decrypt(
       { name: 'AES-GCM', iv: decryptIv, additionalData: aad },
       key,
@@ -873,15 +709,7 @@ export async function drDecryptText(st, packet, opts = {}) {
     );
     const plaintext = new TextDecoder().decode(decryptPayload);
 
-    try {
-      const fingerprintAfterDecrypt = await fingerprintState(working, mkHash, decCtHash);
-      if (drDebugLogsEnabled) {
-        console.warn('[dr-fingerprint:post-decrypt]', {
-          ...fingerprintAfterDecrypt,
-          diff: diffFingerprint(beforeAttempt, fingerprintAfterDecrypt)
-        });
-      }
-    } catch { }
+    // [H-2 fix] Post-decrypt fingerprint logging removed
 
     // [FIX] Capture send-side state BEFORE restoreHolder() wipes it.
     // drEncryptText may have advanced Ns/ckS/NsTotal concurrently (during our
@@ -916,31 +744,17 @@ export async function drDecryptText(st, packet, opts = {}) {
       opts.onSkippedKeys(newSkippedKeys);
     }
 
-    // [DEBUG-TRACE]
-    console.log('[drDecryptText] Decrypt Success', { n: headerN });
+    // [H-2 fix] Decrypt success trace removed
     return plaintext;
   } catch (err) {
-    // [DEBUG-TRACE]
-    console.error('[drDecryptText] Failed', err, {
-      headerN,
-      chainId,
-      currentNr
-    });
-    if (drDebugLogsEnabled) {
-      try {
-        console.warn('[dr-error:decrypt-fail]', {
-          message: err?.message || String(err),
-          stack: err?.stack || null,
-          headerN,
-          currentNr,
-          chainId: chainId ? chainId.slice(0, 12) : null
-        });
-      } catch (logErr) {
-        console.warn('[dr-error:decrypt-fail:log-error]', String(logErr));
-      }
-    }
+    // [H-2 fix] Decrypt failure logging sanitized — no key hashes
+    console.error('[drDecryptText] Failed', err?.message || String(err));
     const isAeadFailure = (err?.name === 'OperationError') || (err?.code === 'OperationError') || (typeof err?.message === 'string' && err.message.includes('OperationError'));
+
+    // [H-2 fix] AEAD failure diagnostics with key hashes removed
+
     const ensureDrMeta = () => {
+      // [H-2 fix] __drMeta sanitized — no key/iv/ct hashes
       if (!err.__drMeta) {
         err.__drMeta = {
           headerN: Number.isFinite(headerN) ? headerN : null,
@@ -949,19 +763,7 @@ export async function drDecryptText(st, packet, opts = {}) {
           nrAtDerive: Number.isFinite(nrAtDerive) ? nrAtDerive : null,
           ratchetPerformed,
           chainId: packet?.header?.ek_pub_b64 || null,
-          postRatchetTheirPubPrefix,
-          dhOutHash,
-          ckRSeedHash,
-          ckSSeedHash,
-          mkHash,
-          chainHash,
-          encIvHash,
-          encCtHash,
-          encAadHash,
-          decIvHash,
-          decCtHash,
-          decAadHash,
-          encMkHash
+          postRatchetTheirPubPrefix
         };
       }
       return err.__drMeta;
@@ -992,24 +794,7 @@ export async function drDecryptText(st, packet, opts = {}) {
         const expected = fingerprintBeforeDecrypt || beforeAttempt;
         const afterRestore = await fingerprintState(st, mkHash, decCtHash);
         diff = expected ? diffFingerprint(expected, afterRestore) : null;
-        if (drDebugLogsEnabled) {
-          try {
-            console.warn('[dr-rollback:aes-gcm]', {
-              stateKey: stateKey || null,
-              holderId: holderId || null,
-              headerN: Number.isFinite(headerN) ? headerN : null,
-              mkHash: mkHash || null,
-              ctHash: decCtHash || null,
-              expected,
-              afterRestore
-            });
-            console.warn('[dr-fingerprint:post-restore]', {
-              ...afterRestore,
-              msgType: msgType || null,
-              packetKey: packetKey || null
-            });
-          } catch { }
-        }
+        // [H-2 fix] Rollback/restore debug logs with key hashes removed
       } catch { }
     } else {
       try {

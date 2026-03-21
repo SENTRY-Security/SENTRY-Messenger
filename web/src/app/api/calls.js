@@ -3,7 +3,10 @@ import { buildAccountPayload, ensureDeviceId } from '../core/store.js';
 
 function normalizeDigest(value) {
   if (!value) return null;
-  const cleaned = String(value).replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+  const str = String(value).trim();
+  // Allow ephemeral guest digests (EPHEMERAL_<hex>) to pass through
+  if (str.startsWith('EPHEMERAL_')) return str;
+  const cleaned = str.replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
   return cleaned.length === 64 ? cleaned : null;
 }
 

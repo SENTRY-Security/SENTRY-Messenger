@@ -1,4 +1,5 @@
 import { CALL_SESSION_DIRECTION } from './state.js';
+import { t } from '/locales/index.js';
 
 export const CALL_LOG_OUTCOME = Object.freeze({
   SUCCESS: 'success',
@@ -11,24 +12,28 @@ function formatReason(reason, viewerRole) {
   if (!reason) return null;
   const r = String(reason).toLowerCase();
   const isOutgoing = viewerRole === CALL_SESSION_DIRECTION.OUTGOING;
-  if (r.includes('user_reject')) return isOutgoing ? '對方拒絕' : '你已拒絕';
-  if (r.includes('rejected')) return isOutgoing ? '對方拒絕' : '你已拒絕';
-  if (r.includes('caller_cancelled')) return isOutgoing ? '你已取消' : '對方取消';
-  if (r.includes('peer_cancelled')) return isOutgoing ? '對方取消' : '你已取消';
-  if (r.includes('busy')) return isOutgoing ? '對方忙線中' : '你正忙線';
-  if (r.includes('timeout')) return '未接聽';
+  if (r.includes('user_reject')) return isOutgoing ? t('calls.peerRejected') : t('calls.youRejected');
+  if (r.includes('rejected')) return isOutgoing ? t('calls.peerRejected') : t('calls.youRejected');
+  if (r.includes('caller_cancelled')) return isOutgoing ? t('calls.youCancelled') : t('calls.peerCancelled');
+  if (r.includes('peer_cancelled')) return isOutgoing ? t('calls.peerCancelled') : t('calls.youCancelled');
+  if (r.includes('busy')) return isOutgoing ? t('calls.peerBusy') : t('calls.youBusy');
+  if (r.includes('timeout')) return t('calls.noAnswer');
+  if (r.includes('target_invalid') || r.includes('not_found')) return t('calls.peerUnavailable');
+  if (r.includes('network') || r.includes('connection')) return t('calls.networkError');
+  // Don't show raw error codes to users — use a generic fallback
+  if (/^[A-Z_]+$/.test(reason.trim())) return null;
   return reason;
 }
 
 export function formatCallLogDuration(seconds) {
   const total = Number(seconds);
-  if (!Number.isFinite(total) || total <= 0) return '0秒';
+  if (!Number.isFinite(total) || total <= 0) return t('calls.durationZeroSeconds');
   const mins = Math.floor(total / 60);
   const secs = total % 60;
   if (mins > 0) {
-    return `${mins}分${secs.toString().padStart(2, '0')}秒`;
+    return t('calls.durationMinSec', { min: mins, sec: secs.toString().padStart(2, '0') });
   }
-  return `${secs}秒`;
+  return t('calls.durationSec', { sec: secs });
 }
 
 export function normalizeCallLogPayload(payload = {}, meta = {}) {
@@ -61,27 +66,27 @@ export function describeCallLogForViewer(callLog, viewerRole) {
   const outcome = callLog?.outcome || CALL_LOG_OUTCOME.FAILED;
   const durationSeconds = Number(callLog?.durationSeconds) || 0;
   const reason = callLog?.reason || null;
-  const callTypeLabel = callLog?.kind === 'video' ? '視訊通話' : '語音通話';
+  const callTypeLabel = callLog?.kind === 'video' ? t('calls.callTypeVideo') : t('calls.callTypeVoice');
   let label = callTypeLabel;
   let subLabel = null;
   switch (outcome) {
     case CALL_LOG_OUTCOME.SUCCESS: {
       const durationText = formatCallLogDuration(durationSeconds);
       label = `${callTypeLabel} ${durationText}`;
-      subLabel = role === CALL_SESSION_DIRECTION.OUTGOING ? '我方撥出' : '對方撥出';
+      subLabel = role === CALL_SESSION_DIRECTION.OUTGOING ? t('calls.outgoing') : t('calls.incomingCall');
       break;
     }
     case CALL_LOG_OUTCOME.MISSED: {
-      label = role === CALL_SESSION_DIRECTION.OUTGOING ? '對方未接聽' : '未接來電';
+      label = role === CALL_SESSION_DIRECTION.OUTGOING ? t('calls.missedCall') : t('calls.missedCall');
       break;
     }
     case CALL_LOG_OUTCOME.CANCELLED: {
-      label = '通話已取消';
-      subLabel = role === CALL_SESSION_DIRECTION.OUTGOING ? '我方取消' : '對方取消';
+      label = t('calls.callCancelled');
+      subLabel = role === CALL_SESSION_DIRECTION.OUTGOING ? t('calls.callerCancelled') : t('calls.peerCancelled');
       break;
     }
     default: {
-      label = '通話失敗';
+      label = t('calls.callFailed');
       subLabel = formatReason(reason, role);
       break;
     }

@@ -22,8 +22,11 @@ import { prepareCallKeyEnvelope } from '../../../features/calls/key-manager.js';
 import { buildCallPeerIdentity } from '../../../features/calls/identity.js';
 import { getCallAudioConstraints } from '../browser-detection.js';
 import { getAccountDigest, normalizePeerIdentity } from '../../../core/store.js';
+import { t } from '/locales/index.js';
 
 import { sendDrText } from '../../../features/dr-session.js';
+import { BizConvStore } from '../../../features/biz-conv.js';
+import { markBizConvBackupDirty } from '../../../features/biz-conv-backup.js';
 import { getReplacementInfo } from '../../../features/messages/ui/outbox-hooks.js';
 import { normalizeCounterValue, normalizeTimelineMessageId } from '../../../features/messages/parser.js';
 import { getTimeline as timelineGetTimeline, upsertTimelineEntry } from '../../../features/timeline-store.js';
@@ -95,7 +98,7 @@ export class ComposerController extends BaseController {
         if (!this.elements.statusLabel) return;
         this.elements.statusLabel.textContent = message || '';
         this.elements.statusLabel.style.color = isError ? '#dc2626' : '#64748b';
-        if (this.pendingNewMessageHint && message !== '有新訊息') {
+        if (this.pendingNewMessageHint && message !== t('composer.hasNewMessage')) {
             this.pendingNewMessageHint = false;
         }
     }
@@ -138,7 +141,18 @@ export class ComposerController extends BaseController {
      */
     updateConversationActionsAvailability() {
         const state = this.getMessageState();
-        const enabled = !!(state.activePeerDigest && state.conversationToken && this._isSubscriptionActive());
+        // Ephemeral conversations don't use conversationToken — gate on
+        // encryption readiness instead so the owner can place calls.
+        const ephCtrl = this.deps.controllers?.ephemeral;
+        let enabled;
+        if (state.conversationId && ephCtrl?.isEphemeralConversation?.(state.conversationId)) {
+            const session = ephCtrl.getSessionByConversationId(state.conversationId);
+            // Disable calls if peer reported no WebRTC support
+            const peerNoWebRTC = ephCtrl.isPeerNoWebRTC?.(state.conversationId);
+            enabled = !!(session && ephCtrl.hasEncryptionReady(session.session_id) && !peerNoWebRTC);
+        } else {
+            enabled = !!(state.activePeerDigest && state.conversationToken && this._isSubscriptionActive());
+        }
         const buttons = [this.elements.callBtn];
         for (const btn of buttons) {
             if (!btn) continue;
@@ -157,6 +171,36 @@ export class ComposerController extends BaseController {
             return;
         }
 
+        // ── Ephemeral conversation: simpler availability logic ──
+        const ephCtrl = this.deps.controllers?.ephemeral;
+        if (state.conversationId && ephCtrl?.isEphemeralConversation?.(state.conversationId)) {
+            const session = ephCtrl.getSessionByConversationId(state.conversationId);
+            const encReady = session && ephCtrl.hasEncryptionReady(session.session_id);
+            this.elements.input.disabled = !encReady;
+            this.elements.sendBtn.disabled = !encReady;
+            this.elements.sendBtn.classList.toggle('disabled', !encReady);
+            this.elements.sendBtn.setAttribute('aria-disabled', encReady ? 'false' : 'true');
+            this.elements.input.placeholder = encReady
+                ? t('composer.inputPlaceholder')
+                : t('ephemeral.encryptionNotReady');
+            this.updateConversationActionsAvailability();
+            return;
+        }
+
+        // ── Business conversation: enable if group state exists ──
+        if (state.activeBizConv && state.conversationId) {
+            const bizReady = BizConvStore.conversations.has(state.conversationId);
+            this.elements.input.disabled = !bizReady;
+            this.elements.sendBtn.disabled = !bizReady;
+            this.elements.sendBtn.classList.toggle('disabled', !bizReady);
+            this.elements.sendBtn.setAttribute('aria-disabled', bizReady ? 'false' : 'true');
+            this.elements.input.placeholder = bizReady
+                ? t('composer.inputPlaceholder')
+                : t('messages.bizConvDefault');
+            this.updateConversationActionsAvailability();
+            return;
+        }
+
         const subscriptionOk = this._isSubscriptionActive();
         const key = state.activePeerDigest ? String(state.activePeerDigest).toUpperCase() : null;
         const statusInfo = key ? this.deps.getCachedSecureStatus?.(key) : null;
@@ -167,7 +211,7 @@ export class ComposerController extends BaseController {
         const isLoading = !!state.loading;
 
         // [OPTIMIZATION] Unblock input during history sync (isLoading).
-        // Sending (Ns) and Receiving (Nr) are independent chains. 
+        // Sending (Ns) and Receiving (Nr) are independent chains.
         // Persistence is atomic (synchronous singleton state), so parallel operations are safe.
         const blocked = !subscriptionOk || status === SECURE_CONVERSATION_STATUS.PENDING || status === SECURE_CONVERSATION_STATUS.FAILED;
         const enabled = conversationReady && !blocked;
@@ -177,15 +221,15 @@ export class ComposerController extends BaseController {
         this.elements.sendBtn.classList.toggle('disabled', !enabled);
         this.elements.sendBtn.setAttribute('aria-disabled', enabled ? 'false' : 'true');
 
-        let placeholder = '輸入訊息…';
+        let placeholder = t('composer.inputPlaceholder');
         if (!state.conversationToken || !state.activePeerDigest) {
-            placeholder = '選擇好友開始聊天';
+            placeholder = t('composer.selectSecureFriend');
         } else if (!subscriptionOk) {
-            placeholder = '帳號已到期，請儲值後再聊天';
+            placeholder = t('composer.accountExpiredTopUp');
         } else if (status === SECURE_CONVERSATION_STATUS.PENDING) {
-            placeholder = '正在建立安全對話…';
+            placeholder = t('composer.buildingSecureConversation');
         } else if (status === SECURE_CONVERSATION_STATUS.FAILED) {
-            placeholder = statusInfo?.error ? `安全對話失敗：${statusInfo.error}` : '安全對話建立失敗，請稍後再試。';
+            placeholder = statusInfo?.error ? t('composer.secureFailed', { error: statusInfo.error }) : t('composer.secureFailedGeneric');
         }
         // [UX] Recursive Gap Fill cleans up the placeholder override.
         // We no longer show "(同步中)" to keep the interface clean.
@@ -200,6 +244,18 @@ export class ComposerController extends BaseController {
      */
     async handleConversationAction(type) {
         const state = this.getMessageState();
+
+        // ── Ephemeral conversation: route to ephemeral call system ──
+        const ephCtrl = this.deps.controllers?.ephemeral;
+        if (state.conversationId && ephCtrl?.isEphemeralConversation?.(state.conversationId)) {
+            const session = ephCtrl.getSessionByConversationId(state.conversationId);
+            if (session) {
+                const mode = type === 'video' ? 'video' : 'voice';
+                ephCtrl.initiateCall(session.session_id, mode);
+            }
+            return;
+        }
+
         const preconditionMissing = [];
         if (!state.activePeerDigest) preconditionMissing.push('activePeerDigest');
         if (!state.conversationToken) preconditionMissing.push('conversationToken');
@@ -210,7 +266,7 @@ export class ComposerController extends BaseController {
 
         const actionType = type;
         const contactEntry = this.sessionStore.contactIndex?.get?.(state.activePeerDigest) || null;
-        const fallbackName = `好友 ${state.activePeerDigest.slice(-4)}`;
+        const fallbackName = `${t('common.friend')} ${state.activePeerDigest.slice(-4)}`;
         const displayName = contactEntry?.nickname || contactEntry?.profile?.nickname || fallbackName;
         const avatarUrl = resolveContactAvatarUrl(contactEntry);
 
@@ -223,9 +279,9 @@ export class ComposerController extends BaseController {
 
         if (!peerAccountDigest || !peerDeviceId) {
             if (!peerDeviceId) {
-                this.showToast('缺少對端裝置資訊，請重新同步好友');
+                this.showToast(t('composer.missingPeerDeviceInfo'));
             } else {
-                this.showToast('找不到通話對象');
+                this.showToast(t('composer.callTargetNotFound'));
             }
             return;
         }
@@ -261,12 +317,12 @@ export class ComposerController extends BaseController {
                     }
                 } catch {
                     this.log({ callMediaPermissionDenied: mediaErr?.message || mediaErr });
-                    this.showToast('需要麥克風權限才能撥打通話');
+                    this.showToast(t('calls.micPermissionRequired'));
                     return;
                 }
             } else {
                 this.log({ callMediaPermissionDenied: mediaErr?.message || mediaErr });
-                this.showToast('需要麥克風權限才能撥打通話');
+                this.showToast(t('calls.micPermissionRequired'));
                 return;
             }
         }
@@ -286,11 +342,11 @@ export class ComposerController extends BaseController {
 
         if (!result?.ok) {
             if (result?.error === 'CALL_ALREADY_IN_PROGRESS') {
-                this.showToast('已有進行中的通話');
+                this.showToast(t('calls.alreadyInCall'));
             } else if (result?.error === 'MISSING_PEER') {
-                this.showToast('找不到通話對象');
+                this.showToast(t('composer.callTargetNotFound'));
             } else {
-                this.showToast(result?.error || '暫時無法啟動通話');
+                this.showToast(result?.error || t('calls.cannotStartCall'));
             }
             return;
         }
@@ -299,7 +355,7 @@ export class ComposerController extends BaseController {
         const callId = result.callId || snapshot?.callId || null;
         if (!callId) {
             this.log({ callInviteSignalSkipped: true, reason: 'missing-call-id', peerAccountDigest: state.activePeerDigest });
-            this.showToast('無法建立通話：缺少識別碼');
+            this.showToast(t('calls.cannotCreateCall'));
             return;
         }
 
@@ -323,7 +379,7 @@ export class ComposerController extends BaseController {
         const callerSummary = getSelfProfileSummary() || {};
         const fallbackCallerName = (() => {
             const digest = getAccountDigest();
-            return digest ? `好友 ${digest.slice(-4)}` : null;
+            return digest ? `${t('common.friend')} ${digest.slice(-4)}` : null;
         })();
         const callerDisplayName = callerSummary.displayName || fallbackCallerName || null;
         const callerAvatarUrl = callerSummary.avatarUrl || this.sessionStore.currentAvatarUrl || null;
@@ -352,7 +408,7 @@ export class ComposerController extends BaseController {
 
         if (!sent) {
             this.log({ callInviteSignalFailed: true, callId, peerAccountDigest: state.activePeerDigest });
-            this.showToast('通話信令傳送失敗');
+            this.showToast(t('calls.callSignalingFailed'));
             return;
         }
 
@@ -360,7 +416,7 @@ export class ComposerController extends BaseController {
             await startOutgoingCallMedia({ callId, peerAccountDigest: state.activePeerDigest });
         } catch (err) {
             this.log({ callMediaStartError: err?.message || err });
-            this.showToast('無法啟動通話媒體：' + (err?.message || err));
+            this.showToast(t('calls.cannotStartCallMedia') + (err?.message || err));
             return;
         }
     }
@@ -380,7 +436,7 @@ export class ComposerController extends BaseController {
     async handleComposerSubmit(event) {
         event.preventDefault();
         if (!this._requireSubscriptionActive()) {
-            this.setMessagesStatus('帳號已到期，請先儲值', true);
+            this.setMessagesStatus(t('calls.accountExpiredTopUp'), true);
             return;
         }
 
@@ -388,6 +444,18 @@ export class ComposerController extends BaseController {
         if (!text) return;
 
         const state = this.getMessageState();
+
+        // ── Ephemeral conversation: use dedicated E2EE send path ──
+        const ephCtrl = this.deps.controllers?.ephemeral;
+        if (state.conversationId && ephCtrl?.isEphemeralConversation?.(state.conversationId)) {
+            return this._handleEphemeralSend(text, state, ephCtrl);
+        }
+
+        // ── Business conversation (group): use Sender Key encryption + WS relay ──
+        if (state.activeBizConv && state.conversationId) {
+            return this._handleBizConvSend(text, state);
+        }
+
         const contactEntryLog = state.activePeerDigest ? this.sessionStore.contactIndex?.get?.(state.activePeerDigest) : null;
 
         // UI Noise Logging
@@ -402,7 +470,7 @@ export class ComposerController extends BaseController {
         }
 
         if (!state.conversationToken || !state.activePeerDigest) {
-            this.setMessagesStatus('請先選擇已建立安全對話的好友', true);
+            this.setMessagesStatus(t('composer.selectSecureFriendForSend'), true);
             return;
         }
 
@@ -508,7 +576,7 @@ export class ComposerController extends BaseController {
                 }
 
                 if (replacementMsg) {
-                    this.deps.messageStatus?.applyOutgoingFailure(replacementMsg, err, '傳送失敗', 'COUNTER_TOO_LOW_REPAIR_FAILED');
+                    this.deps.messageStatus?.applyOutgoingFailure(replacementMsg, err, t('messages.sendFailed'), 'COUNTER_TOO_LOW_REPAIR_FAILED');
                 }
                 this.deps.updateMessagesUI?.({ preserveScroll: true, forceFullRender: true });
                 return;
@@ -520,11 +588,125 @@ export class ComposerController extends BaseController {
                 return;
             }
 
-            this.setMessagesStatus('傳送失敗：' + (err?.message || err), true);
+            this.setMessagesStatus(t('messages.sendFailed') + '：' + (err?.message || err), true);
             if (localMsg) {
-                this.deps.messageStatus?.applyOutgoingFailure(localMsg, err, '傳送失敗', 'UI_SEND_THROW');
+                this.deps.messageStatus?.applyOutgoingFailure(localMsg, err, t('messages.sendFailed'), 'UI_SEND_THROW');
                 this.deps.updateMessagesUI?.({ preserveScroll: true, forceFullRender: true });
             }
+        } finally {
+            if (this.elements.sendBtn) this.elements.sendBtn.disabled = false;
+        }
+    }
+
+    /**
+     * Send a message via ephemeral E2EE (Double Ratchet over WS).
+     */
+    /**
+     * Send a message via business conversation (Sender Key encryption + WS relay).
+     */
+    async _handleBizConvSend(text, state) {
+        const convId = state.conversationId;
+        const convState = BizConvStore.conversations.get(convId);
+        if (!convState) {
+            this.setMessagesStatus('Group not found', true);
+            return;
+        }
+
+        if (this.elements.sendBtn) this.elements.sendBtn.disabled = true;
+        const ts = Date.now();
+        const msgId = crypto.randomUUID();
+
+        // Append outgoing bubble immediately
+        const localMsg = this.deps.appendLocalOutgoingMessage?.({ text, ts, id: msgId });
+
+        if (this.elements.input) {
+            this.elements.input.value = '';
+            this.elements.input.focus();
+        }
+        this.clearDraft(convId);
+
+        try {
+            const deviceId = this.deps.ensureDeviceId?.() || 'unknown';
+            const envelope = await BizConvStore.encryptMessage(convId, deviceId, text);
+
+            // Send via WS relay
+            const sent = this.deps.wsSend?.({
+                type: 'biz-conv-message',
+                conversation_id: convId,
+                ...envelope,
+                message_id: msgId,
+                ts
+            });
+
+            if (localMsg) {
+                localMsg.status = sent ? 'sent' : 'failed';
+                localMsg.pending = false;
+            }
+            upsertTimelineEntry(convId, {
+                messageId: msgId,
+                status: sent ? 'sent' : 'failed',
+                pending: false,
+                error: sent ? null : 'WS send failed'
+            });
+
+            markBizConvBackupDirty();
+            this.deps.updateMessagesUI?.({ preserveScroll: true });
+        } catch (err) {
+            this.setMessagesStatus(t('messages.sendFailed') + '：' + (err?.message || err), true);
+            if (localMsg) {
+                localMsg.status = 'failed';
+                localMsg.pending = false;
+            }
+            this.deps.updateMessagesUI?.({ preserveScroll: true });
+        } finally {
+            if (this.elements.sendBtn) this.elements.sendBtn.disabled = false;
+        }
+    }
+
+    async _handleEphemeralSend(text, state, ephCtrl) {
+        const session = ephCtrl.getSessionByConversationId(state.conversationId);
+        if (!session) {
+            this.setMessagesStatus(t('ephemeral.sessionExpired'), true);
+            return;
+        }
+        if (!ephCtrl.hasEncryptionReady(session.session_id)) {
+            this.setMessagesStatus(t('ephemeral.encryptionNotReady'), true);
+            return;
+        }
+
+        if (this.elements.sendBtn) this.elements.sendBtn.disabled = true;
+        const ts = Date.now();
+
+        // Append outgoing bubble immediately
+        const msgId = crypto.randomUUID();
+        const localMsg = this.deps.appendLocalOutgoingMessage?.({ text, ts, id: msgId });
+
+        if (this.elements.input) {
+            this.elements.input.value = '';
+            this.elements.input.focus();
+        }
+
+        try {
+            await ephCtrl.sendEncryptedMessage(session.session_id, text);
+            // Mark as sent (ephemeral has no server ACK — WS send is fire-and-forget)
+            if (localMsg) {
+                localMsg.status = 'sent';
+                localMsg.pending = false;
+            }
+            upsertTimelineEntry(state.conversationId, {
+                messageId: msgId,
+                status: 'sent',
+                pending: false,
+                error: null
+            });
+            this.deps.updateMessagesUI?.({ preserveScroll: true });
+        } catch (err) {
+            this.setMessagesStatus(t('messages.sendFailed') + '：' + (err?.message || err), true);
+            if (localMsg) {
+                localMsg.status = 'failed';
+                localMsg.pending = false;
+            }
+            this.deps.updateMessagesUI?.({ preserveScroll: true });
         } finally {
             if (this.elements.sendBtn) this.elements.sendBtn.disabled = false;
         }

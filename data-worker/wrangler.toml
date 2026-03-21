@@ -1,9 +1,106 @@
+# ── Production (default) ─────────────────────────────────────────
 name = "message-data"
 main = "src/worker.js"
 compatibility_date = "2025-09-17"
 compatibility_flags = ["nodejs_compat"]
 
+[vars]
+OPAQUE_SERVER_ID = "api.message.sentry.red"
+# Debug endpoints disabled in production (C-2 fix)
+# Only explicitly enabled in [env.uat.vars]
+ENABLE_DEBUG_ENDPOINTS = "false"
+NTAG424_KDF = "HKDF"
+NTAG424_SALT = "sentry.red"
+NTAG424_INFO = "ntag424-slot-0"
+NTAG424_KVER = "1"
+# S3/R2 (non-secret config; keys set via wrangler secret)
+S3_ENDPOINT = "https://436a742b2a3f99a70289f00ca8688b8e.r2.cloudflarestorage.com"
+S3_REGION = "auto"
+S3_BUCKET = "message-media"
+SIGNED_PUT_TTL = "900"
+SIGNED_GET_TTL = "900"
+# Web Push (VAPID) — public key is safe to expose; private key set via wrangler secret
+VAPID_PUBLIC_KEY = "BGNlllC_H-lqHnnKrxT2IhF_5_xei3is_loJHesBmzjhfgmGMwq_nwlVVaKkrOhTnCO9_DeFtlotIl3Oug3eI2k"
+VAPID_SUBJECT = "mailto:admin@sentry.red"
+# VAPID_PRIVATE_KEY → set via: wrangler secret put VAPID_PRIVATE_KEY
+# Comma-separated origins allowed for CORS (M-11 fix)
+CORS_ORIGINS = "https://message.sentry.red"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "message_db"
 database_id = "99728586-d8a9-4525-a1af-e68e84594047"
+
+# KV namespace for short-lived auth sessions (SDM exchange, OPAQUE login)
+# Create with: wrangler kv namespace create AUTH_KV
+[[kv_namespaces]]
+binding = "AUTH_KV"
+id = "2ace4d55398742928e4b2ca79a371d0d"
+
+# Durable Objects for WebSocket connections (one DO per account)
+[durable_objects]
+bindings = [
+  { name = "ACCOUNT_WS", class_name = "AccountWebSocket" },
+  { name = "RATE_LIMITER", class_name = "RateLimiter" },
+  { name = "BROWSER_SESSION", class_name = "BrowserSession" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["AccountWebSocket"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["RateLimiter"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["BrowserSession"]
+
+# ── SAFE Browser Container ────────────────────────────────────────
+# Each BrowserSession DO manages one KasmVNC Chromium container instance.
+[[containers]]
+class_name = "BrowserSession"
+image = "./Dockerfile.safe"
+max_instances = 10
+
+# ── UAT Environment ─────────────────────────────────────────────
+[env.uat]
+name = "message-data-uat"
+
+[env.uat.vars]
+OPAQUE_SERVER_ID = "uat-api.message.sentry.red"
+ENABLE_DEBUG_ENDPOINTS = "true"
+CORS_ORIGINS = "https://uat-message.sentry.red"
+NTAG424_KDF = "HKDF"
+NTAG424_SALT = "sentry.red"
+NTAG424_INFO = "ntag424-slot-0"
+NTAG424_KVER = "1"
+S3_ENDPOINT = "https://436a742b2a3f99a70289f00ca8688b8e.r2.cloudflarestorage.com"
+S3_REGION = "auto"
+S3_BUCKET = "message-media-uat"
+SIGNED_PUT_TTL = "900"
+SIGNED_GET_TTL = "900"
+VAPID_PUBLIC_KEY = "BGNlllC_H-lqHnnKrxT2IhF_5_xei3is_loJHesBmzjhfgmGMwq_nwlVVaKkrOhTnCO9_DeFtlotIl3Oug3eI2k"
+VAPID_SUBJECT = "mailto:admin@sentry.red"
+# VAPID_PRIVATE_KEY → set via: wrangler secret put VAPID_PRIVATE_KEY --env uat
+[[env.uat.d1_databases]]
+binding = "DB"
+database_name = "message_db_uat"
+database_id = "362f2681-29fc-45bf-9e2a-09b9021e6019"
+
+[[env.uat.kv_namespaces]]
+binding = "AUTH_KV"
+id = "3d14a30fff6344c7bb300d175e84b38c"
+
+[env.uat.durable_objects]
+bindings = [
+  { name = "ACCOUNT_WS", class_name = "AccountWebSocket" },
+  { name = "RATE_LIMITER", class_name = "RateLimiter" },
+  { name = "BROWSER_SESSION", class_name = "BrowserSession" }
+]
+
+[[env.uat.containers]]
+class_name = "BrowserSession"
+image = "./Dockerfile.safe"
+max_instances = 5

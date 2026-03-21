@@ -1,0 +1,1520 @@
+/**
+ * EphemeralController
+ * Owner-side controller for ephemeral chat link feature.
+ * - Create link modal
+ * - Ephemeral conversation list items (timer, colors, dashed border, swipe-delete)
+ * - In-conversation timer bar + extend button
+ * - WS event handling for ephemeral messages
+ * - E2EE: X3DH key exchange + Double Ratchet encrypt/decrypt
+ */
+
+import { BaseController } from './base-controller.js';
+import { ephemeralCreateLink, ephemeralDelete, ephemeralList, ephemeralExtend, ephemeralRevokeInvite, ephemeralClearPendingKeyExchange } from '../../../api/ephemeral.js';
+import { escapeHtml } from '../ui-utils.js';
+import { t } from '/locales/index.js';
+import { generateInitialBundle } from '../../../../shared/crypto/prekeys.js';
+import { x3dhRespond, drEncryptText, drDecryptText } from '../../../../shared/crypto/dr.js';
+import { loadNacl } from '../../../../shared/crypto/nacl.js';
+import { saveSettings, DEFAULT_SETTINGS } from '../../../features/settings.js';
+import { appendUserMessage } from '../../../features/timeline-store.js';
+import {
+  activateEphemeralCallMode,
+  deactivateEphemeralCallMode,
+  handleEphemeralCallMessage,
+  initiateEphemeralCall,
+  isEphemeralCallMode,
+  deriveCallTokenFromDR
+} from '../../../features/calls/ephemeral-call-adapter.js';
+import { setContactSecret } from '../../../core/contact-secrets.js';
+import { bytesToB64Url } from '../../../../shared/utils/base64.js';
+import {
+  initCallMediaSession,
+  endCallMediaSession,
+  setCallSignalSender,
+  sendCallSignal,
+  getCallSessionSnapshot,
+  isCallActive,
+  completeCallSession,
+  CALL_SESSION_STATUS,
+  subscribeCallEvent,
+  CALL_EVENT
+} from '../../../features/calls/index.js';
+
+const EPHEMERAL_TTL_SEC = 600; // 10 minutes
+const STORAGE_KEY_INVITE_KEYS = '__eph_pending_invite_keys';
+const STORAGE_KEY_SESSION_TOKEN_MAP = '__eph_session_token_map';
+const STUN_SERVERS = [{ urls: 'stun:stun.cloudflare.com:3478' }];
+
+// ── sessionStorage helpers for E2EE key persistence ──
+// Private keys MUST survive page reloads / iOS background purges.
+// Without persistence, switching apps to share the link causes key loss
+// and the key exchange can NEVER complete (the root cause of always-fail).
+function _persistMap(storageKey, map) {
+  try {
+    const obj = {};
+    for (const [k, v] of map) obj[k] = v;
+    sessionStorage.setItem(storageKey, JSON.stringify(obj));
+  } catch { /* quota exceeded or private browsing */ }
+}
+
+function _restoreMap(storageKey) {
+  try {
+    const raw = sessionStorage.getItem(storageKey);
+    if (!raw) return new Map();
+    const obj = JSON.parse(raw);
+    return new Map(Object.entries(obj));
+  } catch { return new Map(); }
+}
+
+export class EphemeralController extends BaseController {
+  constructor(deps) {
+    super(deps);
+    /** @type {Map<string, {session_id, conversation_id, guest_digest, expires_at, extended_count, created_at}>} */
+    this.ephemeralSessions = new Map();
+    this._timerInterval = null;
+
+    // ── E2EE state ──
+    // Restored from sessionStorage so keys survive page reloads / iOS background purges.
+    /** @type {Map<string, object>} token → devicePriv (owner's ephemeral keypair, awaiting guest key-exchange) */
+    this._pendingInviteKeys = _restoreMap(STORAGE_KEY_INVITE_KEYS);
+    /** @type {Map<string, object>} session_id → DR state (active Double Ratchet sessions) */
+    this._drStates = new Map();
+    /** @type {Map<string, string>} session_id → token (maps sessions back to invite tokens for key lookup) */
+    this._sessionTokenMap = _restoreMap(STORAGE_KEY_SESSION_TOKEN_MAP);
+    /** @type {Array<{token, expires_at, created_at}>} pending (unconsumed) invites from server */
+    this._pendingInvites = [];
+    /** @type {boolean} prevents concurrent _generateLink calls */
+    this._generating = false;
+    // Call state is now managed by the standard call system via ephemeral-call-adapter
+    /** @type {boolean} whether the remote peer is in foreground */
+    this._peerPresent = true;
+    /** @type {Function|null} visibility change handler ref (for cleanup) */
+    this._visibilityHandler = null;
+  }
+
+  init() {
+    super.init();
+    this._bindCreateButton();
+    this._bindModalEvents();
+    this._startTimerTick();
+    this._listenWsEvents();
+    this._bindVisibilityChange();
+    // Load active sessions on init
+    this._loadSessions();
+    // Periodic poll for pending key exchanges (every 5s while sessions exist)
+    this._kexPollInterval = setInterval(() => this._pollPendingKeyExchanges(), 5000);
+  }
+
+  destroy() {
+    if (this._kexPollInterval) clearInterval(this._kexPollInterval);
+    if (this._timerInterval) clearInterval(this._timerInterval);
+    if (this._visibilityHandler) document.removeEventListener('visibilitychange', this._visibilityHandler);
+    // Clear all crypto state (memory + storage)
+    this._drStates.clear();
+    this._pendingInviteKeys.clear();
+    this._sessionTokenMap.clear();
+    try { sessionStorage.removeItem(STORAGE_KEY_INVITE_KEYS); } catch {}
+    try { sessionStorage.removeItem(STORAGE_KEY_SESSION_TOKEN_MAP); } catch {}
+    super.destroy();
+  }
+
+  // ── Load sessions from server ──
+  async _loadSessions() {
+    let data;
+    try {
+      data = await ephemeralList();
+    } catch (err) {
+      console.warn('[Ephemeral] loadSessions failed', err?.message);
+      return; // Keep existing in-memory sessions intact on failure
+    }
+
+    const sessions = data?.sessions || [];
+    // Preserve client-only fields (e.g. guest_nickname) across server reloads
+    const preserved = new Map();
+    for (const [id, s] of this.ephemeralSessions) {
+      if (s.guest_nickname) preserved.set(id, { guest_nickname: s.guest_nickname });
+    }
+    // Only clear AFTER successful fetch — never lose WS-sourced sessions on API failure
+    this.ephemeralSessions.clear();
+    for (const s of sessions) {
+      const prev = preserved.get(s.session_id);
+      if (prev?.guest_nickname) s.guest_nickname = prev.guest_nickname;
+      this.ephemeralSessions.set(s.session_id, s);
+      // Populate sessionTokenMap from server data (covers missed WS notifications)
+      if (s.invite_token && !this._sessionTokenMap.has(s.session_id)) {
+        this._sessionTokenMap.set(s.session_id, s.invite_token);
+      }
+    }
+    _persistMap(STORAGE_KEY_SESSION_TOKEN_MAP, this._sessionTokenMap);
+    this._pendingInvites = data?.pending_invites || [];
+    this._requestListRender();
+
+    // ── Process any pending key exchanges stored via HTTP fallback ──
+    for (const s of sessions) {
+      if (s.pending_key_exchange_json && !this._drStates.has(s.session_id)) {
+        try {
+          const guestBundle = typeof s.pending_key_exchange_json === 'string'
+            ? JSON.parse(s.pending_key_exchange_json) : s.pending_key_exchange_json;
+          console.log('[Ephemeral] processing pending key-exchange from D1 for', s.session_id);
+          await this._handleKeyExchange({
+            sessionId: s.session_id,
+            guestBundle
+          });
+        } catch (err) {
+          console.warn('[Ephemeral] pending key-exchange processing failed', s.session_id, err?.message);
+        }
+      }
+    }
+  }
+
+  /**
+   * Periodic poll: check if any sessions have pending key exchanges that
+   * haven't been processed yet. This catches the case where the WS relay
+   * failed but the HTTP fallback stored the bundle in D1.
+   */
+  async _pollPendingKeyExchanges() {
+    // Only poll if there are sessions without established DR state
+    const needsPoll = [...this.ephemeralSessions.values()].some(s => !this._drStates.has(s.session_id));
+    if (!needsPoll) return;
+    try {
+      await this._loadSessions();
+    } catch { /* swallowed — _loadSessions has its own error handling */ }
+  }
+
+  // ── Auto-Logout Warning ──
+  _isAutoLogoutEnabled() {
+    const ss = this.deps.sessionStore?.settingsState;
+    return !!(ss?.autoLogoutOnBackground ?? DEFAULT_SETTINGS.autoLogoutOnBackground);
+  }
+
+  /**
+   * Show a warning modal if autoLogoutOnBackground is enabled.
+   * Returns a Promise that resolves to true if user wants to continue,
+   * or false if they cancelled.
+   */
+  _showAutoLogoutWarning() {
+    return new Promise((resolve) => {
+      const modal = document.getElementById('ephAutoLogoutWarnModal');
+      if (!modal) { resolve(true); return; }
+
+      const toggle = document.getElementById('ephAutoLogoutToggle');
+      const continueBtn = document.getElementById('ephAutoLogoutWarnContinue');
+      const closeBtns = modal.querySelectorAll('[data-eph-warn-close]');
+
+      // Sync toggle with current setting
+      if (toggle) toggle.checked = this._isAutoLogoutEnabled();
+
+      // Show modal
+      modal.style.display = 'flex';
+      modal.setAttribute('aria-hidden', 'false');
+
+      const cleanup = () => {
+        modal.style.display = 'none';
+        modal.setAttribute('aria-hidden', 'true');
+        if (toggle) toggle.removeEventListener('change', onToggle);
+        if (continueBtn) continueBtn.removeEventListener('click', onContinue);
+        closeBtns.forEach(el => el.removeEventListener('click', onCancel));
+      };
+
+      const onToggle = async () => {
+        const newValue = toggle.checked;
+        // Update in-memory settings immediately
+        const ss = this.deps.sessionStore;
+        if (ss?.settingsState) {
+          ss.settingsState = { ...ss.settingsState, autoLogoutOnBackground: newValue };
+        }
+        // Persist to server
+        try {
+          await saveSettings(ss.settingsState);
+        } catch (err) {
+          console.warn('[Ephemeral] save settings failed', err?.message);
+        }
+      };
+
+      const onContinue = () => { cleanup(); resolve(true); };
+      const onCancel = () => { cleanup(); resolve(false); };
+
+      if (toggle) toggle.addEventListener('change', onToggle);
+      if (continueBtn) continueBtn.addEventListener('click', onContinue);
+      closeBtns.forEach(el => el.addEventListener('click', onCancel));
+    });
+  }
+
+  // ── Create Link Button ──
+  _bindCreateButton() {
+    const btn = document.getElementById('btnCreateEphemeralLink');
+    if (!btn) return;
+    btn.addEventListener('click', () => this._showCreateModal());
+
+    // Business chat (group) creation
+    const bizBtn = document.getElementById('btnCreateBusinessChat');
+    if (bizBtn) bizBtn.addEventListener('click', () => {
+      if (typeof this.deps.openBizConvCreateModal === 'function') {
+        this.deps.openBizConvCreateModal();
+      }
+    });
+  }
+
+  _showComingSoonModal() {
+    let modal = document.getElementById('comingSoonModal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'comingSoonModal';
+      modal.className = 'coming-soon-modal';
+      modal.innerHTML = `
+        <div class="coming-soon-backdrop"></div>
+        <div class="coming-soon-panel">
+          <div class="coming-soon-icon">🚧</div>
+          <div class="coming-soon-title">${escapeHtml(t('ephemeral.comingSoonTitle') || '功能開發中')}</div>
+          <div class="coming-soon-desc">${escapeHtml(t('ephemeral.comingSoonDesc') || '商業對話功能尚未開放，敬請期待')}</div>
+          <button class="coming-soon-ok">${escapeHtml(t('misc.ok') || 'OK')}</button>
+        </div>
+      `;
+      document.body.appendChild(modal);
+      modal.querySelector('.coming-soon-backdrop')?.addEventListener('click', () => modal.classList.remove('active'));
+      modal.querySelector('.coming-soon-ok')?.addEventListener('click', () => modal.classList.remove('active'));
+    }
+    modal.classList.add('active');
+  }
+
+  async _showCreateModal() {
+    const modal = document.getElementById('ephemeralLinkModal');
+    if (!modal) return;
+    const loading = document.getElementById('ephLinkLoading');
+    const result = document.getElementById('ephLinkResult');
+    const error = document.getElementById('ephLinkError');
+    const sessionList = document.getElementById('ephLinkSessionList');
+    const urlInput = document.getElementById('ephLinkUrl');
+    const copied = document.getElementById('ephLinkCopied');
+
+    // Reset link-generation area
+    if (loading) loading.style.display = 'flex';
+    if (result) result.style.display = 'none';
+    if (error) error.style.display = 'none';
+    if (copied) copied.style.display = 'none';
+
+    // Always load sessions first so the list is up to date
+    await this._loadSessions();
+
+    // Render session list (always visible if there are sessions/invites)
+    this._renderSessionListInModal(sessionList);
+
+    modal.style.display = 'flex';
+    modal.setAttribute('aria-hidden', 'false');
+
+    await this._generateLink(loading, result, error, urlInput, sessionList);
+  }
+
+  /**
+   * Attempt to generate a link. On max-sessions error, show the error hint
+   * and keep the session list visible so the user can free a slot.
+   */
+  async _generateLink(loading, result, error, urlInput, sessionList) {
+    // Prevent concurrent generation (e.g. rapid revoke clicks)
+    if (this._generating) return;
+    this._generating = true;
+
+    if (loading) loading.style.display = 'flex';
+    if (result) result.style.display = 'none';
+    if (error) error.style.display = 'none';
+
+    try {
+      await loadNacl();
+      const { devicePriv, bundlePub } = await generateInitialBundle(1, 1);
+
+      const data = await ephemeralCreateLink({ prekeyBundle: bundlePub });
+      const url = `${location.origin}/e/${data.token}`;
+
+      this._pendingInviteKeys.set(data.token, devicePriv);
+      _persistMap(STORAGE_KEY_INVITE_KEYS, this._pendingInviteKeys);
+
+      if (loading) loading.style.display = 'none';
+      if (urlInput) urlInput.value = url;
+      if (result) result.style.display = 'block';
+
+      // Re-load sessions to show the new pending invite in the list
+      await this._loadSessions();
+      this._renderSessionListInModal(sessionList);
+    } catch (err) {
+      if (loading) loading.style.display = 'none';
+      const msg = err?.message || '';
+      const isMaxSessions = /max\s+\d+\s+active/i.test(msg);
+      if (isMaxSessions) {
+        if (error) {
+          error.innerHTML = `<strong>${escapeHtml(t('ephemeral.maxSessionsReached'))}</strong><br/><span style="font-size:12px">${escapeHtml(t('ephemeral.maxSessionsDesc'))}</span>`;
+          error.style.display = 'block';
+        }
+      } else if (error) {
+        error.textContent = msg || t('ephemeral.createLinkFailed');
+        error.style.display = 'block';
+      }
+    } finally {
+      this._generating = false;
+    }
+  }
+
+  /**
+   * Render the active ephemeral session list inside the create-link modal.
+   * Always shown so user can manage existing sessions alongside link generation.
+   */
+  _renderSessionListInModal(sessionListEl) {
+    if (!sessionListEl) return;
+
+    const now = Math.floor(Date.now() / 1000);
+    sessionListEl.innerHTML = '';
+
+    // Merge active sessions + pending invites, sorted by created_at desc
+    const sessions = Array.from(this.ephemeralSessions.values())
+      .filter(s => s.expires_at > now)
+      .map(s => ({ ...s, _type: 'session' }));
+    const pendingInvites = (this._pendingInvites || [])
+      .filter(inv => inv.expires_at > now)
+      .map(inv => ({ ...inv, _type: 'invite' }));
+    const all = [...sessions, ...pendingInvites].sort((a, b) => a.created_at - b.created_at);
+
+    all.forEach((item, idx) => {
+      const seq = idx + 1;
+      const createdTime = this._fmtTime(item.created_at);
+      const row = document.createElement('div');
+
+      if (item._type === 'session') {
+        const remaining = item.expires_at - now;
+        const min = Math.floor(remaining / 60);
+        const sec = remaining % 60;
+        const timerText = `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+        const colorClass = remaining > 300 ? 'green' : remaining > 120 ? 'yellow' : 'red';
+
+        row.className = 'eph-session-row';
+        row.dataset.ephSession = item.session_id;
+        row.innerHTML = `
+          <div class="eph-session-info">
+            <span class="eph-session-name">#${seq} · ${escapeHtml(t('ephemeral.tempChat'))}</span>
+            <span class="eph-session-meta">${escapeHtml(createdTime)}</span>
+            <span class="eph-timer-badge ${colorClass}">${escapeHtml(timerText)}</span>
+          </div>
+          <button type="button" class="eph-session-terminate">${escapeHtml(t('ephemeral.terminateSession'))}</button>
+        `;
+        row.querySelector('.eph-session-terminate')?.addEventListener('click', async (e) => {
+          const btn = e.currentTarget;
+          btn.disabled = true;
+          btn.textContent = '…';
+          try {
+            await this._deleteSession(item.session_id);
+            row.remove();
+            this._onSlotFreed(sessionListEl);
+          } catch {
+            btn.disabled = false;
+            btn.textContent = t('ephemeral.terminateSession');
+          }
+        });
+      } else {
+        row.className = 'eph-session-row eph-session-pending';
+        row.dataset.token = item.token;
+        row.innerHTML = `
+          <div class="eph-session-info">
+            <span class="eph-session-name">#${seq} · ${escapeHtml(t('ephemeral.pendingLink'))}</span>
+            <span class="eph-session-meta">${escapeHtml(createdTime)}</span>
+            <span class="eph-timer-badge pending">${escapeHtml(t('ephemeral.pendingBadge'))}</span>
+          </div>
+          <button type="button" class="eph-session-terminate">${escapeHtml(t('ephemeral.revokeLink'))}</button>
+        `;
+        row.querySelector('.eph-session-terminate')?.addEventListener('click', async (e) => {
+          const btn = e.currentTarget;
+          btn.disabled = true;
+          btn.textContent = '…';
+          try {
+            await ephemeralRevokeInvite({ token: item.token });
+            this._pendingInviteKeys.delete(item.token);
+            _persistMap(STORAGE_KEY_INVITE_KEYS, this._pendingInviteKeys);
+            row.remove();
+            this._onSlotFreed(sessionListEl);
+          } catch {
+            btn.disabled = false;
+            btn.textContent = t('ephemeral.revokeLink');
+          }
+        });
+      }
+
+      sessionListEl.appendChild(row);
+    });
+
+    sessionListEl.style.display = all.length ? 'block' : 'none';
+  }
+
+  /** Format unix timestamp to HH:MM local time */
+  _fmtTime(ts) {
+    const d = new Date(ts * 1000);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+
+  /**
+   * Called after a session/invite is removed. Immediately generates a new link.
+   */
+  async _onSlotFreed(sessionListEl) {
+    const loading = document.getElementById('ephLinkLoading');
+    const result = document.getElementById('ephLinkResult');
+    const error = document.getElementById('ephLinkError');
+    const urlInput = document.getElementById('ephLinkUrl');
+    const copied = document.getElementById('ephLinkCopied');
+    if (copied) copied.style.display = 'none';
+    await this._generateLink(loading, result, error, urlInput, sessionListEl);
+  }
+
+  _bindModalEvents() {
+    const modal = document.getElementById('ephemeralLinkModal');
+    if (!modal) return;
+
+    // Close buttons
+    modal.querySelectorAll('[data-eph-close]').forEach(el => {
+      el.addEventListener('click', () => {
+        modal.style.display = 'none';
+        modal.setAttribute('aria-hidden', 'true');
+        // Reload sessions after creating
+        this._loadSessions();
+      });
+    });
+
+    // Copy button
+    const copyBtn = document.getElementById('ephLinkCopy');
+    const urlInput = document.getElementById('ephLinkUrl');
+    const copied = document.getElementById('ephLinkCopied');
+    if (copyBtn && urlInput) {
+      copyBtn.addEventListener('click', async () => {
+        // Warn if auto-logout is on (user will paste in another app)
+        if (this._isAutoLogoutEnabled()) {
+          const proceed = await this._showAutoLogoutWarning();
+          if (!proceed) return;
+        }
+        try {
+          await navigator.clipboard.writeText(urlInput.value);
+          if (copied) {
+            copied.style.display = 'block';
+            setTimeout(() => { copied.style.display = 'none'; }, 2000);
+          }
+        } catch {
+          urlInput.select();
+          document.execCommand('copy');
+          if (copied) {
+            copied.style.display = 'block';
+            setTimeout(() => { copied.style.display = 'none'; }, 2000);
+          }
+        }
+      });
+    }
+
+    // Share button (Web Share API → clipboard fallback)
+    const shareBtn = document.getElementById('ephLinkShare');
+    if (shareBtn && urlInput) {
+      shareBtn.addEventListener('click', async () => {
+        // Warn if auto-logout is on (share will switch app)
+        if (this._isAutoLogoutEnabled()) {
+          const proceed = await this._showAutoLogoutWarning();
+          if (!proceed) return;
+        }
+        const url = urlInput.value;
+        const shareText = t('ephemeral.shareText', { url });
+        if (navigator.share) {
+          try {
+            await navigator.share({ title: 'SENTRY Messenger', text: shareText });
+          } catch { /* user cancelled */ }
+        } else {
+          // Fallback: copy full share text to clipboard
+          try { await navigator.clipboard.writeText(shareText); } catch { /* ignore */ }
+          if (copied) {
+            copied.style.display = 'block';
+            setTimeout(() => { copied.style.display = 'none'; }, 2000);
+          }
+        }
+      });
+    }
+  }
+
+  // ── Timer Tick (every second) ──
+  _startTimerTick() {
+    this._timerInterval = setInterval(() => {
+      this._updateAllTimers();
+    }, 1000);
+  }
+
+  _updateAllTimers() {
+    const now = Math.floor(Date.now() / 1000);
+    let needsRender = false;
+
+    for (const [id, session] of this.ephemeralSessions) {
+      const remaining = session.expires_at - now;
+      if (remaining <= 0) {
+        this.ephemeralSessions.delete(id);
+        // Clean up crypto state for expired session
+        this._drStates.delete(id);
+        const expiredToken = this._sessionTokenMap.get(id);
+        this._sessionTokenMap.delete(id);
+        if (expiredToken) this._pendingInviteKeys.delete(expiredToken);
+        needsRender = true;
+        continue;
+      }
+      // Update ALL DOM timers (conversation list + modal both have matching elements)
+      const min = Math.floor(remaining / 60);
+      const sec = remaining % 60;
+      const timerText = `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+      const colorClass = remaining > 300 ? 'green' : remaining > 120 ? 'yellow' : 'red';
+      for (const timerEl of document.querySelectorAll(`[data-eph-session="${id}"] .eph-timer-badge`)) {
+        timerEl.textContent = timerText;
+        timerEl.className = 'eph-timer-badge ' + colorClass;
+      }
+
+      // Update in-conversation timer if this is the active conversation
+      this._updateConvTimer(session, remaining);
+    }
+
+    if (needsRender) {
+      _persistMap(STORAGE_KEY_INVITE_KEYS, this._pendingInviteKeys);
+      _persistMap(STORAGE_KEY_SESSION_TOKEN_MAP, this._sessionTokenMap);
+      this._requestListRender();
+    }
+  }
+
+  _updateConvTimer(session, remaining) {
+    const convTimerEl = document.getElementById('ephConvTimerClock');
+    const extendBtnEl = document.getElementById('ephConvExtendBtn');
+    const fillEl = document.getElementById('ephConvProgressFill');
+    const fireEl = document.getElementById('ephConvProgressFire');
+    if (!convTimerEl) return;
+    if (convTimerEl.dataset.sessionId !== session.session_id) return;
+
+    const min = Math.floor(remaining / 60);
+    const sec = remaining % 60;
+    convTimerEl.textContent = `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+
+    // Calculate elapsed percentage (0% = just started, 100% = time's up)
+    // Use _progressBase (set on extend) to reset the progress bar after extending
+    const baseTime = session._progressBase || session.created_at;
+    const totalDuration = (baseTime && session.expires_at)
+      ? (session.expires_at - baseTime) : 600;
+    const elapsed = Math.max(0, Math.min(100, (1 - remaining / totalDuration) * 100));
+
+    convTimerEl.className = 'eph-conv-timer-clock' + (elapsed >= 80 ? ' red' : '');
+    if (fillEl) {
+      fillEl.style.width = elapsed + '%';
+    }
+    if (fireEl) {
+      fireEl.style.left = elapsed + '%';
+    }
+    if (extendBtnEl) {
+      if (remaining <= 300) {
+        extendBtnEl.classList.add('active');
+        extendBtnEl.disabled = false;
+      } else {
+        extendBtnEl.classList.remove('active');
+        extendBtnEl.disabled = true;
+      }
+    }
+  }
+
+  // ── Render ephemeral items in conversation list ──
+  /**
+   * Called by ConversationListController.renderConversationList().
+   * Inserts ephemeral items at the TOP of the conversation list (pinned).
+   * @param {HTMLElement} listEl - The <ul> conversation list element
+   */
+  renderEphemeralItems(listEl) {
+    if (!listEl || !this.ephemeralSessions.size) return;
+
+    const now = Math.floor(Date.now() / 1000);
+    const sorted = Array.from(this.ephemeralSessions.values())
+      .filter(s => s.expires_at > now)
+      .sort((a, b) => b.created_at - a.created_at);
+
+    for (const session of sorted) {
+      const remaining = session.expires_at - now;
+      const min = Math.floor(remaining / 60);
+      const sec = remaining % 60;
+      const timerText = `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+      const colorClass = remaining > 300 ? 'green' : remaining > 120 ? 'yellow' : 'red';
+
+      const li = document.createElement('li');
+      li.className = 'conversation-item ephemeral';
+      li.dataset.ephSession = session.session_id;
+      li.dataset.conversationId = session.conversation_id;
+      li.style.touchAction = 'pan-y';
+
+      const guestId = (session.guest_digest || '').slice(-4);
+      const displayName = session.guest_nickname || t('ephemeral.guestLabel', { id: guestId });
+      li.innerHTML = `
+        <div class="item-content conversation-item-content">
+          <div class="conversation-avatar"></div>
+          <div class="conversation-content">
+            <div class="conversation-row conversation-row-top">
+              <span class="conversation-name">${escapeHtml(session.guest_nickname || t('ephemeral.tempChat'))}</span>
+              <span class="eph-timer-badge ${colorClass}">${escapeHtml(timerText)}</span>
+            </div>
+            <div class="conversation-row conversation-row-bottom">
+              <span class="conversation-snippet">${escapeHtml(session.guest_nickname ? t('ephemeral.tempChat') : displayName)}</span>
+            </div>
+          </div>
+        </div>
+        <button type="button" class="item-delete" aria-label="${escapeHtml(t('ephemeral.deleteTempChat'))}"><i class='bx bx-trash'></i></button>
+      `;
+
+      // Click → open ephemeral conversation
+      li.querySelector('.item-content')?.addEventListener('click', () => {
+        this._openEphemeralConversation(session);
+      });
+
+      // Delete button
+      li.querySelector('.item-delete')?.addEventListener('click', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        await this._deleteSession(session.session_id);
+      });
+
+      // Setup swipe
+      this.deps.setupSwipe?.(li);
+
+      // Insert at top (before first child)
+      if (listEl.firstChild) {
+        listEl.insertBefore(li, listEl.firstChild);
+      } else {
+        listEl.appendChild(li);
+      }
+    }
+  }
+
+  // ── Open ephemeral conversation ──
+  _openEphemeralConversation(session) {
+    // Use the existing setActiveConversation mechanism
+    // Must include both digest and device_id (format: "digest::deviceId")
+    // otherwise normalizePeerIdentity returns null → "invalid contact"
+    const peerKey = `${session.guest_digest}::${session.guest_device_id}`;
+    this.deps.setActiveConversation?.(peerKey, session.conversation_id, null);
+    // Mark messages list + header avatar as ephemeral for styling
+    document.getElementById('messagesList')?.classList.add('ephemeral-active');
+    document.getElementById('messagesPeerAvatar')?.classList.add('ephemeral-active');
+    // Show timer bar in messages thread
+    this._showConvTimerBar(session);
+    // Update header name to show guest nickname
+    const guestId = (session.guest_digest || '').slice(-4);
+    const displayName = session.guest_nickname || t('ephemeral.guestLabel', { id: guestId });
+    const peerNameEl = document.querySelector('.messages-header strong');
+    if (peerNameEl) peerNameEl.textContent = displayName;
+  }
+
+  _showConvTimerBar(session) {
+    // Inject timer bar into messages header area
+    let timerBar = document.getElementById('ephConvTimerBar');
+    if (!timerBar) {
+      timerBar = document.createElement('div');
+      timerBar.id = 'ephConvTimerBar';
+      timerBar.className = 'eph-conv-timer-bar';
+      timerBar.innerHTML = `
+        <div class="eph-conv-timer-control-row">
+          <button id="ephConvExtendBtn" class="eph-conv-extend-btn" disabled>${escapeHtml(t('ephemeral.extendTime'))}</button>
+          <div id="ephConvTimerClock" class="eph-conv-timer-clock" data-session-id="">--:--</div>
+          <button id="ephConvEndBtn" class="eph-conv-end-btn">${escapeHtml(t('ephemeral.endConversation'))}</button>
+        </div>
+        <div class="eph-conv-progress-wrap">
+          <div id="ephConvProgressFill" class="eph-conv-progress-fill" style="width:0%"></div>
+          <div id="ephConvProgressFire" class="eph-conv-progress-fire" style="left:0%">🔥<span class="fire-glow"></span></div>
+        </div>
+        <div class="eph-conv-timer-label">${escapeHtml(t('ephemeral.timerLabel'))}</div>
+      `;
+      // Insert after messages-header
+      const header = document.querySelector('.messages-header');
+      if (header && header.parentNode) {
+        header.parentNode.insertBefore(timerBar, header.nextSibling);
+      }
+
+      // Bind extend button
+      document.getElementById('ephConvExtendBtn')?.addEventListener('click', async () => {
+        const sid = document.getElementById('ephConvTimerClock')?.dataset?.sessionId;
+        console.log('[Ephemeral] extend clicked, sessionId:', sid);
+        if (!sid) return;
+        const btn = document.getElementById('ephConvExtendBtn');
+        if (btn) { btn.disabled = true; btn.textContent = t('ephemeral.extending') || 'Extending…'; }
+        try {
+          const data = await ephemeralExtend({ sessionId: sid });
+          console.log('[Ephemeral] extend OK', data);
+          const s = this.ephemeralSessions.get(sid);
+          if (s) {
+            // Reset progress bar baseline so fire icon moves back to start
+            s._progressBase = Math.floor(Date.now() / 1000);
+            s.expires_at = data.expires_at;
+          }
+        } catch (err) {
+          console.warn('[Ephemeral] extend failed', err?.message, err?.status, err?.data);
+        } finally {
+          if (btn) { btn.textContent = t('ephemeral.extendTime') || 'Extend'; btn.disabled = false; }
+        }
+      });
+
+      // Bind end conversation button
+      document.getElementById('ephConvEndBtn')?.addEventListener('click', () => {
+        const sid = document.getElementById('ephConvTimerClock')?.dataset?.sessionId;
+        if (!sid) return;
+        this._showEndConfirmModal(sid);
+      });
+
+    }
+
+    const clockEl = document.getElementById('ephConvTimerClock');
+    if (clockEl) clockEl.dataset.sessionId = session.session_id;
+    timerBar.style.display = 'flex';
+  }
+
+  hideConvTimerBar() {
+    const timerBar = document.getElementById('ephConvTimerBar');
+    if (timerBar) timerBar.style.display = 'none';
+    document.getElementById('messagesList')?.classList.remove('ephemeral-active');
+    document.getElementById('messagesPeerAvatar')?.classList.remove('ephemeral-active');
+  }
+
+  /**
+   * Check if a conversation ID belongs to an ephemeral session.
+   */
+  isEphemeralConversation(conversationId) {
+    if (!conversationId) return false;
+    for (const session of this.ephemeralSessions.values()) {
+      if (session.conversation_id === conversationId) return true;
+    }
+    return false;
+  }
+
+  getSessionByConversationId(conversationId) {
+    for (const session of this.ephemeralSessions.values()) {
+      if (session.conversation_id === conversationId) return session;
+    }
+    return null;
+  }
+
+  /**
+   * Check if a DR session is established for the given session ID.
+   */
+  hasEncryptionReady(sessionId) {
+    return this._drStates.has(sessionId);
+  }
+
+  // ── E2EE: Send encrypted message ──
+  /**
+   * Encrypt and send a message for an ephemeral session.
+   * @param {string} sessionId
+   * @param {string} text - plaintext message
+   */
+  async sendEncryptedMessage(sessionId, text) {
+    const drSt = this._drStates.get(sessionId);
+    if (!drSt) throw new Error('no DR state for session');
+    const session = this.ephemeralSessions.get(sessionId);
+    if (!session) throw new Error('session not found');
+
+    const senderDeviceId = this.deps.ensureDeviceId?.() || '';
+    const packet = await drEncryptText(drSt, text, {
+      deviceId: senderDeviceId,
+      version: 1
+    });
+
+    this.deps.wsSend?.({
+      type: 'ephemeral-message',
+      conversationId: session.conversation_id,
+      header: packet.header,
+      iv_b64: packet.iv_b64,
+      ciphertext_b64: packet.ciphertext_b64,
+      ts: Date.now()
+    });
+  }
+
+  /**
+   * Compress an image file via canvas, return base64 JPEG.
+   */
+  async _compressImage(file) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 1024;
+        let w = img.width, h = img.height;
+        if (w > MAX || h > MAX) {
+          const scale = MAX / Math.max(w, h);
+          w = Math.round(w * scale);
+          h = Math.round(h * scale);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        URL.revokeObjectURL(img.src);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+        resolve(dataUrl); // "data:image/jpeg;base64,..."
+      };
+      img.onerror = () => { URL.revokeObjectURL(img.src); reject(new Error('image load failed')); };
+      img.src = URL.createObjectURL(file);
+    });
+  }
+
+  /**
+   * Send an encrypted image in ephemeral chat (inline, no R2 upload).
+   */
+  async sendEncryptedImage(sessionId, file, conversationId, uiDeps) {
+    const dataUrl = await this._compressImage(file);
+    // payload: JSON with _type marker so receiver knows it's an image
+    const payload = JSON.stringify({ _type: 'image', data: dataUrl, name: file.name || 'image.jpg' });
+
+    const drSt = this._drStates.get(sessionId);
+    if (!drSt) throw new Error('no DR state for session');
+    const session = this.ephemeralSessions.get(sessionId);
+    if (!session) throw new Error('session not found');
+
+    const senderDeviceId = this.deps.ensureDeviceId?.() || '';
+    const packet = await drEncryptText(drSt, payload, { deviceId: senderDeviceId, version: 1 });
+
+    // Append local outgoing image bubble
+    const msgId = crypto.randomUUID();
+    const ts = Date.now();
+    appendUserMessage(conversationId, {
+      id: msgId, messageId: msgId,
+      text: `📷 ${file.name || 'Image'}`,
+      ts, direction: 'outgoing',
+      msgType: 'text', status: 'sent', decrypted: true,
+      _ephImage: dataUrl
+    });
+
+    this.deps.wsSend?.({
+      type: 'ephemeral-message',
+      conversationId: session.conversation_id,
+      header: packet.header,
+      iv_b64: packet.iv_b64,
+      ciphertext_b64: packet.ciphertext_b64,
+      ts
+    });
+
+    uiDeps?.updateMessagesUI?.({ preserveScroll: true });
+    uiDeps?.scrollMessagesToBottomSoon?.();
+  }
+
+  // ── E2EE: Decrypt incoming message ──
+  /**
+   * Decrypt an incoming ephemeral message.
+   * @returns {{ text: string, ts: number } | null}
+   */
+  async decryptIncomingMessage(msg) {
+    if (!msg?.conversationId) return null;
+    const session = this.getSessionByConversationId(msg.conversationId);
+    if (!session) return null;
+    const drSt = this._drStates.get(session.session_id);
+    if (!drSt) return null;
+
+    const plaintext = await drDecryptText(drSt, {
+      header: msg.header,
+      iv_b64: msg.iv_b64,
+      ciphertext_b64: msg.ciphertext_b64
+    });
+    return { text: plaintext, ts: msg.ts };
+  }
+
+  /**
+   * Decrypt an incoming ephemeral message and render it in the timeline.
+   * This bypasses the regular handleIncomingSecureMessage path which
+   * requires targetDeviceId/senderDeviceId (not present in ephemeral WS relay).
+   */
+  async decryptAndRender(msg) {
+    const result = await this.decryptIncomingMessage(msg);
+    if (!result) return;
+
+    // Handle encrypted control messages (e.g. nickname)
+    if (this._handleControlMessage(result.text, msg)) return;
+
+    // Check for inline image message
+    let ephImage = null;
+    let displayText = result.text;
+    try {
+      if (result.text && result.text[0] === '{') {
+        const parsed = JSON.parse(result.text);
+        if (parsed._type === 'image' && parsed.data) {
+          ephImage = parsed.data;
+          displayText = `📷 ${parsed.name || 'Image'}`;
+        }
+      }
+    } catch { /* not JSON, treat as text */ }
+
+    const messageId = crypto.randomUUID();
+    appendUserMessage(msg.conversationId, {
+      id: messageId,
+      messageId,
+      text: displayText,
+      ts: result.ts || Date.now(),
+      direction: 'incoming',
+      senderDigest: msg.senderDigest || msg.fromDigest || '',
+      msgType: 'text',
+      status: 'received',
+      decrypted: true,
+      _ephImage: ephImage
+    });
+
+    this.deps.updateMessagesUI?.({ preserveScroll: true });
+    this.deps.scrollMessagesToBottomSoon?.();
+  }
+
+  /**
+   * Handle encrypted control messages (not rendered as chat).
+   * Returns true if the message was a control message and was consumed.
+   */
+  _handleControlMessage(text, rawMsg) {
+    try {
+      if (!text || text[0] !== '{') return false;
+      const ctrl = JSON.parse(text);
+      if (!ctrl._ctrl) return false;
+
+      if (ctrl._ctrl === 'set-nickname' && ctrl.nickname) {
+        const session = rawMsg?.conversationId
+          ? this.getSessionByConversationId(rawMsg.conversationId)
+          : null;
+        if (session) {
+          session.guest_nickname = ctrl.nickname;
+          // Update peer name display if this conversation is active
+          const state = this.deps.getMessageState?.() || {};
+          if (state.conversationId === session.conversation_id) {
+            const peerNameEl = document.querySelector('.messages-header strong');
+            if (peerNameEl) peerNameEl.textContent = ctrl.nickname;
+          }
+          this._requestListRender();
+          console.log('[Ephemeral] guest nickname set:', ctrl.nickname);
+        }
+        return true;
+      }
+
+      if (ctrl._ctrl === 'peer-away' || ctrl._ctrl === 'peer-back') {
+        const convId = rawMsg?.conversationId;
+        if (convId) this._setPeerPresence(ctrl._ctrl === 'peer-back', convId);
+        return true;
+      }
+
+      if (ctrl._ctrl === 'no-webrtc') {
+        const convId = rawMsg?.conversationId;
+        if (convId) this._handlePeerNoWebRTC(convId);
+        return true;
+      }
+
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  // ── Delete ──
+  async _deleteSession(sessionId) {
+    try {
+      await ephemeralDelete({ sessionId });
+      this.ephemeralSessions.delete(sessionId);
+      // Clean up crypto state
+      this._drStates.delete(sessionId);
+      const token = this._sessionTokenMap.get(sessionId);
+      if (token) this._pendingInviteKeys.delete(token);
+      this._sessionTokenMap.delete(sessionId);
+      this._requestListRender();
+      this.hideConvTimerBar();
+    } catch (err) {
+      console.warn('[Ephemeral] delete failed', err?.message);
+    }
+  }
+
+  // ── WS Events ──
+  _listenWsEvents() {
+    // This is called by the WS integration layer
+  }
+
+  // ── Visibility-based presence for ephemeral sessions ──
+  _bindVisibilityChange() {
+    this._visibilityHandler = () => {
+      const hidden = document.hidden;
+      // Broadcast to ALL active ephemeral sessions
+      for (const [sid, session] of this.ephemeralSessions) {
+        if (!this._drStates.has(sid)) continue;
+        const ctrl = hidden ? { _ctrl: 'peer-away' } : { _ctrl: 'peer-back' };
+        this.sendEncryptedMessage(sid, JSON.stringify(ctrl)).catch(() => {});
+      }
+    };
+    document.addEventListener('visibilitychange', this._visibilityHandler);
+  }
+
+  /**
+   * Update peer presence state + show tombstone + manage composer.
+   */
+  _setPeerPresence(present, conversationId) {
+    this._peerPresent = present;
+    // Show system tombstone in timeline
+    const msgId = crypto.randomUUID();
+    const text = present ? t('ephemeral.peerBack') : t('ephemeral.peerAway');
+    appendUserMessage(conversationId, {
+      id: msgId, messageId: msgId,
+      text, ts: Date.now(),
+      direction: 'incoming', msgType: 'system',
+      status: 'received'
+    });
+    this.deps.updateMessagesUI?.({ preserveScroll: true });
+    this.deps.scrollMessagesToBottomSoon?.();
+    // Toggle composer warning
+    const composerInput = document.getElementById('composerInput') || document.querySelector('.messages-composer textarea');
+    if (composerInput) {
+      if (!present) {
+        composerInput.dataset.origPlaceholder = composerInput.placeholder;
+        composerInput.placeholder = t('ephemeral.peerAwayHint') || 'Peer is away — messages may not be delivered';
+      } else {
+        composerInput.placeholder = composerInput.dataset.origPlaceholder || t('composer.placeholder') || 'Type a message…';
+        delete composerInput.dataset.origPlaceholder;
+      }
+    }
+  }
+
+  /**
+   * Handle guest reporting no WebRTC support — disable call buttons and show tombstone.
+   */
+  _handlePeerNoWebRTC(conversationId) {
+    // Mark this session as no-webrtc
+    const session = this.getSessionByConversationId(conversationId);
+    if (session) session._peerNoWebRTC = true;
+
+    // Show system tombstone in timeline
+    const msgId = crypto.randomUUID();
+    appendUserMessage(conversationId, {
+      id: msgId, messageId: msgId,
+      text: t('ephemeral.peerNoWebrtc'), ts: Date.now(),
+      direction: 'incoming', msgType: 'system',
+      status: 'received'
+    });
+    this.deps.updateMessagesUI?.({ preserveScroll: true });
+    this.deps.scrollMessagesToBottomSoon?.();
+
+    // Disable call buttons if currently viewing this conversation
+    const state = this.deps.getMessageState?.() || {};
+    if (state.conversationId === conversationId) {
+      this._disableCallButtonsForNoWebRTC();
+    }
+  }
+
+  /**
+   * Disable owner-side call buttons when peer has no WebRTC.
+   */
+  _disableCallButtonsForNoWebRTC() {
+    const callBtn = this.deps.controllers?.composer?.elements?.callBtn;
+    if (callBtn) {
+      callBtn.disabled = true;
+      callBtn.setAttribute('aria-disabled', 'true');
+    }
+  }
+
+  /**
+   * Check whether the peer in a given conversation lacks WebRTC.
+   */
+  isPeerNoWebRTC(conversationId) {
+    const session = this.getSessionByConversationId(conversationId);
+    return !!(session && session._peerNoWebRTC);
+  }
+
+  /**
+   * Find the owner's private key for a session by looking up the invite token.
+   * The session_started event includes the invite_token, which we map at that point.
+   */
+  _findPrivKeyForSession(sessionId) {
+    const token = this._sessionTokenMap.get(sessionId);
+    if (!token) return null;
+    return this._pendingInviteKeys.get(token) || null;
+  }
+
+  handleWsMessage(msg) {
+    if (!msg?.type) return false;
+    switch (msg.type) {
+      case 'ephemeral_session_started': {
+        // Guest consumed the link — add session to owner's list
+        const sessionData = {
+          session_id: msg.sessionId,
+          conversation_id: msg.conversationId,
+          guest_digest: msg.guestDigest,
+          guest_device_id: msg.guestDeviceId,
+          expires_at: msg.expiresAt,
+          extended_count: 0,
+          created_at: Math.floor(Date.now() / 1000)
+        };
+        this.ephemeralSessions.set(msg.sessionId, sessionData);
+
+        // Map session_id → invite_token for key lookup
+        if (msg.inviteToken) {
+          this._sessionTokenMap.set(msg.sessionId, msg.inviteToken);
+          _persistMap(STORAGE_KEY_SESSION_TOKEN_MAP, this._sessionTokenMap);
+          // Remove consumed invite from pending list
+          this._pendingInvites = this._pendingInvites.filter(inv => inv.token !== msg.inviteToken);
+        }
+
+        this._requestListRender();
+        this._refreshModalIfOpen();
+        return true;
+      }
+      case 'ephemeral-key-exchange': {
+        // Guest sent their public key bundle — complete X3DH as responder
+        this._handleKeyExchange(msg).catch(err => {
+          console.warn('[Ephemeral] key-exchange failed', err?.message);
+        });
+        return true;
+      }
+      case 'ephemeral-key-exchange-ack': {
+        // Acknowledgement (owner side doesn't need to act on this)
+        return true;
+      }
+      case 'ephemeral-extended': {
+        const session = this.ephemeralSessions.get(msg.sessionId);
+        if (session) {
+          session._progressBase = Math.floor(Date.now() / 1000);
+          session.expires_at = msg.expiresAt;
+          this._requestListRender();
+          this._refreshModalIfOpen();
+          // Show system tombstone
+          const extMsgId = crypto.randomUUID();
+          appendUserMessage(msg.conversationId || session.conversation_id, {
+            id: extMsgId, messageId: extMsgId,
+            text: t('ephemeral.extendedTenMin'), ts: Date.now(),
+            direction: 'incoming', msgType: 'system',
+            status: 'received'
+          });
+          this.deps.updateMessagesUI?.({ preserveScroll: true });
+          this.deps.scrollMessagesToBottomSoon?.();
+        }
+        return true;
+      }
+      case 'ephemeral-deleted': {
+        const delSession = this.ephemeralSessions.get(msg.sessionId);
+        const delConvId = delSession?.conversation_id || msg.conversationId;
+        const delToken = this._sessionTokenMap.get(msg.sessionId);
+        this.ephemeralSessions.delete(msg.sessionId);
+        this._drStates.delete(msg.sessionId);
+        this._sessionTokenMap.delete(msg.sessionId);
+        if (delToken) this._pendingInviteKeys.delete(delToken);
+        _persistMap(STORAGE_KEY_INVITE_KEYS, this._pendingInviteKeys);
+        _persistMap(STORAGE_KEY_SESSION_TOKEN_MAP, this._sessionTokenMap);
+        this._requestListRender();
+        this._refreshModalIfOpen();
+        this.hideConvTimerBar();
+        // End any active call for this session
+        if (isEphemeralCallMode() && isCallActive()) {
+          endCallMediaSession('session-ended');
+          completeCallSession({ reason: 'session-ended' });
+          deactivateEphemeralCallMode();
+        }
+        // If currently viewing this conversation, navigate back to list
+        const delState = this.deps.getMessageState?.() || {};
+        if (delConvId && delState.conversationId === delConvId) {
+          delState.activePeerDigest = null;
+          delState.conversationId = null;
+          delState.viewMode = 'list';
+          this.deps.applyMessagesLayout?.();
+        }
+        return true;
+      }
+      case 'ephemeral-guest-leave': {
+        // Guest ended the conversation — clean up just like ephemeral-deleted
+        const glSession = this.ephemeralSessions.get(msg.sessionId);
+        const glConvId = glSession?.conversation_id || msg.conversationId;
+        const glToken = this._sessionTokenMap.get(msg.sessionId);
+        this.ephemeralSessions.delete(msg.sessionId);
+        this._drStates.delete(msg.sessionId);
+        this._sessionTokenMap.delete(msg.sessionId);
+        if (glToken) this._pendingInviteKeys.delete(glToken);
+        _persistMap(STORAGE_KEY_INVITE_KEYS, this._pendingInviteKeys);
+        _persistMap(STORAGE_KEY_SESSION_TOKEN_MAP, this._sessionTokenMap);
+        this._requestListRender();
+        this._refreshModalIfOpen();
+        this.hideConvTimerBar();
+        // End any active call for this session
+        if (isEphemeralCallMode() && isCallActive()) {
+          endCallMediaSession('session-ended');
+          completeCallSession({ reason: 'session-ended' });
+          deactivateEphemeralCallMode();
+        }
+        // If owner is currently viewing this ephemeral conversation, navigate back + show modal
+        const glState = this.deps.getMessageState?.() || {};
+        if (glConvId && glState.conversationId === glConvId) {
+          glState.activePeerDigest = null;
+          glState.conversationId = null;
+          glState.viewMode = 'list';
+          this.deps.applyMessagesLayout?.();
+          this._showGuestEndedModal();
+        }
+        return true;
+      }
+      case 'ephemeral-peer-reconnected': {
+        // Peer came back online after a disconnection — show tombstone
+        const convId = msg.conversationId;
+        if (convId) this._setPeerPresence(true, convId);
+        return true;
+      }
+      case 'ephemeral-peer-disconnected': {
+        // Peer went offline — show tombstone
+        const dcConvId = msg.conversationId;
+        if (dcConvId) this._setPeerPresence(false, dcConvId);
+        return true;
+      }
+      case 'ephemeral-message': {
+        // Encrypted message — decrypt and forward to rendering pipeline
+        // Decryption is handled by the WS integration layer calling decryptIncomingMessage()
+        return false; // Let WS integration handle it
+      }
+      default:
+        // Handle ephemeral call signals
+        if (typeof msg.type === 'string' && msg.type.startsWith('ephemeral-call-')) {
+          this._handleCallSignal(msg);
+          return true;
+        }
+        return false;
+    }
+  }
+
+  // ── E2EE: Handle key exchange from guest ──
+  async _handleKeyExchange(msg) {
+    const sessionId = msg.sessionId;
+    console.log('[Ephemeral] _handleKeyExchange START', sessionId,
+      'sessions:', this.ephemeralSessions.size,
+      'tokenMap:', this._sessionTokenMap.size,
+      'inviteKeys:', this._pendingInviteKeys.size,
+      'hasDrState:', this._drStates.has(sessionId));
+
+    let session = this.ephemeralSessions.get(sessionId);
+
+    // Session or key mapping may be missing if the ephemeral_session_started
+    // WS notification was lost (e.g. owner's WS was disconnected when the
+    // guest consumed the link). Fetch from server to recover.
+    if (!session || !this._sessionTokenMap.has(sessionId)) {
+      console.log('[Ephemeral] key-exchange: session/token missing, fetching from server...');
+      await this._loadSessions();
+      session = this.ephemeralSessions.get(sessionId);
+    }
+
+    if (!session) {
+      console.error('[Ephemeral] key-exchange FAIL: session not found after server fetch', sessionId);
+      return;
+    }
+
+    // ── Idempotent: if x3dh was already completed, just resend the ack ──
+    // This handles the case where the first ack was lost (e.g. D1 replica lag
+    // in the relay, guest WS disconnected briefly). The guest retries the
+    // key-exchange, but the private key was already deleted after the first
+    // x3dhRespond. Without this check, ALL retries fail with "no private key".
+    if (this._drStates.has(sessionId)) {
+      console.log('[Ephemeral] key-exchange: DR state already exists, resending ack', sessionId);
+      const sent = this.deps.wsSend?.({
+        type: 'ephemeral-key-exchange-ack',
+        sessionId,
+        conversationId: session.conversation_id,
+        targetDigest: session.guest_digest,
+        targetAccountDigest: session.guest_digest
+      });
+      console.log('[Ephemeral] re-sent ack for', sessionId, 'sent:', sent);
+      // Ensure composer is enabled even on duplicate key-exchange
+      this.deps.updateComposerAvailability?.();
+      return;
+    }
+
+    const token = this._sessionTokenMap.get(sessionId);
+    console.log('[Ephemeral] key-exchange: token lookup', sessionId, '→', token ? token.slice(0, 8) + '...' : 'NULL',
+      'hasKey:', token ? this._pendingInviteKeys.has(token) : false);
+
+    const ownerPriv = this._findPrivKeyForSession(sessionId);
+    if (!ownerPriv) {
+      console.error('[Ephemeral] key-exchange FAIL: no private key for session', sessionId,
+        'token:', token ? token.slice(0, 8) + '...' : 'NULL',
+        'allTokens:', [...this._pendingInviteKeys.keys()].map(k => k.slice(0, 8) + '...'));
+      return;
+    }
+
+    await loadNacl();
+
+    // X3DH: Owner as responder
+    const drSt = await x3dhRespond(ownerPriv, msg.guestBundle);
+    this._drStates.set(sessionId, drSt);
+
+    // Derive call token from DR root key and store for call E2EE
+    if (drSt?.rk && session?.guest_digest) {
+      try {
+        const tokenBytes = await deriveCallTokenFromDR(drSt.rk);
+        const callToken = bytesToB64Url(tokenBytes);
+        setContactSecret(session.guest_digest, {
+          conversation: { token: callToken },
+          peerDeviceId: session.guest_device_id || 'ephemeral-guest',
+          __debugSource: 'ephemeral-call-token-owner'
+        });
+        console.log('[Ephemeral] call token stored for guest', sessionId);
+      } catch (err) {
+        console.warn('[Ephemeral] call token derive failed:', err?.message);
+      }
+    }
+
+    // Clean up pending invite key (no longer needed — DR state is established)
+    if (token) {
+      this._pendingInviteKeys.delete(token);
+      _persistMap(STORAGE_KEY_INVITE_KEYS, this._pendingInviteKeys);
+    }
+
+    // Send ack to guest so they know encryption is ready
+    const sent = this.deps.wsSend?.({
+      type: 'ephemeral-key-exchange-ack',
+      sessionId,
+      conversationId: session.conversation_id,
+      targetDigest: session.guest_digest,
+      targetAccountDigest: session.guest_digest
+    });
+
+    console.log('[Ephemeral] E2EE session established for', sessionId, 'ack sent:', sent);
+
+    // Clear the pending key exchange from D1 (best-effort)
+    ephemeralClearPendingKeyExchange({ sessionId }).catch(() => {});
+
+    // Notify the UI that encryption is now ready (enables composer input)
+    this.deps.updateComposerAvailability?.();
+  }
+
+  // ── Helpers ──
+  _requestListRender() {
+    this.deps.renderConversationList?.();
+  }
+
+  /**
+   * If the create-link modal is currently visible, re-render its session list
+   * so it reflects real-time changes (e.g. guest joined, session extended/deleted).
+   */
+  _refreshModalIfOpen() {
+    const modal = document.getElementById('ephemeralLinkModal');
+    if (!modal || modal.style.display === 'none' || modal.getAttribute('aria-hidden') === 'true') return;
+    const sessionListEl = document.getElementById('ephLinkSessionList');
+    if (sessionListEl) this._renderSessionListInModal(sessionListEl);
+  }
+
+  // ── End Conversation Confirm Modal ──
+  _showEndConfirmModal(sessionId) {
+    let modal = document.getElementById('ephEndConfirmModal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'ephEndConfirmModal';
+      modal.className = 'eph-end-confirm-modal';
+      modal.innerHTML = `
+        <div class="eph-end-confirm-backdrop" data-eph-end-close></div>
+        <div class="eph-end-confirm-panel">
+          <div class="eph-end-confirm-icon">🔥</div>
+          <div class="eph-end-confirm-title">${escapeHtml(t('ephemeral.endConversation'))}</div>
+          <div class="eph-end-confirm-desc">${escapeHtml(t('ephemeral.endConversationConfirm'))}</div>
+          <div class="eph-end-confirm-actions">
+            <button class="eph-end-confirm-cancel" data-eph-end-close>${escapeHtml(t('common.cancel') || 'Cancel')}</button>
+            <button class="eph-end-confirm-ok" id="ephEndConfirmOk">${escapeHtml(t('ephemeral.endConversation'))}</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+
+      // Close on backdrop click
+      modal.querySelector('[data-eph-end-close]')?.addEventListener('click', () => {
+        modal.classList.remove('active');
+      });
+      modal.querySelectorAll('[data-eph-end-close]').forEach(el => {
+        el.addEventListener('click', () => modal.classList.remove('active'));
+      });
+    }
+
+    // Bind confirm action (replace handler each time for correct sessionId)
+    const okBtn = document.getElementById('ephEndConfirmOk');
+    const newOk = okBtn.cloneNode(true);
+    okBtn.parentNode.replaceChild(newOk, okBtn);
+    newOk.id = 'ephEndConfirmOk';
+    newOk.addEventListener('click', async () => {
+      modal.classList.remove('active');
+      await this._deleteSession(sessionId);
+      const state = this.deps.getMessageState?.() || {};
+      state.activePeerDigest = null;
+      state.conversationId = null;
+      state.viewMode = 'list';
+      this.deps.applyMessagesLayout?.();
+    });
+
+    modal.classList.add('active');
+  }
+
+  _showGuestEndedModal() {
+    let modal = document.getElementById('ephGuestEndedModal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'ephGuestEndedModal';
+      modal.className = 'eph-end-confirm-modal';
+      modal.innerHTML = `
+        <div class="eph-end-confirm-backdrop" data-guest-ended-close></div>
+        <div class="eph-end-confirm-panel">
+          <div class="eph-end-confirm-icon">
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          </div>
+          <div class="eph-end-confirm-title">${escapeHtml(t('ephemeral.guestEndedTitle'))}</div>
+          <div class="eph-end-confirm-desc">${escapeHtml(t('ephemeral.guestEndedDesc'))}</div>
+          <div class="eph-end-confirm-actions">
+            <button class="eph-end-confirm-ok" data-guest-ended-close>${escapeHtml(t('ephemeral.guestEndedOk'))}</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+      modal.querySelectorAll('[data-guest-ended-close]').forEach(el => {
+        el.addEventListener('click', () => modal.classList.remove('active'));
+      });
+    }
+    modal.classList.add('active');
+  }
+
+  // ── Ephemeral Call System ──
+
+  async initiateCall(sessionId, mode = 'voice') {
+    if (isCallActive()) return; // already in a call (checked via standard call state)
+    const session = this.ephemeralSessions.get(sessionId);
+    if (!session) return;
+
+    // Activate ephemeral call adapter for this session
+    this._activateCallAdapter(session);
+
+    // Initiate call via adapter → sets up state, sends invite, starts WebRTC
+    const result = await initiateEphemeralCall({ mode });
+    if (!result) {
+      deactivateEphemeralCallMode();
+      console.warn('[EphCall] initiateEphemeralCall failed');
+    }
+  }
+
+  /** Helper: activate the ephemeral call adapter with session context */
+  _activateCallAdapter(session) {
+    const selfDeviceId = this.deps.ensureDeviceId?.() || '';
+    activateEphemeralCallMode({
+      conversationId: session.conversation_id,
+      sessionId: session.session_id,
+      peerDigest: session.guest_digest,
+      peerDeviceId: session.guest_device_id || 'ephemeral-guest',
+      selfDeviceId,
+      wsSend: (msg) => this.deps.wsSend?.(msg),
+      side: 'owner',
+      peerDisplayName: session.guest_nickname || t('ephemeral.guestLabel', { id: (session.guest_digest || '').slice(-4) }),
+      // Restore the regular WS signal sender when ephemeral call ends
+      restoreSignalSender: this.deps.wsSend
+    });
+  }
+
+  _handleCallSignal(msg) {
+    // For incoming invite, ensure adapter is activated with the right session context
+    if (msg.type === 'ephemeral-call-invite' && !isEphemeralCallMode()) {
+      const session = msg.sessionId ? this.ephemeralSessions.get(msg.sessionId) : null;
+      const sessionForConv = session || (msg.conversationId ? this.getSessionByConversationId(msg.conversationId) : null);
+      if (sessionForConv) {
+        this._activateCallAdapter(sessionForConv);
+      }
+    }
+
+    // Delegate to adapter — translates ephemeral-call-* → call-* for standard pipeline
+    handleEphemeralCallMessage(msg);
+  }
+
+  endCall(fromRemote = false) {
+    // End via standard call system — adapter translates to ephemeral-call-end
+    if (!fromRemote) {
+      const session = getCallSessionSnapshot();
+      if (session?.callId) {
+        sendCallSignal('call-end', { callId: session.callId });
+      }
+      endCallMediaSession('hangup');
+      completeCallSession({ reason: 'hangup' });
+    }
+    deactivateEphemeralCallMode();
+  }
+}

@@ -119,14 +119,24 @@ export async function downloadChunkedManifest({ baseKey, manifestEnvelope, abort
   // Download encrypted manifest
   const cipherU8 = await fetchAsUint8Array(manifestGet.url, abortSignal);
 
-  // Decrypt manifest
-  const plain = await aeadDecryptWithMK(
-    cipherU8,
-    cryptoKey,
-    b64u8(manifestEnvelope.hkdf_salt_b64),
-    b64u8(manifestEnvelope.iv_b64),
-    manifestEnvelope.info_tag || MANIFEST_INFO_TAG
-  );
+  // Decrypt manifest (respect envelope version for AAD backward compat)
+  const useAad = (manifestEnvelope.v ?? 1) >= 2;
+  let plain;
+  try {
+    plain = await aeadDecryptWithMK(
+      cipherU8, cryptoKey, b64u8(manifestEnvelope.hkdf_salt_b64),
+      b64u8(manifestEnvelope.iv_b64), manifestEnvelope.info_tag || MANIFEST_INFO_TAG, { useAad }
+    );
+  } catch (firstErr) {
+    try {
+      plain = await aeadDecryptWithMK(
+        cipherU8, cryptoKey, b64u8(manifestEnvelope.hkdf_salt_b64),
+        b64u8(manifestEnvelope.iv_b64), manifestEnvelope.info_tag || MANIFEST_INFO_TAG, { useAad: !useAad }
+      );
+    } catch {
+      throw firstErr;
+    }
+  }
 
   return JSON.parse(new TextDecoder().decode(plain));
 }
@@ -139,13 +149,22 @@ export async function downloadChunkedManifest({ baseKey, manifestEnvelope, abort
  */
 export async function downloadAndDecryptChunk({ chunkUrl, encryptionKey, chunkMeta, abortSignal }) {
   const cipherU8 = await fetchAsUint8Array(chunkUrl, abortSignal);
-  return aeadDecryptWithMK(
-    cipherU8,
-    encryptionKey,
-    b64u8(chunkMeta.salt_b64),
-    b64u8(chunkMeta.iv_b64),
-    CHUNK_INFO_TAG
-  );
+  const useAad = (chunkMeta.v ?? 1) >= 2;
+  try {
+    return await aeadDecryptWithMK(
+      cipherU8, encryptionKey, b64u8(chunkMeta.salt_b64),
+      b64u8(chunkMeta.iv_b64), CHUNK_INFO_TAG, { useAad }
+    );
+  } catch (firstErr) {
+    try {
+      return await aeadDecryptWithMK(
+        cipherU8, encryptionKey, b64u8(chunkMeta.salt_b64),
+        b64u8(chunkMeta.iv_b64), CHUNK_INFO_TAG, { useAad: !useAad }
+      );
+    } catch {
+      throw firstErr;
+    }
+  }
 }
 
 /**

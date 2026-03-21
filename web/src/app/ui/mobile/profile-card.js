@@ -3,6 +3,7 @@ import Cropper from '../../lib/vendor/cropper.esm.js';
 import { loadLatestProfile, saveProfile, normalizeNickname, uploadAvatar, loadAvatarBlob, PROFILE_WRITE_SOURCE } from '../../features/profile.js';
 import { sessionStore } from './session-store.js';
 import { escapeHtml, blobToDataURL } from './ui-utils.js';
+import { t } from '/locales/index.js';
 
 export function initProfileCard(options) {
   const {
@@ -54,7 +55,7 @@ export function initProfileCard(options) {
 
   function updateProfileNicknameUI() {
     const nick = sessionStore.profileState?.nickname ? normalizeNickname(sessionStore.profileState.nickname) : '';
-    profileNicknameEl.textContent = nick || '尚未設定';
+    profileNicknameEl.textContent = nick || t('profile.notSet');
   }
 
   async function updateProfileAvatarUI() {
@@ -99,16 +100,16 @@ export function initProfileCard(options) {
     if (!modalElement || !body) return;
     modalElement.classList.remove('progress-modal', 'folder-modal', 'upload-modal', 'loading-modal', 'confirm-modal', 'nickname-modal');
     modalElement.classList.add('nickname-modal');
-    if (title) title.textContent = '編輯暱稱';
+    if (title) title.textContent = t('profile.editNickname');
     const current = sessionStore.profileState?.nickname || '';
     body.innerHTML = `
       <form id="nicknameForm" class="nickname-form">
-        <label for="nicknameInput">新的暱稱</label>
+        <label for="nicknameInput">${escapeHtml(t('profile.newNickname'))}</label>
         <input id="nicknameInput" type="text" value="${escapeHtml(current)}" maxlength="48" autocomplete="off" spellcheck="false" />
-        <p class="nickname-hint">暱稱僅儲存在加密資料中，伺服器不會看到。僅限文字、數字、空格、-、_、.</p>
+        <p class="nickname-hint">${escapeHtml(t('profile.nicknameHint'))}</p>
         <div class="nickname-actions">
-          <button type="button" id="nicknameCancel" class="secondary">取消</button>
-          <button type="submit" class="primary">儲存</button>
+          <button type="button" id="nicknameCancel" class="secondary">${escapeHtml(t('common.cancel'))}</button>
+          <button type="submit" class="primary">${escapeHtml(t('common.save'))}</button>
         </div>
       </form>`;
     modal.openModal();
@@ -124,7 +125,7 @@ export function initProfileCard(options) {
         if (!submitBtn.dataset.originalHtml) submitBtn.dataset.originalHtml = submitBtn.innerHTML;
         submitBtn.disabled = true;
         submitBtn.classList.add('loading');
-        submitBtn.innerHTML = '<span class="btn-spinner" aria-hidden="true"></span><span class="btn-label">儲存中…</span>';
+        submitBtn.innerHTML = `<span class="btn-spinner" aria-hidden="true"></span><span class="btn-label">${escapeHtml(t('common.saving'))}</span>`;
       } else {
         submitBtn.disabled = false;
         submitBtn.classList.remove('loading');
@@ -144,7 +145,7 @@ export function initProfileCard(options) {
       const raw = input?.value || '';
       const normalized = normalizeNickname(raw);
       if (!normalized || normalized.length < 2) {
-        modal.showAlertModal({ title: '格式錯誤', message: '暱稱需至少 2 個字，且只能包含文字、數字、空格或 - _ .' });
+        modal.showAlertModal({ title: t('profile.nicknameFormatErrorTitle'), message: t('profile.nicknameFormatError') });
         input?.focus();
         return;
       }
@@ -176,7 +177,7 @@ export function initProfileCard(options) {
         restoreShareButton();
       } catch (err) {
         log({ profileNicknameError: err?.message || err });
-        modal.showAlertModal({ title: '更新失敗', message: '更新暱稱失敗，請稍後再試。' });
+        modal.showAlertModal({ title: t('profile.updateNicknameFailedTitle'), message: t('profile.updateNicknameFailed') });
       } finally {
         setSubmitLoading(false);
       }
@@ -190,14 +191,14 @@ export function initProfileCard(options) {
     if (!modalElement || !body) return;
     modalElement.classList.remove('progress-modal', 'folder-modal', 'upload-modal', 'loading-modal', 'confirm-modal', 'nickname-modal', 'avatar-modal', 'avatar-preview-modal');
     modalElement.classList.add('avatar-modal', 'avatar-preview-modal');
-    if (title) title.textContent = '頭像預覽';
+    if (title) title.textContent = t('profile.avatarPreview');
     const currentSrc = profileAvatarImg?.src || '/assets/images/avatar.png';
     body.innerHTML = `
       <div class="avatar-upload">
-        <div class="avatar-preview"><img id="avatarPreviewImg" src="${escapeHtml(currentSrc)}" alt="頭像預覽" /></div>
+        <div class="avatar-preview"><img id="avatarPreviewImg" src="${escapeHtml(currentSrc)}" alt="${escapeHtml(t('profile.avatarPreviewAlt'))}" /></div>
         <div class="avatar-actions">
-          <button type="button" id="avatarPreviewClose" class="secondary">關閉</button>
-          <button type="button" id="avatarPreviewEdit" class="primary">更換頭像</button>
+          <button type="button" id="avatarPreviewClose" class="secondary">${escapeHtml(t('common.close'))}</button>
+          <button type="button" id="avatarPreviewEdit" class="primary">${escapeHtml(t('profile.changeAvatar'))}</button>
         </div>
       </div>`;
     modal.openModal();
@@ -247,19 +248,19 @@ export function initProfileCard(options) {
     if (!modalElement || !body) return;
     modalElement.classList.remove('progress-modal', 'folder-modal', 'upload-modal', 'loading-modal', 'confirm-modal', 'nickname-modal', 'avatar-modal', 'avatar-preview-modal');
     modalElement.classList.add('avatar-modal');
-    if (title) title.textContent = '更新頭像';
+    if (title) title.textContent = t('profile.updateAvatar');
     const currentSrc = profileAvatarImg?.src || '/assets/images/avatar.png';
     body.innerHTML = `
       <div class="avatar-upload">
         <div class="avatar-cropper">
-          <img id="avatarCropImg" src="${escapeHtml(currentSrc)}" alt="頭像裁切" />
+          <img id="avatarCropImg" src="${escapeHtml(currentSrc)}" alt="${escapeHtml(t('profile.avatarCropAlt'))}" />
         </div>
         <div class="avatar-toolbar">
           <div class="avatar-actions-row">
-            <button type="button" id="avatarChooseBtn" class="secondary">選擇圖片</button>
-            <button type="button" id="avatarSubmit" class="primary upload-primary" disabled>上傳</button>
+            <button type="button" id="avatarChooseBtn" class="secondary">${escapeHtml(t('profile.chooseImage'))}</button>
+            <button type="button" id="avatarSubmit" class="primary upload-primary" disabled>${escapeHtml(t('common.upload'))}</button>
           </div>
-          <p class="avatar-hint">拖曳或縮放裁切，支援雙指或滑鼠滾輪。</p>
+          <p class="avatar-hint">${escapeHtml(t('profile.avatarCropHint'))}</p>
         </div>
         <input id="avatarFileInput" type="file" accept="image/*" style="display:none" />
         <div id="avatarStatus" class="avatar-hint" style="text-align:center"></div>
@@ -334,7 +335,7 @@ export function initProfileCard(options) {
             : 1;
           if (ratio < 0.9) {
             cropperBox.classList.add('zoom-hint');
-            setStatus('提示：可雙指或滾輪放大，再拖曳置中。');
+            setStatus(t('profile.cropHint'));
             setTimeout(() => cropperBox.classList.remove('zoom-hint'), 3200);
           }
         }
@@ -355,11 +356,11 @@ export function initProfileCard(options) {
         return;
       }
       if (!file.type.startsWith('image/')) {
-        setStatus('僅支援圖片格式。');
+        setStatus(t('profile.imageFormatOnly'));
         submitBtn?.setAttribute('disabled', 'disabled');
         return;
       }
-      setStatus('正在準備圖片…');
+      setStatus(t('profile.preparingImage'));
       try {
         const { dataUrl } = await loadAndResizeImage(file, { maxSize: 2048 });
         await setupCropper(dataUrl);
@@ -367,25 +368,25 @@ export function initProfileCard(options) {
         submitBtn?.removeAttribute('disabled');
       } catch (err) {
         submitBtn?.setAttribute('disabled', 'disabled');
-        setStatus(`圖片讀取失敗：${err?.message || err}`);
+        setStatus(`${t('profile.imageReadFailed')}${err?.message || err}`);
       }
     });
 
     submitBtn?.addEventListener('click', async () => {
       if (!cropper) {
-        setStatus('請先選擇並裁切圖片。');
+        setStatus(t('profile.selectAndCropFirst'));
         return;
       }
       submitBtn?.setAttribute('disabled', 'disabled');
       chooseBtn?.setAttribute('disabled', 'disabled');
-      setStatus('上傳中… 0%');
+      setStatus(t('upload.uploading', { percent: 0 }));
       try {
         const canvas = cropper.getCroppedCanvas({ width: 512, height: 512, imageSmoothingEnabled: true, imageSmoothingQuality: 'high' });
-        if (!canvas) throw new Error('裁切失敗，請重試');
+        if (!canvas) throw new Error(t('profile.cropFailed'));
         const uploadBlob = await new Promise((resolve, reject) => {
           canvas.toBlob((b) => {
             if (b) resolve(b);
-            else reject(new Error('裁切失敗，請重試'));
+            else reject(new Error(t('profile.cropFailed')));
           }, 'image/jpeg', 0.9);
         });
         const thumbDataUrl = canvas.toDataURL('image/jpeg', 0.85);
@@ -395,7 +396,7 @@ export function initProfileCard(options) {
           thumbDataUrl,
           onProgress: (p) => {
             const percent = p?.percent ?? Math.round((p.loaded / (p.total || file.size || 1)) * 100);
-            setStatus(`上傳中… ${percent}%`);
+            setStatus(t('upload.uploading', { percent }));
           }
         });
         const prevVersion = Number(sessionStore.profileState?.profileVersion) || 0;
@@ -428,7 +429,7 @@ export function initProfileCard(options) {
         restoreShareButton();
       } catch (err) {
         log({ profileAvatarUploadError: err?.message || err });
-        setStatus(`上傳失敗：${err?.message || err}`);
+        setStatus(`${t('profile.uploadFailed')}${err?.message || err}`);
         submitBtn?.removeAttribute('disabled');
         chooseBtn?.removeAttribute('disabled');
       }
@@ -526,7 +527,7 @@ export function initProfileCard(options) {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(reader.error || new Error('讀取檔案失敗'));
+      reader.onerror = () => reject(reader.error || new Error(t('profile.readFileFailed')));
       reader.readAsDataURL(file);
     });
   }
@@ -535,7 +536,7 @@ export function initProfileCard(options) {
     const img = new Image();
     const loadPromise = new Promise((resolve, reject) => {
       img.onload = () => resolve(null);
-      img.onerror = (err) => reject(err || new Error('圖片載入失敗'));
+      img.onerror = (err) => reject(err || new Error(t('profile.imageLoadFailed')));
     });
     img.src = src;
     if (typeof img.decode === 'function') {

@@ -15,7 +15,8 @@ import {
   getAccountDigest, setAccountDigest,
   getDevicePriv, ensureDeviceId,
   resetAll, clearSecrets,
-  setOpaqueServerId
+  setOpaqueServerId,
+  setBrandKey, setBrandName, setBrandLogo
 } from '../core/store.js';
 import { exchangeSDM, unlockAndInit } from '../features/login-flow.js';
 import { exchangeFromURLIfPresent, exchangeWithParams, parseSdmParams } from '../features/sdm.js';
@@ -37,6 +38,14 @@ import { loadArgon2 } from '../crypto/kdf.js';
 import { generateInitialBundle } from '../crypto/prekeys.js';
 import { generateSimExchange, upsertSimTag, setSimConfig } from '../../libs/ntag424-sim.js';
 import { isIosVersionTooOld } from './mobile/browser-detection.js';
+import { applyBrand } from '../core/brand-apply.js';
+import { brandLookup } from '../api/auth.js';
+import { initI18n, t, applyDOMTranslations } from '/locales/index.js';
+
+// --- i18n: load language pack early (non-blocking) ---
+const i18nReady = initI18n().catch(err => {
+  console.warn('[i18n] Init failed, using fallback keys:', err);
+});
 
 function summarizeMkForLog(mkRaw) {
   const summary = { mkLen: mkRaw instanceof Uint8Array ? mkRaw.length : 0, mkHash12: null };
@@ -116,10 +125,10 @@ if (isIosVersionTooOld()) {
   const blocker = document.createElement('div');
   blocker.style.cssText = 'position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0a0a0a;color:#e0e0e0;padding:2rem;text-align:center;z-index:99999;font-family:-apple-system,system-ui,sans-serif;';
   blocker.innerHTML = '<div style="font-size:2.5rem;margin-bottom:1rem;">&#9888;&#65039;</div>'
-    + '<h2 style="margin:0 0 0.75rem;font-size:1.25rem;color:#fff;">iOS 版本過舊</h2>'
+    + `<h2 style="margin:0 0 0.75rem;font-size:1.25rem;color:#fff;">${t('auth.iosVersionTooOld')}</h2>`
     + '<p style="margin:0;font-size:0.95rem;line-height:1.6;max-width:320px;color:#aaa;">'
-    + '此應用程式需要 <strong style="color:#fff;">iOS 17.1</strong> 或以上版本才能正常運作。'
-    + '<br><br>請前往「設定 > 一般 > 軟體更新」升級您的裝置。</p>';
+    + `${t('auth.iosVersionRequired', { version: '17.1' })}`
+    + `<br><br>${t('auth.iosUpdateInstructions')}</p>`;
   document.body.appendChild(blocker);
 }
 
@@ -464,20 +473,20 @@ const transitionLabel = document.getElementById('loginTransitionLabel');
 // Both paths span 0%→70% since flow-specific steps occupy non-overlapping ranges.
 const STEP_PROGRESS = {
   // Shared steps (0% → 20%)
-  'opaque':          { start: 2,  done: 10, label: 'AUTHENTICATING...' },
-  'wrap-mk':         { start: 10, done: 16, label: 'ENCRYPTING MASTER KEY...' },
-  'mk-store':        { start: 16, done: 20, label: 'SECURING KEY VAULT...' },
+  'opaque':          { start: 2,  done: 10, i18nKey: 'loginStages.authenticating' },
+  'wrap-mk':         { start: 10, done: 16, i18nKey: 'loginStages.encryptingMasterKey' },
+  'mk-store':        { start: 16, done: 20, i18nKey: 'loginStages.securingKeyVault' },
   // New-account only (20% → 70%)
-  'generate-bundle': { start: 20, done: 30, label: 'GENERATING CIPHER KEYS...' },
-  'prekeys-publish': { start: 30, done: 40, label: 'PUBLISHING PREKEYS...' },
-  'wrap-device':     { start: 40, done: 48, label: 'WRAPPING DEVICE KEYS...' },
-  'devkeys-store':   { start: 48, done: 54, label: 'STORING DEVICE BACKUP...' },
-  'nickname-init':   { start: 54, done: 62, label: 'SETTING IDENTITY...' },
-  'avatar-init':     { start: 62, done: 70, label: 'CONFIGURING PROFILE...' },
+  'generate-bundle': { start: 20, done: 30, i18nKey: 'loginStages.generatingCipherKeys' },
+  'prekeys-publish': { start: 30, done: 40, i18nKey: 'loginStages.publishingPrekeys' },
+  'wrap-device':     { start: 40, done: 48, i18nKey: 'loginStages.wrappingDeviceKeys' },
+  'devkeys-store':   { start: 48, done: 54, i18nKey: 'loginStages.storingDeviceBackup' },
+  'nickname-init':   { start: 54, done: 62, i18nKey: 'loginStages.settingIdentity' },
+  'avatar-init':     { start: 62, done: 70, i18nKey: 'loginStages.configuringProfile' },
   // Existing-account only (20% → 70%)
-  'devkeys-fetch':   { start: 20, done: 32, label: 'FETCHING DEVICE KEYS...' },
-  'prekeys-sync':    { start: 32, done: 50, label: 'SYNCING CIPHER KEYS...' },
-  'contact-restore': { start: 50, done: 70, label: 'RESTORING CONTACTS...' },
+  'devkeys-fetch':   { start: 20, done: 32, i18nKey: 'loginStages.fetchingDeviceKeys' },
+  'prekeys-sync':    { start: 32, done: 50, i18nKey: 'loginStages.syncingCipherKeys' },
+  'contact-restore': { start: 50, done: 70, i18nKey: 'loginStages.restoringContacts' },
 };
 let currentProgress = 0;
 let fillRAF = null;
@@ -542,7 +551,7 @@ function updateBootstrapStep(step, status) {
     stopSlowFill();
     if (def.start > currentProgress) currentProgress = def.start;
     setBarWidth(currentProgress);
-    if (transitionLabel) transitionLabel.textContent = def.label;
+    if (transitionLabel) transitionLabel.textContent = def.i18nKey ? t(def.i18nKey) : '';
     startSlowFill(def.done);
   } else if (status === 'success' || status === 'skip' || status === 'info') {
     // Snap to done value, then bridge-fill toward next step's target
@@ -632,21 +641,21 @@ function applyAccountMode() {
   if (newAccount) {
     if (passwordWrapper) {
       const label = passwordWrapper.querySelector('label');
-      if (label) label.textContent = '設定登入密碼';
+      if (label) label.textContent = t('auth.setLoginPassword');
     }
     if (confirmWrapper) {
       if (welcomeAcknowledged) confirmWrapper.classList.remove('hidden');
       else confirmWrapper.classList.add('hidden');
     }
     if (unlockBtn) {
-      unlockBtn.textContent = '登入';
+      unlockBtn.textContent = t('auth.login');
       unlockBtn.disabled = !welcomeAcknowledged;
     }
     if (!welcomeAcknowledged) showWelcomeModal();
   } else {
     if (passwordWrapper) {
       const label = passwordWrapper.querySelector('label');
-      if (label) label.textContent = '登入密碼';
+      if (label) label.textContent = t('auth.loginPassword');
     }
     if (confirmWrapper) {
       confirmWrapper.classList.add('hidden');
@@ -656,7 +665,7 @@ function applyAccountMode() {
     hideWelcomeModal();
     welcomeAcknowledged = false;
     if (unlockBtn) {
-      unlockBtn.textContent = '登入';
+      unlockBtn.textContent = t('auth.login');
       unlockBtn.disabled = false;
     }
   }
@@ -759,7 +768,7 @@ passwordToggles.forEach((btn) => {
       icon.innerHTML = isMasked ? PW_ICON_HIDE : PW_ICON_SHOW;
       icon.dataset.state = isMasked ? 'hide' : 'show';
     }
-    btn.setAttribute('aria-label', isMasked ? '隱藏密碼' : '顯示密碼');
+    btn.setAttribute('aria-label', isMasked ? t('auth.hidePassword') : t('auth.showPassword'));
   });
 });
 if (welcomeNextBtn) {
@@ -796,6 +805,7 @@ async function onSdmExchange() {
     if (newAccount) welcomeAcknowledged = false;
     applyAccountMode();
     markVerifiedUI();
+    applyBrand();
   } catch (e) {
     log({ exchangeError: String(e?.message || e) });
   }
@@ -805,8 +815,26 @@ async function onSdmExchange() {
 // auto-exchange from URL if params present (via features/sdm)
 (async function autoExchangeFromURL() {
   try {
-    const hasParams = !!parseSdmParams();
+    const sdmParams = parseSdmParams();
+    const hasParams = !!sdmParams;
     if (hasParams) setUidVerifyingState(true);
+
+    // Fire brand lookup in parallel with SDM exchange so we can show brand
+    // on the splash screen while the full exchange is still in progress.
+    // Brand lookup is a fast GET by UID; SDM exchange is a heavier POST.
+    let brandApplied = false;
+    if (hasParams && sdmParams.uidHex) {
+      brandLookup(sdmParams.uidHex).then(info => {
+        if (brandApplied) return; // SDM exchange already applied brand
+        if (info && (info.brand || info.brand_name || info.brand_logo)) {
+          if (info.brand) setBrandKey(info.brand);
+          if (info.brand_name) setBrandName(info.brand_name);
+          if (info.brand_logo) setBrandLogo(info.brand_logo);
+          applyBrand();
+        }
+      }).catch(() => { /* brand lookup is best-effort */ });
+    }
+
     const res = await exchangeFromURLIfPresent();
     if (res && res.performed) {
       // prefill inputs for visibility
@@ -817,6 +845,9 @@ async function onSdmExchange() {
       if (newAccount) welcomeAcknowledged = false;
       applyAccountMode();
       markVerifiedUI();
+      // Apply brand styling based on backend response (authoritative)
+      brandApplied = true;
+      applyBrand();
     }
   } catch (e) {
     log({ exchangeError: String(e?.message || e) });
@@ -861,15 +892,15 @@ async function onUnlock() {
   if (loginInProgress) return;
   const pwd = pwdEl.value || '';
   if (!getSession()) { log('Run SDM Exchange first.'); return; }
-  if (!pwd) { log('請輸入密碼。'); return; }
+  if (!pwd) { log(t('auth.enterPassword')); return; }
   if (newAccount) {
     if ((pwd || '').length < 6) {
-      log('密碼至少需 6 個字元。');
+      log(t('auth.passwordTooShort'));
       return;
     }
     const confirmPwd = pwdConfirmEl?.value || '';
     if (confirmPwd !== pwd) {
-      log('兩次輸入的密碼不一致。');
+      log(t('auth.passwordMismatch'));
       return;
     }
   }
@@ -901,17 +932,17 @@ async function onUnlock() {
           contactRestorePromise = hydrateContactSecretsFromBackup({ reason: 'login-bootstrap' })
             .then((res) => {
               if (res.ok) {
-                updateBootstrapStep('contact-restore', 'success', `還原 ${res.entries} 筆資料`);
+                updateBootstrapStep('contact-restore', 'success', t('bootstrap.contactRestoreSuccess', { count: res.entries }));
               } else if (res.status === 404) {
-                updateBootstrapStep('contact-restore', 'info', '無備份資料');
+                updateBootstrapStep('contact-restore', 'info', t('bootstrap.noBackupData'));
               } else {
-                updateBootstrapStep('contact-restore', 'skip', '還原略過或失敗');
+                updateBootstrapStep('contact-restore', 'skip', t('bootstrap.restoreSkippedOrFailed'));
               }
               return res;
             })
             .catch((err) => {
               log({ contactRestoreError: err?.message || err });
-              updateBootstrapStep('contact-restore', 'error', '還原失敗');
+              updateBootstrapStep('contact-restore', 'error', t('bootstrap.restoreFailed'));
               return { ok: false };
             });
         }
@@ -924,7 +955,7 @@ async function onUnlock() {
           profileInitPromise = initProfileDefaultsOnce({ uidHex: getAccountDigest(), evidence: info?.evidence || null })
             .then((result) => {
               if (result?.skipped) {
-                const reason = result.reason || '已存在暱稱/頭像';
+                const reason = result.reason || t('bootstrap.existingNicknameAvatar');
                 updateBootstrapStep('nickname-init', 'skip', reason);
                 updateBootstrapStep('avatar-init', 'skip', reason);
               } else {
@@ -932,7 +963,7 @@ async function onUnlock() {
                 if (result?.avatarWritten) {
                   updateBootstrapStep('avatar-init', 'success');
                 } else {
-                  updateBootstrapStep('avatar-init', 'skip', result?.avatarReason || '已存在頭像');
+                  updateBootstrapStep('avatar-init', 'skip', result?.avatarReason || t('bootstrap.existingAvatar'));
                 }
               }
               return result;
@@ -955,7 +986,7 @@ async function onUnlock() {
     if (!hasPrekeys) {
       hideLoading();
       loginInProgress = false;
-      log('預共享金鑰尚未就緒，請稍後再試。');
+      log(t('auth.preSharedKeyNotReady'));
       return;
     }
     let deviceIdAfterUnlock = null;
@@ -984,7 +1015,7 @@ async function onUnlock() {
         try {
           const result = await initProfileDefaultsOnce({ uidHex: getAccountDigest(), evidence: r?.evidence || null });
           if (result?.skipped) {
-            const reason = result.reason || '已存在暱稱/頭像';
+            const reason = result.reason || t('bootstrap.existingNicknameAvatar');
             updateBootstrapStep('nickname-init', 'skip', reason);
             updateBootstrapStep('avatar-init', 'skip', reason);
           } else {
@@ -992,7 +1023,7 @@ async function onUnlock() {
             if (result?.avatarWritten) {
               updateBootstrapStep('avatar-init', 'success');
             } else {
-              updateBootstrapStep('avatar-init', 'skip', result?.avatarReason || '已存在頭像');
+              updateBootstrapStep('avatar-init', 'skip', result?.avatarReason || t('bootstrap.existingAvatar'));
             }
           }
         } catch (err) {
@@ -1021,15 +1052,15 @@ async function onUnlock() {
         try {
           const restoreRes = await hydrateContactSecretsFromBackup({ reason: 'login-bootstrap' });
           if (restoreRes.ok) {
-            updateBootstrapStep('contact-restore', 'success', `還原 ${restoreRes.entries} 筆資料`);
+            updateBootstrapStep('contact-restore', 'success', t('bootstrap.contactRestoreSuccess', { count: restoreRes.entries }));
           } else if (restoreRes.status === 404) {
-            updateBootstrapStep('contact-restore', 'info', '無備份資料');
+            updateBootstrapStep('contact-restore', 'info', t('bootstrap.noBackupData'));
           } else {
-            updateBootstrapStep('contact-restore', 'skip', '還原略過或失敗');
+            updateBootstrapStep('contact-restore', 'skip', t('bootstrap.restoreSkippedOrFailed'));
           }
         } catch (err) {
           log({ contactRestoreError: err?.message || err });
-          updateBootstrapStep('contact-restore', 'error', '還原失敗');
+          updateBootstrapStep('contact-restore', 'error', t('bootstrap.restoreFailed'));
         }
       }
     }
@@ -1137,48 +1168,48 @@ function invalidateExchange() {
 }
 
 
-const FALLBACK_ERROR_MESSAGE = '發生未知錯誤，請稍後再試。';
-const PASSWORD_ERROR_MESSAGE = '密碼不正確，請重新輸入。';
+const FALLBACK_ERROR_MESSAGE = t('errors.fallbackError');
+const PASSWORD_ERROR_MESSAGE = t('errors.passwordIncorrect');
 
 const ERROR_CODE_MESSAGES = {
-  ConfigError: '伺服器設定異常，請通知客服。',
-  Unauthorized: '晶片驗證失敗，請重新感應卡片。',
-  ExchangeFailed: '伺服器驗證失敗，請稍後再試。',
-  Replay: '偵測到晶片計數器重複，請關閉頁面後重新感應。',
-  SessionExpired: '驗證已逾時，請重新感應卡片。',
-  SessionMismatch: '驗證資料不一致，請重新感應卡片。',
-  StoreFailed: '伺服器儲存資料失敗，請稍後再試。',
-  BadRequest: '送出的資訊格式不正確，請確認後重試。',
+  ConfigError: t('errors.configError'),
+  Unauthorized: t('errors.unauthorized'),
+  ExchangeFailed: t('errors.exchangeFailed'),
+  Replay: t('errors.replay'),
+  SessionExpired: t('errors.sessionExpired'),
+  SessionMismatch: t('errors.sessionMismatch'),
+  StoreFailed: t('errors.storeFailed'),
+  BadRequest: t('errors.badRequest'),
   OpaqueLoginFinishFailed: PASSWORD_ERROR_MESSAGE,
-  OpaqueSessionExpired: '驗證已逾時，請重新感應卡片。',
-  OpaqueSessionNotFound: '驗證資訊不存在，請重新感應卡片。'
+  OpaqueSessionExpired: t('errors.opaqueSessionExpired'),
+  OpaqueSessionNotFound: t('errors.opaqueSessionNotFound')
 };
 
 const ERROR_PATTERNS = [
-  { pattern: /uid hex \(14\) required/i, message: '尚未偵測到晶片 UID，請重新感應。' },
-  { pattern: /sdm mac \(16\) required/i, message: 'MAC 資料缺失，請重新感應晶片。' },
-  { pattern: /password required/i, message: '請輸入解鎖密碼。' },
-  { pattern: /請輸入密碼。?/i, message: '請輸入密碼。' },
-  { pattern: /密碼至少需 6 個字元/i, message: '密碼至少需 6 個字元。' },
-  { pattern: /兩次輸入的密碼不一致/i, message: '兩次輸入的密碼不一致。' },
-  { pattern: /sdm exchange required/i, message: '請先完成晶片驗證。' },
-  { pattern: /uid not set/i, message: '尚未偵測到晶片 UID，請重新感應。' },
-  { pattern: /wrong password or envelope mismatch/i, message: '密碼不正確，請重新輸入。' },
+  { pattern: /uid hex \(14\) required/i, message: t('errors.uidNotDetected') },
+  { pattern: /sdm mac \(16\) required/i, message: t('errors.macMissing') },
+  { pattern: /password required/i, message: t('errors.enterUnlockPassword') },
+  { pattern: /請輸入密碼。?/i, message: t('auth.enterPassword') },
+  { pattern: /密碼至少需 6 個字元/i, message: t('auth.passwordTooShort') },
+  { pattern: /兩次輸入的密碼不一致/i, message: t('auth.passwordMismatch') },
+  { pattern: /sdm exchange required/i, message: t('errors.completeChipVerification') },
+  { pattern: /uid not set/i, message: t('errors.uidNotDetected') },
+  { pattern: /wrong password or envelope mismatch/i, message: t('errors.passwordIncorrect') },
   { pattern: /unlock failed/i, message: PASSWORD_ERROR_MESSAGE },
-  { pattern: /enter a password first/i, message: '請輸入解鎖密碼。' },
-  { pattern: /run sdm exchange first/i, message: '請先感應晶片並完成驗證。' },
-  { pattern: /mk\.store failed/i, message: '儲存主金鑰失敗，請稍後再試。' },
-  { pattern: /initialize mk failed/i, message: '初始化主金鑰失敗，請稍後再試。' },
-  { pattern: /devkeys\.fetch failed/i, message: '讀取裝置備份失敗，請稍後再試。' },
-  { pattern: /keys\.publish.*failed/i, message: '同步裝置金鑰失敗，請稍後再試。' },
-  { pattern: /devkeys\.store.*failed/i, message: '儲存裝置備份失敗，請稍後再試。' },
-  { pattern: /prekeys initialization failed/i, message: '初始化預共享金鑰失敗，請稍後再試。' },
-  { pattern: /prekeys re-initialization failed/i, message: '重新建置預共享金鑰失敗，請稍後再試。' },
-  { pattern: /prekeys replenish failed/i, message: '補貨預共享金鑰失敗，請稍後再試。' },
-  { pattern: /please re-tap the tag/i, message: '驗證已逾時，請重新感應卡片。' },
-  { pattern: /counter must be strictly increasing/i, message: '偵測到晶片計數器重複，請關閉頁面後重新感應。' },
-  { pattern: /uid mismatch/i, message: '驗證資料不一致，請重新感應卡片。' },
-  { pattern: /sdm verify failed/i, message: '晶片驗證失敗，請重新感應卡片。' },
+  { pattern: /enter a password first/i, message: t('errors.enterUnlockPassword') },
+  { pattern: /run sdm exchange first/i, message: t('errors.completeChipScanFirst') },
+  { pattern: /mk\.store failed/i, message: t('errors.masterKeyStoreFailed') },
+  { pattern: /initialize mk failed/i, message: t('errors.masterKeyInitFailed') },
+  { pattern: /devkeys\.fetch failed/i, message: t('errors.deviceBackupReadFailed') },
+  { pattern: /keys\.publish.*failed/i, message: t('errors.deviceKeySyncFailed') },
+  { pattern: /devkeys\.store.*failed/i, message: t('errors.deviceBackupStoreFailed') },
+  { pattern: /prekeys initialization failed/i, message: t('errors.prekeysInitFailed') },
+  { pattern: /prekeys re-initialization failed/i, message: t('errors.prekeysReinitFailed') },
+  { pattern: /prekeys replenish failed/i, message: t('errors.prekeysReplenishFailed') },
+  { pattern: /please re-tap the tag/i, message: t('errors.sessionExpired') },
+  { pattern: /counter must be strictly increasing/i, message: t('errors.replay') },
+  { pattern: /uid mismatch/i, message: t('errors.sessionMismatch') },
+  { pattern: /sdm verify failed/i, message: t('errors.chipVerifyFailed') },
   { pattern: /opaque login.*failed/i, message: PASSWORD_ERROR_MESSAGE },
   { pattern: /opaque.*password/i, message: PASSWORD_ERROR_MESSAGE },
   { pattern: /OpaqueLoginFinishFailed/i, message: PASSWORD_ERROR_MESSAGE },
@@ -1268,7 +1299,7 @@ function translateString(str) {
     }
   }
   if (trimmed.includes('please re-tap the tag')) return ERROR_CODE_MESSAGES.SessionExpired;
-  if (trimmed.includes('counter must be strictly increasing')) return '偵測到晶片計數器重複，請關閉頁面後重新感應。';
+  if (trimmed.includes('counter must be strictly increasing')) return t('errors.replay');
 
   const patternMsg = findPatternMessage(trimmed);
   if (patternMsg) return patternMsg;
@@ -1302,7 +1333,7 @@ function shouldShowModal(line) {
   try {
     if (typeof line === 'string') {
       const lower = line.toLowerCase();
-      if (lower.includes('error') || lower.includes('fail') || lower.includes('失敗')) return true;
+      if (lower.includes('error') || lower.includes('fail') || lower.includes('failed') || lower.includes('失敗')) return true;
       const obj = JSON.parse(line);
       if (obj && (obj.error || obj.errors || obj.status >= 400)) return true;
       return false;
