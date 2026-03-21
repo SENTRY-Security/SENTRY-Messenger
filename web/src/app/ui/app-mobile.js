@@ -1240,6 +1240,10 @@ function initSafeBrowser() {
     document.getElementById('modalTitle').textContent = '';
     body.innerHTML = `
       <div class="safe-viewer">
+        <div class="safe-loading-overlay" id="safeLoadingOverlay">
+          <div class="loading-spinner"></div>
+          <div class="safe-loading-text">${t('safe.starting') || 'Connecting...'}</div>
+        </div>
         <iframe sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
                 allow="fullscreen *; clipboard-read; clipboard-write"
                 src="${url}"
@@ -1254,8 +1258,22 @@ function initSafeBrowser() {
     modalEl.setAttribute('aria-hidden', 'false');
     document.body.classList.add('modal-open');
 
+    // Hide loading overlay once iframe content loads
+    const iframe = body.querySelector('iframe');
+    const overlay = body.querySelector('#safeLoadingOverlay');
+    let loadTimer = null;
+    if (iframe && overlay) {
+      iframe.addEventListener('load', () => {
+        overlay.classList.add('safe-loading-hidden');
+      }, { once: true });
+      // Fallback: hide overlay after 15s regardless
+      loadTimer = setTimeout(() => {
+        overlay.classList.add('safe-loading-hidden');
+      }, 15000);
+    }
+
     const cleanup = () => {
-      const iframe = body.querySelector('iframe');
+      if (loadTimer) clearTimeout(loadTimer);
       if (iframe) iframe.src = 'about:blank';
       modalEl.classList.remove('safe-modal');
       modalEl.style.display = 'none';
