@@ -27,7 +27,7 @@ export function createSettingsModule({ deps }) {
   const { log, showToast, sessionStore, openModal, closeModal, resetModalVariants,
     DEFAULT_SETTINGS, saveSettings, loadSettings,
     getMkRaw, getAccountDigest,
-    openChangePasswordModal, openPushModal, showAlertModal } = deps;
+    openChangePasswordModal, openPushModal, showAlertModal, onLabToggle } = deps;
 
   let initPromise = null;
   let customLogoutCtx = null;
@@ -407,7 +407,7 @@ export function createSettingsModule({ deps }) {
         const nextValue = !!input.checked;
         if (previous[key] === nextValue) return;
         input.disabled = true;
-        try { await persistPatch({ [key]: nextValue }); if (key === 'autoLogoutOnBackground') _autoLoggedOut = false; }
+        try { await persistPatch({ [key]: nextValue }); if (key === 'autoLogoutOnBackground') _autoLoggedOut = false; if (key === 'sentryLab' && typeof onLabToggle === 'function') onLabToggle(nextValue); }
         catch (err) { log({ settingsAutoSaveError: err?.message || err }); if (typeof showAlertModal === 'function') showAlertModal({ title: t('errors.saveFailed'), message: t('errors.saveSettingsFailed') }); input.checked = !!previous[key]; }
         finally { input.disabled = false; }
       });

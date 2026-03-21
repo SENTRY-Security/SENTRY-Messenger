@@ -1127,6 +1127,19 @@ function flushContactSecretsLocal(reason = 'manual') {
 // Navigation
 const tabs = ['contacts', 'messages', 'drive', 'profile'];
 let currentTab = 'drive';
+
+// SAFE tab – shown only when sentryLab is enabled
+function setSafeTabVisible(visible) {
+  const btn = document.getElementById('nav-safe');
+  if (btn) btn.style.display = visible ? '' : 'none';
+  if (visible && !tabs.includes('safe')) {
+    tabs.push('safe');
+    btn?.addEventListener('click', () => switchTab('safe'));
+  } else if (!visible && tabs.includes('safe')) {
+    tabs.splice(tabs.indexOf('safe'), 1);
+    if (currentTab === 'safe') switchTab('drive');
+  }
+}
 let _restoreContactsBars = null;
 function switchTab(name, options = {}) {
   currentTab = name;
@@ -1401,7 +1414,8 @@ const settingsMod = createSettingsModule({
     DEFAULT_SETTINGS, saveSettings, loadSettings,
     getMkRaw, getAccountDigest,
     openChangePasswordModal, openPushModal: () => openPushModal?.(),
-    showAlertModal
+    showAlertModal,
+    onLabToggle: (enabled) => setSafeTabVisible(enabled)
   }
 });
 const getEffectiveSettingsState = () => settingsMod.getEffective();
@@ -1534,7 +1548,8 @@ settingsInitPromise = bootLoadSettings()
     const fallback = { ...DEFAULT_SETTINGS, updatedAt: Date.now() };
     if (!sessionStore.settingsState) sessionStore.settingsState = fallback;
     return sessionStore.settingsState || fallback;
-  });
+  })
+  .then(() => { setSafeTabVisible(!!getEffectiveSettingsState().sentryLab); });
 settingsMod.initPromise = settingsInitPromise;
 
 // Register Service Worker for push notifications (registration only, no auto-subscribe)
