@@ -822,11 +822,11 @@ export function initDrivePane({
       li.innerHTML = `
         <div class="item-content">
           <div class="meta">
-            <div class="name"><i class='bx bx-folder' aria-hidden="true"></i><span class="label">${escapeHtml(displayName)}</span>${badge}</div>
+            <div class="name"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg><span class="label">${escapeHtml(displayName)}</span>${badge}</div>
             <div class="sub">${subLabel}</div>
           </div>
         </div>
-        ${isSystem ? '' : `<button type="button" class="item-delete" aria-label="${t('drive.deleteAriaLabel')}"><i class='bx bx-trash'></i></button>`}`;
+        ${isSystem ? '' : `<button type="button" class="item-delete" aria-label="${t('drive.deleteAriaLabel')}"><svg class="icon"><use href="#i-trash-2"/></svg></button>`}`;
       const open = async () => {
         if (li.classList.contains('show-delete')) {
           closeSwipe?.(li);
@@ -870,8 +870,8 @@ export function initDrivePane({
       const iconColor = fileIconColor(name, ct);
       const isImage = ct.startsWith('image/') || ['jpg','jpeg','png','gif','webp','bmp','svg','heic','heif','avif'].includes(String(name || '').split('.').pop().toLowerCase());
       const iconHtml = isImage
-        ? `<span class="file-thumb" aria-hidden="true"><i class='${iconClass}'></i></span>`
-        : `<i class='${iconClass}' style="color:${iconColor}" aria-hidden="true"></i>`;
+        ? `<span class="file-thumb" aria-hidden="true"><svg class="icon"><use href="#i-${iconClass}"/></svg></span>`
+        : `<svg class="icon" style="color:${iconColor}" aria-hidden="true"><use href="#i-${iconClass}"/></svg>`;
       const li = document.createElement('li');
       li.className = 'file-item file';
       li.dataset.type = 'file';
@@ -886,7 +886,7 @@ export function initDrivePane({
             <div class="sub">${fmtSize(size)} · ${escapeHtml(friendlyCt)}${ts ? ` · ${escapeHtml(ts)}` : ''}</div>
           </div>
         </div>
-        <button type="button" class="item-delete" aria-label="${t('drive.deleteAriaLabel')}"><i class='bx bx-trash'></i></button>`;
+        <button type="button" class="item-delete" aria-label="${t('drive.deleteAriaLabel')}"><svg class="icon"><use href="#i-trash-2"/></svg></button>`;
       const preview = () => {
         if (li.classList.contains('show-delete')) {
           closeSwipe?.(li);
@@ -926,7 +926,7 @@ export function initDrivePane({
       const emptyLi = document.createElement('li');
       emptyLi.className = 'empty-state';
       emptyLi.innerHTML = `
-        <i class='bx bx-cloud-upload' aria-hidden="true"></i>
+        <svg class="icon" aria-hidden="true"><use href="#i-cloud-upload"/></svg>
         <p class="empty-state-title">${t('drive.noFilesYet')}</p>
         <p class="empty-state-hint">${t('drive.emptyStateHint')}</p>
         <button type="button" class="empty-state-btn">${t('drive.uploadFileTitle')}</button>`;
@@ -938,16 +938,16 @@ export function initDrivePane({
   function fileIconForName(name, contentType) {
     const ext = String(name || '').split('.').pop().toLowerCase();
     const ct = String(contentType || '').toLowerCase();
-    if (ct.startsWith('image/') || ['jpg','jpeg','png','gif','webp','bmp','svg','heic','heif','avif'].includes(ext)) return 'bx bx-image';
-    if (ct.startsWith('video/') || ['mp4','mov','m4v','webm','avi','mkv'].includes(ext)) return 'bx bx-video';
-    if (ct.startsWith('audio/') || ['mp3','wav','m4a','aac','flac','ogg'].includes(ext)) return 'bx bx-music';
-    if (ext === 'pdf') return 'bx bxs-file-pdf';
-    if (['doc','docx','rtf','odt','pages'].includes(ext)) return 'bx bx-file';
-    if (['xls','xlsx','csv','ods','numbers'].includes(ext)) return 'bx bx-spreadsheet';
-    if (['ppt','pptx','odp','key'].includes(ext)) return 'bx bx-slideshow';
-    if (['zip','rar','7z','gz','tar','tgz','bz2'].includes(ext)) return 'bx bx-archive';
-    if (['txt','md','log','json','xml','yml','yaml'].includes(ext) || ct.startsWith('text/')) return 'bx bx-file';
-    return 'bx bx-file';
+    if (ct.startsWith('image/') || ['jpg','jpeg','png','gif','webp','bmp','svg','heic','heif','avif'].includes(ext)) return 'image';
+    if (ct.startsWith('video/') || ['mp4','mov','m4v','webm','avi','mkv'].includes(ext)) return 'film';
+    if (ct.startsWith('audio/') || ['mp3','wav','m4a','aac','flac','ogg'].includes(ext)) return 'music';
+    if (ext === 'pdf') return 'file-text';
+    if (['doc','docx','rtf','odt','pages'].includes(ext)) return 'file';
+    if (['xls','xlsx','csv','ods','numbers'].includes(ext)) return 'file-spreadsheet';
+    if (['ppt','pptx','odp','key'].includes(ext)) return 'presentation';
+    if (['zip','rar','7z','gz','tar','tgz','bz2'].includes(ext)) return 'archive';
+    if (['txt','md','log','json','xml','yml','yaml'].includes(ext) || ct.startsWith('text/')) return 'file';
+    return 'file';
   }
 
   function fileIconColor(name, contentType) {
@@ -1160,7 +1160,7 @@ export function initDrivePane({
         <div class="upload-field">
           <input id="uploadFileInput" type="file" class="upload-input" multiple />
           <label for="uploadFileInput" class="upload-callout">
-            <i class='bx bx-cloud-upload'></i>
+            <svg class="icon"><use href="#i-cloud-upload"/></svg>
             <span>${t('drive.clickToSelectFiles')}</span>
           </label>
         </div>
