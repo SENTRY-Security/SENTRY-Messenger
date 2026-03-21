@@ -466,7 +466,8 @@ button.primary:active {
   transition: background .2s, color .2s, border-color .2s, transform .15s ease;
 }
 
-.list-actions button i {
+.list-actions button i,
+.list-actions button .icon {
   font-size: 18px;
   color: var(--fg);
 }

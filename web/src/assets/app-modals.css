@@ -77,7 +77,8 @@
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.2);
 }
 
-.modal-action i {
+.modal-action i,
+.modal-action .icon {
   font-size: 18px;
   margin-right: 4px;
 }

@@ -217,7 +217,8 @@
   align-items: center;
 }
 
-.share-corner-toggle--scan i {
+.share-corner-toggle--scan i,
+.share-corner-toggle--scan .icon {
   font-size: 24px;
 }
 
@@ -435,7 +436,8 @@ main.content.security-locked {
   gap: 10px;
 }
 
-.media-permission-card li i {
+.media-permission-card li i,
+.media-permission-card li .icon {
   font-size: 18px;
   color: #38bdf8;
   margin-top: 2px;
@@ -556,7 +558,8 @@ body.media-permission-open {
   background: rgba(148, 163, 184, 0.2);
 }
 
-.add-friend-menu-item i {
+.add-friend-menu-item i,
+.add-friend-menu-item .icon {
   font-size: 20px;
   color: #94a3b8;
 }

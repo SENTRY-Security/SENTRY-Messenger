@@ -62,7 +62,8 @@
   color: var(--fg);
 }
 
-.icon-btn i {
+.icon-btn i,
+.icon-btn .icon {
   font-size: 18px;
 }
 
