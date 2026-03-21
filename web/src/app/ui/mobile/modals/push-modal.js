@@ -216,66 +216,34 @@ export function createPushModal({ deps }) {
           <span style="font-size:12px;">${escapeHtml(t('push.statusUnsupportedDetail'))}</span>
         </div>`;
     } else if (iosNeedsPWA || iosNoPush) {
-      // iOS browser mode — wizard-style step UI (one step at a time)
-      // If a push device already exists, hide wizard and only show device list
+      // iOS browser mode — show tutorial video, then PIN generation
       const currentSettings = getEffectiveSettings ? getEffectiveSettings() : {};
       const autoLogoutOn = !!currentSettings.autoLogoutOnBackground;
-      const stepLabels = [
-        escapeHtml(t('push.iosStep1')),
-        escapeHtml(t('push.iosStep2')),
-        escapeHtml(t('push.iosStep3')),
-        escapeHtml(t('push.iosStep4'))
-      ];
-      const numStyle = 'width:24px;height:24px;border-radius:50%;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;transition:all .2s;cursor:pointer;flex-shrink:0;';
-      const numActive = 'background:#38bdf8;color:#000;';
-      const numInactive = 'background:rgba(148,163,184,0.15);color:var(--muted);';
-      const imgStyle = 'width:100%;border-radius:10px;margin-top:12px;border:1px solid rgba(148,163,184,0.12);';
       contentHTML = `
-        <!-- Wizard section (hidden when device exists) -->
-        <div id="pushWizard" style="padding:12px 0;">
-          <!-- Step indicator numbers -->
-          <div id="pushStepNums" style="display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:16px;">
-            ${[1,2,3,4].map((n, i) => `<div data-dot="${i}" style="${numStyle}${i === 0 ? numActive : numInactive}">${n}</div>`).join('')}
-          </div>
-          <!-- Step panels -->
-          <div id="pushStepPanels" style="position:relative;overflow:hidden;">
-            <div data-step="0" style="text-align:center;">
-              <div style="font-size:15px;font-weight:700;margin-bottom:4px;">${stepLabels[0]}</div>
-              <img src="/assets/images/step1.jpg" alt="Step 1" style="${imgStyle}" />
-            </div>
-            <div data-step="1" style="display:none;text-align:center;">
-              <div style="font-size:15px;font-weight:700;margin-bottom:4px;">${stepLabels[1]}</div>
-              <img src="/assets/images/step2.jpg" alt="Step 2" style="${imgStyle}" />
-            </div>
-            <div data-step="2" style="display:none;text-align:center;">
-              <div style="font-size:15px;font-weight:700;margin-bottom:4px;">${stepLabels[2]}</div>
-              <img src="/assets/images/step3.jpg" alt="Step 3" style="${imgStyle}" />
-            </div>
-            <div data-step="3" style="display:none;text-align:center;">
-              <div style="font-size:15px;font-weight:700;margin-bottom:8px;">${stepLabels[3]}</div>
-              <button type="button" id="pushGeneratePin" style="width:100%;padding:10px 16px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;background:rgba(56,189,248,0.15);color:#38bdf8;">
-                ${escapeHtml(t('push.generatePin'))}
-              </button>
-              <div id="pushPinDisplay" style="display:none;margin-top:12px;">
-                <div id="pushPinCode" style="font-size:32px;font-weight:700;letter-spacing:8px;font-family:monospace;color:var(--accent);padding:12px;background:rgba(56,189,248,0.08);border-radius:10px;"></div>
-                <div style="font-size:11px;color:var(--muted);margin-top:6px;">${escapeHtml(t('push.pinExpiry'))}</div>
-                <div id="pushAutoLogoutToggle" style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;padding:12px;background:rgba(148,163,184,0.08);border-radius:10px;text-align:left;">
-                  <div style="flex:1;">
-                    <div style="font-size:13px;font-weight:600;">${escapeHtml(t('push.keepSessionAlive'))}</div>
-                    <div style="font-size:11px;color:var(--muted);margin-top:2px;">${escapeHtml(t('push.keepSessionAliveDesc'))}</div>
-                  </div>
-                  <label class="settings-switch" style="margin-left:10px;">
-                    <input type="checkbox" id="pushKeepAliveToggle" ${autoLogoutOn ? '' : 'checked'} />
-                    <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
-                  </label>
-                </div>
+        <!-- Tutorial video section (hidden when device exists) -->
+        <div id="pushTutorial" style="padding:12px 0;">
+          <button type="button" id="pushShowTutorial" style="width:100%;padding:10px 16px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;background:rgba(56,189,248,0.15);color:#38bdf8;">
+            ${escapeHtml(t('push.explainTitle'))}
+          </button>
+        </div>
+        <!-- PIN section (initially hidden, shown after tutorial) -->
+        <div id="pushPinSection" style="display:none;padding:12px 0;">
+          <button type="button" id="pushGeneratePin" style="width:100%;padding:10px 16px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;background:rgba(56,189,248,0.15);color:#38bdf8;">
+            ${escapeHtml(t('push.generatePin'))}
+          </button>
+          <div id="pushPinDisplay" style="display:none;margin-top:12px;">
+            <div id="pushPinCode" style="font-size:32px;font-weight:700;letter-spacing:8px;font-family:monospace;color:var(--accent);padding:12px;background:rgba(56,189,248,0.08);border-radius:10px;text-align:center;"></div>
+            <div style="font-size:11px;color:var(--muted);margin-top:6px;text-align:center;">${escapeHtml(t('push.pinExpiry'))}</div>
+            <div id="pushAutoLogoutToggle" style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;padding:12px;background:rgba(148,163,184,0.08);border-radius:10px;text-align:left;">
+              <div style="flex:1;">
+                <div style="font-size:13px;font-weight:600;">${escapeHtml(t('push.keepSessionAlive'))}</div>
+                <div style="font-size:11px;color:var(--muted);margin-top:2px;">${escapeHtml(t('push.keepSessionAliveDesc'))}</div>
               </div>
+              <label class="settings-switch" style="margin-left:10px;">
+                <input type="checkbox" id="pushKeepAliveToggle" ${autoLogoutOn ? '' : 'checked'} />
+                <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+              </label>
             </div>
-          </div>
-          <!-- Nav buttons -->
-          <div style="display:flex;gap:10px;margin-top:16px;">
-            <button type="button" id="pushStepPrev" style="flex:1;padding:10px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;background:rgba(148,163,184,0.15);color:var(--fg);display:none;">${escapeHtml(t('common.prevStep'))}</button>
-            <button type="button" id="pushStepNext" style="flex:1;padding:10px;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;background:rgba(56,189,248,0.15);color:#38bdf8;">${escapeHtml(t('common.nextStep'))}</button>
           </div>
         </div>
         <div id="pushDeviceSection" style="padding:14px 0;border-top:1px solid var(--line);">
@@ -332,13 +300,13 @@ export function createPushModal({ deps }) {
 
     // iOS browser mode: step wizard + generate PIN + manage existing devices
     if (iosNeedsPWA || iosNoPush) {
-      const wizardEl = body.querySelector('#pushWizard');
+      const tutorialEl = body.querySelector('#pushTutorial');
       const deviceSection = body.querySelector('#pushDeviceSection');
 
-      // Toggle wizard vs device-only view based on existing devices
+      // Toggle tutorial vs device-only view based on existing devices
       function updateWizardVisibility(devices) {
         const hasDevices = devices && devices.length > 0;
-        if (wizardEl) wizardEl.style.display = hasDevices ? 'none' : '';
+        if (tutorialEl) tutorialEl.style.display = hasDevices ? 'none' : '';
         if (deviceSection) {
           deviceSection.style.display = hasDevices ? '' : 'none';
         }
@@ -406,33 +374,50 @@ export function createPushModal({ deps }) {
 
       renderDevicesWithVisibility();
 
-      // Step wizard navigation
-      const TOTAL_STEPS = 4;
-      let currentStep = 0;
-      const panels = body.querySelectorAll('[data-step]');
-      const nums = body.querySelectorAll('[data-dot]');
-      const prevBtn = body.querySelector('#pushStepPrev');
-      const nextBtn = body.querySelector('#pushStepNext');
+      // Tutorial video button → opens a standalone video modal
+      const showTutorialBtn = body.querySelector('#pushShowTutorial');
+      const pinSection = body.querySelector('#pushPinSection');
 
-      function goToStep(idx) {
-        currentStep = idx;
-        panels.forEach(p => { p.style.display = Number(p.dataset.step) === idx ? '' : 'none'; });
-        nums.forEach(d => {
-          const active = Number(d.dataset.dot) === idx;
-          d.style.background = active ? '#38bdf8' : 'rgba(148,163,184,0.15)';
-          d.style.color = active ? '#000' : 'var(--muted)';
+      function showVideoTutorialModal() {
+        const overlay = document.createElement('div');
+        overlay.className = 'push-tutorial-overlay';
+        overlay.innerHTML = `
+          <div class="push-tutorial-panel">
+            <div class="push-tutorial-header">${escapeHtml(t('push.tutorialTitle'))}</div>
+            <div class="push-tutorial-video-wrap">
+              <video autoplay loop muted playsinline class="push-tutorial-video">
+                <source src="/assets/images/AVAssetExportPreset960x540.mov" type="video/quicktime">
+                <source src="/assets/images/AVAssetExportPreset960x540.mov" type="video/mp4">
+              </video>
+            </div>
+            <div class="push-tutorial-actions">
+              <button type="button" class="push-tutorial-btn primary" id="tutorialUnderstood">${escapeHtml(t('common.understood'))}</button>
+              <button type="button" class="push-tutorial-btn secondary" id="tutorialClose">${escapeHtml(t('common.close'))}</button>
+            </div>
+          </div>`;
+        document.body.appendChild(overlay);
+
+        // Try to play video (handle autoplay restrictions)
+        const video = overlay.querySelector('video');
+        if (video) video.play().catch(() => {});
+
+        const cleanup = () => { overlay.remove(); };
+
+        overlay.querySelector('#tutorialClose')?.addEventListener('click', cleanup, { once: true });
+        overlay.querySelector('#tutorialUnderstood')?.addEventListener('click', () => {
+          cleanup();
+          // Show PIN section and hide tutorial button
+          if (pinSection) pinSection.style.display = '';
+          if (showTutorialBtn) showTutorialBtn.parentElement.style.display = 'none';
+        }, { once: true });
+
+        // Close on backdrop click
+        overlay.addEventListener('click', (e) => {
+          if (e.target === overlay) cleanup();
         });
-        if (prevBtn) prevBtn.style.display = idx > 0 ? '' : 'none';
-        if (nextBtn) nextBtn.style.display = idx < TOTAL_STEPS - 1 ? '' : 'none';
       }
 
-      prevBtn?.addEventListener('click', () => { if (currentStep > 0) goToStep(currentStep - 1); });
-      nextBtn?.addEventListener('click', () => { if (currentStep < TOTAL_STEPS - 1) goToStep(currentStep + 1); });
-
-      // Allow tapping number indicators to jump to step
-      nums.forEach(d => {
-        d.addEventListener('click', () => goToStep(Number(d.dataset.dot)));
-      });
+      showTutorialBtn?.addEventListener('click', showVideoTutorialModal);
 
       const generatePinBtn = body.querySelector('#pushGeneratePin');
       const pinDisplay = body.querySelector('#pushPinDisplay');
@@ -525,15 +510,31 @@ export function createPushModal({ deps }) {
           log({ pushUnsubscribeError: err?.message || err });
         }
       } else {
+        // Show tutorial video modal, then subscribe on confirm
         const confirmed = await new Promise((resolve) => {
-          showAlertModal({
-            title: t('push.explainTitle'),
-            message: t('push.explainBody'),
-            confirmText: t('common.confirm'),
-            cancelText: t('common.cancel'),
-            onConfirm: () => resolve(true),
-            onCancel: () => resolve(false)
-          });
+          const overlay = document.createElement('div');
+          overlay.className = 'push-tutorial-overlay';
+          overlay.innerHTML = `
+            <div class="push-tutorial-panel">
+              <div class="push-tutorial-header">${escapeHtml(t('push.tutorialTitle'))}</div>
+              <div class="push-tutorial-video-wrap">
+                <video autoplay loop muted playsinline class="push-tutorial-video">
+                  <source src="/assets/images/AVAssetExportPreset960x540.mov" type="video/quicktime">
+                  <source src="/assets/images/AVAssetExportPreset960x540.mov" type="video/mp4">
+                </video>
+              </div>
+              <div class="push-tutorial-actions">
+                <button type="button" class="push-tutorial-btn primary" id="tutorialUnderstood">${escapeHtml(t('common.understood'))}</button>
+                <button type="button" class="push-tutorial-btn secondary" id="tutorialClose">${escapeHtml(t('common.close'))}</button>
+              </div>
+            </div>`;
+          document.body.appendChild(overlay);
+          const video = overlay.querySelector('video');
+          if (video) video.play().catch(() => {});
+          const cleanup = (result) => { overlay.remove(); resolve(result); };
+          overlay.querySelector('#tutorialUnderstood')?.addEventListener('click', () => cleanup(true), { once: true });
+          overlay.querySelector('#tutorialClose')?.addEventListener('click', () => cleanup(false), { once: true });
+          overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(false); });
         });
 
         if (!confirmed) {
