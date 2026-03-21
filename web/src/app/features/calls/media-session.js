@@ -1779,10 +1779,13 @@ function createEncryptionTransform(keyName, mode) {
       return key;
     });
   let rekeyPromise = null;
+  let _frameCount = 0;
+  let _failCount = 0;
+  let _passthrough = false; // fallback: stop decrypting after too many failures
   const transform = new TransformStream({
     async transform(encodedFrame, controller) {
       if (!cryptoKey) {
-        await importPromise;
+        try { await importPromise; } catch { controller.enqueue(encodedFrame); return; }
       }
       // Check if epoch has changed (key rotation occurred)
       const latestCtx = getCallKeyContext();
@@ -1800,9 +1803,22 @@ function createEncryptionTransform(keyName, mode) {
             baseNonce = new Uint8Array(latestCtx.keys[keyName].nonce);
             currentEpoch = latestEpoch;
             rekeyPromise = null;
+            _failCount = 0;
+            _passthrough = false;
           });
         }
-        await rekeyPromise;
+        try { await rekeyPromise; } catch { /* ignore */ }
+      }
+      _frameCount++;
+      // Diagnostic: log first frame + every 200th frame
+      if (_frameCount === 1 || _frameCount % 200 === 0) {
+        logCapped({ e2eeFrame: { mode, keyName, frame: _frameCount, fails: _failCount, passthrough: _passthrough, hasKey: !!cryptoKey, byteLen: encodedFrame.data?.byteLength } });
+      }
+      // Passthrough mode: too many consecutive decrypt failures → peer likely
+      // not encrypting.  Stop corrupting frames by attempting invalid decryption.
+      if (_passthrough) {
+        controller.enqueue(encodedFrame);
+        return;
       }
       try {
         if (mode === 'encrypt') {
@@ -1823,10 +1839,20 @@ function createEncryptionTransform(keyName, mode) {
           const ciphertext = data.slice(4);
           const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, cryptoKey, ciphertext);
           encodedFrame.data = decrypted;
+          _failCount = 0; // reset on success
         }
         controller.enqueue(encodedFrame);
       } catch (err) {
-        log({ callMediaTransformError: err?.message || err, mode, keyName });
+        _failCount++;
+        if (_failCount <= 3 || _failCount % 100 === 0) {
+          log({ callMediaTransformError: err?.message || err, mode, keyName, frame: _frameCount, consecutiveFails: _failCount });
+        }
+        // After 50 consecutive decrypt failures, assume E2EE mismatch —
+        // switch to passthrough so audio is at least audible (unencrypted).
+        if (mode === 'decrypt' && _failCount >= 50) {
+          _passthrough = true;
+          log({ e2eePassthroughActivated: true, keyName, frame: _frameCount, reason: 'consecutive-decrypt-failures' });
+        }
         controller.enqueue(encodedFrame);
       }
     }
@@ -1869,6 +1895,9 @@ let baseNonce = null;
 let frameCounter = 0;
 let mode = 'encrypt';
 let importPromise = null;
+let _fc = 0;
+let _fails = 0;
+let _passthrough = false;
 
 self.onmessage = async (event) => {
   const msg = event.data;
@@ -1877,6 +1906,8 @@ self.onmessage = async (event) => {
     const usages = mode === 'encrypt' ? ['encrypt'] : ['decrypt'];
     baseNonce = new Uint8Array(msg.nonce);
     if (msg.resetCounter) frameCounter = 0;
+    _fails = 0;
+    _passthrough = false;
     try {
       importPromise = crypto.subtle.importKey(
         'raw', new Uint8Array(msg.key), { name: 'AES-GCM' }, false, usages
@@ -1893,9 +1924,11 @@ self.onrtctransform = (event) => {
   const ts = new TransformStream({
     async transform(frame, controller) {
       if (!cryptoKey) {
-        if (importPromise) await importPromise;
+        if (importPromise) { try { await importPromise; } catch {} }
         if (!cryptoKey) { controller.enqueue(frame); return; }
       }
+      _fc++;
+      if (_passthrough) { controller.enqueue(frame); return; }
       try {
         if (mode === 'encrypt') {
           frameCounter++;
@@ -1917,9 +1950,16 @@ self.onrtctransform = (event) => {
           const ciphertext = data.slice(4);
           const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, cryptoKey, ciphertext);
           frame.data = decrypted;
+          _fails = 0;
         }
         controller.enqueue(frame);
       } catch (err) {
+        _fails++;
+        if (_fails <= 3) console.warn('[e2ee-worker]', mode, 'fail #' + _fails, err?.message);
+        if (mode === 'decrypt' && _fails >= 50) {
+          _passthrough = true;
+          console.warn('[e2ee-worker] passthrough activated after', _fails, 'consecutive decrypt failures');
+        }
         controller.enqueue(frame);
       }
     }
