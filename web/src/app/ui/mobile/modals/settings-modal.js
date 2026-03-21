@@ -192,7 +192,7 @@ export function createSettingsModule({ deps }) {
   async function persistPatch(partial) {
     const previous = getEffective();
     const next = { ...previous, ...partial };
-    const trackedKeys = ['autoLogoutOnBackground', 'autoLogoutRedirectMode', 'autoLogoutCustomUrl', 'language'];
+    const trackedKeys = ['autoLogoutOnBackground', 'autoLogoutRedirectMode', 'autoLogoutCustomUrl', 'language', 'sentryLab'];
     const noChange = trackedKeys.every((key) => previous[key] === next[key]);
     if (noChange) return previous;
     sessionStore.settingsState = next;
@@ -281,6 +281,24 @@ export function createSettingsModule({ deps }) {
           <select id="settingsLanguage" class="settings-select" style="padding:6px 10px;border:1px solid var(--line);border-radius:8px;font-size:14px;background:var(--bg);color:var(--fg);">
             ${SUPPORTED_LANGUAGES.map(l => `<option value="${l.code}" ${l.code === getCurrentLang() ? 'selected' : ''}>${escapeHtml(l.label)}</option>`).join('')}
           </select>
+        </div>
+        <div class="settings-item">
+          <div class="settings-text" style="display:flex;align-items:center;gap:8px;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">
+              <path d="M9 3h6v2H9z"/>
+              <path d="M7 5h10l1 11H6L7 5z"/>
+              <path d="M10 16v4M14 16v4M8 20h8"/>
+              <circle cx="12" cy="10" r="1" fill="currentColor" stroke="none"/>
+            </svg>
+            <div>
+              <strong>${escapeHtml(t('settings.sentryLab'))}</strong>
+              <p>${escapeHtml(t('settings.sentryLabDesc'))}</p>
+            </div>
+          </div>
+          <label class="settings-switch">
+            <input type="checkbox" id="settingsSentryLab" ${current.sentryLab ? 'checked' : ''} />
+            <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+          </label>
         </div>
         <div class="settings-item" id="settingsPushRow" style="cursor:pointer;">
           <div class="settings-text">
@@ -408,6 +426,9 @@ export function createSettingsModule({ deps }) {
         finally { autoLogoutInput.disabled = false; const state = getEffective(); setAutoLogoutVis(!!state.autoLogoutOnBackground); syncRadios(); }
       });
     }
+
+    const sentryLabInput = body.querySelector('#settingsSentryLab');
+    registerToggle(sentryLabInput, 'sentryLab');
   }
 
   return {

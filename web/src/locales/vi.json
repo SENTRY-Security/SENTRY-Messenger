@@ -436,7 +436,9 @@
     "autoLogoutOnBackgroundDesc": "Tự động đăng xuất khi ứng dụng chuyển sang nền",
     "defaultLogoutPage": "Trang đăng xuất mặc định",
     "defaultLogoutPageDesc": "Sử dụng trang đăng xuất mặc định tích hợp sẵn",
-    "language": "Ngôn ngữ / Language"
+    "language": "Ngôn ngữ / Language",
+    "sentryLab": "SENTRY Lab",
+    "sentryLabDesc": "Bật các tính năng thử nghiệm, có thể không ổn định hoặc thay đổi bất cứ lúc nào."
   },
   "password": {
     "title": "Đổi mật khẩu",

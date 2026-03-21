@@ -438,7 +438,9 @@
     "autoLogoutOnBackgroundDesc": "當應用程式移至背景時自動登出",
     "defaultLogoutPage": "預設登出頁面",
     "defaultLogoutPageDesc": "使用內建的預設登出頁面",
-    "language": "語言 / Language"
+    "language": "語言 / Language",
+    "sentryLab": "SENTRY Lab",
+    "sentryLabDesc": "啟用實驗性功能，可能不穩定或隨時變更。"
   },
   "password": {
     "title": "變更密碼",

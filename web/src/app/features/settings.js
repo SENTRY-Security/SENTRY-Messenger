@@ -22,7 +22,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   autoLogoutRedirectMode: 'default',
   autoLogoutCustomUrl: '',
   language: null,   // null = follow browser; 'en' | 'zh-Hant' = forced
-  pushNotifications: false
+  pushNotifications: false,
+  sentryLab: false
 });
 
 function sanitizeLogoutUrl(input) {
@@ -49,7 +50,8 @@ function normalizeSettings(input = {}) {
     autoLogoutRedirectMode: wantsCustomRedirect && hasUrl ? 'custom' : DEFAULT_SETTINGS.autoLogoutRedirectMode,
     autoLogoutCustomUrl: sanitizedUrl || null,
     language: lang,
-    pushNotifications: typeof input.pushNotifications === 'boolean' ? input.pushNotifications : DEFAULT_SETTINGS.pushNotifications
+    pushNotifications: typeof input.pushNotifications === 'boolean' ? input.pushNotifications : DEFAULT_SETTINGS.pushNotifications,
+    sentryLab: typeof input.sentryLab === 'boolean' ? input.sentryLab : DEFAULT_SETTINGS.sentryLab
   };
   return normalized;
 }

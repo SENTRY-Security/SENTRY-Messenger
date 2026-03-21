@@ -436,7 +436,9 @@
     "autoLogoutOnBackgroundDesc": "ออกจากระบบอัตโนมัติเมื่อแอปย้ายไปพื้นหลัง",
     "defaultLogoutPage": "หน้าออกจากระบบเริ่มต้น",
     "defaultLogoutPageDesc": "ใช้หน้าออกจากระบบเริ่มต้นของระบบ",
-    "language": "ภาษา / Language"
+    "language": "ภาษา / Language",
+    "sentryLab": "SENTRY Lab",
+    "sentryLabDesc": "เปิดใช้งานฟีเจอร์ทดลอง อาจไม่เสถียรหรือมีการเปลี่ยนแปลง"
   },
   "password": {
     "title": "เปลี่ยนรหัสผ่าน",

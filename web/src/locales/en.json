@@ -438,7 +438,9 @@
     "autoLogoutOnBackgroundDesc": "Automatically log out when the app moves to background",
     "defaultLogoutPage": "Default logout page",
     "defaultLogoutPageDesc": "Use the built-in default logout page",
-    "language": "Language / 語言"
+    "language": "Language / 語言",
+    "sentryLab": "SENTRY Lab",
+    "sentryLabDesc": "Enable experimental features that may be unstable or subject to change."
   },
   "password": {
     "title": "Change Password",

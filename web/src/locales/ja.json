@@ -436,7 +436,9 @@
     "autoLogoutOnBackgroundDesc": "アプリがバックグラウンドに移動した際に自動でログアウトします",
     "defaultLogoutPage": "デフォルトログアウトページ",
     "defaultLogoutPageDesc": "組み込みのデフォルトログアウトページを使用します",
-    "language": "言語 / Language"
+    "language": "言語 / Language",
+    "sentryLab": "SENTRY Lab",
+    "sentryLabDesc": "実験的な機能を有効にします。不安定な場合や変更される場合があります。"
   },
   "password": {
     "title": "パスワード変更",

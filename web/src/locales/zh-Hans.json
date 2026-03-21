@@ -438,7 +438,9 @@
     "autoLogoutOnBackgroundDesc": "当应用程序移至后台时自动退出登录",
     "defaultLogoutPage": "默认退出页面",
     "defaultLogoutPageDesc": "使用内建的默认退出页面",
-    "language": "语言 / Language"
+    "language": "语言 / Language",
+    "sentryLab": "SENTRY Lab",
+    "sentryLabDesc": "启用实验性功能，可能不稳定或随时变更。"
   },
   "password": {
     "title": "更改密码",
