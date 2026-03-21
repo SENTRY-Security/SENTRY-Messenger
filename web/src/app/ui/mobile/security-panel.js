@@ -36,18 +36,19 @@ function itemStatusClass(score) {
 function renderCircle(score) {
   const color = scoreColor(score);
   const radius = 54;
-  const circumference = 2 * Math.PI * radius;
-  const offset = circumference * (1 - score / 100);
+  const circumference = Math.round(2 * Math.PI * radius);
+  const offset = Math.round(circumference * (1 - score / 100));
 
   return `
     <div class="sec-circle-wrap">
-      <svg class="sec-circle" viewBox="0 0 120 120">
-        <circle class="sec-circle-bg" cx="60" cy="60" r="${radius}" />
+      <svg class="sec-circle" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
+        <circle class="sec-circle-bg" cx="60" cy="60" r="${radius}"
+          fill="none" stroke-width="8" />
         <circle class="sec-circle-fg" cx="60" cy="60" r="${radius}"
-          stroke="${color}"
+          fill="none" stroke="${color}" stroke-width="8" stroke-linecap="round"
           stroke-dasharray="${circumference}"
           stroke-dashoffset="${offset}"
-          style="transition: stroke-dashoffset 0.8s ease, stroke 0.4s ease" />
+          transform="rotate(-90 60 60)" />
       </svg>
       <div class="sec-circle-label">
         <span class="sec-score-num" style="color:${color}">${score}</span>
@@ -125,9 +126,11 @@ function render(container, result) {
       </div>
       <span class="sec-grade" style="background:${color}">${grade}</span>
     </div>
-    ${renderCircle(score)}
-    <div class="sec-details">
-      ${details.map(renderDetailRow).join('')}
+    <div class="sec-body">
+      ${renderCircle(score)}
+      <div class="sec-details">
+        ${details.map(renderDetailRow).join('')}
+      </div>
     </div>
     ${suggestions.length > 0 ? `
       <div class="sec-suggestions-section">

@@ -205,7 +205,9 @@ html.no-anim .cover-spinner {
 
 #tab-profile {
   display: block;
-  overflow: auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  height: 100%;
 }
 
 #tab-safe {

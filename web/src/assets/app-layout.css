@@ -236,6 +236,11 @@
   padding-bottom: calc(var(--navbar-height) + 8px);
 }
 
+.content>#tab-profile {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 body.messages-fullscreen {
   overflow: hidden;
 }
