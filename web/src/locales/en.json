@@ -876,7 +876,8 @@
     "pptxLoadFailed": "PowerPoint load failed: {{error}}",
     "zipEncrypted": "This archive is encrypted",
     "zipEncryptedHint": "Encrypted archives cannot be previewed online. Please download and open with a decompression tool",
-    "pptxSlideEmpty": "This slide is empty"
+    "pptxSlideEmpty": "This slide is empty",
+    "pptxSlides": "slides"
   },
   "mediaHandling": {
     "videoDataIncomplete": "Video data incomplete, cannot play",
