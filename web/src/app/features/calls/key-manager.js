@@ -210,6 +210,27 @@ async function maybeDeriveKeys(trigger = 'auto') {
   deriveTask = deriveKeysFromEnvelope({ session, envelope: mediaState.pendingEnvelope, trigger })
     .catch((err) => {
       log({ callKeyDeriveError: err?.message || err, trigger });
+      // Key derivation failed (e.g. conversation token not yet available for
+      // ephemeral calls).  Update capabilities to insertableStreams: false so
+      // that:
+      // 1. The callee's receiver/sender transforms are correctly skipped
+      // 2. The capabilities are carried in outgoing signals (accept/answer)
+      //    via the ephemeral adapter, telling the caller to stop encrypting
+      // Without this, the caller encrypts audio while the callee can't
+      // decrypt → noise on the callee side.
+      try {
+        // Clear pendingEnvelope to prevent infinite re-derive attempts
+        // (STATE events from updateCallMedia trigger handleCallStateEvent
+        // which calls maybeDeriveKeys again).
+        updateCallMedia({
+          pendingEnvelope: null,
+          capabilities: { insertableStreams: false }
+        });
+        setCallMediaStatus(CALL_MEDIA_STATE_STATUS.SKIPPED);
+        log({ callKeyDeriveFailFallback: true, trigger });
+      } catch (fallbackErr) {
+        log({ callKeyDeriveFailFallbackError: fallbackErr?.message });
+      }
     })
     .finally(() => {
       deriveTask = null;
