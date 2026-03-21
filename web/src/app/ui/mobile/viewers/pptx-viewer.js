@@ -43,26 +43,142 @@ const EMU_PX = 914400 / 96;
 const emuToPx = (v) => Math.round(Number(v) / EMU_PX);
 const attr = (xml, name) => { const m = xml.match(new RegExp(`${name}="([^"]*)"`)); return m ? m[1] : null; };
 
-// ── Color ──
-const SCHEME_COLORS = { dk1:'#1e293b', dk2:'#334155', lt1:'#ffffff', lt2:'#f1f5f9', accent1:'#4472C4', accent2:'#ED7D31', accent3:'#A5A5A5', accent4:'#FFC000', accent5:'#5B9BD5', accent6:'#70AD47', tx1:'#1e293b', tx2:'#475569', bg1:'#ffffff', bg2:'#e2e8f0', hlink:'#0563C1', folHlink:'#954F72' };
+// ── Theme ──
+// Parsed once per file; holds real colors + fonts from theme1.xml
+let themeColors = {};
+let themeFontMajor = 'Calibri';
+let themeFontMinor = 'Calibri';
 
+async function parseTheme(zip) {
+  try {
+    const xml = await zip.file('ppt/theme/theme1.xml')?.async('string');
+    if (!xml) return;
+    // Color scheme: <a:clrScheme> children like <a:dk1><a:srgbClr val="000000"/></a:dk1>
+    const scheme = xml.match(/<a:clrScheme[^>]*>([\s\S]*?)<\/a:clrScheme>/);
+    if (scheme) {
+      const tags = ['dk1','dk2','lt1','lt2','accent1','accent2','accent3','accent4','accent5','accent6','hlink','folHlink'];
+      for (const tag of tags) {
+        const m = scheme[1].match(new RegExp(`<a:${tag}>[\\s\\S]*?<a:srgbClr\\s+val="([^"]+)"`, 'i'));
+        if (m) themeColors[tag] = '#' + m[1];
+        else {
+          const sys = scheme[1].match(new RegExp(`<a:${tag}>[\\s\\S]*?<a:sysClr[^>]*lastClr="([^"]+)"`, 'i'));
+          if (sys) themeColors[tag] = '#' + sys[1];
+        }
+      }
+      // tx1/tx2/bg1/bg2 aliases
+      themeColors.tx1 = themeColors.dk1; themeColors.tx2 = themeColors.dk2;
+      themeColors.bg1 = themeColors.lt1; themeColors.bg2 = themeColors.lt2;
+    }
+    // Fonts
+    const majorLatin = xml.match(/<a:majorFont>[\s\S]*?<a:latin\s+typeface="([^"]+)"/);
+    const minorLatin = xml.match(/<a:minorFont>[\s\S]*?<a:latin\s+typeface="([^"]+)"/);
+    if (majorLatin) themeFontMajor = majorLatin[1];
+    if (minorLatin) themeFontMinor = minorLatin[1];
+  } catch {}
+}
+
+// Common font name → CSS web-safe fallback
+const FONT_MAP = {
+  'Calibri': '"Calibri",-apple-system,sans-serif',
+  'Arial': 'Arial,sans-serif',
+  'Times New Roman': '"Times New Roman",serif',
+  'Verdana': 'Verdana,sans-serif',
+  'Georgia': 'Georgia,serif',
+  'Tahoma': 'Tahoma,sans-serif',
+  'Trebuchet MS': '"Trebuchet MS",sans-serif',
+  'Courier New': '"Courier New",monospace',
+  'Segoe UI': '"Segoe UI",-apple-system,sans-serif',
+  'Meiryo': '"Meiryo","Hiragino Sans",sans-serif',
+  'Microsoft JhengHei': '"Microsoft JhengHei","PingFang TC",sans-serif',
+  'Microsoft YaHei': '"Microsoft YaHei","PingFang SC",sans-serif',
+  '微軟正黑體': '"Microsoft JhengHei","PingFang TC",sans-serif',
+  '微软雅黑': '"Microsoft YaHei","PingFang SC",sans-serif',
+};
+
+function resolveFont(rawFont) {
+  if (!rawFont) return null;
+  // Theme font references
+  if (rawFont === '+mj-lt' || rawFont === '+mj-ea') return FONT_MAP[themeFontMajor] || `"${themeFontMajor}",sans-serif`;
+  if (rawFont === '+mn-lt' || rawFont === '+mn-ea') return FONT_MAP[themeFontMinor] || `"${themeFontMinor}",sans-serif`;
+  return FONT_MAP[rawFont] || `"${rawFont}",-apple-system,sans-serif`;
+}
+
+// ── Color ──
 function parseColor(xml) {
   if (!xml) return null;
   const srgb = xml.match(/<a:srgbClr\s+val="([^"]+)"/);
-  if (srgb) return '#' + srgb[1];
+  if (srgb) {
+    // Check for lumMod/lumOff adjustments
+    let color = srgb[1];
+    const lumMod = xml.match(/<a:lumMod\s+val="(\d+)"/);
+    const lumOff = xml.match(/<a:lumOff\s+val="(\d+)"/);
+    if (lumMod || lumOff) {
+      return adjustLuminance('#' + color, lumMod ? Number(lumMod[1]) / 100000 : 1, lumOff ? Number(lumOff[1]) / 100000 : 0);
+    }
+    return '#' + color;
+  }
   const scheme = xml.match(/<a:schemeClr\s+val="([^"]+)"/);
-  if (scheme) return SCHEME_COLORS[scheme[1]] || null;
+  if (scheme) {
+    let base = themeColors[scheme[1]] || null;
+    if (!base) return null;
+    const lumMod = xml.match(/<a:lumMod\s+val="(\d+)"/);
+    const lumOff = xml.match(/<a:lumOff\s+val="(\d+)"/);
+    const tint = xml.match(/<a:tint\s+val="(\d+)"/);
+    const shade = xml.match(/<a:shade\s+val="(\d+)"/);
+    if (lumMod || lumOff || tint || shade) {
+      let mod = lumMod ? Number(lumMod[1]) / 100000 : 1;
+      let off = lumOff ? Number(lumOff[1]) / 100000 : 0;
+      if (tint) { const t = Number(tint[1]) / 100000; mod *= t; off += (1 - t); }
+      if (shade) mod *= Number(shade[1]) / 100000;
+      return adjustLuminance(base, mod, off);
+    }
+    return base;
+  }
   return null;
+}
+
+function adjustLuminance(hex, mod, off) {
+  // Simple luminance adjustment: convert to HSL, modify, convert back
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h = 0, s = 0, l = (max + min) / 2;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+    else if (max === g) h = ((b - r) / d + 2) / 6;
+    else h = ((r - g) / d + 4) / 6;
+  }
+  l = Math.max(0, Math.min(1, l * mod + off));
+  // HSL → RGB
+  const hue2rgb = (p, q, t) => { if (t < 0) t += 1; if (t > 1) t -= 1; if (t < 1/6) return p + (q - p) * 6 * t; if (t < 1/2) return q; if (t < 2/3) return p + (q - p) * (2/3 - t) * 6; return p; };
+  let rr, gg, bb;
+  if (s === 0) { rr = gg = bb = l; } else {
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    rr = hue2rgb(p, q, h + 1/3); gg = hue2rgb(p, q, h); bb = hue2rgb(p, q, h - 1/3);
+  }
+  return '#' + [rr, gg, bb].map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join('');
 }
 
 function parseFill(xml) {
   if (!xml) return null;
-  // Solid fill
   const solid = xml.match(/<a:solidFill>([\s\S]*?)<\/a:solidFill>/);
   if (solid) return parseColor(solid[0]);
-  // Gradient fill → use first stop color
-  const gradStop = xml.match(/<a:gs\b[^>]*>([\s\S]*?)<\/a:gs>/);
-  if (gradStop) return parseColor(gradStop[0]);
+  // Gradient fill → CSS linear-gradient
+  const gradFill = xml.match(/<a:gradFill>([\s\S]*?)<\/a:gradFill>/);
+  if (gradFill) {
+    const stops = [];
+    for (const gs of gradFill[1].matchAll(/<a:gs\s+pos="(\d+)">([\s\S]*?)<\/a:gs>/g)) {
+      const pos = Math.round(Number(gs[1]) / 1000);
+      const c = parseColor(gs[2]);
+      if (c) stops.push(`${c} ${pos}%`);
+    }
+    if (stops.length >= 2) return `linear-gradient(180deg,${stops.join(',')})`;
+    if (stops.length === 1) return stops[0].split(' ')[0];
+  }
   return null;
 }
 
@@ -72,7 +188,8 @@ function parseLine(xml) {
   if (!ln) return null;
   const w = attr(ln[1], 'w');
   const color = parseFill(ln[2]);
-  return { width: w ? Math.max(1, emuToPx(w)) : 1, color: color || '#94a3b8' };
+  if (!color || color === 'none') return null;
+  return { width: w ? Math.max(1, emuToPx(w)) : 1, color: typeof color === 'string' && color.startsWith('#') ? color : '#94a3b8' };
 }
 
 // ── Text Run ──
@@ -87,15 +204,21 @@ function parseTextRun(runXml) {
   const color = parseColor(rPr);
   const bold = /\bb="1"/.test(rPr);
   const italic = /\bi="1"/.test(rPr);
-  const underline = /\bu="sng"/.test(rPr);
+  const underline = /\bu="sng"/.test(rPr) || /\bu="dbl"/.test(rPr);
   const strike = /\bstrike="sng/.test(rPr);
   // Font
   const latin = rPr.match(/<a:latin\s+typeface="([^"]+)"/);
   const ea = rPr.match(/<a:ea\s+typeface="([^"]+)"/);
   const font = latin ? latin[1] : (ea ? ea[1] : null);
+  // Character spacing (spc in 1/100 pt)
+  const spcMatch = rPr.match(/\bspc="(-?\d+)"/);
+  const letterSpacing = spcMatch ? Number(spcMatch[1]) / 100 : null;
+  // Superscript/subscript (baseline in %)
+  const baselineMatch = rPr.match(/\bbaseline="(-?\d+)"/);
+  const baseline = baselineMatch ? Number(baselineMatch[1]) / 1000 : null;
   // Hyperlink
   const hlinkMatch = runXml.match(/<a:hlinkClick[^>]*r:id="(rId\d+)"/);
-  return { text, fontSize, color, bold, italic, underline, strike, font, hlinkRid: hlinkMatch ? hlinkMatch[1] : null };
+  return { text, fontSize, color, bold, italic, underline, strike, font, letterSpacing, baseline, hlinkRid: hlinkMatch ? hlinkMatch[1] : null };
 }
 
 // ── Paragraph ──
@@ -105,14 +228,18 @@ function parseParagraph(pXml) {
     const run = parseTextRun(m[1]);
     if (run) runs.push(run);
   }
-  // Also handle <a:fld> (field, e.g. slide number)
   for (const m of pXml.matchAll(/<a:fld\b[^>]*>([\s\S]*?)<\/a:fld>/g)) {
     const run = parseTextRun(m[1]);
     if (run) runs.push(run);
   }
-  const pPr = pXml.match(/<a:pPr\b([^>]*)[\s\S]*?(?:\/>|<\/a:pPr>)/);
-  const pPrStr = pPr ? pPr[0] : '';
+  // Line break <a:br/>
+  for (const m of pXml.matchAll(/<a:br\s*\/>/g)) {
+    runs.push({ text: '\n', fontSize: null, color: null, bold: false, italic: false, underline: false, strike: false, font: null, letterSpacing: null, baseline: null, hlinkRid: null });
+  }
+
+  const pPr = pXml.match(/<a:pPr\b([^>]*)([\s\S]*?)(?:\/>|<\/a:pPr>)/);
   const pPrAttrs = pPr ? pPr[1] : '';
+  const pPrBody = pPr ? pPr[2] : '';
   let align = 'left';
   const algn = attr(pPrAttrs, 'algn');
   if (algn === 'ctr') align = 'center';
@@ -120,15 +247,35 @@ function parseParagraph(pXml) {
   else if (algn === 'just') align = 'justify';
   // Bullet
   let bullet = null;
-  if (/<a:buChar\s+char="([^"]*)"/.test(pPrStr)) bullet = pPrStr.match(/<a:buChar\s+char="([^"]*)"/)[1];
-  else if (/<a:buAutoNum/.test(pPrStr)) bullet = 'auto';
+  const buNone = /<a:buNone/.test(pPrBody);
+  if (!buNone) {
+    const buChar = pPrBody.match(/<a:buChar\s+char="([^"]*)"/);
+    if (buChar) bullet = buChar[1];
+    else if (/<a:buAutoNum/.test(pPrBody)) bullet = 'auto';
+  }
+  // Bullet color and size
+  let bulletColor = null;
+  const buClr = pPrBody.match(/<a:buClr>([\s\S]*?)<\/a:buClr>/);
+  if (buClr) bulletColor = parseColor(buClr[1]);
   // Indent level
   const lvl = attr(pPrAttrs, 'lvl');
   const indent = lvl ? parseInt(lvl) : 0;
+  // Left margin (marL in EMU)
+  const marL = attr(pPrAttrs, 'marL');
+  const marginLeft = marL ? emuToPx(marL) : null;
   // Line spacing
-  const lnSpc = pPrStr.match(/<a:lnSpc>[\s\S]*?<a:spcPct\s+val="(\d+)"/);
+  const lnSpc = pPrBody.match(/<a:lnSpc>[\s\S]*?<a:spcPct\s+val="(\d+)"/);
   const lineHeight = lnSpc ? Math.round(Number(lnSpc[1]) / 1000) / 100 : null;
-  return { runs, align, bullet, indent, lineHeight };
+  // Space before/after
+  const spcBef = pPrBody.match(/<a:spcBef>[\s\S]*?<a:spcPts\s+val="(\d+)"/);
+  const spcAft = pPrBody.match(/<a:spcAft>[\s\S]*?<a:spcPts\s+val="(\d+)"/);
+  const spaceBefore = spcBef ? Math.round(Number(spcBef[1]) / 100) : null;
+  const spaceAfter = spcAft ? Math.round(Number(spcAft[1]) / 100) : null;
+  // Default run properties (defRPr) for font size fallback
+  const defRPr = pPrBody.match(/<a:defRPr\b([^>]*)/);
+  const defSz = defRPr ? attr(defRPr[1], 'sz') : null;
+  const defaultFontSize = defSz ? Math.round(Number(defSz) / 100) : null;
+  return { runs, align, bullet, bulletColor, indent, marginLeft, lineHeight, spaceBefore, spaceAfter, defaultFontSize };
 }
 
 // ── Shape position/size ──
@@ -250,7 +397,7 @@ async function getSlideSize(zip) {
 async function getLayoutBg(slideXml, relsXml, zip) {
   // Slide's own background
   const slideBg = slideXml.match(/<p:bg>([\s\S]*?)<\/p:bg>/);
-  if (slideBg) { const c = parseColor(slideBg[1]); if (c) return c; }
+  if (slideBg) { const c = parseFill(slideBg[1]) || parseColor(slideBg[1]); if (c) return c; }
   // Find layout from rels
   if (!relsXml) return null;
   const layoutRel = relsXml.match(/Target="([^"]*slideLayout[^"]*)"/);
@@ -282,23 +429,31 @@ async function getLayoutBg(slideXml, relsXml, zip) {
 // ═══════════════════════════════════════
 // DOM Builder
 // ═══════════════════════════════════════
-function renderRun(run, relMap) {
+function renderRun(run, relMap, defaultFontSize) {
+  if (run.text === '\n') return document.createElement('br');
   const span = document.createElement('span');
   let css = '';
-  if (run.fontSize) css += `font-size:${run.fontSize}pt;`;
+  const fs = run.fontSize || defaultFontSize;
+  if (fs) css += `font-size:${fs}pt;`;
   if (run.color) css += `color:${run.color};`;
   if (run.bold) css += 'font-weight:700;';
   if (run.italic) css += 'font-style:italic;';
-  if (run.underline) css += 'text-decoration:underline;';
-  if (run.strike) css += 'text-decoration:line-through;';
-  if (run.font) css += `font-family:"${run.font}",-apple-system,sans-serif;`;
+  // text-decoration can combine underline + line-through
+  const deco = [run.underline ? 'underline' : '', run.strike ? 'line-through' : ''].filter(Boolean).join(' ');
+  if (deco) css += `text-decoration:${deco};`;
+  if (run.font) { const f = resolveFont(run.font); if (f) css += `font-family:${f};`; }
+  if (run.letterSpacing) css += `letter-spacing:${run.letterSpacing}pt;`;
+  if (run.baseline) {
+    if (run.baseline > 0) css += `vertical-align:super;font-size:${Math.round((fs || 12) * 0.65)}pt;`;
+    else css += `vertical-align:sub;font-size:${Math.round((fs || 12) * 0.65)}pt;`;
+  }
   if (css) span.style.cssText = css;
   span.textContent = run.text;
   if (run.hlinkRid && relMap[run.hlinkRid]) {
     const a = document.createElement('a');
     a.href = relMap[run.hlinkRid];
     a.target = '_blank'; a.rel = 'noopener noreferrer';
-    a.style.color = 'inherit'; a.style.textDecoration = 'underline';
+    a.style.cssText = 'color:inherit;text-decoration:underline;cursor:pointer;';
     a.appendChild(span);
     return a;
   }
@@ -307,18 +462,25 @@ function renderRun(run, relMap) {
 
 function renderParagraph(para, relMap, autoNum) {
   const p = document.createElement('p');
-  let css = `margin:0 0 2px;text-align:${para.align};`;
+  let css = `margin:0;text-align:${para.align};white-space:pre-wrap;word-break:break-word;`;
   if (para.lineHeight) css += `line-height:${para.lineHeight};`;
-  if (para.indent) css += `padding-left:${para.indent * 20}px;`;
+  else css += 'line-height:1.35;';
+  const leftPad = (para.marginLeft || 0) + (para.indent || 0) * 20;
+  if (leftPad) css += `padding-left:${leftPad}px;`;
+  if (para.spaceBefore) css += `margin-top:${para.spaceBefore}pt;`;
+  if (para.spaceAfter) css += `margin-bottom:${para.spaceAfter}pt;`;
+  else css += 'margin-bottom:2px;';
   p.style.cssText = css;
   // Bullet
   if (para.bullet) {
     const bulletSpan = document.createElement('span');
-    bulletSpan.style.cssText = 'margin-right:6px;';
+    let bCss = 'margin-right:6px;';
+    if (para.bulletColor) bCss += `color:${para.bulletColor};`;
+    bulletSpan.style.cssText = bCss;
     bulletSpan.textContent = para.bullet === 'auto' ? `${autoNum.n++}. ` : `${para.bullet} `;
     p.appendChild(bulletSpan);
   }
-  for (const run of para.runs) p.appendChild(renderRun(run, relMap));
+  for (const run of para.runs) p.appendChild(renderRun(run, relMap, para.defaultFontSize));
   return p;
 }
 
@@ -368,12 +530,17 @@ async function buildShapeElement(shape, relMap, zip, scaleX, scaleY, objectUrls)
     el.style.overflow = 'auto';
     el.appendChild(renderTable(shape));
   } else if (shape.type === 'text') {
-    if (shape.bgColor) el.style.background = shape.bgColor;
+    // Background: could be solid color or gradient
+    if (shape.bgColor) {
+      if (shape.bgColor.startsWith('linear-gradient')) el.style.background = shape.bgColor;
+      else el.style.background = shape.bgColor;
+    }
     if (shape.line) el.style.border = `${shape.line.width}px solid ${shape.line.color}`;
     const m = shape.margin || { l: 7, r: 7, t: 4, b: 4 };
     el.style.padding = `${m.t}px ${m.r}px ${m.b}px ${m.l}px`;
     el.style.boxSizing = 'border-box';
     el.style.display = 'flex'; el.style.flexDirection = 'column';
+    el.style.fontFamily = resolveFont(themeFontMinor) || 'sans-serif';
     if (shape.anchor === 'ctr') el.style.justifyContent = 'center';
     else if (shape.anchor === 'b') el.style.justifyContent = 'flex-end';
     const autoNum = { n: 1 };
@@ -403,7 +570,8 @@ async function buildSlideElement(slideXml, relsXml, zip, slideSize, objectUrls) 
 
   const slide = document.createElement('div');
   slide.className = 'pptx-slide';
-  let slideCss = `aspect-ratio:${slideSize.w}/${slideSize.h};background:${bgColor};position:relative;overflow:hidden;`;
+  const defaultFont = resolveFont(themeFontMinor) || 'sans-serif';
+  let slideCss = `aspect-ratio:${slideSize.w}/${slideSize.h};background:${bgColor};position:relative;overflow:hidden;font-family:${defaultFont};font-size:12pt;color:${themeColors.tx1 || '#1e293b'};`;
   if (bgImageUrl) slideCss += `background-image:url(${bgImageUrl});background-size:cover;background-position:center;`;
   slide.style.cssText = slideCss;
 
@@ -487,6 +655,9 @@ export async function renderPptxViewer({ url, blob, name, modalApi }) {
     else throw new Error('No data source');
 
     const zip = await JSZip.loadAsync(arrayBuffer);
+    // Parse theme for real colors + fonts
+    themeColors = {}; themeFontMajor = 'Calibri'; themeFontMinor = 'Calibri';
+    await parseTheme(zip);
     const slideSize = await getSlideSize(zip);
 
     const slideFiles = Object.keys(zip.files)
