@@ -200,36 +200,45 @@ function concatU8(arrays) {
 //   moof { mfhd, traf { tfhd, tfdt, trun } } + mdat { data }
 
 /**
- * Build a single-sample fMP4 fragment (moof + mdat).
+ * Build a multi-sample fMP4 fragment (moof + mdat).
+ *
+ * Packs N samples into a single moof with one trun, producing a standard
+ * fMP4 segment that iOS Safari / ManagedMediaSource handles correctly.
+ *
+ * Previously each sample got its own moof+mdat (buildMoofMdat called per
+ * frame), creating ~100 tiny moofs per segment. iOS Safari's MSE didn't
+ * always merge these into contiguous buffer ranges, causing the seek bar
+ * to show scattered/fragmented buffering indicators.
  *
  * @param {number} trackId - Track ID
  * @param {number} sequenceNumber - Moof sequence number (1-based, incrementing)
- * @param {number} baseDecodeTime - Base media decode time (in track timescale)
- * @param {number} duration - Sample duration (in track timescale)
- * @param {Uint8Array} sampleData - Encoded sample data
- * @param {boolean} isSync - Whether this is a sync (key) sample
- * @param {number} ctsOffset - CTS minus DTS (composition time offset)
- * @returns {Uint8Array} Binary fMP4 fragment
+ * @param {{ data: Uint8Array, duration: number, isSync: boolean, ctsOffset: number }[]} samples
+ * @param {number} baseDecodeTime - Base media decode time of the first sample (in track timescale)
+ * @returns {Uint8Array} Binary fMP4 fragment, or null if samples is empty
  */
-function buildMoofMdat(trackId, sequenceNumber, baseDecodeTime, duration, sampleData, isSync, ctsOffset) {
-  const dataLen = sampleData.byteLength;
+function buildMultiSampleMoofMdat(trackId, sequenceNumber, samples, baseDecodeTime) {
+  if (!samples || samples.length === 0) return null;
 
-  // Fixed box sizes (all version=0):
+  const sampleCount = samples.length;
+  let totalDataLen = 0;
+  for (let i = 0; i < sampleCount; i++) totalDataLen += samples[i].data.byteLength;
+
+  // Box sizes (all version=0):
   //   mfhd: 8(header) + 4(fullbox) + 4(seq_num) = 16
   //   tfhd: 8 + 4 + 4(track_id) = 16 (flag=0x020000 default-base-is-moof)
   //   tfdt: 8 + 4 + 4(baseMediaDecodeTime) = 16 (version 0, 32-bit time)
-  //   trun: 8 + 4 + 4(count) + 4(data_offset) + 16(1 sample * 4 fields) = 36
+  //   trun: 8 + 4 + 4(count) + 4(data_offset) + sampleCount * 16
   //         flags = data_offset(0x1) | duration(0x100) | size(0x200) | flags(0x400) | cts(0x800)
-  //   traf: 8 + 16 + 16 + 36 = 76
-  //   moof: 8 + 16 + 76 = 100
-  //   mdat: 8 + dataLen
+  //   traf: 8 + 16 + 16 + trun_size
+  //   moof: 8 + 16 + traf_size
+  //   mdat: 8 + totalDataLen
   const MFHD_SIZE = 16;
   const TFHD_SIZE = 16;
   const TFDT_SIZE = 16;
-  const TRUN_SIZE = 36;
+  const TRUN_SIZE = 20 + sampleCount * 16;
   const TRAF_SIZE = 8 + TFHD_SIZE + TFDT_SIZE + TRUN_SIZE;
   const MOOF_SIZE = 8 + MFHD_SIZE + TRAF_SIZE;
-  const MDAT_SIZE = 8 + dataLen;
+  const MDAT_SIZE = 8 + totalDataLen;
 
   const total = MOOF_SIZE + MDAT_SIZE;
   const buf = new ArrayBuffer(total);
@@ -256,22 +265,30 @@ function buildMoofMdat(trackId, sequenceNumber, baseDecodeTime, duration, sample
 
   // tfdt (version 0 = 32-bit baseMediaDecodeTime)
   wFullBoxHdr(TFDT_SIZE, 'tfdt', 0);
-  w32(baseDecodeTime >>> 0); // ensure unsigned 32-bit
+  w32(baseDecodeTime >>> 0);
 
   // trun (flags: data_offset | duration | size | flags | cts_offset = 0xF01)
   wFullBoxHdr(TRUN_SIZE, 'trun', 0xF01);
-  w32(1);                      // sample_count
+  w32(sampleCount);
   dv.setInt32(p, MOOF_SIZE + 8); p += 4; // data_offset = moof_size + mdat_header(8)
-  w32(duration);               // sample_duration
-  w32(dataLen);                // sample_size
-  w32(isSync ? (1 << 25) : (1 << 16)); // sample_flags
-  w32(ctsOffset >>> 0);        // sample_composition_time_offset (unsigned)
+  for (let i = 0; i < sampleCount; i++) {
+    const s = samples[i];
+    w32(s.duration);
+    w32(s.data.byteLength);
+    w32(s.isSync ? (1 << 25) : (1 << 16));
+    w32(s.ctsOffset >>> 0);
+  }
 
   // ── mdat ──
   w32(MDAT_SIZE); wStr('mdat');
-  new Uint8Array(buf, p).set(sampleData);
+  const out = new Uint8Array(buf);
+  let dp = p;
+  for (let i = 0; i < sampleCount; i++) {
+    out.set(samples[i].data, dp);
+    dp += samples[i].data.byteLength;
+  }
 
-  return new Uint8Array(buf);
+  return out;
 }
 
 // ─── Codec description extraction from mp4box internals ───
@@ -631,8 +648,8 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
 
   // ── Streaming mode: manual segment builder state ──
   // When onSegment is provided, encoder outputs are turned into fMP4 segments
-  // using our manual buildMoofMdat() function (bypasses mp4box.js's broken
-  // fragmentation path). mp4box.js is still used for addTrack and init segments.
+  // using our manual buildMultiSampleMoofMdat() function (bypasses mp4box.js's
+  // broken fragmentation path). mp4box.js is still used for addTrack and init segments.
   let incMuxer = null;
   let incMuxVideoTrackId = null;
   let incMuxAudioTrackId = null;
@@ -651,7 +668,8 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
   let segSequenceNum = 0;          // moof sequence number (incrementing)
   let videoFirstDts = null;        // first video DTS (for baseMediaDecodeTime)
   let audioFirstDts = null;        // first audio DTS
-  const pendingFragments = [];     // accumulated moof+mdat fragments
+  const pendingVideoSamples = [];  // accumulated video samples for multi-sample moof
+  const pendingAudioSamples = [];  // accumulated audio samples for multi-sample moof
   let samplesInPendingSegment = 0;
   const SAMPLES_PER_SEGMENT = 100;
 
@@ -1052,7 +1070,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
       // Generate init segment using mp4box.js (this works correctly).
       // setSegmentOptions + initializeSegmentation builds the ftyp+moov.
       // We do NOT call start() — media segments are built manually via
-      // buildMoofMdat() to bypass mp4box.js's broken DataStream write path.
+      // buildMultiSampleMoofMdat() to bypass mp4box.js's broken DataStream write path.
       incMuxer.setSegmentOptions(incMuxVideoTrackId, null, { nbSamples: 100 });
       if (incMuxAudioTrackId != null) {
         incMuxer.setSegmentOptions(incMuxAudioTrackId, null, { nbSamples: 100 });
@@ -1090,13 +1108,46 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
     }
   }
 
-  /** Flush accumulated fragments into a single ready segment. */
+  /**
+   * Flush accumulated per-track samples into multi-sample moof+mdat segments.
+   * Produces at most 2 moofs per flush (one video, one audio) instead of
+   * N per-sample moofs. This prevents iOS Safari from reporting fragmented
+   * buffer ranges in video.buffered.
+   */
   function flushPendingFragments() {
-    if (pendingFragments.length === 0) return;
+    if (pendingVideoSamples.length === 0 && pendingAudioSamples.length === 0) return;
     const ep = totalSamples > 0 ? Math.min(1, processedSamples / totalSamples) : 0;
-    const data = concatU8(pendingFragments);
-    readySegments.push({ trackIndex: 0, data, encodeProgress: ep });
-    pendingFragments.length = 0;
+    const fragments = [];
+
+    if (pendingVideoSamples.length > 0) {
+      // Adjust durations so each sample's end exactly meets the next sample's
+      // start — eliminates rounding-induced 1-tick gaps that cause iOS Safari
+      // to report fragmented buffer ranges.
+      for (let i = 0; i < pendingVideoSamples.length - 1; i++) {
+        const gap = pendingVideoSamples[i + 1].baseDecodeTime - pendingVideoSamples[i].baseDecodeTime;
+        if (gap > 0) pendingVideoSamples[i].duration = gap;
+      }
+      const baseDts = pendingVideoSamples[0].baseDecodeTime;
+      const frag = buildMultiSampleMoofMdat(incMuxVideoTrackId, ++segSequenceNum, pendingVideoSamples, baseDts);
+      if (frag) fragments.push(frag);
+      pendingVideoSamples.length = 0;
+    }
+
+    if (pendingAudioSamples.length > 0) {
+      for (let i = 0; i < pendingAudioSamples.length - 1; i++) {
+        const gap = pendingAudioSamples[i + 1].baseDecodeTime - pendingAudioSamples[i].baseDecodeTime;
+        if (gap > 0) pendingAudioSamples[i].duration = gap;
+      }
+      const baseDts = pendingAudioSamples[0].baseDecodeTime;
+      const frag = buildMultiSampleMoofMdat(incMuxAudioTrackId, ++segSequenceNum, pendingAudioSamples, baseDts);
+      if (frag) fragments.push(frag);
+      pendingAudioSamples.length = 0;
+    }
+
+    if (fragments.length > 0) {
+      const data = concatU8(fragments);
+      readySegments.push({ trackIndex: 0, data, encodeProgress: ep });
+    }
     samplesInPendingSegment = 0;
   }
 
@@ -1108,11 +1159,10 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
     if (videoFirstDts === null) videoFirstDts = ts;
     const baseDecodeTime = ts - videoFirstDts;
 
-    const frag = buildMoofMdat(
-      incMuxVideoTrackId, ++segSequenceNum, baseDecodeTime,
-      dur || 3000, sampleData, !!frame.key, 0
-    );
-    pendingFragments.push(frag);
+    pendingVideoSamples.push({
+      data: sampleData, baseDecodeTime,
+      duration: dur || 3000, isSync: !!frame.key, ctsOffset: 0
+    });
     samplesInPendingSegment++;
     if (samplesInPendingSegment >= SAMPLES_PER_SEGMENT) {
       flushPendingFragments();
@@ -1128,11 +1178,10 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
     if (audioFirstDts === null) audioFirstDts = ts;
     const baseDecodeTime = ts - audioFirstDts;
 
-    const frag = buildMoofMdat(
-      incMuxAudioTrackId, ++segSequenceNum, baseDecodeTime,
-      dur || 1024, sampleData, frame.key !== false, 0
-    );
-    pendingFragments.push(frag);
+    pendingAudioSamples.push({
+      data: sampleData, baseDecodeTime,
+      duration: dur || 1024, isSync: frame.key !== false, ctsOffset: 0
+    });
     samplesInPendingSegment++;
     if (samplesInPendingSegment >= SAMPLES_PER_SEGMENT) {
       flushPendingFragments();
