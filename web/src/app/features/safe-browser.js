@@ -1,22 +1,27 @@
 // /app/features/safe-browser.js
-// SAFE Browser — manages connection to a KasmVNC browser instance.
+// SAFE Browser — fully automatic browser session management.
 //
-// Two modes:
-//   1. CF Container mode — Worker at SAFE_WORKER_URL proxies to container
-//      iframe src = {SAFE_WORKER_URL}/api/safe/browser/?password=...
-//   2. Direct mode — connect to a self-hosted KasmVNC/noVNC instance
-//      iframe src = https://your-server:6901/?password=...
+// Flow:
+//   1. User opens SAFE tab → autoStart() called
+//   2. POST /api/safe/start → Worker starts CF Container, returns { password }
+//   3. iframe.src = {workerUrl}/api/safe/browser/?password={auto-generated}
+//   4. User sees Chromium immediately — zero config needed
+//
+// The Worker URL is resolved from SAFE_WORKER_URL env or derived from app origin.
 
 import { log } from '../core/log.js';
+import { getAccountToken } from '../core/store.js';
 
-const STORAGE_KEY = 'safe_endpoint';
-const STORAGE_PW_KEY = 'safe_password';
-const STORAGE_MODE_KEY = 'safe_mode';
+// ── State machine ────────────────────────────────────────────────
 
-let _state = 'disconnected'; // disconnected | connecting | connected | error
+let _state = 'idle'; // idle | starting | connected | stopped | error
 let _listeners = [];
+let _iframeUrl = null;
+let _lastError = null;
 
 export function getState() { return _state; }
+export function getIframeUrl() { return _iframeUrl; }
+export function getLastError() { return _lastError; }
 
 export function onStateChange(fn) {
   _listeners.push(fn);
@@ -24,215 +29,140 @@ export function onStateChange(fn) {
 }
 
 function setState(next, detail) {
+  const prev = _state;
   _state = next;
+  if (detail?.iframeUrl) _iframeUrl = detail.iframeUrl;
+  if (detail?.error) _lastError = detail.error;
   for (const fn of _listeners) {
-    try { fn(next, detail); } catch (e) { log({ safeBrowserStateError: e?.message }); }
+    try { fn(next, detail, prev); } catch (e) { log({ safeBrowserStateError: e?.message }); }
   }
 }
 
-// ── Persistence (sessionStorage — cleared on logout) ─────────────
+// ── Worker URL resolution ────────────────────────────────────────
 
-export function getSavedEndpoint() {
-  try { return sessionStorage.getItem(STORAGE_KEY) || ''; } catch { return ''; }
-}
-
-export function getSavedPassword() {
-  try { return sessionStorage.getItem(STORAGE_PW_KEY) || ''; } catch { return ''; }
-}
-
-export function getSavedMode() {
-  try { return sessionStorage.getItem(STORAGE_MODE_KEY) || 'direct'; } catch { return 'direct'; }
-}
-
-export function saveConfig(endpoint, password, mode) {
-  try {
-    sessionStorage.setItem(STORAGE_KEY, endpoint || '');
-    sessionStorage.setItem(STORAGE_PW_KEY, password || '');
-    sessionStorage.setItem(STORAGE_MODE_KEY, mode || 'direct');
-  } catch { /* quota / security */ }
-}
-
-export function clearConfig() {
-  try {
-    sessionStorage.removeItem(STORAGE_KEY);
-    sessionStorage.removeItem(STORAGE_PW_KEY);
-    sessionStorage.removeItem(STORAGE_MODE_KEY);
-  } catch { /* ignore */ }
-}
-
-// ── URL builders ─────────────────────────────────────────────────
-
-/**
- * Build iframe URL for CF Container mode.
- * The Worker proxies /api/safe/browser/* → KasmVNC port 6901.
- */
-function buildContainerIframeUrl(workerUrl, password) {
-  try {
-    const base = workerUrl.replace(/\/+$/, '');
-    const url = new URL(base + '/api/safe/browser/');
-    if (password) url.searchParams.set('password', password);
-    return url.toString();
-  } catch (err) {
-    log({ safeBuildContainerUrlError: err?.message });
-    return null;
+function getWorkerUrl() {
+  // 1. Explicit global config (set by build or runtime)
+  if (typeof globalThis !== 'undefined' && typeof globalThis.SAFE_WORKER_URL === 'string') {
+    const url = globalThis.SAFE_WORKER_URL.trim();
+    if (url) return url.replace(/\/+$/, '');
   }
+  // 2. Same-origin: safe-worker deployed as route on same domain
+  //    (via Cloudflare Pages Function or Service Binding)
+  return '';
+}
+
+// ── API calls ────────────────────────────────────────────────────
+
+function authHeaders() {
+  const token = getAccountToken?.() || '';
+  return {
+    'Authorization': 'Bearer ' + token,
+    'Content-Type': 'application/json',
+  };
 }
 
 /**
- * Build iframe URL for direct KasmVNC/noVNC connection.
+ * Start the container. Worker auto-generates VNC password.
+ * Returns { status, password, browserPath }.
  */
-function buildDirectIframeUrl(endpoint, password) {
-  if (!endpoint) return null;
-  try {
-    let base = endpoint.trim();
-    base = base.replace(/^wss:\/\//i, 'https://').replace(/^ws:\/\//i, 'http://');
-    if (!/^https?:\/\//i.test(base)) base = 'https://' + base;
-    const url = new URL(base);
-    if (password) url.searchParams.set('password', password);
-    return url.toString();
-  } catch (err) {
-    log({ safeBuildDirectUrlError: err?.message });
-    return null;
-  }
-}
-
-// ── CF Container API calls ───────────────────────────────────────
-
-/**
- * Start the CF Container via Worker API.
- * Returns { status, browserPath } on success.
- */
-async function startContainer(workerUrl, authToken, password) {
-  const base = workerUrl.replace(/\/+$/, '');
+async function apiStart() {
+  const base = getWorkerUrl();
   const res = await fetch(base + '/api/safe/start', {
     method: 'POST',
-    headers: {
-      'Authorization': 'Bearer ' + authToken,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ password: password || 'sentry' }),
+    headers: authHeaders(),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data?.message || `Start failed: ${res.status}`);
+    throw new Error(data?.message || `Start failed (${res.status})`);
   }
   return res.json();
 }
 
 /**
- * Check container status via Worker API.
+ * Stop the container.
  */
-async function getContainerStatus(workerUrl, authToken) {
-  const base = workerUrl.replace(/\/+$/, '');
+async function apiStop() {
+  const base = getWorkerUrl();
+  await fetch(base + '/api/safe/stop', {
+    method: 'POST',
+    headers: authHeaders(),
+  }).catch(() => {});
+}
+
+/**
+ * Get container status.
+ */
+async function apiStatus() {
+  const base = getWorkerUrl();
   const res = await fetch(base + '/api/safe/status', {
-    headers: { 'Authorization': 'Bearer ' + authToken },
+    headers: authHeaders(),
   });
   if (!res.ok) return { status: 'unknown' };
   return res.json();
 }
 
-/**
- * Stop the CF Container via Worker API.
- */
-async function stopContainer(workerUrl, authToken) {
-  const base = workerUrl.replace(/\/+$/, '');
-  await fetch(base + '/api/safe/stop', {
-    method: 'POST',
-    headers: { 'Authorization': 'Bearer ' + authToken },
-  }).catch(() => {});
-}
-
-// ── Connection ───────────────────────────────────────────────────
+// ── Public API ───────────────────────────────────────────────────
 
 /**
- * Connect in CF Container mode.
- * Starts the container, then loads KasmVNC via Worker proxy.
+ * Auto-start a browser session. Called when SAFE tab is opened.
+ * No user input required.
  */
-export async function connectContainer(workerUrl, password, authToken) {
-  if (!workerUrl) {
-    setState('error', { message: 'No Worker URL provided' });
-    return false;
-  }
-  if (!authToken) {
-    setState('error', { message: 'No auth token' });
-    return false;
-  }
+export async function autoStart() {
+  // Already running — don't restart
+  if (_state === 'starting' || _state === 'connected') return;
 
-  saveConfig(workerUrl, password, 'container');
-  setState('connecting', { mode: 'container' });
+  setState('starting');
 
   try {
-    // Start the container (may take 2-10s for cold start)
-    await startContainer(workerUrl, authToken, password);
+    const result = await apiStart();
 
-    // Build iframe URL through the Worker proxy
-    const iframeUrl = buildContainerIframeUrl(workerUrl, password);
-    if (!iframeUrl) throw new Error('Failed to build browser URL');
+    // Build iframe URL: Worker proxies /api/safe/browser/ to KasmVNC
+    const base = getWorkerUrl();
+    const iframeUrl = new URL(base + '/api/safe/browser/');
+    if (result.password) {
+      iframeUrl.searchParams.set('password', result.password);
+    }
 
-    setState('connecting', { mode: 'container', iframeUrl });
-    return true;
+    setState('starting', { iframeUrl: iframeUrl.toString() });
   } catch (err) {
-    setState('error', { message: err?.message || 'Container start failed' });
-    return false;
+    log({ safeAutoStartError: err?.message });
+    setState('error', { error: err?.message || 'Failed to start browser' });
   }
 }
 
 /**
- * Connect in direct mode (self-hosted KasmVNC/noVNC).
- */
-export function connectDirect(endpoint, password) {
-  if (!endpoint) {
-    setState('error', { message: 'No endpoint provided' });
-    return false;
-  }
-
-  const iframeUrl = buildDirectIframeUrl(endpoint, password);
-  if (!iframeUrl) {
-    setState('error', { message: 'Invalid endpoint URL' });
-    return false;
-  }
-
-  saveConfig(endpoint, password, 'direct');
-  setState('connecting', { mode: 'direct', iframeUrl });
-  return true;
-}
-
-/**
- * Signal that the iframe has loaded successfully.
+ * Mark as connected (called by UI when iframe loads).
  */
 export function markConnected() {
   setState('connected');
 }
 
 /**
- * Signal a connection error.
+ * Mark error (called by UI on iframe error).
  */
 export function markError(message) {
-  setState('error', { message: message || 'Connection failed' });
+  setState('error', { error: message || 'Connection failed' });
 }
 
 /**
- * Disconnect from the remote browser.
+ * Stop the browser session.
  */
-export function disconnect() {
-  setState('disconnected');
+export async function stop() {
+  setState('stopped');
+  _iframeUrl = null;
+  await apiStop();
 }
 
 /**
- * Attempt to reconnect using saved config.
+ * Resume after stop — just auto-start again.
  */
-export function reconnect() {
-  const endpoint = getSavedEndpoint();
-  const password = getSavedPassword();
-  const mode = getSavedMode();
-  if (!endpoint) {
-    setState('disconnected');
-    return;
-  }
-  if (mode === 'container') {
-    // Can't reconnect container mode without auth token — show setup
-    setState('disconnected');
-  } else {
-    connectDirect(endpoint, password);
-  }
+export function resume() {
+  autoStart();
+}
+
+/**
+ * Retry after error — just auto-start again.
+ */
+export function retry() {
+  autoStart();
 }

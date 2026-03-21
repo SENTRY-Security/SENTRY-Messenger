@@ -444,12 +444,11 @@
   },
   "safe": {
     "description": "安全应用前端环境",
-    "serverUrl": "浏览器服务器 URL",
-    "connect": "连接",
-    "connecting": "正在连接至浏览器...",
-    "retry": "重试",
-    "setupGuide": "设置指南",
-    "setupEndpoint": "然后在上方输入服务器地址。"
+    "starting": "正在启动浏览器...",
+    "startingHint": "首次启动可能需要几秒钟。",
+    "stopped": "浏览器已停止。",
+    "resume": "继续",
+    "retry": "重试"
   },
   "password": {
     "title": "更改密码",

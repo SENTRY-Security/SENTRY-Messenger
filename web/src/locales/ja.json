@@ -442,12 +442,11 @@
   },
   "safe": {
     "description": "セキュアアプリケーションフロントエンド環境",
-    "serverUrl": "ブラウザサーバー URL",
-    "connect": "接続",
-    "connecting": "ブラウザに接続中...",
-    "retry": "再試行",
-    "setupGuide": "セットアップガイド",
-    "setupEndpoint": "上記にサーバーアドレスを入力してください。"
+    "starting": "ブラウザを起動中...",
+    "startingHint": "初回起動には数秒かかる場合があります。",
+    "stopped": "ブラウザが停止しました。",
+    "resume": "再開",
+    "retry": "再試行"
   },
   "password": {
     "title": "パスワード変更",

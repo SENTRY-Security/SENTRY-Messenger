@@ -444,12 +444,11 @@
   },
   "safe": {
     "description": "Secure Application Frontend Environment",
-    "serverUrl": "Browser Server URL",
-    "connect": "Connect",
-    "connecting": "Connecting to browser...",
-    "retry": "Retry",
-    "setupGuide": "Setup Guide",
-    "setupEndpoint": "Then enter the server address above."
+    "starting": "Starting browser...",
+    "startingHint": "First launch may take a few seconds.",
+    "stopped": "Browser stopped.",
+    "resume": "Resume",
+    "retry": "Retry"
   },
   "password": {
     "title": "Change Password",

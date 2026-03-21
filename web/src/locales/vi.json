@@ -442,12 +442,11 @@
   },
   "safe": {
     "description": "Môi trường giao diện ứng dụng bảo mật",
-    "serverUrl": "URL máy chủ trình duyệt",
-    "connect": "Kết nối",
-    "connecting": "Đang kết nối tới trình duyệt...",
-    "retry": "Thử lại",
-    "setupGuide": "Hướng dẫn cài đặt",
-    "setupEndpoint": "Sau đó nhập địa chỉ máy chủ ở trên."
+    "starting": "Đang khởi động trình duyệt...",
+    "startingHint": "Lần khởi động đầu tiên có thể mất vài giây.",
+    "stopped": "Trình duyệt đã dừng.",
+    "resume": "Tiếp tục",
+    "retry": "Thử lại"
   },
   "password": {
     "title": "Đổi mật khẩu",

@@ -1145,69 +1145,34 @@ function setSafeTabVisible(visible) {
 }
 
 // ── SAFE Browser integration ─────────────────────────────────────
+// Zero-config: auto-starts a browser container when the SAFE tab is opened.
 let _safeInitialized = false;
+let _safeAutoStarted = false;
 
 function initSafeBrowser() {
   if (_safeInitialized) return;
   _safeInitialized = true;
 
-  const setupEl = document.getElementById('safe-setup');
-  const connectingEl = document.getElementById('safe-connecting');
+  const startingEl = document.getElementById('safe-starting');
   const browserEl = document.getElementById('safe-browser');
+  const stoppedEl = document.getElementById('safe-stopped');
   const errorEl = document.getElementById('safe-error');
   const iframe = document.getElementById('safe-iframe');
 
-  // Mode-specific inputs
-  const workerUrlInput = document.getElementById('safe-worker-url');
-  const passwordInput = document.getElementById('safe-password');
-  const endpointInput = document.getElementById('safe-endpoint');
-  const directPwInput = document.getElementById('safe-direct-password');
-  const connectBtn = document.getElementById('safe-connect-btn');
   const retryBtn = document.getElementById('safe-retry-btn');
+  const resumeBtn = document.getElementById('safe-resume-btn');
   const errorMsg = document.getElementById('safe-error-msg');
   const statusSpan = document.getElementById('safe-status');
 
-  const fieldsContainer = document.getElementById('safe-fields-container');
-  const fieldsDirect = document.getElementById('safe-fields-direct');
-
   // Toolbar buttons
-  const btnDisconnect = document.getElementById('safe-btn-disconnect');
+  const btnStop = document.getElementById('safe-btn-stop');
   const btnFullscreen = document.getElementById('safe-btn-fullscreen');
   const btnRefresh = document.getElementById('safe-btn-refresh');
 
-  // Mode switching
-  let safeMode = safeBrowser.getSavedMode() || 'container';
-
-  function setSafeMode(mode) {
-    safeMode = mode;
-    if (fieldsContainer) fieldsContainer.style.display = mode === 'container' ? '' : 'none';
-    if (fieldsDirect) fieldsDirect.style.display = mode === 'direct' ? '' : 'none';
-    document.querySelectorAll('.safe-mode-tab').forEach(btn => {
-      const isActive = btn.dataset.mode === mode;
-      btn.classList.toggle('active', isActive);
-      btn.style.background = isActive ? 'var(--accent)' : 'var(--bg-input)';
-      btn.style.color = isActive ? '#fff' : 'var(--fg)';
-    });
-  }
-
-  document.querySelectorAll('.safe-mode-tab').forEach(btn => {
-    btn.addEventListener('click', () => setSafeMode(btn.dataset.mode));
-  });
-
-  // Restore saved config
-  const savedEndpoint = safeBrowser.getSavedEndpoint();
-  const savedPw = safeBrowser.getSavedPassword();
-  const savedMode = safeBrowser.getSavedMode();
-  if (savedMode === 'container' && savedEndpoint && workerUrlInput) workerUrlInput.value = savedEndpoint;
-  if (savedMode === 'container' && savedPw && passwordInput) passwordInput.value = savedPw;
-  if (savedMode === 'direct' && savedEndpoint && endpointInput) endpointInput.value = savedEndpoint;
-  if (savedMode === 'direct' && savedPw && directPwInput) directPwInput.value = savedPw;
-  setSafeMode(savedMode || 'container');
-
   function showPanel(name) {
-    if (setupEl) setupEl.style.display = name === 'setup' ? '' : 'none';
-    if (connectingEl) connectingEl.style.display = name === 'connecting' ? '' : 'none';
+    if (startingEl) startingEl.style.display = name === 'starting' ? '' : 'none';
     if (browserEl) browserEl.style.display = name === 'browser' ? '' : 'none';
+    if (stoppedEl) stoppedEl.style.display = name === 'stopped' ? '' : 'none';
     if (errorEl) errorEl.style.display = name === 'error' ? '' : 'none';
   }
 
@@ -1219,83 +1184,54 @@ function initSafeBrowser() {
     iframe.style.height = (available - toolbarH) + 'px';
   }
 
-  // State machine
+  // State machine — react to safe-browser.js state changes
   safeBrowser.onStateChange((state, detail) => {
     switch (state) {
-      case 'disconnected':
-        showPanel('setup');
-        if (iframe) iframe.src = 'about:blank';
+      case 'idle':
+        showPanel('starting');
         break;
 
-      case 'connecting': {
-        showPanel('connecting');
+      case 'starting': {
+        showPanel('starting');
+        // When iframeUrl is ready, load it
         if (iframe && detail?.iframeUrl) {
           iframe.src = detail.iframeUrl;
-          iframe.onload = () => {
-            safeBrowser.markConnected();
-          };
-          iframe.onerror = () => {
-            safeBrowser.markError('Failed to load browser');
-          };
-          // Cross-origin iframes may not fire load events reliably
+          iframe.onload = () => safeBrowser.markConnected();
+          iframe.onerror = () => safeBrowser.markError('Failed to load browser');
+          // Cross-origin iframes may not fire load events reliably;
+          // CF Container cold start can be 5-10s + KasmVNC boot
           setTimeout(() => {
-            if (safeBrowser.getState() === 'connecting') {
-              safeBrowser.markConnected();
-            }
-          }, 30000); // 30s — CF Container cold start can be 5-10s
+            if (safeBrowser.getState() === 'starting') safeBrowser.markConnected();
+          }, 30000);
         }
         break;
       }
 
       case 'connected':
         showPanel('browser');
-        if (statusSpan) statusSpan.textContent = 'Connected';
+        if (statusSpan) statusSpan.textContent = 'SAFE Browser';
         resizeIframe();
+        break;
+
+      case 'stopped':
+        showPanel('stopped');
+        if (iframe) iframe.src = 'about:blank';
         break;
 
       case 'error':
         showPanel('error');
-        if (errorMsg) errorMsg.textContent = detail?.message || 'Connection error';
+        if (errorMsg) errorMsg.textContent = detail?.error || 'Connection error';
+        if (iframe) iframe.src = 'about:blank';
         break;
     }
   });
 
-  // Connect button — dispatch based on mode
-  connectBtn?.addEventListener('click', () => {
-    if (safeMode === 'container') {
-      const url = workerUrlInput?.value?.trim();
-      const pw = passwordInput?.value || '';
-      if (!url) {
-        if (workerUrlInput) { workerUrlInput.focus(); workerUrlInput.style.borderColor = 'var(--danger)'; }
-        return;
-      }
-      if (workerUrlInput) workerUrlInput.style.borderColor = '';
-      // Use account token as auth for the container Worker
-      const authToken = getAccountToken?.() || 'anonymous';
-      safeBrowser.connectContainer(url, pw, authToken);
-    } else {
-      const ep = endpointInput?.value?.trim();
-      const pw = directPwInput?.value || '';
-      if (!ep) {
-        if (endpointInput) { endpointInput.focus(); endpointInput.style.borderColor = 'var(--danger)'; }
-        return;
-      }
-      if (endpointInput) endpointInput.style.borderColor = '';
-      safeBrowser.connectDirect(ep, pw);
-    }
-  });
+  // Resume / Retry buttons
+  resumeBtn?.addEventListener('click', () => safeBrowser.resume());
+  retryBtn?.addEventListener('click', () => safeBrowser.retry());
 
-  // Enter key to connect
-  workerUrlInput?.addEventListener('keydown', (e) => { if (e.key === 'Enter') connectBtn?.click(); });
-  passwordInput?.addEventListener('keydown', (e) => { if (e.key === 'Enter') connectBtn?.click(); });
-  endpointInput?.addEventListener('keydown', (e) => { if (e.key === 'Enter') connectBtn?.click(); });
-  directPwInput?.addEventListener('keydown', (e) => { if (e.key === 'Enter') connectBtn?.click(); });
-
-  // Retry button
-  retryBtn?.addEventListener('click', () => safeBrowser.reconnect());
-
-  // Disconnect button
-  btnDisconnect?.addEventListener('click', () => safeBrowser.disconnect());
+  // Stop button
+  btnStop?.addEventListener('click', () => safeBrowser.stop());
 
   // Fullscreen
   btnFullscreen?.addEventListener('click', () => {
@@ -1317,7 +1253,15 @@ function initSafeBrowser() {
   // Resize on window resize
   window.addEventListener('resize', resizeIframe);
 
-  showPanel('setup');
+  showPanel('starting');
+}
+
+// Called when SAFE tab becomes active — auto-start if not already running
+function onSafeTabActivated() {
+  if (!_safeAutoStarted || safeBrowser.getState() === 'idle') {
+    _safeAutoStarted = true;
+    safeBrowser.autoStart();
+  }
 }
 let _restoreContactsBars = null;
 function switchTab(name, options = {}) {
@@ -1338,8 +1282,9 @@ function switchTab(name, options = {}) {
     drivePane.refreshDriveList().catch((err) => log({ driveListError: String(err?.message || err) }));
   }
 
-  // Resize SAFE iframe when switching to/from the tab
+  // SAFE tab: auto-start browser + resize iframe
   if (name === 'safe') {
+    onSafeTabActivated();
     const iframe = document.getElementById('safe-iframe');
     const browserEl = document.getElementById('safe-browser');
     if (iframe && browserEl && safeBrowser.getState() === 'connected') {

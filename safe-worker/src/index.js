@@ -102,11 +102,9 @@ export class BrowserSession extends Container {
   // Internet access required — users browse FB/IG/LINE/Telegram
   enableInternet = true;
 
-  // Environment variables passed to the container
-  // VNC_PW is set per-session; override in onStart or via env
-  envVars = {
-    VNC_PW: 'sentry',
-  };
+  // VNC_PW is auto-generated per session and stored in DO storage.
+  // Initialized in fetch() before container starts.
+  envVars = {};
 
   // ── Lifecycle hooks ──────────────────────────────────────────
 
@@ -146,20 +144,22 @@ export class BrowserSession extends Container {
     // ── Start container ────────────────────────────────────────
     if (path === '/api/safe/start' && request.method === 'POST') {
       try {
-        // Optional: read custom password from request body
-        try {
-          const body = await request.json();
-          if (body?.password) {
-            this.envVars = { ...this.envVars, VNC_PW: body.password };
-          }
-        } catch { /* no body or invalid JSON — use defaults */ }
+        // Auto-generate VNC password per session (or reuse existing)
+        let vncPassword = await this.ctx.storage.get('vnc_pw');
+        if (!vncPassword) {
+          vncPassword = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
+          await this.ctx.storage.put('vnc_pw', vncPassword);
+        }
+
+        // Set password before starting
+        this.envVars = { VNC_PW: vncPassword };
 
         // Start container and wait for KasmVNC to be ready on port 6901
         await this.startAndWaitForPorts();
 
         return Response.json({
           status: 'running',
-          // Client will use /api/safe/browser/ to access KasmVNC
+          password: vncPassword,
           browserPath: '/api/safe/browser/',
         });
       } catch (err) {

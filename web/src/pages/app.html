@@ -684,87 +684,39 @@
       </div>
     </section>
     <section id="tab-safe" class="tab" style="display:none">
-      <!-- SAFE: Secure Application Frontend Environment -->
+      <!-- SAFE: Secure Application Frontend Environment
+           Zero-config: auto-starts a browser container when the tab is opened. -->
 
-      <!-- State: Disconnected / Setup -->
-      <div id="safe-setup" class="card" style="text-align:center;padding:32px 24px;">
-        <i class='bx bx-globe' style="font-size:48px;color:var(--accent);"></i>
-        <h2 style="margin:12px 0 8px;">SAFE</h2>
-        <p style="color:var(--muted);font-size:13px;margin-bottom:16px;" data-i18n="safe.description">Secure Application Frontend Environment</p>
-
-        <div style="display:flex;flex-direction:column;gap:12px;max-width:400px;margin:0 auto;">
-          <!-- Mode selector -->
-          <div id="safe-mode-tabs" style="display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
-            <button type="button" class="safe-mode-tab active" data-mode="container"
-                    style="flex:1;padding:8px;font-size:13px;border:none;cursor:pointer;background:var(--accent);color:#fff;">
-              <i class='bx bx-cloud'></i> CF Container
-            </button>
-            <button type="button" class="safe-mode-tab" data-mode="direct"
-                    style="flex:1;padding:8px;font-size:13px;border:none;cursor:pointer;background:var(--bg-input);color:var(--fg);">
-              <i class='bx bx-server'></i> Self-hosted
-            </button>
-          </div>
-
-          <!-- CF Container mode fields -->
-          <div id="safe-fields-container">
-            <div style="display:flex;flex-direction:column;gap:10px;">
-              <label style="text-align:left;font-size:13px;color:var(--muted);">SAFE Worker URL</label>
-              <input id="safe-worker-url" type="url" placeholder="https://safe-browser.your-account.workers.dev"
-                     style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-input);color:var(--fg);font-size:14px;box-sizing:border-box;" />
-              <input id="safe-password" type="password" placeholder="Password (default: sentry)"
-                     style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-input);color:var(--fg);font-size:14px;box-sizing:border-box;" />
-            </div>
-          </div>
-
-          <!-- Direct mode fields (hidden by default) -->
-          <div id="safe-fields-direct" style="display:none;">
-            <div style="display:flex;flex-direction:column;gap:10px;">
-              <label style="text-align:left;font-size:13px;color:var(--muted);" data-i18n="safe.serverUrl">Browser Server URL</label>
-              <input id="safe-endpoint" type="url" placeholder="https://your-server:6901"
-                     style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-input);color:var(--fg);font-size:14px;box-sizing:border-box;" />
-              <input id="safe-direct-password" type="password" placeholder="VNC Password"
-                     style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-input);color:var(--fg);font-size:14px;box-sizing:border-box;" />
-            </div>
-          </div>
-
-          <button id="safe-connect-btn" type="button" class="primary"
-                  style="padding:12px;border-radius:8px;font-size:14px;font-weight:600;">
-            <i class='bx bx-link'></i>
-            <span data-i18n="safe.connect">Connect</span>
-          </button>
-
-          <details style="text-align:left;margin-top:8px;">
-            <summary style="font-size:12px;color:var(--muted);cursor:pointer;" data-i18n="safe.setupGuide">Setup Guide</summary>
-            <div style="font-size:12px;color:var(--muted);margin-top:8px;line-height:1.6;">
-              <p><strong>CF Container:</strong></p>
-              <code style="display:block;background:var(--bg-input);padding:8px;border-radius:4px;margin:4px 0;font-size:11px;word-break:break-all;white-space:pre-wrap;">cd safe-worker && npm i && npx wrangler deploy</code>
-              <p style="margin-top:8px;"><strong>Self-hosted (Docker):</strong></p>
-              <code style="display:block;background:var(--bg-input);padding:8px;border-radius:4px;margin:4px 0;font-size:11px;word-break:break-all;white-space:pre-wrap;">docker run --rm --shm-size=512m -p 6901:6901 -e VNC_PW=password kasmweb/chromium:1.18.0</code>
-            </div>
-          </details>
-        </div>
-      </div>
-
-      <!-- State: Connecting -->
-      <div id="safe-connecting" style="display:none;text-align:center;padding:48px 24px;">
+      <!-- State: Starting (shown automatically on first open) -->
+      <div id="safe-starting" style="text-align:center;padding:48px 24px;">
         <div class="spinner" style="margin:0 auto 16px;"></div>
-        <p style="color:var(--muted);" data-i18n="safe.connecting">Connecting to browser...</p>
+        <p style="color:var(--muted);font-size:14px;" data-i18n="safe.starting">Starting browser...</p>
+        <p style="color:var(--muted);font-size:12px;margin-top:8px;" data-i18n="safe.startingHint">First launch may take a few seconds.</p>
       </div>
 
-      <!-- State: Connected — iframe / canvas viewer -->
+      <!-- State: Connected — full-screen browser -->
       <div id="safe-browser" style="display:none;position:relative;width:100%;height:100%;">
         <div id="safe-toolbar" style="display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--bg-card);border-bottom:1px solid var(--border);">
-          <button id="safe-btn-back" type="button" class="icon-btn" title="Back"><i class='bx bx-arrow-back'></i></button>
-          <button id="safe-btn-home" type="button" class="icon-btn" title="Home"><i class='bx bx-home'></i></button>
           <button id="safe-btn-refresh" type="button" class="icon-btn" title="Refresh"><i class='bx bx-refresh'></i></button>
           <span id="safe-status" style="flex:1;font-size:12px;color:var(--muted);text-align:center;"></span>
           <button id="safe-btn-fullscreen" type="button" class="icon-btn" title="Fullscreen"><i class='bx bx-fullscreen'></i></button>
-          <button id="safe-btn-disconnect" type="button" class="icon-btn" title="Disconnect" style="color:var(--danger);"><i class='bx bx-x'></i></button>
+          <button id="safe-btn-stop" type="button" class="icon-btn" title="Stop" style="color:var(--danger);"><i class='bx bx-power-off'></i></button>
         </div>
         <iframe id="safe-iframe" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
                 allow="fullscreen *; clipboard-read; clipboard-write"
                 style="width:100%;border:none;background:#1a1a2e;"
                 allowfullscreen="true"></iframe>
+      </div>
+
+      <!-- State: Stopped (user explicitly stopped, or idle shutdown) -->
+      <div id="safe-stopped" style="display:none;text-align:center;padding:48px 24px;">
+        <i class='bx bx-power-off' style="font-size:48px;color:var(--muted);"></i>
+        <p style="color:var(--muted);margin:12px 0;" data-i18n="safe.stopped">Browser stopped.</p>
+        <button id="safe-resume-btn" type="button" class="primary"
+                style="padding:12px 32px;border-radius:8px;font-size:14px;font-weight:600;">
+          <i class='bx bx-play'></i>
+          <span data-i18n="safe.resume">Resume</span>
+        </button>
       </div>
 
       <!-- State: Error -->
@@ -1022,7 +974,7 @@
       </button>
       <button id="nav-safe" class="navbtn" style="display:none" aria-label="SAFE ™">
         <span class="nav-badge" data-tab="safe"></span>
-        <i class='bx bx-mobile-alt'></i>
+        <i class='bx bxl-chrome'></i>
         <span>SAFE ™</span>
       </button>
     </div>
@@ -1061,6 +1013,9 @@
     // which routes migrated endpoints to Worker and legacy to Node.js.
     // For local dev, override via ?api=https://... query parameter.
     window.API_ORIGIN = new URLSearchParams(location.search).get('api') || '';
+    // SAFE Browser Worker URL — set to the deployed safe-worker origin.
+    // Empty string = same origin (Pages Function proxy or Service Binding).
+    window.SAFE_WORKER_URL = new URLSearchParams(location.search).get('safe') || '';
     (function () {
       const overlay = document.getElementById('orientationOverlay');
       const docEl = document.documentElement;

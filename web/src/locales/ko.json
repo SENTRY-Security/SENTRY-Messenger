@@ -442,12 +442,11 @@
   },
   "safe": {
     "description": "보안 애플리케이션 프론트엔드 환경",
-    "serverUrl": "브라우저 서버 URL",
-    "connect": "연결",
-    "connecting": "브라우저에 연결 중...",
-    "retry": "재시도",
-    "setupGuide": "설정 가이드",
-    "setupEndpoint": "위에 서버 주소를 입력하세요."
+    "starting": "브라우저 시작 중...",
+    "startingHint": "첫 실행은 몇 초 걸릴 수 있습니다.",
+    "stopped": "브라우저가 중지되었습니다.",
+    "resume": "재개",
+    "retry": "재시도"
   },
   "password": {
     "title": "비밀번호 변경",
