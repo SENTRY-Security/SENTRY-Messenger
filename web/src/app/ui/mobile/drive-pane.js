@@ -6,6 +6,7 @@ import { sessionStore } from './session-store.js';
 import { escapeHtml, fmtSize, safeJSON } from './ui-utils.js';
 import { b64 } from '../../crypto/aead.js';
 import { openImageViewer } from './viewers/image-viewer.js';
+import { renderPdfViewer, cleanupPdfViewer } from './viewers/pdf-viewer.js';
 import { renderExcelViewer, cleanupExcelViewer, isExcelMime, isExcelFilename } from './viewers/excel-viewer.js';
 import { t } from '/locales/index.js';
 
@@ -35,8 +36,6 @@ export function initDrivePane({
   const driveRefreshEl = dom.driveRefresh ?? document.getElementById('driveRefreshHint');
   const driveRefreshLabelEl = dom.driveRefreshLabel ?? document.querySelector('#driveRefreshHint .label');
   const driveScrollEl = dom.driveScroll ?? document.getElementById('tab-drive');
-  let activePdfCleanup = null;
-  let pdfJsLibPromise = null;
   const isSubscriptionActive = () => true; // DEV: 硬解鎖訂閱
   const requireSubscriptionActive = () => {
     if (isSubscriptionActive()) return true;
@@ -223,231 +222,7 @@ export function initDrivePane({
     }
   }
 
-  const PDFJS_ESM_URL = '/assets/libs/pdfjs/pdf.mjs';
-  const PDFJS_WORKER_URL = '/assets/libs/pdfjs/pdf.worker.min.mjs';
-
-  async function getPdfJs() {
-    if (pdfJsLibPromise) return pdfJsLibPromise;
-    pdfJsLibPromise = import(/* webpackIgnore: true */ PDFJS_ESM_URL)
-      .then((lib) => {
-        try { lib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL; } catch (err) { log({ pdfWorkerInitError: err?.message || err }); }
-        return lib;
-      })
-      .catch((err) => { pdfJsLibPromise = null; throw err; });
-    return pdfJsLibPromise;
-  }
-
-  function cleanupPdfViewer() {
-    if (typeof activePdfCleanup === 'function') {
-      try { activePdfCleanup(); } catch {}
-    }
-    activePdfCleanup = null;
-  }
-
-  async function renderPdfPreview({ url, name, modalApi }) {
-    const { openModal, closeModal, showConfirmModal } = modalApi || {};
-    let pdfjsLib;
-    try {
-      pdfjsLib = await getPdfJs();
-    } catch (err) {
-      log({ drivePdfLoadError: err?.message || err });
-      return false;
-    }
-    const modalEl = document.getElementById('modal');
-    const body = document.getElementById('modalBody');
-    const modalTitle = document.getElementById('modalTitle');
-    const closeBtn = document.getElementById('modalClose');
-    const closeArea = document.getElementById('modalCloseArea');
-    if (!modalEl || !body || !modalTitle) return false;
-    cleanupPdfViewer();
-    modalEl.classList.add('pdf-modal');
-    modalTitle.textContent = '';
-    body.innerHTML = `
-      <div class="pdf-viewer">
-        <div class="pdf-toolbar">
-          <button type="button" class="pdf-btn" id="pdfCloseBtn" aria-label="${t('viewer.close')}"><svg viewBox="0 0 16 16" fill="none"><path d="M3 8h10M8 3l-5 5 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-          <div class="pdf-title" title="${escapeHtml(name || 'PDF')}">${escapeHtml(name || 'PDF')}</div>
-          <div class="pdf-actions">
-            <a class="pdf-btn" id="pdfDownload" href="${escapeHtml(url)}" download="${escapeHtml(name || 'file.pdf')}">${t('drive.download')}</a>
-          </div>
-        </div>
-        <div class="pdf-stage">
-          <div class="pdf-canvas-wrap">
-            <canvas id="pdfCanvas" class="pdf-canvas"></canvas>
-            <div class="pdf-loading" id="pdfLoading">${t('common.loading')}</div>
-          </div>
-        </div>
-        <div class="pdf-footer">
-          <div class="pdf-actions-row">
-            <div class="pdf-page-info">
-              <button type="button" class="pdf-btn" id="pdfPrev" aria-label="${t('viewer.prevPage')}">‹</button>
-              <span id="pdfPageLabel">– / –</span>
-              <button type="button" class="pdf-btn" id="pdfNext" aria-label="${t('viewer.nextPage')}">›</button>
-            </div>
-          </div>
-        </div>
-      </div>`;
-    openModal?.();
-
-    const canvas = body.querySelector('#pdfCanvas');
-    const loadingEl = body.querySelector('#pdfLoading');
-    const pageLabel = body.querySelector('#pdfPageLabel');
-    const stage = body.querySelector('.pdf-stage');
-
-    let pdfDoc = null;
-    let pageNum = 1;
-    let scale = 1;
-    let rendering = false;
-    let pendingPage = null;
-    let fitWidth = true;
-
-    const updateLabels = () => {
-      if (pageLabel && pdfDoc) pageLabel.textContent = `${pageNum} / ${pdfDoc.numPages}`;
-    };
-
-    const cleanupCore = () => {
-      try { pdfDoc?.cleanup?.(); pdfDoc?.destroy?.(); } catch {}
-      modalEl.classList.remove('pdf-modal');
-    };
-
-    const renderPage = async (num) => {
-      if (!pdfDoc || !canvas) return;
-      rendering = true;
-      const page = await pdfDoc.getPage(num);
-      const baseViewport = page.getViewport({ scale: 1 });
-      if (fitWidth && stage?.clientWidth) {
-        const maxWidth = Math.max(stage.clientWidth, 320);
-        scale = Math.min(3, Math.max(0.6, maxWidth / baseViewport.width));
-      }
-      const viewport = page.getViewport({ scale });
-      const ctx = canvas.getContext('2d');
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      canvas.style.width = `${viewport.width}px`;
-      canvas.style.height = `${viewport.height}px`;
-      if (loadingEl) loadingEl.textContent = t('drive.loadingPage', { page: num });
-      await page.render({ canvasContext: ctx, viewport }).promise;
-      rendering = false;
-      updateLabels();
-      if (loadingEl) loadingEl.textContent = '';
-      if (pendingPage) {
-        const next = pendingPage;
-        pendingPage = null;
-        renderPage(next);
-      }
-      if (stage) stage.style.touchAction = scale > 1 ? 'none' : 'auto';
-    };
-
-    try {
-      pdfDoc = await pdfjsLib.getDocument({ url }).promise;
-      pageNum = 1;
-      updateLabels();
-      await renderPage(pageNum);
-    } catch (err) {
-      if (loadingEl) {
-        loadingEl.textContent = t('drive.pdfLoadFailed', { error: err?.message || err });
-        loadingEl.classList.add('pdf-error');
-      }
-      return true;
-    }
-
-    const queueRender = (num) => {
-      if (num < 1 || num > pdfDoc.numPages) return;
-      pageNum = num;
-      if (rendering) {
-        pendingPage = num;
-      } else {
-        renderPage(num);
-      }
-    };
-
-    body.querySelector('#pdfPrev')?.addEventListener('click', () => queueRender(pageNum - 1));
-    body.querySelector('#pdfNext')?.addEventListener('click', () => queueRender(pageNum + 1));
-    const downloadBtn = body.querySelector('#pdfDownload');
-    downloadBtn?.addEventListener('click', (e) => {
-      e.preventDefault();
-      const proceed = () => triggerDownload(url, name || 'file.pdf');
-      if (typeof showConfirmModal === 'function') {
-        showConfirmModal({
-          title: t('drive.downloadPdf'),
-          message: t('drive.downloadPdfConfirm'),
-          confirmLabel: t('drive.download'),
-          onConfirm: proceed
-        });
-      } else {
-        showConfirmModal?.({ title: t('drive.downloadPdf'), message: t('drive.downloadPdfConfirm'), confirmLabel: t('drive.download'), onConfirm: proceed });
-      }
-    });
-    body.querySelector('#pdfCloseBtn')?.addEventListener('click', () => activePdfCleanup?.());
-    closeBtn?.addEventListener('click', () => activePdfCleanup?.(), { once: true });
-    closeArea?.addEventListener('click', () => activePdfCleanup?.(), { once: true });
-    const handleResize = () => { if (fitWidth) queueRender(pageNum); };
-    window.addEventListener('resize', handleResize);
-
-    // Pinch/pan
-    let pinchStartDist = null;
-    let pinchStartScale = scale;
-    let panStart = null;
-    const getDistance = (touches) => {
-      if (!touches || touches.length < 2) return null;
-      const [a, b] = touches;
-      const dx = a.clientX - b.clientX;
-      const dy = a.clientY - b.clientY;
-      return Math.sqrt(dx * dx + dy * dy);
-    };
-    const onTouchStart = (e) => {
-      if (e.touches.length === 2) {
-        pinchStartDist = getDistance(e.touches);
-        pinchStartScale = scale;
-        panStart = null;
-        if (stage) stage.style.touchAction = 'none';
-      } else if (e.touches.length === 1 && scale > 1 && stage) {
-        const t = e.touches[0];
-        panStart = { x: t.clientX, y: t.clientY, scrollLeft: stage.scrollLeft, scrollTop: stage.scrollTop };
-        stage.style.touchAction = 'none';
-      }
-    };
-    const onTouchMove = (e) => {
-      if (e.touches.length === 2 && pinchStartDist) {
-        const dist = getDistance(e.touches);
-        if (!dist) return;
-        e.preventDefault();
-        const factor = dist / pinchStartDist;
-        scale = Math.min(3, Math.max(0.6, pinchStartScale * factor));
-        fitWidth = false;
-        queueRender(pageNum);
-      } else if (e.touches.length === 1 && panStart && stage) {
-        e.preventDefault();
-        const t = e.touches[0];
-        stage.scrollLeft = panStart.scrollLeft - (t.clientX - panStart.x);
-        stage.scrollTop = panStart.scrollTop - (t.clientY - panStart.y);
-      }
-    };
-    const onTouchEnd = () => {
-      pinchStartDist = null;
-      panStart = null;
-      if (stage && scale <= 1) stage.style.touchAction = 'auto';
-    };
-    stage?.addEventListener('touchstart', onTouchStart, { passive: false });
-    stage?.addEventListener('touchmove', onTouchMove, { passive: false });
-    stage?.addEventListener('touchend', onTouchEnd);
-    stage?.addEventListener('touchcancel', onTouchEnd);
-
-    const prevCleanup = activePdfCleanup;
-    activePdfCleanup = () => {
-      if (typeof prevCleanup === 'function') prevCleanup();
-      cleanupCore();
-      window.removeEventListener('resize', handleResize);
-      stage?.removeEventListener('touchstart', onTouchStart);
-      stage?.removeEventListener('touchmove', onTouchMove);
-      stage?.removeEventListener('touchend', onTouchEnd);
-      stage?.removeEventListener('touchcancel', onTouchEnd);
-      closeModal?.();
-      activePdfCleanup = null;
-      if (stage) stage.style.touchAction = 'auto';
-    };
-    return true;
-  }
+  // PDF viewer is now shared with chat — imported from viewers/pdf-viewer.js
 
   const {
     openModal,
@@ -1509,7 +1284,7 @@ export function initDrivePane({
     const ct = (contentType || '').toLowerCase();
 
     if (ct === 'application/pdf' || ct.startsWith('application/pdf')) {
-      renderPdfPreview({
+      renderPdfViewer({
         url,
         name: resolvedName,
         modalApi: { openModal, closeModal, showConfirmModal }
