@@ -145,8 +145,8 @@ function startPolling(password) {
         catch (e) { /* ignore */ }
       }
 
-      // Container is ready — load the iframe
-      if (data.status === 'running' || data.status === 'healthy') {
+      // Container is ready — only 'healthy' means fully ready to serve
+      if (data.status === 'healthy') {
         stopPolling();
         setState('starting', { iframeUrl: buildIframeUrl(password) });
       }
@@ -173,11 +173,11 @@ export async function autoStart() {
   try {
     const result = await apiStart();
 
-    if (result.status === 'running') {
-      // Container already running — load iframe immediately
+    if (result.status === 'healthy') {
+      // Container already healthy — load iframe immediately
       setState('starting', { iframeUrl: buildIframeUrl(result.password) });
     } else {
-      // Container is starting/building — poll every 3s
+      // Container is starting/running/building — poll every 3s until healthy
       _containerStatus = result.status;
       setState('starting', { containerStatus: result.status, elapsed: 0 });
       startPolling(result.password);

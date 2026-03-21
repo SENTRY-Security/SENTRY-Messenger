@@ -71,9 +71,17 @@ export class BrowserSession extends Container {
         // Set password before starting
         this.envVars = { VNC_PW: vncPassword };
 
-        // Check if already running
+        // Check current state — return actual status
         const currentState = await this.getState();
-        if (currentState.status === 'running' || currentState.status === 'healthy') {
+        if (currentState.status === 'healthy') {
+          return Response.json({
+            status: 'healthy',
+            password: vncPassword,
+            browserPath: '/api/safe/browser/',
+          });
+        }
+        // Already starting — don't restart, just return current status
+        if (currentState.status === 'running') {
           return Response.json({
             status: 'running',
             password: vncPassword,
