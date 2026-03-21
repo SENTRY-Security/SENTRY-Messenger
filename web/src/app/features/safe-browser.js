@@ -129,19 +129,16 @@ async function apiStatus() {
 
 function buildIframeUrl(password) {
   const base = getWorkerUrl();
-  const url = new URL(base + '/api/safe/browser/vnc.html');
+  const token = getAccountToken?.() || '';
+  const seg = token ? encodeURIComponent(token) : '_';
+  // Embed token in URL path so ALL sub-resource requests (JS/CSS/images)
+  // automatically carry auth via their relative path prefix
+  const url = new URL(`${base}/api/safe/browser/${seg}/vnc.html`);
   url.searchParams.set('autoconnect', 'true');
   url.searchParams.set('resize', 'scale');
-  // iframe can't set Authorization header — pass token via query param
-  const token = getAccountToken?.() || '';
-  // Include token in both the page URL and the WebSocket path
-  // so noVNC's WebSocket connection also passes auth
-  const wsPath = token
-    ? `api/safe/browser/websockify?token=${encodeURIComponent(token)}`
-    : 'api/safe/browser/websockify';
-  url.searchParams.set('path', wsPath);
+  // WebSocket path also includes the token segment
+  url.searchParams.set('path', `api/safe/browser/${seg}/websockify`);
   if (password) url.searchParams.set('password', password);
-  if (token) url.searchParams.set('token', token);
   return url.toString();
 }
 

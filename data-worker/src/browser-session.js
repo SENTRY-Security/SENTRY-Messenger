@@ -154,8 +154,8 @@ export class BrowserSession extends Container {
         }
       }
 
-      // Strip the /api/safe/browser prefix, keep the rest of the path
-      const containerPath = path.replace('/api/safe/browser', '') || '/';
+      // Strip /api/safe/browser/{token} prefix, keep the rest of the path
+      const containerPath = path.replace(/^\/api\/safe\/browser\/[^/]*/, '') || '/';
       const containerUrl = new URL(request.url);
       containerUrl.pathname = containerPath;
 
