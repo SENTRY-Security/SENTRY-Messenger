@@ -89,7 +89,7 @@ export async function renderPdfViewer({ url, name, modalApi }) {
   const stage = body.querySelector('#pdfStage');
 
   let pdfDoc = null;
-  const pageCanvases = []; // { canvas, wrap, rendered, rendering, pageNum, zoom, fitScale }
+  const pageCanvases = [];
   const gestureCleanups = [];
 
   const cleanupCore = () => {
@@ -99,54 +99,43 @@ export async function renderPdfViewer({ url, name, modalApi }) {
     modalEl.classList.remove('pdf-modal');
   };
 
-  // Compute the scale that makes this page exactly fit the stage width
-  const computeFitScale = (viewport) => {
-    if (!stage?.clientWidth) return 1;
-    const cs = getComputedStyle(stage);
-    const padL = parseFloat(cs.paddingLeft) || 0;
-    const padR = parseFloat(cs.paddingRight) || 0;
-    const available = Math.max(stage.clientWidth - padL - padR, 320);
-    return Math.min(3, Math.max(0.6, available / viewport.width));
-  };
+  // Determine pixel render scale: enough resolution for crisp display
+  const BASE_RENDER_SCALE = Math.max(2, window.devicePixelRatio || 2);
 
-  // Render a page canvas at a given render scale; CSS size stays at per-page fitScale
+  // Render a page; CSS width is always 100% (browser handles fit-width)
   const renderPageAt = async (entry, renderScale) => {
     if (entry.rendering) return;
     entry.rendering = true;
     try {
       const page = await pdfDoc.getPage(entry.pageNum);
       const baseViewport = page.getViewport({ scale: 1 });
-      // Per-page fitScale — each page fills the stage width independently
-      entry.fitScale = computeFitScale(baseViewport);
-      const pageFit = entry.fitScale;
-      const cssViewport = page.getViewport({ scale: pageFit });
       const hiresViewport = page.getViewport({ scale: renderScale });
       const canvas = entry.canvas;
       const ctx = canvas.getContext('2d');
+      // Pixel buffer at requested render scale
       canvas.width = hiresViewport.width;
       canvas.height = hiresViewport.height;
-      canvas.style.width = `${cssViewport.width}px`;
-      canvas.style.height = `${cssViewport.height}px`;
-      entry.wrap.style.width = `${cssViewport.width}px`;
-      entry.wrap.style.height = `${cssViewport.height}px`;
+      // CSS: 100% width, auto height — browser fits to container, no measurement needed
+      canvas.style.width = '100%';
+      canvas.style.height = 'auto';
+      // Wrap: full width, aspect-ratio driven height — zero whitespace
+      const aspect = baseViewport.width / baseViewport.height;
+      entry.wrap.style.width = '100%';
+      entry.wrap.style.height = 'auto';
+      entry.wrap.style.aspectRatio = `${aspect}`;
       entry.wrap.style.minHeight = '0';
       await page.render({ canvasContext: ctx, viewport: hiresViewport }).promise;
       entry.rendered = true;
       entry.currentRenderScale = renderScale;
+      entry.baseViewport = baseViewport;
     } catch (err) {
       log({ pdfPageRenderError: err?.message, page: entry.pageNum });
     }
     entry.rendering = false;
   };
 
-  // Initial render: each page at its own fitScale
-  const renderPageCanvas = async (entry) => {
-    // Pre-compute fitScale for this page so renderPageAt uses it
-    const page = await pdfDoc.getPage(entry.pageNum);
-    const baseViewport = page.getViewport({ scale: 1 });
-    entry.fitScale = computeFitScale(baseViewport);
-    return renderPageAt(entry, entry.fitScale);
-  };
+  // Initial render at base scale
+  const renderPageCanvas = (entry) => renderPageAt(entry, BASE_RENDER_SCALE);
 
   // ── Per-page pinch-zoom + pan ──
   const attachPageGesture = (entry) => {
@@ -176,28 +165,18 @@ export async function renderPdfViewer({ url, name, modalApi }) {
       ty = Math.max(Math.min(0, wh - h), Math.min(0, ty));
     };
 
-    // Re-render at high resolution, then reset CSS transform
+    // Re-render at higher resolution for sharp zoom
     const scheduleHiresRender = () => {
       if (hiresTimer) clearTimeout(hiresTimer);
       if (zoom <= 1.05) return;
       hiresTimer = setTimeout(async () => {
         hiresTimer = null;
-        const targetZoom = zoom;
-        const pageFit = entry.fitScale || 1;
-        const targetRenderScale = pageFit * targetZoom;
-        // Cap render scale to avoid excessive memory use
-        const maxRenderScale = pageFit * 5;
-        const renderScale = Math.min(maxRenderScale, targetRenderScale);
+        const renderScale = Math.min(BASE_RENDER_SCALE * 5, BASE_RENDER_SCALE * zoom);
         if (entry.currentRenderScale && Math.abs(entry.currentRenderScale - renderScale) < 0.1) return;
-        // Save current pan ratio before re-render
         const panRatioX = canvas.offsetWidth > 0 ? tx / (canvas.offsetWidth * zoom) : 0;
         const panRatioY = canvas.offsetHeight > 0 ? ty / (canvas.offsetHeight * zoom) : 0;
         entry.rendered = false;
         await renderPageAt(entry, renderScale);
-        // After re-render: canvas CSS size is still fitScale dimensions,
-        // but pixel buffer is hi-res. Keep CSS transform for pan only (zoom=1 visually via hi-res pixels).
-        // Actually we keep the CSS zoom so the visual size = cssSize * zoom stays the same.
-        // The hi-res buffer just provides sharper pixels within that zoomed view.
         tx = panRatioX * canvas.offsetWidth * zoom;
         ty = panRatioY * canvas.offsetHeight * zoom;
         clampPan();
@@ -209,11 +188,10 @@ export async function renderPdfViewer({ url, name, modalApi }) {
       if (hiresTimer) { clearTimeout(hiresTimer); hiresTimer = null; }
       zoom = 1; tx = 0; ty = 0;
       applyTransform();
-      // Re-render at base fitScale if we had a hi-res render
-      const pageFit = entry.fitScale || 1;
-      if (entry.currentRenderScale && entry.currentRenderScale > pageFit + 0.1) {
+      // Downgrade back to base resolution to free memory
+      if (entry.currentRenderScale && entry.currentRenderScale > BASE_RENDER_SCALE + 0.1) {
         entry.rendered = false;
-        renderPageAt(entry, pageFit);
+        renderPageAt(entry, BASE_RENDER_SCALE);
       }
     };
 
@@ -359,7 +337,7 @@ export async function renderPdfViewer({ url, name, modalApi }) {
       canvas.className = 'pdf-canvas';
       wrap.appendChild(canvas);
       stage.appendChild(wrap);
-      const entry = { canvas, wrap, rendered: false, rendering: false, pageNum: i, zoom: null, currentRenderScale: 0, fitScale: 1 };
+      const entry = { canvas, wrap, rendered: false, rendering: false, pageNum: i, zoom: null, currentRenderScale: 0, baseViewport: null };
       pageCanvases.push(entry);
       attachPageGesture(entry);
     }

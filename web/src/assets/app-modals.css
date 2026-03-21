@@ -506,19 +506,20 @@
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
   touch-action: pan-y;
-  padding: 52px 0 8px;
+  padding: 48px 0 8px;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   gap: 4px;
   background: #1a1a2e;
 }
 
 .pdf-page-wrap {
   flex: 0 0 auto;
+  width: 100%;
+  box-sizing: border-box;
   background: #111827;
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
-  min-height: 200px;
   overflow: hidden;
   position: relative;
   touch-action: pan-y;
@@ -526,6 +527,8 @@
 
 .pdf-canvas {
   display: block;
+  width: 100%;
+  height: auto;
   background: #fff;
   transform-origin: 0 0;
   will-change: transform;
