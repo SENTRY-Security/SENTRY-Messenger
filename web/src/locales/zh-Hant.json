@@ -811,7 +811,9 @@
     "minutesAgo": "{count} 分鐘前",
     "hoursAgo": "{count} 小時前",
     "daysAgo": "{count} 天前",
-    "monthDay": "{month}/{day}"
+    "monthDay": "{month}/{day}",
+    "pdfLoadFailed": "PDF 載入失敗：{{error}}",
+    "loadingPage": "載入第 {{page}} 頁…"
   },
   "viewer": {
     "close": "關閉",
@@ -849,7 +851,9 @@
     "pdfPreview": "PDF 預覽",
     "saveAsNew": "另存新檔",
     "saveEditedImage": "儲存編輯後的圖片",
-    "sentryStreamPlayer": "SENTRY 串流播放器"
+    "sentryStreamPlayer": "SENTRY 串流播放器",
+    "pdfLoadFailed": "PDF 載入失敗：{{error}}",
+    "loadingPage": "載入第 {{num}} 頁…"
   },
   "mediaHandling": {
     "videoDataIncomplete": "影片資料不完整，無法播放",

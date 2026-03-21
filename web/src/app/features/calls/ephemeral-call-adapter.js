@@ -27,6 +27,8 @@ import { prepareCallKeyEnvelope } from './key-manager.js';
 let _ephCtx = null;
 let _prevSignalSender = null; // stashed regular signal sender to restore on deactivation
 let _callTokenGate = null;    // promise that resolves when call token is stored
+let _gateQueue = [];          // messages queued while gate is pending
+const GATE_TIMEOUT_MS = 5000; // max wait for token derivation before processing anyway
 
 /**
  * Set a promise that must resolve before incoming call signals are processed.
@@ -34,7 +36,35 @@ let _callTokenGate = null;    // promise that resolves when call token is stored
  * which would cause key derivation failure → encrypted audio played raw → noise.
  */
 export function setCallTokenGate(promise) {
-  _callTokenGate = promise || null;
+  if (!promise) { _callTokenGate = null; return; }
+
+  _callTokenGate = promise;
+
+  // Safety timeout — don't block calls forever if derivation hangs
+  const timeout = new Promise(resolve => setTimeout(resolve, GATE_TIMEOUT_MS));
+  const gateWithTimeout = Promise.race([promise, timeout]);
+
+  gateWithTimeout.then(() => {
+    _drainGateQueue();
+  }).catch(err => {
+    log({ callTokenGateError: err?.message || 'unknown' });
+    _drainGateQueue();
+  });
+}
+
+function _drainGateQueue() {
+  _callTokenGate = null;
+  const queued = _gateQueue.splice(0);
+  if (queued.length > 0) {
+    log({ callTokenGateDrained: queued.length });
+  }
+  for (const msg of queued) {
+    if (_ephCtx) {
+      _processEphemeralCallMessage(msg);
+    } else {
+      log({ callTokenGateDropped: msg?.type, reason: 'adapter-deactivated' });
+    }
+  }
 }
 
 /**
@@ -69,6 +99,7 @@ export function deactivateEphemeralCallMode() {
   if (!_ephCtx) return;
   _ephCtx = null;
   _callTokenGate = null;
+  _gateQueue.length = 0;
   setMediaSessionEphemeralMode(false);
   // Restore previous signal sender so regular calls continue working
   if (_prevSignalSender) {
@@ -151,15 +182,13 @@ export function handleEphemeralCallMessage(msg) {
     return false;
   }
 
-  // If a call token gate is pending, wait for it before processing the
-  // invite — otherwise key derivation will fail (token not stored yet)
-  // and encrypted audio will play as raw noise on both sides.
+  // If a call token gate is pending, queue the message — it will be
+  // processed once the token is derived (or the safety timeout fires).
+  // Without this, call-invite arrives before token is stored → key
+  // derivation fails → encrypted audio played as raw noise.
   if (_callTokenGate) {
-    const gate = _callTokenGate;
-    gate.then(() => {
-      _callTokenGate = null;
-      _processEphemeralCallMessage(msg);
-    });
+    log({ callTokenGateQueued: msg.type });
+    _gateQueue.push(msg);
     return true;
   }
 

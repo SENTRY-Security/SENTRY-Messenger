@@ -808,7 +808,9 @@
     "minutesAgo": "{count} phút trước",
     "hoursAgo": "{count} giờ trước",
     "daysAgo": "{count} ngày trước",
-    "monthDay": "{day}/{month}"
+    "monthDay": "{day}/{month}",
+    "pdfLoadFailed": "Tải PDF thất bại: {{error}}",
+    "loadingPage": "Đang tải trang {{page}}…"
   },
   "viewer": {
     "close": "Đóng",
@@ -846,7 +848,9 @@
     "pdfPreview": "Xem trước PDF",
     "saveAsNew": "Lưu thành bản mới",
     "saveEditedImage": "Lưu hình ảnh đã chỉnh sửa",
-    "sentryStreamPlayer": "SENTRY Stream Player"
+    "sentryStreamPlayer": "SENTRY Stream Player",
+    "pdfLoadFailed": "Tải PDF thất bại: {{error}}",
+    "loadingPage": "Đang tải trang {{num}}…"
   },
   "mediaHandling": {
     "videoDataIncomplete": "Dữ liệu video không đầy đủ, không thể phát",

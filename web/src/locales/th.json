@@ -808,7 +808,9 @@
     "minutesAgo": "{count} นาทีที่แล้ว",
     "hoursAgo": "{count} ชั่วโมงที่แล้ว",
     "daysAgo": "{count} วันที่แล้ว",
-    "monthDay": "{day}/{month}"
+    "monthDay": "{day}/{month}",
+    "pdfLoadFailed": "โหลด PDF ล้มเหลว: {{error}}",
+    "loadingPage": "กำลังโหลดหน้า {{page}}…"
   },
   "viewer": {
     "close": "ปิด",
@@ -846,7 +848,9 @@
     "pdfPreview": "ตัวอย่าง PDF",
     "saveAsNew": "บันทึกเป็นใหม่",
     "saveEditedImage": "บันทึกรูปภาพที่แก้ไข",
-    "sentryStreamPlayer": "SENTRY Stream Player"
+    "sentryStreamPlayer": "SENTRY Stream Player",
+    "pdfLoadFailed": "โหลด PDF ล้มเหลว: {{error}}",
+    "loadingPage": "กำลังโหลดหน้า {{num}}…"
   },
   "mediaHandling": {
     "videoDataIncomplete": "ข้อมูลวิดีโอไม่สมบูรณ์ ไม่สามารถเล่นได้",

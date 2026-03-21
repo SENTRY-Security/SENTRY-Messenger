@@ -808,7 +808,9 @@
     "minutesAgo": "{count}분 전",
     "hoursAgo": "{count}시간 전",
     "daysAgo": "{count}일 전",
-    "monthDay": "{month}/{day}"
+    "monthDay": "{month}/{day}",
+    "pdfLoadFailed": "PDF 로드 실패: {{error}}",
+    "loadingPage": "{{page}} 페이지 로드 중…"
   },
   "viewer": {
     "close": "닫기",
@@ -846,7 +848,9 @@
     "pdfPreview": "PDF 미리보기",
     "saveAsNew": "새로 저장",
     "saveEditedImage": "편집된 이미지 저장",
-    "sentryStreamPlayer": "SENTRY Stream Player"
+    "sentryStreamPlayer": "SENTRY Stream Player",
+    "pdfLoadFailed": "PDF 로드 실패: {{error}}",
+    "loadingPage": "{{num}} 페이지 로드 중…"
   },
   "mediaHandling": {
     "videoDataIncomplete": "동영상 데이터가 불완전하여 재생할 수 없습니다",

@@ -810,7 +810,9 @@
     "minutesAgo": "{count} 分钟前",
     "hoursAgo": "{count} 小时前",
     "daysAgo": "{count} 天前",
-    "monthDay": "{month}/{day}"
+    "monthDay": "{month}/{day}",
+    "pdfLoadFailed": "PDF 加载失败：{{error}}",
+    "loadingPage": "正在加载第 {{page}} 页…"
   },
   "viewer": {
     "close": "关闭",
@@ -848,7 +850,9 @@
     "pdfPreview": "PDF 预览",
     "saveAsNew": "另存新文件",
     "saveEditedImage": "保存编辑后的图片",
-    "sentryStreamPlayer": "SENTRY 串流播放器"
+    "sentryStreamPlayer": "SENTRY 串流播放器",
+    "pdfLoadFailed": "PDF 加载失败：{{error}}",
+    "loadingPage": "正在加载第 {{num}} 页…"
   },
   "mediaHandling": {
     "videoDataIncomplete": "视频数据不完整，无法播放",
