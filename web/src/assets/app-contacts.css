@@ -58,6 +58,7 @@ html.no-anim .cover-spinner {
   min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   padding-bottom: calc(var(--navbar-height) + 28px);
 }
 

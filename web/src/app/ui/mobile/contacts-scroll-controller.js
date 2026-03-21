@@ -127,14 +127,21 @@ export function createContactsScrollController({
       }
 
       // Bar hide/show
-      if (scrollTop > barThreshold) {
+      // Guard: skip bar hiding entirely when there isn't enough scroll
+      // content to fully hide bars — prevents partial-transform stuck state
+      // when there are few contacts.
+      const maxScrollForBars = scrollEl.scrollHeight - scrollEl.clientHeight;
+      const canFullyHide = maxScrollForBars > barThreshold + BAR_SCROLL_RANGE;
+
+      if (canFullyHide && scrollTop > barThreshold) {
         if (barsHidden && upwardAccum >= RESTORE_SCROLL_DIST
             && performance.now() > bounceGuardUntil) {
           // direction-driven restore (requires sustained upward scroll)
           showBars();
           upwardAccum = 0;
-        } else if (!barsHidden && delta >= 0) {
-          // position-driven hide
+        } else if (!barsHidden) {
+          // position-driven hide/reveal — tracks scroll in both directions
+          // so bars follow the finger on the way back up, not just down
           const progress = clamp((scrollTop - barThreshold) / BAR_SCROLL_RANGE, 0, 1);
           hideBars(progress);
         }
