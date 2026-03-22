@@ -598,10 +598,26 @@ async function getSlideSize(zip) {
 }
 
 // ── Slide layout/master background ──
+// Parse background from a bg element (handles solidFill, gradFill, bgRef, noFill)
+function parseBgElement(bgEl) {
+  if (!bgEl) return undefined; // no bg element = inherit from parent
+  // Check for noFill (explicit "no background" = white)
+  if (dn(bgEl, NS_A, 'noFill')) return '#ffffff';
+  // Try solidFill / gradFill
+  const fill = parseFill(bgEl);
+  if (fill) return fill;
+  // Try bgRef with schemeClr (theme reference)
+  const color = parseColor(bgEl);
+  if (color) return color;
+  // bg element exists but we can't parse it → treat as white (stop cascade)
+  return '#ffffff';
+}
+
 async function getLayoutBg(slideDoc, relsXml, zip) {
   // Slide's own background
   const slideBg = dn(slideDoc, NS_P, 'bg');
-  if (slideBg) { const c = parseFill(slideBg) || parseColor(slideBg); if (c) return c; }
+  const slideBgColor = parseBgElement(slideBg);
+  if (slideBgColor !== undefined) return slideBgColor;
   // Find layout from rels
   if (!relsXml) return null;
   const relsDoc = parseXml(relsXml);
@@ -616,8 +632,9 @@ async function getLayoutBg(slideDoc, relsXml, zip) {
     const layoutXmlStr = await zip.file(layoutPath)?.async('string');
     if (!layoutXmlStr) return null;
     const layoutDoc = parseXml(layoutXmlStr);
-    const bg = dn(layoutDoc, NS_P, 'bg');
-    if (bg) { const c = parseColor(bg); if (c) return c; }
+    const layoutBg = dn(layoutDoc, NS_P, 'bg');
+    const layoutBgColor = parseBgElement(layoutBg);
+    if (layoutBgColor !== undefined) return layoutBgColor;
     // Check master from layout rels
     const layoutNum = layoutPath.match(/slideLayout(\d+)/)?.[1];
     const layoutRelsPath = `ppt/slideLayouts/_rels/slideLayout${layoutNum}.xml.rels`;
@@ -637,7 +654,8 @@ async function getLayoutBg(slideDoc, relsXml, zip) {
     if (!masterXmlStr) return null;
     const masterDoc = parseXml(masterXmlStr);
     const masterBg = dn(masterDoc, NS_P, 'bg');
-    if (masterBg) return parseColor(masterBg);
+    const masterBgColor = parseBgElement(masterBg);
+    if (masterBgColor !== undefined) return masterBgColor;
   } catch {}
   return null;
 }
@@ -1536,25 +1554,13 @@ function collectDocShapes(doc, relMap, phStyles) {
   const shapeTypes = new Set(['sp', 'pic', 'cxnSp', 'grpSp']);
   for (const child of spTree.children) {
     if (child.namespaceURI !== NS_P || !shapeTypes.has(child.localName)) continue;
+    // Skip placeholder shapes (text content handled by slide's own placeholders)
+    if (child.localName === 'sp' && extractPhFromShape(child)) continue;
     if (child.localName === 'grpSp') {
       shapes.push(...parseGroupShapes(child, relMap, phStyles));
     } else {
-      // For placeholder shapes: only render if they have visual fill (background area)
-      // Skip placeholder text (slide provides its own content)
-      const ph = child.localName === 'sp' ? extractPhFromShape(child) : null;
       const s = parseShape(child, relMap, phStyles);
-      if (s) {
-        if (ph) {
-          // Placeholder: render fill/border only, strip text
-          if (s.bgColor || s.line || s.blipTarget) {
-            s.paragraphs = [];
-            shapes.push(s);
-          }
-          // Skip purely textual placeholders (no visual decoration)
-        } else {
-          shapes.push(s);
-        }
-      }
+      if (s) shapes.push(s);
     }
   }
   return shapes;
