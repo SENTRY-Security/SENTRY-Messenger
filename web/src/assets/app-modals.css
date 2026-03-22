@@ -1022,7 +1022,10 @@
   flex: 0 0 auto;
   background: #fff; color: #1e293b;
   box-shadow: 0 4px 24px rgba(0,0,0,0.5);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.pptx-slide-canvas {
+  display: block; width: 100%; height: auto;
 }
 
 .pptx-slide-num {

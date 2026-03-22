@@ -521,160 +521,431 @@ async function getLayoutBg(slideDoc, relsXml, zip) {
 }
 
 // ═══════════════════════════════════════
-// DOM Builder
+// Canvas Renderer
 // ═══════════════════════════════════════
-function renderRun(run, relMap, defaultFontSize) {
-  if (run.text === '\n') return document.createElement('br');
-  const span = document.createElement('span');
-  let css = '';
-  const fs = run.fontSize || defaultFontSize;
-  if (fs) css += `font-size:${fs}pt;`;
-  if (run.color) css += `color:${run.color};`;
-  if (run.bold) css += 'font-weight:700;';
-  if (run.italic) css += 'font-style:italic;';
-  // text-decoration can combine underline + line-through
-  const deco = [run.underline ? 'underline' : '', run.strike ? 'line-through' : ''].filter(Boolean).join(' ');
-  if (deco) css += `text-decoration:${deco};`;
-  if (run.font) { const f = resolveFont(run.font); if (f) css += `font-family:${f};`; }
-  if (run.letterSpacing) css += `letter-spacing:${run.letterSpacing}pt;`;
-  if (run.baseline) {
-    if (run.baseline > 0) css += `vertical-align:super;font-size:${Math.round((fs || 12) * 0.65)}pt;`;
-    else css += `vertical-align:sub;font-size:${Math.round((fs || 12) * 0.65)}pt;`;
-  }
-  if (css) span.style.cssText = css;
-  span.textContent = run.text;
-  if (run.hlinkRid && relMap[run.hlinkRid]) {
-    const a = document.createElement('a');
-    a.href = relMap[run.hlinkRid];
-    a.target = '_blank'; a.rel = 'noopener noreferrer';
-    a.style.cssText = 'color:inherit;text-decoration:underline;cursor:pointer;';
-    a.appendChild(span);
-    return a;
-  }
-  return span;
+
+// Convert pt to canvas px at given DPI scale
+const ptToPx = (pt) => pt * 4 / 3; // 1pt = 1.333px at 96dpi
+
+function buildCanvasFont(run, defaultFontSize) {
+  const fs = run.fontSize || defaultFontSize || 12;
+  const sizePx = ptToPx(fs);
+  const style = run.italic ? 'italic ' : '';
+  const weight = run.bold ? '700 ' : '';
+  const rawFont = run.font;
+  const family = rawFont ? (resolveFont(rawFont) || 'sans-serif') : (resolveFont(themeFontMinor) || 'sans-serif');
+  return `${style}${weight}${sizePx}px ${family}`;
 }
 
-function renderParagraph(para, relMap, autoNum) {
-  const p = document.createElement('p');
-  let css = `margin:0;text-align:${para.align};white-space:pre-wrap;word-break:break-word;`;
-  if (para.lineHeight) css += `line-height:${para.lineHeight};`;
-  else css += 'line-height:1.35;';
-  const leftPad = (para.marginLeft || 0) + (para.indent || 0) * 20;
-  if (leftPad) css += `padding-left:${leftPad}px;`;
-  if (para.spaceBefore) css += `margin-top:${para.spaceBefore}pt;`;
-  if (para.spaceAfter) css += `margin-bottom:${para.spaceAfter}pt;`;
-  else css += 'margin-bottom:2px;';
-  p.style.cssText = css;
-  // Bullet
-  if (para.bullet) {
-    const bulletSpan = document.createElement('span');
-    let bCss = 'margin-right:6px;';
-    if (para.bulletColor) bCss += `color:${para.bulletColor};`;
-    bulletSpan.style.cssText = bCss;
-    bulletSpan.textContent = para.bullet === 'auto' ? `${autoNum.n++}. ` : `${para.bullet} `;
-    p.appendChild(bulletSpan);
+// Load image from zip as ImageBitmap (or Image fallback)
+async function loadZipImage(zip, imgPath, objectUrls) {
+  const file = zip.file(imgPath);
+  if (!file) return null;
+  const blob = await file.async('blob');
+  const url = URL.createObjectURL(blob);
+  objectUrls.push(url);
+  // Try createImageBitmap for better perf, fall back to Image
+  try {
+    return await createImageBitmap(blob);
+  } catch {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = url;
+    });
   }
-  for (const run of para.runs) p.appendChild(renderRun(run, relMap, para.defaultFontSize));
-  return p;
 }
 
-function renderTable(shape) {
-  const table = document.createElement('table');
-  table.style.cssText = 'width:100%;border-collapse:collapse;font-size:10pt;';
-  for (const row of shape.rows) {
-    const tr = document.createElement('tr');
-    for (const cell of row) {
-      const td = document.createElement('td');
-      td.style.cssText = `border:1px solid #cbd5e1;padding:4px 6px;vertical-align:top;${cell.fill ? 'background:' + cell.fill + ';' : ''}`;
-      if (cell.gridSpan > 1) td.colSpan = cell.gridSpan;
-      if (cell.rowSpan > 1) td.rowSpan = cell.rowSpan;
-      const autoNum = { n: 1 };
-      for (const para of cell.paragraphs) td.appendChild(renderParagraph(para, {}, autoNum));
-      tr.appendChild(td);
+// Parse CSS linear-gradient into canvas-usable stops
+function parseGradientStops(gradientStr) {
+  const m = gradientStr.match(/linear-gradient\((\d+)deg,(.+)\)/);
+  if (!m) return null;
+  const angle = Number(m[1]);
+  const parts = m[2].split(/,(?![^(]*\))/);
+  const stops = [];
+  for (const p of parts) {
+    const t = p.trim();
+    const cm = t.match(/^(#[0-9a-fA-F]{6})\s+(\d+)%$/);
+    if (cm) stops.push({ color: cm[1], pos: Number(cm[2]) / 100 });
+  }
+  return stops.length >= 2 ? { angle, stops } : null;
+}
+
+function applyGradientFill(ctx, gradInfo, x, y, w, h) {
+  const rad = (gradInfo.angle - 90) * Math.PI / 180;
+  const cx = x + w / 2, cy = y + h / 2;
+  const len = Math.max(w, h);
+  const dx = Math.cos(rad) * len / 2, dy = Math.sin(rad) * len / 2;
+  const grad = ctx.createLinearGradient(cx - dx, cy - dy, cx + dx, cy + dy);
+  for (const s of gradInfo.stops) grad.addColorStop(s.pos, s.color);
+  return grad;
+}
+
+// Word-wrap text into lines that fit within maxWidth
+function wrapText(ctx, text, maxWidth) {
+  if (maxWidth <= 0) return [text];
+  const words = text.split(/(\s+)/); // keep whitespace as separators
+  const lines = [];
+  let line = '';
+  for (const word of words) {
+    const test = line + word;
+    if (ctx.measureText(test).width > maxWidth && line.length > 0) {
+      lines.push(line);
+      line = word.trimStart();
+    } else {
+      line = test;
     }
-    table.appendChild(tr);
   }
-  return table;
+  if (line) lines.push(line);
+  return lines.length ? lines : [''];
 }
 
-async function buildShapeElement(shape, relMap, zip, scaleX, scaleY, objectUrls) {
-  const el = document.createElement('div');
-  let css = `position:absolute;left:${shape.x * scaleX}%;top:${shape.y * scaleY}%;width:${shape.w * scaleX}%;height:${shape.h * scaleY}%;overflow:hidden;`;
-  if (shape.rot) css += `transform:rotate(${shape.rot}deg);`;
-  // Geometry → border-radius
-  if (shape.geom === 'roundRect') css += 'border-radius:8px;';
-  else if (shape.geom === 'ellipse') css += 'border-radius:50%;';
-  el.style.cssText = css;
+// Measure paragraph height (for vertical alignment)
+function measureParagraphHeight(ctx, para, shapeW, margin, scale, autoNum) {
+  const m = margin || { l: 7, r: 7, t: 4, b: 4 };
+  const leftPad = ((m.l + (para.marginLeft || 0) + (para.indent || 0) * 20) * scale);
+  const contentW = shapeW - (m.l + m.r) * scale - ((para.marginLeft || 0) + (para.indent || 0) * 20) * scale;
+  const lh = para.lineHeight || 1.35;
+  const spaceBefore = (para.spaceBefore || 0) * scale * 4 / 3;
+  const spaceAfter = (para.spaceAfter || 2) * scale * 4 / 3;
+
+  let totalH = spaceBefore;
+  // Build full text segments for measurement
+  const segments = [];
+  if (para.bullet) {
+    const bulletText = para.bullet === 'auto' ? `${autoNum.n}. ` : `${para.bullet} `;
+    segments.push({ text: bulletText, fontSize: para.defaultFontSize || 12 });
+  }
+  for (const run of para.runs) {
+    if (run.text === '\n') { segments.push({ text: '\n', fontSize: run.fontSize || para.defaultFontSize || 12 }); continue; }
+    const fs = run.fontSize || para.defaultFontSize || 12;
+    segments.push({ text: run.text, fontSize: fs, font: buildCanvasFont(run, para.defaultFontSize) });
+  }
+
+  // Simple height estimate: measure each run's text and wrap
+  let maxFontSize = 12;
+  let lineText = '';
+  for (const seg of segments) {
+    if (seg.fontSize > maxFontSize) maxFontSize = seg.fontSize;
+    if (seg.text === '\n') {
+      const lineH = ptToPx(maxFontSize) * scale * lh;
+      totalH += lineH;
+      lineText = '';
+      maxFontSize = 12;
+      continue;
+    }
+    lineText += seg.text;
+  }
+  if (lineText) {
+    // Estimate line count
+    ctx.font = `${ptToPx(maxFontSize) * scale}px sans-serif`;
+    const lines = wrapText(ctx, lineText, Math.max(1, contentW));
+    totalH += lines.length * ptToPx(maxFontSize) * scale * lh;
+  }
+  totalH += spaceAfter;
+  return totalH;
+}
+
+function drawTextShape(ctx, shape, sx, sy, sw, sh, scale, relMap) {
+  const m = shape.margin || { l: 7, r: 7, t: 4, b: 4 };
+  const padL = m.l * scale, padR = m.r * scale, padT = m.t * scale, padB = m.b * scale;
+  const contentW = sw - padL - padR;
+
+  // Measure total content height for vertical alignment
+  let totalContentH = 0;
+  const autoNumMeasure = { n: 1 };
+  for (const para of shape.paragraphs) {
+    totalContentH += measureParagraphHeight(ctx, para, sw, m, scale, autoNumMeasure);
+  }
+
+  let startY = sy + padT;
+  if (shape.anchor === 'ctr') {
+    startY = sy + padT + Math.max(0, (sh - padT - padB - totalContentH) / 2);
+  } else if (shape.anchor === 'b') {
+    startY = sy + sh - padB - totalContentH;
+  }
+
+  let curY = startY;
+  const autoNum = { n: 1 };
+
+  for (const para of shape.paragraphs) {
+    const lh = para.lineHeight || 1.35;
+    const spaceBefore = (para.spaceBefore || 0) * scale * 4 / 3;
+    const spaceAfter = (para.spaceAfter || 2) * scale * 4 / 3;
+    const paraLeftPad = ((para.marginLeft || 0) + (para.indent || 0) * 20) * scale;
+    curY += spaceBefore;
+
+    // Build drawable segments for this paragraph
+    const segments = [];
+    if (para.bullet) {
+      const bulletText = para.bullet === 'auto' ? `${autoNum.n++}. ` : `${para.bullet} `;
+      const bFs = para.defaultFontSize || 12;
+      segments.push({
+        text: bulletText,
+        font: `${ptToPx(bFs) * scale}px ${resolveFont(themeFontMinor) || 'sans-serif'}`,
+        color: para.bulletColor || shape.paragraphs[0]?.runs[0]?.color || themeColors.tx1 || '#1e293b',
+        fontSize: bFs, underline: false, strike: false, baseline: null
+      });
+    }
+    for (const run of para.runs) {
+      if (run.text === '\n') { segments.push({ text: '\n' }); continue; }
+      const fs = run.fontSize || para.defaultFontSize || 12;
+      const effectiveFs = run.baseline ? fs * 0.65 : fs;
+      segments.push({
+        text: run.text,
+        font: `${run.italic ? 'italic ' : ''}${run.bold ? '700 ' : ''}${ptToPx(effectiveFs) * scale}px ${resolveFont(run.font) || resolveFont(themeFontMinor) || 'sans-serif'}`,
+        color: run.color || themeColors.tx1 || '#1e293b',
+        fontSize: fs, underline: run.underline, strike: run.strike, baseline: run.baseline
+      });
+    }
+
+    // Line-break and draw
+    const lineStartX = sx + padL + paraLeftPad;
+    const maxLineW = contentW - paraLeftPad;
+
+    // Split segments into wrapped lines
+    const lines = []; // each line = [{ text, font, color, ... }]
+    let currentLine = [];
+    let currentLineW = 0;
+
+    for (const seg of segments) {
+      if (seg.text === '\n') {
+        lines.push(currentLine);
+        currentLine = [];
+        currentLineW = 0;
+        continue;
+      }
+      ctx.font = seg.font;
+      const segW = ctx.measureText(seg.text).width;
+
+      if (currentLineW + segW <= maxLineW || currentLine.length === 0) {
+        currentLine.push(seg);
+        currentLineW += segW;
+      } else {
+        // Need to wrap: try to split this segment's text
+        const words = seg.text.split(/(\s+)/);
+        let partial = '';
+        for (const word of words) {
+          const testW = ctx.measureText(partial + word).width;
+          if (currentLineW + testW > maxLineW && (partial || currentLine.length > 0)) {
+            if (partial) currentLine.push({ ...seg, text: partial });
+            lines.push(currentLine);
+            currentLine = [];
+            currentLineW = 0;
+            partial = word.trimStart();
+          } else {
+            partial += word;
+          }
+        }
+        if (partial) {
+          ctx.font = seg.font;
+          currentLine.push({ ...seg, text: partial });
+          currentLineW += ctx.measureText(partial).width;
+        }
+      }
+    }
+    if (currentLine.length) lines.push(currentLine);
+
+    // Draw each line
+    for (const line of lines) {
+      let maxFs = 12;
+      for (const s of line) { if (s.fontSize > maxFs) maxFs = s.fontSize; }
+      const lineH = ptToPx(maxFs) * scale * lh;
+
+      // Calculate line width for alignment
+      let totalLineW = 0;
+      for (const s of line) {
+        ctx.font = s.font;
+        totalLineW += ctx.measureText(s.text).width;
+      }
+
+      let drawX = lineStartX;
+      if (para.align === 'center') drawX = lineStartX + (maxLineW - totalLineW) / 2;
+      else if (para.align === 'right') drawX = lineStartX + maxLineW - totalLineW;
+
+      const baselineY = curY + ptToPx(maxFs) * scale;
+
+      for (const seg of line) {
+        ctx.font = seg.font;
+        ctx.fillStyle = seg.color || '#000';
+
+        let segY = baselineY;
+        if (seg.baseline && seg.baseline > 0) segY = baselineY - ptToPx(maxFs) * scale * 0.3;
+        else if (seg.baseline && seg.baseline < 0) segY = baselineY + ptToPx(maxFs) * scale * 0.15;
+
+        ctx.fillText(seg.text, drawX, segY);
+
+        const tw = ctx.measureText(seg.text).width;
+        if (seg.underline) {
+          ctx.beginPath();
+          ctx.strokeStyle = seg.color || '#000';
+          ctx.lineWidth = Math.max(1, scale);
+          ctx.moveTo(drawX, segY + 2 * scale);
+          ctx.lineTo(drawX + tw, segY + 2 * scale);
+          ctx.stroke();
+        }
+        if (seg.strike) {
+          ctx.beginPath();
+          ctx.strokeStyle = seg.color || '#000';
+          ctx.lineWidth = Math.max(1, scale);
+          const strikeY = segY - ptToPx(maxFs) * scale * 0.3;
+          ctx.moveTo(drawX, strikeY);
+          ctx.lineTo(drawX + tw, strikeY);
+          ctx.stroke();
+        }
+        drawX += tw;
+      }
+      curY += lineH;
+    }
+    curY += spaceAfter;
+  }
+}
+
+function drawTable(ctx, shape, sx, sy, sw, sh, scale) {
+  if (!shape.rows || !shape.rows.length) return;
+  const rowCount = shape.rows.length;
+  const colCount = Math.max(...shape.rows.map(r => r.length));
+  if (!colCount) return;
+  const cellW = sw / colCount;
+  const cellH = sh / rowCount;
+  const fontSize = 10 * scale;
+  const padding = 4 * scale;
+
+  for (let ri = 0; ri < rowCount; ri++) {
+    const row = shape.rows[ri];
+    for (let ci = 0; ci < row.length; ci++) {
+      const cell = row[ci];
+      const cx = sx + ci * cellW;
+      const cy = sy + ri * cellH;
+      const cw = cellW * (cell.gridSpan || 1);
+      const ch = cellH * (cell.rowSpan || 1);
+
+      // Cell background
+      if (cell.fill) {
+        ctx.fillStyle = cell.fill;
+        ctx.fillRect(cx, cy, cw, ch);
+      }
+      // Cell border
+      ctx.strokeStyle = '#cbd5e1';
+      ctx.lineWidth = scale;
+      ctx.strokeRect(cx, cy, cw, ch);
+
+      // Cell text
+      ctx.font = `${fontSize}px ${resolveFont(themeFontMinor) || 'sans-serif'}`;
+      ctx.fillStyle = themeColors.tx1 || '#1e293b';
+      let textY = cy + padding + fontSize;
+      const autoNum = { n: 1 };
+      for (const para of cell.paragraphs) {
+        for (const run of para.runs) {
+          if (run.text === '\n') { textY += fontSize * 1.3; continue; }
+          const fs = run.fontSize || 10;
+          ctx.font = buildCanvasFont(run, 10).replace(/(\d+(?:\.\d+)?)px/, (_, n) => `${Number(n) * scale}px`);
+          if (run.color) ctx.fillStyle = run.color;
+          const lines = wrapText(ctx, run.text, cw - padding * 2);
+          for (const line of lines) {
+            if (textY > cy + ch) break;
+            ctx.fillText(line, cx + padding, textY);
+            textY += fs * scale * 4 / 3 * 1.3;
+          }
+        }
+      }
+    }
+  }
+}
+
+async function drawShapeOnCanvas(ctx, shape, zip, canvasW, canvasH, slideSize, scale, objectUrls) {
+  const sx = shape.x / slideSize.w * canvasW;
+  const sy = shape.y / slideSize.h * canvasH;
+  const sw = shape.w / slideSize.w * canvasW;
+  const sh = shape.h / slideSize.h * canvasH;
+
+  ctx.save();
+  if (shape.rot) {
+    const cx = sx + sw / 2, cy = sy + sh / 2;
+    ctx.translate(cx, cy);
+    ctx.rotate(shape.rot * Math.PI / 180);
+    ctx.translate(-cx, -cy);
+  }
+
+  // Clip for rounded shapes
+  if (shape.geom === 'roundRect' || shape.geom === 'ellipse') {
+    ctx.beginPath();
+    if (shape.geom === 'ellipse') {
+      ctx.ellipse(sx + sw / 2, sy + sh / 2, sw / 2, sh / 2, 0, 0, Math.PI * 2);
+    } else {
+      const r = Math.min(8 * scale, sw / 4, sh / 4);
+      ctx.moveTo(sx + r, sy);
+      ctx.arcTo(sx + sw, sy, sx + sw, sy + sh, r);
+      ctx.arcTo(sx + sw, sy + sh, sx, sy + sh, r);
+      ctx.arcTo(sx, sy + sh, sx, sy, r);
+      ctx.arcTo(sx, sy, sx + sw, sy, r);
+    }
+    ctx.closePath();
+    ctx.clip();
+  }
 
   if (shape.type === 'image') {
     const imgPath = resolvePath(shape.target);
     try {
-      const imgFile = zip.file(imgPath);
-      if (imgFile) {
-        const imgBlob = await imgFile.async('blob');
-        const imgUrl = URL.createObjectURL(imgBlob);
-        objectUrls.push(imgUrl);
-        const img = document.createElement('img');
-        img.src = imgUrl; img.decoding = 'async';
-        img.style.cssText = 'width:100%;height:100%;object-fit:contain;display:block;';
-        el.appendChild(img);
+      const img = await loadZipImage(zip, imgPath, objectUrls);
+      if (img) {
+        // Contain-fit within shape bounds
+        const imgW = img.width, imgH = img.height;
+        const imgAspect = imgW / imgH;
+        const shapeAspect = sw / sh;
+        let dw, dh, dx, dy;
+        if (imgAspect > shapeAspect) {
+          dw = sw; dh = sw / imgAspect; dx = sx; dy = sy + (sh - dh) / 2;
+        } else {
+          dh = sh; dw = sh * imgAspect; dy = sy; dx = sx + (sw - dw) / 2;
+        }
+        ctx.drawImage(img, dx, dy, dw, dh);
       }
     } catch {}
   } else if (shape.type === 'table') {
-    el.style.overflow = 'auto';
-    el.appendChild(renderTable(shape));
+    drawTable(ctx, shape, sx, sy, sw, sh, scale);
   } else if (shape.type === 'text') {
-    // Background: could be solid color or gradient
+    // Shape background
     if (shape.bgColor) {
-      if (shape.bgColor.startsWith('linear-gradient')) el.style.background = shape.bgColor;
-      else el.style.background = shape.bgColor;
+      const gradInfo = shape.bgColor.startsWith?.('linear-gradient') ? parseGradientStops(shape.bgColor) : null;
+      if (gradInfo) {
+        ctx.fillStyle = applyGradientFill(ctx, gradInfo, sx, sy, sw, sh);
+      } else {
+        ctx.fillStyle = shape.bgColor;
+      }
+      ctx.fillRect(sx, sy, sw, sh);
     }
-    if (shape.line) el.style.border = `${shape.line.width}px solid ${shape.line.color}`;
-    const m = shape.margin || { l: 7, r: 7, t: 4, b: 4 };
-    el.style.padding = `${m.t}px ${m.r}px ${m.b}px ${m.l}px`;
-    el.style.boxSizing = 'border-box';
-    el.style.display = 'flex'; el.style.flexDirection = 'column';
-    el.style.fontFamily = resolveFont(themeFontMinor) || 'sans-serif';
-    if (shape.anchor === 'ctr') el.style.justifyContent = 'center';
-    else if (shape.anchor === 'b') el.style.justifyContent = 'flex-end';
-    const autoNum = { n: 1 };
-    for (const para of shape.paragraphs) el.appendChild(renderParagraph(para, relMap, autoNum));
+    // Shape border
+    if (shape.line) {
+      ctx.strokeStyle = shape.line.color;
+      ctx.lineWidth = shape.line.width * scale;
+      ctx.strokeRect(sx, sy, sw, sh);
+    }
+    drawTextShape(ctx, shape, sx, sy, sw, sh, scale, {});
   }
-  return el;
+
+  ctx.restore();
 }
 
-async function buildSlideElement(slideXmlStr, relsXml, zip, slideSize, objectUrls) {
+async function buildSlideCanvas(slideXmlStr, relsXml, zip, slideSize, objectUrls) {
   const slideDoc = parseXml(slideXmlStr);
   const relMap = buildRelMap(relsXml);
   const bgColor = await getLayoutBg(slideDoc, relsXml, zip) || '#ffffff';
 
-  // Check for background image fill
-  let bgImageUrl = null;
+  // Check for background image
+  let bgImage = null;
   const slideBgEl = dn(slideDoc, NS_P, 'bg');
   if (slideBgEl) {
     const bgBlip = dn(slideBgEl, NS_A, 'blip');
     const bgEmbed = bgBlip ? (bgBlip.getAttributeNS(NS_R, 'embed') || bgBlip.getAttribute('r:embed')) : null;
     if (bgEmbed && relMap[bgEmbed]) {
       const bgPath = resolvePath(relMap[bgEmbed]);
-      try {
-        const bgFile = zip.file(bgPath);
-        if (bgFile) {
-          const bgBlob = await bgFile.async('blob');
-          bgImageUrl = URL.createObjectURL(bgBlob);
-          objectUrls.push(bgImageUrl);
-        }
-      } catch {}
+      bgImage = await loadZipImage(zip, bgPath, objectUrls);
     }
   }
 
-  const slide = document.createElement('div');
-  slide.className = 'pptx-slide';
-  const defaultFont = resolveFont(themeFontMinor) || 'sans-serif';
-  let slideCss = `aspect-ratio:${slideSize.w}/${slideSize.h};background:${bgColor};position:relative;overflow:hidden;font-family:${defaultFont};font-size:12pt;color:${themeColors.tx1 || '#1e293b'};`;
-  if (bgImageUrl) slideCss += `background-image:url(${bgImageUrl});background-size:cover;background-position:center;`;
-  slide.style.cssText = slideCss;
-
-  // Collect shapes from spTree — direct children only (fixes duplicate shapes in groups)
+  // Collect shapes
   const allShapes = [];
   const spTree = dn(slideDoc, NS_P, 'spTree');
   if (spTree) {
@@ -685,20 +956,39 @@ async function buildSlideElement(slideXmlStr, relsXml, zip, slideSize, objectUrl
     for (const gf of qnAll(spTree, NS_P, 'graphicFrame')) { const s = parseShape(gf, relMap); if (s) allShapes.push(s); }
   }
 
-  const scaleX = 100 / slideSize.w;
-  const scaleY = 100 / slideSize.h;
+  // Return a render function that draws onto a sized canvas
+  return { bgColor, bgImage, shapes: allShapes, relMap };
+}
 
-  for (const shape of allShapes) {
-    const el = await buildShapeElement(shape, relMap, zip, scaleX, scaleY, objectUrls);
-    slide.appendChild(el);
+function renderSlideToCanvas(canvas, slideData, slideSize, zip, objectUrls) {
+  const dpr = window.devicePixelRatio || 1;
+  // Use container width to determine canvas size
+  const displayW = canvas.parentElement?.clientWidth || canvas.clientWidth || 360;
+  const aspect = slideSize.h / slideSize.w;
+  const displayH = Math.round(displayW * aspect);
+
+  canvas.style.width = '100%';
+  canvas.style.height = 'auto';
+  canvas.style.aspectRatio = `${slideSize.w}/${slideSize.h}`;
+  canvas.width = Math.round(displayW * dpr);
+  canvas.height = Math.round(displayH * dpr);
+
+  const ctx = canvas.getContext('2d');
+  const scale = canvas.width / slideSize.w;
+
+  // Background
+  ctx.fillStyle = slideData.bgColor;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  if (slideData.bgImage) {
+    ctx.drawImage(slideData.bgImage, 0, 0, canvas.width, canvas.height);
   }
 
-  // Slide number overlay
-  const numEl = document.createElement('div');
-  numEl.className = 'pptx-slide-num';
-  slide.appendChild(numEl);
-
-  return slide;
+  // Draw shapes sequentially (images are async)
+  return (async () => {
+    for (const shape of slideData.shapes) {
+      await drawShapeOnCanvas(ctx, shape, zip, canvas.width, canvas.height, slideSize, scale, objectUrls);
+    }
+  })();
 }
 
 // ═══════════════════════════════════════
@@ -765,19 +1055,38 @@ export async function renderPptxViewer({ url, blob, name, modalApi }) {
     if (!slideFiles.length) throw new Error('No slides found');
     if (loadingEl) loadingEl.remove();
 
-    // Build all slides vertically
+    // Build all slides as canvases
     const slideEls = [];
+    const slideDataList = [];
     for (let i = 0; i < slideFiles.length; i++) {
       const slideXml = await zip.file(slideFiles[i])?.async('string');
       if (!slideXml) continue;
       const slideNum = slideFiles[i].match(/slide(\d+)/)?.[1] || '1';
       const relsXml = await zip.file(`ppt/slides/_rels/slide${slideNum}.xml.rels`)?.async('string').catch(() => null);
-      const slideEl = await buildSlideElement(slideXml, relsXml, zip, slideSize, objectUrls);
-      // Set slide number
-      const numEl = slideEl.querySelector('.pptx-slide-num');
-      if (numEl) numEl.textContent = `${i + 1}`;
-      stageEl.appendChild(slideEl);
-      slideEls.push(slideEl);
+      const slideData = await buildSlideCanvas(slideXml, relsXml, zip, slideSize, objectUrls);
+
+      const wrapper = document.createElement('div');
+      wrapper.className = 'pptx-slide';
+      wrapper.style.cssText = `position:relative;width:100%;`;
+
+      const canvas = document.createElement('canvas');
+      canvas.className = 'pptx-slide-canvas';
+      wrapper.appendChild(canvas);
+
+      // Slide number overlay
+      const numEl = document.createElement('div');
+      numEl.className = 'pptx-slide-num';
+      numEl.textContent = `${i + 1}`;
+      wrapper.appendChild(numEl);
+
+      stageEl.appendChild(wrapper);
+      slideEls.push(wrapper);
+      slideDataList.push({ canvas, slideData });
+    }
+
+    // Render all canvases (after DOM insertion so clientWidth is available)
+    for (const { canvas, slideData } of slideDataList) {
+      await renderSlideToCanvas(canvas, slideData, slideSize, zip, objectUrls);
     }
 
     pageLabel.textContent = `${slideEls.length} ${t('viewer.pptxSlides')}`;
