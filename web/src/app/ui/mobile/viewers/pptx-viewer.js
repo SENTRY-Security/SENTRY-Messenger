@@ -306,11 +306,24 @@ function parseParagraph(pEl) {
   const spcAft = pPr ? qn(pPr, NS_A, 'spcAft') : null;
   const spcAftPts = spcAft ? dn(spcAft, NS_A, 'spcPts') : null;
   const spaceAfter = spcAftPts ? Math.round(Number(spcAftPts.getAttribute('val') || '0') / 100) : null;
-  // Default run properties (defRPr) for font size fallback
+  // Default run properties (defRPr) — full style fallback for runs without explicit rPr
   const defRPr = pPr ? qn(pPr, NS_A, 'defRPr') : null;
   const defSz = defRPr?.getAttribute('sz');
   const defaultFontSize = defSz ? Math.round(Number(defSz) / 100) : null;
-  return { runs, align, bullet, bulletColor, indent, marginLeft, lineHeight, spaceBefore, spaceAfter, defaultFontSize };
+  const defaultColor = defRPr ? parseColor(defRPr) : null;
+  const defaultBold = defRPr?.getAttribute('b') === '1' || false;
+  const defaultItalic = defRPr?.getAttribute('i') === '1' || false;
+  const defLatin = defRPr ? qn(defRPr, NS_A, 'latin') : null;
+  const defEa = defRPr ? qn(defRPr, NS_A, 'ea') : null;
+  const defaultFont = defLatin ? defLatin.getAttribute('typeface') : (defEa ? defEa.getAttribute('typeface') : null);
+  // endParaRPr — used when paragraph is otherwise empty (acts as default)
+  const endParaRPr = qn(pEl, NS_A, 'endParaRPr');
+  const endSz = endParaRPr?.getAttribute('sz');
+  const endFontSize = endSz ? Math.round(Number(endSz) / 100) : null;
+  const endColor = endParaRPr ? parseColor(endParaRPr) : null;
+  return { runs, align, bullet, bulletColor, indent, marginLeft, lineHeight, spaceBefore, spaceAfter,
+    defaultFontSize: defaultFontSize || endFontSize, defaultColor: defaultColor || endColor,
+    defaultBold, defaultItalic, defaultFont };
 }
 
 // ── Shape position/size ──
@@ -397,10 +410,40 @@ function parseShape(spEl, relMap) {
   // Text body
   const txBody = dn(spEl, NS_P, 'txBody');
   const paragraphs = [];
+  // Parse lstStyle for default font sizes per indent level
+  const lstStyle = txBody ? qn(txBody, NS_A, 'lstStyle') : null;
+  const levelDefaults = {};
+  if (lstStyle) {
+    const lvlNames = ['defPPr', 'lvl1pPr', 'lvl2pPr', 'lvl3pPr', 'lvl4pPr', 'lvl5pPr'];
+    for (let li = 0; li < lvlNames.length; li++) {
+      const lvlPPr = qn(lstStyle, NS_A, lvlNames[li]);
+      if (!lvlPPr) continue;
+      const dr = qn(lvlPPr, NS_A, 'defRPr');
+      if (dr) {
+        const sz = dr.getAttribute('sz');
+        const c = parseColor(dr);
+        const b = dr.getAttribute('b') === '1';
+        const latin = qn(dr, NS_A, 'latin');
+        levelDefaults[li === 0 ? 0 : li - 1] = {
+          fontSize: sz ? Math.round(Number(sz) / 100) : null,
+          color: c, bold: b,
+          font: latin ? latin.getAttribute('typeface') : null
+        };
+      }
+    }
+  }
   if (txBody) {
     for (const p of qnAll(txBody, NS_A, 'p')) {
       const para = parseParagraph(p);
       if (para.runs.length) paragraphs.push(para);
+      // Apply lstStyle defaults if paragraph/runs lack properties
+      const lvlDef = levelDefaults[para.indent] || levelDefaults[0];
+      if (lvlDef) {
+        if (!para.defaultFontSize && lvlDef.fontSize) para.defaultFontSize = lvlDef.fontSize;
+        if (!para.defaultColor && lvlDef.color) para.defaultColor = lvlDef.color;
+        if (!para.defaultBold && lvlDef.bold) para.defaultBold = lvlDef.bold;
+        if (!para.defaultFont && lvlDef.font) para.defaultFont = lvlDef.font;
+      }
     }
   }
   // Text body properties
@@ -757,10 +800,13 @@ function drawTextShape(ctx, shape, sx, sy, sw, sh, scale, relMap) {
       if (run.text === '\n') { segments.push({ text: '\n' }); continue; }
       const fs = (run.fontSize || para.defaultFontSize || 12) * fScale;
       const effectiveFs = run.baseline ? fs * 0.65 : fs;
+      const isBold = run.bold || (!run.fontSize && para.defaultBold) || false;
+      const isItalic = run.italic || (!run.fontSize && para.defaultItalic) || false;
+      const runFont = run.font || para.defaultFont;
       segments.push({
         text: run.text,
-        font: `${run.italic ? 'italic ' : ''}${run.bold ? '700 ' : ''}${ptToPx(effectiveFs) * scale}px ${resolveFont(run.font) || resolveFont(themeFontMinor) || 'sans-serif'}`,
-        color: run.color || defaultTextColor,
+        font: `${isItalic ? 'italic ' : ''}${isBold ? '700 ' : ''}${ptToPx(effectiveFs) * scale}px ${resolveFont(runFont) || resolveFont(themeFontMinor) || 'sans-serif'}`,
+        color: run.color || para.defaultColor || defaultTextColor,
         fontSize: fs, underline: run.underline, strike: run.strike, baseline: run.baseline
       });
     }
