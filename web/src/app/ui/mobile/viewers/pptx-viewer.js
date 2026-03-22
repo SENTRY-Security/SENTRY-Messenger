@@ -393,20 +393,52 @@ function parseShape(spEl, relMap) {
 }
 
 // ── Group shapes (recursive, direct children only) ──
+// Transforms child coordinates from group's child space (chOff/chExt) to parent space (off/ext)
 function parseGroupShapes(grpEl, relMap) {
   const shapes = [];
+
+  // Read group transform: off/ext define position in parent, chOff/chExt define child coordinate space
+  const grpSpPr = qn(grpEl, NS_P, 'grpSpPr');
+  const xfrm = grpSpPr ? dn(grpSpPr, NS_A, 'xfrm') : null;
+  let canMap = false;
+  let gx = 0, gy = 0, sx = 1, sy = 1, cox = 0, coy = 0;
+  if (xfrm) {
+    const offEl = qn(xfrm, NS_A, 'off');
+    const extEl = qn(xfrm, NS_A, 'ext');
+    const chOffEl = qn(xfrm, NS_A, 'chOff');
+    const chExtEl = qn(xfrm, NS_A, 'chExt');
+    if (offEl && extEl && chExtEl) {
+      const chCx = Number(chExtEl.getAttribute('cx') || '0');
+      const chCy = Number(chExtEl.getAttribute('cy') || '0');
+      if (chCx > 0 && chCy > 0) {
+        gx = emuToPx(offEl.getAttribute('x') || '0');
+        gy = emuToPx(offEl.getAttribute('y') || '0');
+        cox = chOffEl ? emuToPx(chOffEl.getAttribute('x') || '0') : 0;
+        coy = chOffEl ? emuToPx(chOffEl.getAttribute('y') || '0') : 0;
+        sx = Number(extEl.getAttribute('cx') || '0') / chCx;
+        sy = Number(extEl.getAttribute('cy') || '0') / chCy;
+        canMap = true;
+      }
+    }
+  }
+  const mapCoords = (s) => {
+    if (!canMap) return s;
+    return { ...s, x: gx + (s.x - cox) * sx, y: gy + (s.y - coy) * sy, w: s.w * sx, h: s.h * sy };
+  };
+
   for (const sp of qnAll(grpEl, NS_P, 'sp')) {
-    const s = parseShape(sp, relMap); if (s) shapes.push(s);
+    const s = parseShape(sp, relMap); if (s) shapes.push(mapCoords(s));
   }
   for (const pic of qnAll(grpEl, NS_P, 'pic')) {
-    const s = parseShape(pic, relMap); if (s) shapes.push(s);
+    const s = parseShape(pic, relMap); if (s) shapes.push(mapCoords(s));
   }
   for (const cxn of qnAll(grpEl, NS_P, 'cxnSp')) {
-    const s = parseShape(cxn, relMap); if (s) shapes.push(s);
+    const s = parseShape(cxn, relMap); if (s) shapes.push(mapCoords(s));
   }
-  // Nested groups — recursive with direct children only
+  // Nested groups — recursive; sub-group shapes are already in sub-group parent space,
+  // so mapCoords transforms them to this group's parent space
   for (const subGrp of qnAll(grpEl, NS_P, 'grpSp')) {
-    shapes.push(...parseGroupShapes(subGrp, relMap));
+    for (const s of parseGroupShapes(subGrp, relMap)) shapes.push(mapCoords(s));
   }
   return shapes;
 }
