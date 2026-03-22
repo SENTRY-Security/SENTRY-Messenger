@@ -386,6 +386,10 @@ function parseShape(spEl, relMap) {
   // Text body properties
   const bodyPr = txBody ? qn(txBody, NS_A, 'bodyPr') : null;
   const anchor = bodyPr?.getAttribute('anchor');
+  const wrapAttr = bodyPr?.getAttribute('wrap'); // "none" = no wrapping
+  const noWrap = wrapAttr === 'none';
+  // Auto-fit: spAutoFit = shrink to fit, noAutofit = fixed size
+  const autoFit = bodyPr ? !!dn(bodyPr, NS_A, 'spAutoFit') : false;
   const lIns = bodyPr?.getAttribute('lIns'); const rIns = bodyPr?.getAttribute('rIns');
   const tIns = bodyPr?.getAttribute('tIns'); const bIns = bodyPr?.getAttribute('bIns');
   const margin = {
@@ -394,7 +398,7 @@ function parseShape(spEl, relMap) {
   };
   // Return shape if it has text OR visual fill/border (decorative shapes)
   if (!paragraphs.length && !bgColor && !line) return null;
-  return { type: 'text', ...tf, paragraphs, bgColor, line, anchor, margin, geom };
+  return { type: 'text', ...tf, paragraphs, bgColor, line, anchor, margin, geom, noWrap, autoFit };
 }
 
 // ── Group shapes (recursive, direct children only) ──
@@ -726,7 +730,7 @@ function drawTextShape(ctx, shape, sx, sy, sw, sh, scale, relMap) {
 
     // Line-break and draw
     const lineStartX = sx + padL + paraLeftPad;
-    const maxLineW = contentW - paraLeftPad;
+    const maxLineW = shape.noWrap ? Infinity : (contentW - paraLeftPad);
 
     // Split segments into wrapped lines
     const lines = []; // each line = [{ text, font, color, ... }]
@@ -886,6 +890,119 @@ function drawTable(ctx, shape, sx, sy, sw, sh, scale) {
   }
 }
 
+// Draw preset geometry path (arrows, stars, etc.)
+function drawGeomPath(ctx, geom, sx, sy, sw, sh) {
+  ctx.beginPath();
+  switch (geom) {
+    case 'ellipse':
+      ctx.ellipse(sx + sw / 2, sy + sh / 2, sw / 2, sh / 2, 0, 0, Math.PI * 2);
+      break;
+    case 'roundRect': {
+      const r = Math.min(sw * 0.1, sh * 0.1, 20);
+      ctx.moveTo(sx + r, sy);
+      ctx.arcTo(sx + sw, sy, sx + sw, sy + sh, r);
+      ctx.arcTo(sx + sw, sy + sh, sx, sy + sh, r);
+      ctx.arcTo(sx, sy + sh, sx, sy, r);
+      ctx.arcTo(sx, sy, sx + sw, sy, r);
+      break;
+    }
+    case 'rightArrow': {
+      const headW = Math.min(sw * 0.4, sh * 0.6);
+      const shaftH = sh * 0.4;
+      const shaftTop = sy + (sh - shaftH) / 2;
+      ctx.moveTo(sx, shaftTop);
+      ctx.lineTo(sx + sw - headW, shaftTop);
+      ctx.lineTo(sx + sw - headW, sy);
+      ctx.lineTo(sx + sw, sy + sh / 2);
+      ctx.lineTo(sx + sw - headW, sy + sh);
+      ctx.lineTo(sx + sw - headW, shaftTop + shaftH);
+      ctx.lineTo(sx, shaftTop + shaftH);
+      break;
+    }
+    case 'leftArrow': {
+      const headW = Math.min(sw * 0.4, sh * 0.6);
+      const shaftH = sh * 0.4;
+      const shaftTop = sy + (sh - shaftH) / 2;
+      ctx.moveTo(sx + sw, shaftTop);
+      ctx.lineTo(sx + headW, shaftTop);
+      ctx.lineTo(sx + headW, sy);
+      ctx.lineTo(sx, sy + sh / 2);
+      ctx.lineTo(sx + headW, sy + sh);
+      ctx.lineTo(sx + headW, shaftTop + shaftH);
+      ctx.lineTo(sx + sw, shaftTop + shaftH);
+      break;
+    }
+    case 'upArrow': {
+      const headH = Math.min(sh * 0.4, sw * 0.6);
+      const shaftW = sw * 0.4;
+      const shaftLeft = sx + (sw - shaftW) / 2;
+      ctx.moveTo(shaftLeft, sy + sh);
+      ctx.lineTo(shaftLeft, sy + headH);
+      ctx.lineTo(sx, sy + headH);
+      ctx.lineTo(sx + sw / 2, sy);
+      ctx.lineTo(sx + sw, sy + headH);
+      ctx.lineTo(shaftLeft + shaftW, sy + headH);
+      ctx.lineTo(shaftLeft + shaftW, sy + sh);
+      break;
+    }
+    case 'downArrow': {
+      const headH = Math.min(sh * 0.4, sw * 0.6);
+      const shaftW = sw * 0.4;
+      const shaftLeft = sx + (sw - shaftW) / 2;
+      ctx.moveTo(shaftLeft, sy);
+      ctx.lineTo(shaftLeft, sy + sh - headH);
+      ctx.lineTo(sx, sy + sh - headH);
+      ctx.lineTo(sx + sw / 2, sy + sh);
+      ctx.lineTo(sx + sw, sy + sh - headH);
+      ctx.lineTo(shaftLeft + shaftW, sy + sh - headH);
+      ctx.lineTo(shaftLeft + shaftW, sy);
+      break;
+    }
+    case 'diamond': {
+      ctx.moveTo(sx + sw / 2, sy);
+      ctx.lineTo(sx + sw, sy + sh / 2);
+      ctx.lineTo(sx + sw / 2, sy + sh);
+      ctx.lineTo(sx, sy + sh / 2);
+      break;
+    }
+    case 'triangle':
+    case 'isoscelesTriangle': {
+      ctx.moveTo(sx + sw / 2, sy);
+      ctx.lineTo(sx + sw, sy + sh);
+      ctx.lineTo(sx, sy + sh);
+      break;
+    }
+    case 'hexagon': {
+      const inset = sw * 0.25;
+      ctx.moveTo(sx + inset, sy);
+      ctx.lineTo(sx + sw - inset, sy);
+      ctx.lineTo(sx + sw, sy + sh / 2);
+      ctx.lineTo(sx + sw - inset, sy + sh);
+      ctx.lineTo(sx + inset, sy + sh);
+      ctx.lineTo(sx, sy + sh / 2);
+      break;
+    }
+    case 'star5': {
+      const cx = sx + sw / 2, cy2 = sy + sh / 2;
+      const outerR = Math.min(sw, sh) / 2;
+      const innerR = outerR * 0.38;
+      for (let i = 0; i < 5; i++) {
+        const outerAngle = -Math.PI / 2 + (i * 2 * Math.PI) / 5;
+        const innerAngle = outerAngle + Math.PI / 5;
+        if (i === 0) ctx.moveTo(cx + outerR * Math.cos(outerAngle), cy2 + outerR * Math.sin(outerAngle));
+        else ctx.lineTo(cx + outerR * Math.cos(outerAngle), cy2 + outerR * Math.sin(outerAngle));
+        ctx.lineTo(cx + innerR * Math.cos(innerAngle), cy2 + innerR * Math.sin(innerAngle));
+      }
+      break;
+    }
+    default:
+      // Fallback: rectangle
+      ctx.rect(sx, sy, sw, sh);
+      break;
+  }
+  ctx.closePath();
+}
+
 async function drawShapeOnCanvas(ctx, shape, zip, canvasW, canvasH, slideSize, scale, objectUrls) {
   const sx = shape.x / slideSize.w * canvasW;
   const sy = shape.y / slideSize.h * canvasH;
@@ -900,33 +1017,19 @@ async function drawShapeOnCanvas(ctx, shape, zip, canvasW, canvasH, slideSize, s
     ctx.translate(-cx, -cy);
   }
 
-  // Clip for rounded shapes
-  if (shape.geom === 'roundRect' || shape.geom === 'ellipse') {
-    ctx.beginPath();
-    if (shape.geom === 'ellipse') {
-      ctx.ellipse(sx + sw / 2, sy + sh / 2, sw / 2, sh / 2, 0, 0, Math.PI * 2);
-    } else {
-      const r = Math.min(8 * scale, sw / 4, sh / 4);
-      ctx.moveTo(sx + r, sy);
-      ctx.arcTo(sx + sw, sy, sx + sw, sy + sh, r);
-      ctx.arcTo(sx + sw, sy + sh, sx, sy + sh, r);
-      ctx.arcTo(sx, sy + sh, sx, sy, r);
-      ctx.arcTo(sx, sy, sx + sw, sy, r);
-    }
-    ctx.closePath();
-    ctx.clip();
-  }
-
   if (shape.type === 'image') {
+    // Clip to shape geometry for images
+    if (shape.geom && shape.geom !== 'rect') {
+      drawGeomPath(ctx, shape.geom, sx, sy, sw, sh);
+      ctx.clip();
+    }
     const imgPath = resolvePath(shape.target);
     try {
       const img = await loadZipImage(zip, imgPath, objectUrls);
       if (img) {
         if (shape.fillMode === 'stretch') {
-          // Stretch: fill entire shape bounds (most common in PPT)
           ctx.drawImage(img, sx, sy, sw, sh);
         } else {
-          // Contain-fit: preserve aspect ratio
           const imgW = img.width, imgH = img.height;
           const imgAspect = imgW / imgH;
           const shapeAspect = sw / sh;
@@ -943,23 +1046,28 @@ async function drawShapeOnCanvas(ctx, shape, zip, canvasW, canvasH, slideSize, s
   } else if (shape.type === 'table') {
     drawTable(ctx, shape, sx, sy, sw, sh, scale);
   } else if (shape.type === 'text') {
-    // Shape background
-    if (shape.bgColor) {
-      const gradInfo = shape.bgColor.startsWith?.('linear-gradient') ? parseGradientStops(shape.bgColor) : null;
-      if (gradInfo) {
-        ctx.fillStyle = applyGradientFill(ctx, gradInfo, sx, sy, sw, sh);
-      } else {
-        ctx.fillStyle = shape.bgColor;
+    const geom = shape.geom || 'rect';
+    const isRect = geom === 'rect';
+
+    // Draw shape fill using geometry path
+    if (shape.bgColor || shape.line) {
+      drawGeomPath(ctx, geom, sx, sy, sw, sh);
+      if (shape.bgColor) {
+        const gradInfo = shape.bgColor.startsWith?.('linear-gradient') ? parseGradientStops(shape.bgColor) : null;
+        ctx.fillStyle = gradInfo ? applyGradientFill(ctx, gradInfo, sx, sy, sw, sh) : shape.bgColor;
+        ctx.fill();
       }
-      ctx.fillRect(sx, sy, sw, sh);
+      if (shape.line) {
+        ctx.strokeStyle = shape.line.color;
+        ctx.lineWidth = shape.line.width * scale;
+        ctx.stroke();
+      }
     }
-    // Shape border
-    if (shape.line) {
-      ctx.strokeStyle = shape.line.color;
-      ctx.lineWidth = shape.line.width * scale;
-      ctx.strokeRect(sx, sy, sw, sh);
+
+    // Draw text — no clipping (PPT text commonly overflows shape bounds)
+    if (shape.paragraphs && shape.paragraphs.length) {
+      drawTextShape(ctx, shape, sx, sy, sw, sh, scale, {});
     }
-    drawTextShape(ctx, shape, sx, sy, sw, sh, scale, {});
   }
 
   ctx.restore();
