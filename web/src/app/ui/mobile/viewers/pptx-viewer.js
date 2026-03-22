@@ -395,8 +395,17 @@ function parseShape(spEl, relMap, phStyles) {
   // Image via blip
   const blip = dn(spEl, NS_A, 'blip');
   const embedId = blip ? (blip.getAttributeNS(NS_R, 'embed') || blip.getAttribute('r:embed')) : null;
-  if (embedId && relMap[embedId] && /\.(png|jpe?g|gif|bmp|svg|webp|emf|wmf|tiff?)$/i.test(relMap[embedId])) {
-    // Detect stretch vs tile fill mode from blipFill
+  const isImageRef = embedId && relMap[embedId] && /\.(png|jpe?g|gif|bmp|svg|webp|emf|wmf|tiff?)$/i.test(relMap[embedId]);
+  // Check if this shape also has text content (sp with blipFill + text)
+  const txBodyEl = dn(spEl, NS_P, 'txBody');
+  const hasTextContent = txBodyEl && qnAll(txBodyEl, NS_A, 'p').some(p => {
+    for (const ch of p.children) {
+      if (ch.namespaceURI === NS_A && (ch.localName === 'r' || ch.localName === 'fld')) return true;
+    }
+    return false;
+  });
+  if (isImageRef && !hasTextContent) {
+    // Pure image shape (no text) — return as image
     const blipFill = blip.parentElement;
     const hasStretch = blipFill ? !!dn(blipFill, NS_A, 'stretch') : false;
     return { type: 'image', ...tf, target: relMap[embedId], fillMode: hasStretch ? 'stretch' : 'contain' };
@@ -488,9 +497,11 @@ function parseShape(spEl, relMap, phStyles) {
     l: lIns ? emuToPx(lIns) : 7, r: rIns ? emuToPx(rIns) : 7,
     t: tIns ? emuToPx(tIns) : 4, b: bIns ? emuToPx(bIns) : 4
   };
-  // Return shape if it has text OR visual fill/border (decorative shapes)
-  if (!paragraphs.length && !bgColor && !line) return null;
-  return { type: 'text', ...tf, paragraphs, bgColor, line, anchor, margin, geom, noWrap, autoFit, fontScale };
+  // Attach blip fill target for shapes that have both image fill and text
+  const blipTarget = isImageRef ? relMap[embedId] : null;
+  // Return shape if it has text OR visual fill/border/blip (decorative shapes)
+  if (!paragraphs.length && !bgColor && !line && !blipTarget) return null;
+  return { type: 'text', ...tf, paragraphs, bgColor, blipTarget, line, anchor, margin, geom, noWrap, autoFit, fontScale };
 }
 
 // ── Group shapes (recursive, direct children only) ──
@@ -1364,6 +1375,18 @@ async function drawShapeOnCanvas(ctx, shape, zip, canvasW, canvasH, slideSize, s
   } else if (shape.type === 'text') {
     const geom = shape.geom || 'rect';
     const isRect = geom === 'rect';
+
+    // Draw blip fill (image background) for shapes with both image and text
+    if (shape.blipTarget) {
+      try {
+        const imgPath = resolvePath(shape.blipTarget);
+        const img = await loadZipImage(zip, imgPath, objectUrls);
+        if (img) {
+          if (geom !== 'rect') { drawGeomPath(ctx, geom, sx, sy, sw, sh); ctx.clip(); }
+          ctx.drawImage(img, sx, sy, sw, sh);
+        }
+      } catch (_e) { /* blip fill failed, continue with text */ }
+    }
 
     // Draw shape fill using geometry path
     if (shape.bgColor || shape.line) {
