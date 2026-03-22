@@ -359,26 +359,32 @@ function parseShape(spEl, relMap) {
   const blip = dn(spEl, NS_A, 'blip');
   const embedId = blip ? (blip.getAttributeNS(NS_R, 'embed') || blip.getAttribute('r:embed')) : null;
   if (embedId && relMap[embedId] && /\.(png|jpe?g|gif|bmp|svg|webp|emf|wmf|tiff?)$/i.test(relMap[embedId])) {
-    return { type: 'image', ...tf, target: relMap[embedId] };
+    // Detect stretch vs tile fill mode from blipFill
+    const blipFill = blip.parentElement;
+    const hasStretch = blipFill ? !!dn(blipFill, NS_A, 'stretch') : false;
+    return { type: 'image', ...tf, target: relMap[embedId], fillMode: hasStretch ? 'stretch' : 'contain' };
   }
   // Table
   const tblEl = dn(spEl, NS_A, 'tbl');
   if (tblEl) return { type: 'table', ...tf, rows: parseTable(tblEl) };
-  // Text body
-  const txBody = dn(spEl, NS_P, 'txBody');
-  if (!txBody) return null;
-  const paragraphs = [];
-  for (const p of qnAll(txBody, NS_A, 'p')) {
-    const para = parseParagraph(p);
-    if (para.runs.length) paragraphs.push(para);
-  }
-  if (!paragraphs.length) return null;
   // Shape styles — look specifically at spPr
   const spPr = dn(spEl, NS_P, 'spPr');
   const bgColor = spPr ? parseFill(spPr) : null;
   const line = spPr ? parseLine(spPr) : null;
+  // Preset geometry (rounded rect, etc.)
+  const prstGeom = spPr ? dn(spPr, NS_A, 'prstGeom') : null;
+  const geom = prstGeom ? (prstGeom.getAttribute('prst') || 'rect') : 'rect';
+  // Text body
+  const txBody = dn(spEl, NS_P, 'txBody');
+  const paragraphs = [];
+  if (txBody) {
+    for (const p of qnAll(txBody, NS_A, 'p')) {
+      const para = parseParagraph(p);
+      if (para.runs.length) paragraphs.push(para);
+    }
+  }
   // Text body properties
-  const bodyPr = qn(txBody, NS_A, 'bodyPr');
+  const bodyPr = txBody ? qn(txBody, NS_A, 'bodyPr') : null;
   const anchor = bodyPr?.getAttribute('anchor');
   const lIns = bodyPr?.getAttribute('lIns'); const rIns = bodyPr?.getAttribute('rIns');
   const tIns = bodyPr?.getAttribute('tIns'); const bIns = bodyPr?.getAttribute('bIns');
@@ -386,9 +392,8 @@ function parseShape(spEl, relMap) {
     l: lIns ? emuToPx(lIns) : 7, r: rIns ? emuToPx(rIns) : 7,
     t: tIns ? emuToPx(tIns) : 4, b: bIns ? emuToPx(bIns) : 4
   };
-  // Preset geometry (rounded rect, etc.)
-  const prstGeom = spPr ? dn(spPr, NS_A, 'prstGeom') : null;
-  const geom = prstGeom ? (prstGeom.getAttribute('prst') || 'rect') : 'rect';
+  // Return shape if it has text OR visual fill/border (decorative shapes)
+  if (!paragraphs.length && !bgColor && !line) return null;
   return { type: 'text', ...tf, paragraphs, bgColor, line, anchor, margin, geom };
 }
 
@@ -583,16 +588,35 @@ function applyGradientFill(ctx, gradInfo, x, y, w, h) {
 }
 
 // Word-wrap text into lines that fit within maxWidth
+// CJK-aware word wrap: breaks on whitespace for Latin, per-character for CJK
 function wrapText(ctx, text, maxWidth) {
   if (maxWidth <= 0) return [text];
-  const words = text.split(/(\s+)/); // keep whitespace as separators
+  if (ctx.measureText(text).width <= maxWidth) return [text];
+
+  // Segment text into tokens: CJK chars are individual tokens, Latin words stay grouped
+  const CJK_RE = /[\u2E80-\u9FFF\uF900-\uFAFF\uFE30-\uFE4F\u{20000}-\u{2FA1F}]/u;
+  const tokens = [];
+  let buf = '';
+  for (const ch of text) {
+    if (CJK_RE.test(ch)) {
+      if (buf) { tokens.push(buf); buf = ''; }
+      tokens.push(ch);
+    } else if (/\s/.test(ch)) {
+      if (buf) { tokens.push(buf); buf = ''; }
+      tokens.push(ch);
+    } else {
+      buf += ch;
+    }
+  }
+  if (buf) tokens.push(buf);
+
   const lines = [];
   let line = '';
-  for (const word of words) {
-    const test = line + word;
+  for (const tok of tokens) {
+    const test = line + tok;
     if (ctx.measureText(test).width > maxWidth && line.length > 0) {
       lines.push(line);
-      line = word.trimStart();
+      line = /\s/.test(tok) ? '' : tok;
     } else {
       line = test;
     }
@@ -723,8 +747,16 @@ function drawTextShape(ctx, shape, sx, sy, sw, sh, scale, relMap) {
         currentLine.push(seg);
         currentLineW += segW;
       } else {
-        // Need to wrap: try to split this segment's text
-        const words = seg.text.split(/(\s+)/);
+        // Need to wrap: tokenize CJK-aware
+        const CJK = /[\u2E80-\u9FFF\uF900-\uFAFF\uFE30-\uFE4F\u{20000}-\u{2FA1F}]/u;
+        const words = [];
+        let _b = '';
+        for (const ch of seg.text) {
+          if (CJK.test(ch)) { if (_b) { words.push(_b); _b = ''; } words.push(ch); }
+          else if (/\s/.test(ch)) { if (_b) { words.push(_b); _b = ''; } words.push(ch); }
+          else _b += ch;
+        }
+        if (_b) words.push(_b);
         let partial = '';
         for (const word of words) {
           const testW = ctx.measureText(partial + word).width;
@@ -890,17 +922,22 @@ async function drawShapeOnCanvas(ctx, shape, zip, canvasW, canvasH, slideSize, s
     try {
       const img = await loadZipImage(zip, imgPath, objectUrls);
       if (img) {
-        // Contain-fit within shape bounds
-        const imgW = img.width, imgH = img.height;
-        const imgAspect = imgW / imgH;
-        const shapeAspect = sw / sh;
-        let dw, dh, dx, dy;
-        if (imgAspect > shapeAspect) {
-          dw = sw; dh = sw / imgAspect; dx = sx; dy = sy + (sh - dh) / 2;
+        if (shape.fillMode === 'stretch') {
+          // Stretch: fill entire shape bounds (most common in PPT)
+          ctx.drawImage(img, sx, sy, sw, sh);
         } else {
-          dh = sh; dw = sh * imgAspect; dy = sy; dx = sx + (sw - dw) / 2;
+          // Contain-fit: preserve aspect ratio
+          const imgW = img.width, imgH = img.height;
+          const imgAspect = imgW / imgH;
+          const shapeAspect = sw / sh;
+          let dw, dh, dx, dy;
+          if (imgAspect > shapeAspect) {
+            dw = sw; dh = sw / imgAspect; dx = sx; dy = sy + (sh - dh) / 2;
+          } else {
+            dh = sh; dw = sh * imgAspect; dy = sy; dx = sx + (sw - dw) / 2;
+          }
+          ctx.drawImage(img, dx, dy, dw, dh);
         }
-        ctx.drawImage(img, dx, dy, dw, dh);
       }
     } catch {}
   } else if (shape.type === 'table') {
