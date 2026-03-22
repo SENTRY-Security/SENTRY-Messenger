@@ -313,6 +313,9 @@ function parseParagraph(pEl) {
   const defaultColor = defRPr ? parseColor(defRPr) : null;
   const defaultBold = defRPr?.getAttribute('b') === '1' || false;
   const defaultItalic = defRPr?.getAttribute('i') === '1' || false;
+  const defU = defRPr?.getAttribute('u');
+  const defaultUnderline = defU === 'sng' || defU === 'dbl' || false;
+  const defaultStrike = defRPr?.getAttribute('strike') === 'sngStrike' || false;
   const defLatin = defRPr ? qn(defRPr, NS_A, 'latin') : null;
   const defEa = defRPr ? qn(defRPr, NS_A, 'ea') : null;
   const defaultFont = defLatin ? defLatin.getAttribute('typeface') : (defEa ? defEa.getAttribute('typeface') : null);
@@ -323,7 +326,7 @@ function parseParagraph(pEl) {
   const endColor = endParaRPr ? parseColor(endParaRPr) : null;
   return { runs, align, bullet, bulletColor, indent, marginLeft, lineHeight, spaceBefore, spaceAfter,
     defaultFontSize: defaultFontSize || endFontSize, defaultColor: defaultColor || endColor,
-    defaultBold, defaultItalic, defaultFont };
+    defaultBold, defaultItalic, defaultUnderline, defaultStrike, defaultFont };
 }
 
 // ── Shape position/size ──
@@ -444,7 +447,11 @@ function parseShape(spEl, relMap, phStyles) {
         if (!ld.fontSize && val.fontSize) ld.fontSize = val.fontSize;
         if (!ld.color && val.color) ld.color = val.color;
         if (!ld.bold && val.bold) ld.bold = val.bold;
+        if (!ld.italic && val.italic) ld.italic = val.italic;
+        if (!ld.underline && val.underline) ld.underline = val.underline;
+        if (!ld.strike && val.strike) ld.strike = val.strike;
         if (!ld.font && val.font) ld.font = val.font;
+        if (!ld.align && val.align) ld.align = val.align;
       }
     }
   }
@@ -458,7 +465,11 @@ function parseShape(spEl, relMap, phStyles) {
         if (!para.defaultFontSize && lvlDef.fontSize) para.defaultFontSize = lvlDef.fontSize;
         if (!para.defaultColor && lvlDef.color) para.defaultColor = lvlDef.color;
         if (!para.defaultBold && lvlDef.bold) para.defaultBold = lvlDef.bold;
+        if (!para.defaultItalic && lvlDef.italic) para.defaultItalic = lvlDef.italic;
+        if (!para.defaultUnderline && lvlDef.underline) para.defaultUnderline = lvlDef.underline;
+        if (!para.defaultStrike && lvlDef.strike) para.defaultStrike = lvlDef.strike;
         if (!para.defaultFont && lvlDef.font) para.defaultFont = lvlDef.font;
+        if (para.align === 'left' && lvlDef.align) para.align = lvlDef.align;
       }
     }
   }
@@ -618,19 +629,29 @@ function extractLstStyleDefaults(lstStyleEl) {
   for (let i = 0; i < lvlNames.length; i++) {
     const lvlPPr = qn(lstStyleEl, NS_A, lvlNames[i]);
     if (!lvlPPr) continue;
+    // Paragraph-level: alignment
+    const algn = lvlPPr.getAttribute('algn');
+    const align = algn === 'ctr' ? 'center' : algn === 'r' ? 'right' : algn === 'just' ? 'justify' : (algn === 'l' ? 'left' : null);
     const dr = qn(lvlPPr, NS_A, 'defRPr');
-    if (!dr) continue;
+    const lvlKey = i === 0 ? 'def' : i - 1;
+    if (!dr) {
+      if (align) defaults[lvlKey] = { fontSize: null, color: null, bold: false, italic: false, underline: false, strike: false, font: null, align };
+      continue;
+    }
     const sz = dr.getAttribute('sz');
     const c = parseColor(dr);
     const b = dr.getAttribute('b') === '1';
     const it = dr.getAttribute('i') === '1';
+    const u = dr.getAttribute('u');
+    const ul = u === 'sng' || u === 'dbl';
+    const stk = dr.getAttribute('strike') === 'sngStrike';
     const latin = qn(dr, NS_A, 'latin');
     const ea = qn(dr, NS_A, 'ea');
-    const lvlKey = i === 0 ? 'def' : i - 1;
     defaults[lvlKey] = {
       fontSize: sz ? Math.round(Number(sz) / 100) : null,
-      color: c, bold: b, italic: it,
-      font: latin ? latin.getAttribute('typeface') : (ea ? ea.getAttribute('typeface') : null)
+      color: c, bold: b, italic: it, underline: ul, strike: stk,
+      font: latin ? latin.getAttribute('typeface') : (ea ? ea.getAttribute('typeface') : null),
+      align
     };
   }
   return defaults;
@@ -669,11 +690,16 @@ function extractPlaceholderStylesFromDoc(doc) {
           const sz = dr.getAttribute('sz');
           const c = parseColor(dr);
           const b = dr.getAttribute('b') === '1';
+          const u = dr.getAttribute('u');
           const latin = qn(dr, NS_A, 'latin');
+          const ea = qn(dr, NS_A, 'ea');
+          const algn = pPr?.getAttribute('algn');
           defaults[0] = {
             fontSize: sz ? Math.round(Number(sz) / 100) : null,
             color: c, bold: b, italic: dr.getAttribute('i') === '1',
-            font: latin ? latin.getAttribute('typeface') : null
+            underline: u === 'sng' || u === 'dbl', strike: dr.getAttribute('strike') === 'sngStrike',
+            font: latin ? latin.getAttribute('typeface') : (ea ? ea.getAttribute('typeface') : null),
+            align: algn === 'ctr' ? 'center' : algn === 'r' ? 'right' : algn === 'just' ? 'justify' : null
           };
           break;
         }
@@ -681,9 +707,10 @@ function extractPlaceholderStylesFromDoc(doc) {
     }
     const key = phInfo.type + (phInfo.idx ? ':' + phInfo.idx : '');
     defaults._transform = tf;
+    const hasStyleDefaults = Object.keys(defaults).some(k => k !== '_transform');
     phStyles[key] = defaults;
     // Also store by type alone for fallback
-    if (!phStyles[phInfo.type] || Object.keys(phStyles[phInfo.type]).length === 0) {
+    if (!phStyles[phInfo.type] || !Object.keys(phStyles[phInfo.type]).some(k => k !== '_transform')) {
       phStyles[phInfo.type] = defaults;
     }
   }
@@ -971,14 +998,17 @@ function drawTextShape(ctx, shape, sx, sy, sw, sh, scale, relMap) {
       if (run.text === '\n') { segments.push({ text: '\n' }); continue; }
       const fs = (run.fontSize || para.defaultFontSize || 12) * fScale;
       const effectiveFs = run.baseline ? fs * 0.65 : fs;
-      const isBold = run.bold || (!run.fontSize && para.defaultBold) || false;
-      const isItalic = run.italic || (!run.fontSize && para.defaultItalic) || false;
+      const isBold = run.bold || para.defaultBold || false;
+      const isItalic = run.italic || para.defaultItalic || false;
       const runFont = run.font || para.defaultFont;
       segments.push({
         text: run.text,
         font: `${isItalic ? 'italic ' : ''}${isBold ? '700 ' : ''}${ptToPx(effectiveFs) * scale}px ${resolveFont(runFont) || resolveFont(themeFontMinor) || 'sans-serif'}`,
         color: run.color || para.defaultColor || defaultTextColor,
-        fontSize: fs, underline: run.underline, strike: run.strike, baseline: run.baseline
+        fontSize: fs,
+        underline: run.underline || para.defaultUnderline || false,
+        strike: run.strike || para.defaultStrike || false,
+        baseline: run.baseline
       });
     }
 
