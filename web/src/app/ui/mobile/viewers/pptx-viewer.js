@@ -573,6 +573,12 @@ function buildRelMap(relsXml) {
   return map;
 }
 
+function resolvePathFrom(base, target) {
+  const r = target.startsWith('/') ? target.slice(1) : base + target;
+  const parts = r.split('/'); const stack = [];
+  for (const p of parts) { if (p === '..') stack.pop(); else if (p !== '.') stack.push(p); }
+  return stack.join('/');
+}
 function resolvePath(target) {
   const r = target.startsWith('/') ? target.slice(1) : 'ppt/slides/' + target;
   const parts = r.split('/'); const stack = [];
@@ -962,25 +968,23 @@ function isDarkColor(hex) {
   return (0.299 * r + 0.587 * g + 0.114 * b) < 0.4;
 }
 
-function drawTextShape(ctx, shape, sx, sy, sw, sh, scale, relMap) {
+function drawTextShape(ctx, shape, sx, sy, sw, sh, scale, relMap, slideBgColor) {
   const m = shape.margin || { l: 7, r: 7, t: 4, b: 4 };
   const padL = m.l * scale, padR = m.r * scale, padT = m.t * scale, padB = m.b * scale;
   const contentW = sw - padL - padR;
   // normAutofit: scale font sizes by fontScale percentage
   const fScale = (shape.fontScale || 100) / 100;
-  // Smart default text color: use white on dark backgrounds (solid, gradient, or blip)
-  const shapeBg = shape.bgColor;
+  // Smart default text color: use white on dark backgrounds
+  // Check shape's own bg first, then fall back to slide-level bg
+  const effectiveBg = shape.bgColor || slideBgColor;
   let darkBg = false;
-  if (shapeBg && typeof shapeBg === 'string') {
-    if (shapeBg.startsWith('linear-gradient')) {
-      // Check first gradient stop color
-      const firstColor = shapeBg.match(/#[0-9a-fA-F]{6}/);
+  if (effectiveBg && typeof effectiveBg === 'string') {
+    if (effectiveBg.startsWith('linear-gradient')) {
+      const firstColor = effectiveBg.match(/#[0-9a-fA-F]{6}/);
       darkBg = firstColor ? isDarkColor(firstColor[0]) : false;
     } else {
-      darkBg = isDarkColor(shapeBg);
+      darkBg = isDarkColor(effectiveBg);
     }
-  } else if (shape.blipTarget) {
-    darkBg = false; // can't detect image brightness, default to dark text
   }
   const defaultTextColor = darkBg ? '#ffffff' : (themeColors.tx1 || '#1e293b');
 
@@ -1439,7 +1443,7 @@ function drawGeomPath(ctx, geom, sx, sy, sw, sh) {
   ctx.closePath();
 }
 
-async function drawShapeOnCanvas(ctx, shape, zip, canvasW, canvasH, slideSize, scale, objectUrls) {
+async function drawShapeOnCanvas(ctx, shape, zip, canvasW, canvasH, slideSize, scale, objectUrls, slideBgColor) {
   const sx = shape.x / slideSize.w * canvasW;
   const sy = shape.y / slideSize.h * canvasH;
   const sw = shape.w / slideSize.w * canvasW;
@@ -1517,11 +1521,62 @@ async function drawShapeOnCanvas(ctx, shape, zip, canvasW, canvasH, slideSize, s
 
     // Draw text — no clipping (PPT text commonly overflows shape bounds)
     if (shape.paragraphs && shape.paragraphs.length) {
-      drawTextShape(ctx, shape, sx, sy, sw, sh, scale, {});
+      drawTextShape(ctx, shape, sx, sy, sw, sh, scale, {}, slideBgColor);
     }
   }
 
   ctx.restore();
+}
+
+// Collect non-placeholder shapes from layout/master (background design elements)
+async function getLayoutShapes(relsXml, zip, phStyles) {
+  const shapes = [];
+  if (!relsXml) return shapes;
+  try {
+    const relsDoc = parseXml(relsXml);
+    let layoutTarget = null;
+    for (const rel of relsDoc.getElementsByTagName('Relationship')) {
+      const t = rel.getAttribute('Target') || '';
+      if (/slideLayout/i.test(t)) { layoutTarget = t; break; }
+    }
+    if (!layoutTarget) return shapes;
+    const layoutPath = resolvePath(layoutTarget);
+    const layoutXmlStr = await zip.file(layoutPath)?.async('string');
+    if (!layoutXmlStr) return shapes;
+    const layoutDoc = parseXml(layoutXmlStr);
+
+    // Build layout relMap for image references
+    const layoutDir = layoutPath.replace(/[^/]+$/, '');
+    const layoutNum = layoutPath.match(/slideLayout(\d+)/)?.[1];
+    const layoutRelsPath = `ppt/slideLayouts/_rels/slideLayout${layoutNum}.xml.rels`;
+    const layoutRelsStr = await zip.file(layoutRelsPath)?.async('string').catch(() => null);
+    const layoutRelMap = {};
+    if (layoutRelsStr) {
+      const ld = parseXml(layoutRelsStr);
+      for (const rel of ld.getElementsByTagName('Relationship')) {
+        const id = rel.getAttribute('Id'), t = rel.getAttribute('Target');
+        if (id && t) layoutRelMap[id] = resolvePathFrom(layoutDir, t);
+      }
+    }
+
+    // Collect non-placeholder shapes from layout spTree (design elements only)
+    const layoutSpTree = dn(layoutDoc, NS_P, 'spTree');
+    if (layoutSpTree) {
+      const shapeTypes = new Set(['sp', 'pic', 'cxnSp', 'grpSp']);
+      for (const child of layoutSpTree.children) {
+        if (child.namespaceURI !== NS_P || !shapeTypes.has(child.localName)) continue;
+        // Skip placeholder shapes (those are handled by text inheritance)
+        if (child.localName === 'sp' && extractPhFromShape(child)) continue;
+        if (child.localName === 'grpSp') {
+          shapes.push(...parseGroupShapes(child, layoutRelMap, phStyles));
+        } else {
+          const s = parseShape(child, layoutRelMap, phStyles);
+          if (s) shapes.push(s);
+        }
+      }
+    }
+  } catch {}
+  return shapes;
 }
 
 async function buildSlideCanvas(slideXmlStr, relsXml, zip, slideSize, objectUrls) {
@@ -1544,8 +1599,11 @@ async function buildSlideCanvas(slideXmlStr, relsXml, zip, slideSize, objectUrls
     }
   }
 
-  // Collect shapes in document order (preserves z-order: later elements render on top)
-  const allShapes = [];
+  // Collect layout shapes first (design elements behind slide content)
+  const layoutShapes = await getLayoutShapes(relsXml, zip, phStyles);
+
+  // Collect slide shapes in document order (preserves z-order: later elements render on top)
+  const allShapes = [...layoutShapes];
   const spTree = dn(slideDoc, NS_P, 'spTree');
   if (spTree) {
     const shapeTypes = new Set(['sp', 'pic', 'cxnSp', 'grpSp', 'graphicFrame']);
@@ -1560,8 +1618,8 @@ async function buildSlideCanvas(slideXmlStr, relsXml, zip, slideSize, objectUrls
     }
   }
 
-  // Return a render function that draws onto a sized canvas
-  return { bgColor, bgImage, shapes: allShapes, relMap };
+  // Return slide data for rendering — slideBgColor used for text color detection
+  return { bgColor, bgImage, shapes: allShapes, relMap, slideBgColor: bgColor };
 }
 
 function renderSlideToCanvas(canvas, slideData, slideSize, zip, objectUrls) {
@@ -1588,9 +1646,10 @@ function renderSlideToCanvas(canvas, slideData, slideSize, zip, objectUrls) {
   }
 
   // Draw shapes sequentially (images are async)
+  const slideBgColor = slideData.slideBgColor || slideData.bgColor;
   return (async () => {
     for (const shape of slideData.shapes) {
-      await drawShapeOnCanvas(ctx, shape, zip, canvas.width, canvas.height, slideSize, scale, objectUrls);
+      await drawShapeOnCanvas(ctx, shape, zip, canvas.width, canvas.height, slideSize, scale, objectUrls, slideBgColor);
     }
   })();
 }
@@ -1635,7 +1694,7 @@ export async function renderPptxThumbnail(buffer, canvas) {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     if (slideData.bgImage) ctx.drawImage(slideData.bgImage, 0, 0, canvas.width, canvas.height);
     for (const shape of slideData.shapes) {
-      await drawShapeOnCanvas(ctx, shape, zip, canvas.width, canvas.height, slideSize, scale, objectUrls);
+      await drawShapeOnCanvas(ctx, shape, zip, canvas.width, canvas.height, slideSize, scale, objectUrls, slideData.slideBgColor || slideData.bgColor);
     }
     // Cleanup object URLs
     for (const u of objectUrls) { try { URL.revokeObjectURL(u); } catch {} }
