@@ -37,11 +37,48 @@ export function isPptxMime(ct) { if (!ct) return false; const l = ct.toLowerCase
 export function isPptxFilename(name) { return name ? /\.(pptx|ppt|pptm)$/i.test(name) : false; }
 
 // ═══════════════════════════════════════
-// OOXML Parser
+// OOXML Parser — DOMParser based
 // ═══════════════════════════════════════
 const EMU_PX = 914400 / 96;
 const emuToPx = (v) => Math.round(Number(v) / EMU_PX);
-const attr = (xml, name) => { const m = xml.match(new RegExp(`${name}="([^"]*)"`)); return m ? m[1] : null; };
+
+// XML namespaces
+const NS_A = 'http://schemas.openxmlformats.org/drawingml/2006/main';
+const NS_P = 'http://schemas.openxmlformats.org/presentationml/2006/main';
+const NS_R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+
+function parseXml(xmlStr) {
+  return new DOMParser().parseFromString(xmlStr, 'text/xml');
+}
+
+// First direct child by namespace + localName
+function qn(parent, ns, localName) {
+  if (!parent) return null;
+  for (const ch of parent.children) {
+    if (ch.localName === localName && ch.namespaceURI === ns) return ch;
+  }
+  return null;
+}
+
+// All direct children by namespace + localName
+function qnAll(parent, ns, localName) {
+  if (!parent) return [];
+  const result = [];
+  for (const ch of parent.children) {
+    if (ch.localName === localName && ch.namespaceURI === ns) result.push(ch);
+  }
+  return result;
+}
+
+// First descendant (any depth)
+function dn(parent, ns, localName) {
+  return parent?.getElementsByTagNameNS?.(ns, localName)?.[0] || null;
+}
+
+// All descendants as array
+function dnAll(parent, ns, localName) {
+  return [...(parent?.getElementsByTagNameNS?.(ns, localName) || [])];
+}
 
 // ── Theme ──
 // Parsed once per file; holds real colors + fonts from theme1.xml
@@ -51,29 +88,27 @@ let themeFontMinor = 'Calibri';
 
 async function parseTheme(zip) {
   try {
-    const xml = await zip.file('ppt/theme/theme1.xml')?.async('string');
-    if (!xml) return;
-    // Color scheme: <a:clrScheme> children like <a:dk1><a:srgbClr val="000000"/></a:dk1>
-    const scheme = xml.match(/<a:clrScheme[^>]*>([\s\S]*?)<\/a:clrScheme>/);
-    if (scheme) {
+    const xmlStr = await zip.file('ppt/theme/theme1.xml')?.async('string');
+    if (!xmlStr) return;
+    const doc = parseXml(xmlStr);
+    const clrScheme = dn(doc, NS_A, 'clrScheme');
+    if (clrScheme) {
       const tags = ['dk1','dk2','lt1','lt2','accent1','accent2','accent3','accent4','accent5','accent6','hlink','folHlink'];
       for (const tag of tags) {
-        const m = scheme[1].match(new RegExp(`<a:${tag}>[\\s\\S]*?<a:srgbClr\\s+val="([^"]+)"`, 'i'));
-        if (m) themeColors[tag] = '#' + m[1];
-        else {
-          const sys = scheme[1].match(new RegExp(`<a:${tag}>[\\s\\S]*?<a:sysClr[^>]*lastClr="([^"]+)"`, 'i'));
-          if (sys) themeColors[tag] = '#' + sys[1];
-        }
+        const el = qn(clrScheme, NS_A, tag);
+        if (!el) continue;
+        const srgb = dn(el, NS_A, 'srgbClr');
+        if (srgb) { themeColors[tag] = '#' + srgb.getAttribute('val'); continue; }
+        const sys = dn(el, NS_A, 'sysClr');
+        if (sys) themeColors[tag] = '#' + (sys.getAttribute('lastClr') || sys.getAttribute('val') || '000000');
       }
-      // tx1/tx2/bg1/bg2 aliases
       themeColors.tx1 = themeColors.dk1; themeColors.tx2 = themeColors.dk2;
       themeColors.bg1 = themeColors.lt1; themeColors.bg2 = themeColors.lt2;
     }
-    // Fonts
-    const majorLatin = xml.match(/<a:majorFont>[\s\S]*?<a:latin\s+typeface="([^"]+)"/);
-    const minorLatin = xml.match(/<a:minorFont>[\s\S]*?<a:latin\s+typeface="([^"]+)"/);
-    if (majorLatin) themeFontMajor = majorLatin[1];
-    if (minorLatin) themeFontMinor = minorLatin[1];
+    const majorFont = dn(doc, NS_A, 'majorFont');
+    if (majorFont) { const latin = qn(majorFont, NS_A, 'latin'); if (latin) themeFontMajor = latin.getAttribute('typeface') || 'Calibri'; }
+    const minorFont = dn(doc, NS_A, 'minorFont');
+    if (minorFont) { const latin = qn(minorFont, NS_A, 'latin'); if (latin) themeFontMinor = latin.getAttribute('typeface') || 'Calibri'; }
   } catch {}
 }
 
@@ -104,32 +139,31 @@ function resolveFont(rawFont) {
 }
 
 // ── Color ──
-function parseColor(xml) {
-  if (!xml) return null;
-  const srgb = xml.match(/<a:srgbClr\s+val="([^"]+)"/);
+function parseColor(el) {
+  if (!el) return null;
+  const srgb = dn(el, NS_A, 'srgbClr');
   if (srgb) {
-    // Check for lumMod/lumOff adjustments
-    let color = srgb[1];
-    const lumMod = xml.match(/<a:lumMod\s+val="(\d+)"/);
-    const lumOff = xml.match(/<a:lumOff\s+val="(\d+)"/);
+    const color = srgb.getAttribute('val');
+    const lumMod = qn(srgb, NS_A, 'lumMod');
+    const lumOff = qn(srgb, NS_A, 'lumOff');
     if (lumMod || lumOff) {
-      return adjustLuminance('#' + color, lumMod ? Number(lumMod[1]) / 100000 : 1, lumOff ? Number(lumOff[1]) / 100000 : 0);
+      return adjustLuminance('#' + color, lumMod ? Number(lumMod.getAttribute('val')) / 100000 : 1, lumOff ? Number(lumOff.getAttribute('val')) / 100000 : 0);
     }
     return '#' + color;
   }
-  const scheme = xml.match(/<a:schemeClr\s+val="([^"]+)"/);
+  const scheme = dn(el, NS_A, 'schemeClr');
   if (scheme) {
-    let base = themeColors[scheme[1]] || null;
+    const base = themeColors[scheme.getAttribute('val')] || null;
     if (!base) return null;
-    const lumMod = xml.match(/<a:lumMod\s+val="(\d+)"/);
-    const lumOff = xml.match(/<a:lumOff\s+val="(\d+)"/);
-    const tint = xml.match(/<a:tint\s+val="(\d+)"/);
-    const shade = xml.match(/<a:shade\s+val="(\d+)"/);
-    if (lumMod || lumOff || tint || shade) {
-      let mod = lumMod ? Number(lumMod[1]) / 100000 : 1;
-      let off = lumOff ? Number(lumOff[1]) / 100000 : 0;
-      if (tint) { const t = Number(tint[1]) / 100000; mod *= t; off += (1 - t); }
-      if (shade) mod *= Number(shade[1]) / 100000;
+    const lumMod = qn(scheme, NS_A, 'lumMod');
+    const lumOff = qn(scheme, NS_A, 'lumOff');
+    const tintEl = qn(scheme, NS_A, 'tint');
+    const shadeEl = qn(scheme, NS_A, 'shade');
+    if (lumMod || lumOff || tintEl || shadeEl) {
+      let mod = lumMod ? Number(lumMod.getAttribute('val')) / 100000 : 1;
+      let off = lumOff ? Number(lumOff.getAttribute('val')) / 100000 : 0;
+      if (tintEl) { const tv = Number(tintEl.getAttribute('val')) / 100000; mod *= tv; off += (1 - tv); }
+      if (shadeEl) mod *= Number(shadeEl.getAttribute('val')) / 100000;
       return adjustLuminance(base, mod, off);
     }
     return base;
@@ -163,17 +197,17 @@ function adjustLuminance(hex, mod, off) {
   return '#' + [rr, gg, bb].map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join('');
 }
 
-function parseFill(xml) {
-  if (!xml) return null;
-  const solid = xml.match(/<a:solidFill>([\s\S]*?)<\/a:solidFill>/);
-  if (solid) return parseColor(solid[0]);
+function parseFill(el) {
+  if (!el) return null;
+  const solid = dn(el, NS_A, 'solidFill');
+  if (solid) return parseColor(solid);
   // Gradient fill → CSS linear-gradient
-  const gradFill = xml.match(/<a:gradFill>([\s\S]*?)<\/a:gradFill>/);
+  const gradFill = dn(el, NS_A, 'gradFill');
   if (gradFill) {
     const stops = [];
-    for (const gs of gradFill[1].matchAll(/<a:gs\s+pos="(\d+)">([\s\S]*?)<\/a:gs>/g)) {
-      const pos = Math.round(Number(gs[1]) / 1000);
-      const c = parseColor(gs[2]);
+    for (const gs of dnAll(gradFill, NS_A, 'gs')) {
+      const pos = Math.round(Number(gs.getAttribute('pos') || '0') / 1000);
+      const c = parseColor(gs);
       if (c) stops.push(`${c} ${pos}%`);
     }
     if (stops.length >= 2) return `linear-gradient(180deg,${stops.join(',')})`;
@@ -183,126 +217,134 @@ function parseFill(xml) {
 }
 
 // ── Line / Border ──
-function parseLine(xml) {
-  const ln = xml.match(/<a:ln\b([^>]*)>([\s\S]*?)<\/a:ln>/);
+function parseLine(el) {
+  const ln = dn(el, NS_A, 'ln');
   if (!ln) return null;
-  const w = attr(ln[1], 'w');
-  const color = parseFill(ln[2]);
+  const w = ln.getAttribute('w');
+  const color = parseFill(ln);
   if (!color || color === 'none') return null;
   return { width: w ? Math.max(1, emuToPx(w)) : 1, color: typeof color === 'string' && color.startsWith('#') ? color : '#94a3b8' };
 }
 
 // ── Text Run ──
-function parseTextRun(runXml) {
-  const textMatch = runXml.match(/<a:t[^>]*>([\s\S]*?)<\/a:t>/);
-  const text = textMatch ? textMatch[1] : '';
+function parseTextRun(runEl) {
+  const tEl = dn(runEl, NS_A, 't');
+  const text = tEl ? tEl.textContent : '';
   if (!text) return null;
-  const rPrMatch = runXml.match(/<a:rPr\b[\s\S]*?(?:\/>|<\/a:rPr>)/);
-  const rPr = rPrMatch ? rPrMatch[0] : '';
-  const sz = rPr.match(/\bsz="(\d+)"/);
-  const fontSize = sz ? Math.round(Number(sz[1]) / 100) : null;
+  const rPr = dn(runEl, NS_A, 'rPr');
+  const sz = rPr?.getAttribute('sz');
+  const fontSize = sz ? Math.round(Number(sz) / 100) : null;
   const color = parseColor(rPr);
-  const bold = /\bb="1"/.test(rPr);
-  const italic = /\bi="1"/.test(rPr);
-  const underline = /\bu="sng"/.test(rPr) || /\bu="dbl"/.test(rPr);
-  const strike = /\bstrike="sng/.test(rPr);
+  const bold = rPr?.getAttribute('b') === '1';
+  const italic = rPr?.getAttribute('i') === '1';
+  const u = rPr?.getAttribute('u');
+  const underline = u === 'sng' || u === 'dbl';
+  const strike = rPr?.getAttribute('strike')?.startsWith('sng') || false;
   // Font
-  const latin = rPr.match(/<a:latin\s+typeface="([^"]+)"/);
-  const ea = rPr.match(/<a:ea\s+typeface="([^"]+)"/);
-  const font = latin ? latin[1] : (ea ? ea[1] : null);
+  const latin = rPr ? qn(rPr, NS_A, 'latin') : null;
+  const ea = rPr ? qn(rPr, NS_A, 'ea') : null;
+  const font = latin ? latin.getAttribute('typeface') : (ea ? ea.getAttribute('typeface') : null);
   // Character spacing (spc in 1/100 pt)
-  const spcMatch = rPr.match(/\bspc="(-?\d+)"/);
-  const letterSpacing = spcMatch ? Number(spcMatch[1]) / 100 : null;
+  const spc = rPr?.getAttribute('spc');
+  const letterSpacing = spc ? Number(spc) / 100 : null;
   // Superscript/subscript (baseline in %)
-  const baselineMatch = rPr.match(/\bbaseline="(-?\d+)"/);
-  const baseline = baselineMatch ? Number(baselineMatch[1]) / 1000 : null;
+  const baselineRaw = rPr?.getAttribute('baseline');
+  const baseline = baselineRaw ? Number(baselineRaw) / 1000 : null;
   // Hyperlink
-  const hlinkMatch = runXml.match(/<a:hlinkClick[^>]*r:id="(rId\d+)"/);
-  return { text, fontSize, color, bold, italic, underline, strike, font, letterSpacing, baseline, hlinkRid: hlinkMatch ? hlinkMatch[1] : null };
+  const hlinkClick = dn(runEl, NS_A, 'hlinkClick');
+  const hlinkRid = hlinkClick ? (hlinkClick.getAttributeNS(NS_R, 'id') || hlinkClick.getAttribute('r:id')) : null;
+  return { text, fontSize, color, bold, italic, underline, strike, font, letterSpacing, baseline, hlinkRid };
 }
 
 // ── Paragraph ──
-function parseParagraph(pXml) {
+function parseParagraph(pEl) {
+  // Process children in document order to preserve run/break sequence
   const runs = [];
-  for (const m of pXml.matchAll(/<a:r>([\s\S]*?)<\/a:r>/g)) {
-    const run = parseTextRun(m[1]);
-    if (run) runs.push(run);
-  }
-  for (const m of pXml.matchAll(/<a:fld\b[^>]*>([\s\S]*?)<\/a:fld>/g)) {
-    const run = parseTextRun(m[1]);
-    if (run) runs.push(run);
-  }
-  // Line break <a:br/>
-  for (const m of pXml.matchAll(/<a:br\s*\/>/g)) {
-    runs.push({ text: '\n', fontSize: null, color: null, bold: false, italic: false, underline: false, strike: false, font: null, letterSpacing: null, baseline: null, hlinkRid: null });
+  for (const child of pEl.children) {
+    if (child.namespaceURI !== NS_A) continue;
+    if (child.localName === 'r' || child.localName === 'fld') {
+      const run = parseTextRun(child);
+      if (run) runs.push(run);
+    } else if (child.localName === 'br') {
+      runs.push({ text: '\n', fontSize: null, color: null, bold: false, italic: false, underline: false, strike: false, font: null, letterSpacing: null, baseline: null, hlinkRid: null });
+    }
   }
 
-  const pPr = pXml.match(/<a:pPr\b([^>]*)([\s\S]*?)(?:\/>|<\/a:pPr>)/);
-  const pPrAttrs = pPr ? pPr[1] : '';
-  const pPrBody = pPr ? pPr[2] : '';
+  const pPr = qn(pEl, NS_A, 'pPr');
   let align = 'left';
-  const algn = attr(pPrAttrs, 'algn');
-  if (algn === 'ctr') align = 'center';
-  else if (algn === 'r') align = 'right';
-  else if (algn === 'just') align = 'justify';
+  if (pPr) {
+    const algn = pPr.getAttribute('algn');
+    if (algn === 'ctr') align = 'center';
+    else if (algn === 'r') align = 'right';
+    else if (algn === 'just') align = 'justify';
+  }
   // Bullet
   let bullet = null;
-  const buNone = /<a:buNone/.test(pPrBody);
-  if (!buNone) {
-    const buChar = pPrBody.match(/<a:buChar\s+char="([^"]*)"/);
-    if (buChar) bullet = buChar[1];
-    else if (/<a:buAutoNum/.test(pPrBody)) bullet = 'auto';
+  if (pPr && !qn(pPr, NS_A, 'buNone')) {
+    const buChar = qn(pPr, NS_A, 'buChar');
+    if (buChar) bullet = buChar.getAttribute('char');
+    else if (qn(pPr, NS_A, 'buAutoNum')) bullet = 'auto';
   }
-  // Bullet color and size
+  // Bullet color
   let bulletColor = null;
-  const buClr = pPrBody.match(/<a:buClr>([\s\S]*?)<\/a:buClr>/);
-  if (buClr) bulletColor = parseColor(buClr[1]);
+  const buClr = pPr ? qn(pPr, NS_A, 'buClr') : null;
+  if (buClr) bulletColor = parseColor(buClr);
   // Indent level
-  const lvl = attr(pPrAttrs, 'lvl');
+  const lvl = pPr?.getAttribute('lvl');
   const indent = lvl ? parseInt(lvl) : 0;
   // Left margin (marL in EMU)
-  const marL = attr(pPrAttrs, 'marL');
+  const marL = pPr?.getAttribute('marL');
   const marginLeft = marL ? emuToPx(marL) : null;
   // Line spacing
-  const lnSpc = pPrBody.match(/<a:lnSpc>[\s\S]*?<a:spcPct\s+val="(\d+)"/);
-  const lineHeight = lnSpc ? Math.round(Number(lnSpc[1]) / 1000) / 100 : null;
+  const lnSpc = pPr ? qn(pPr, NS_A, 'lnSpc') : null;
+  const spcPct = lnSpc ? dn(lnSpc, NS_A, 'spcPct') : null;
+  const lineHeight = spcPct ? Math.round(Number(spcPct.getAttribute('val') || '0') / 1000) / 100 : null;
   // Space before/after
-  const spcBef = pPrBody.match(/<a:spcBef>[\s\S]*?<a:spcPts\s+val="(\d+)"/);
-  const spcAft = pPrBody.match(/<a:spcAft>[\s\S]*?<a:spcPts\s+val="(\d+)"/);
-  const spaceBefore = spcBef ? Math.round(Number(spcBef[1]) / 100) : null;
-  const spaceAfter = spcAft ? Math.round(Number(spcAft[1]) / 100) : null;
+  const spcBef = pPr ? qn(pPr, NS_A, 'spcBef') : null;
+  const spcBefPts = spcBef ? dn(spcBef, NS_A, 'spcPts') : null;
+  const spaceBefore = spcBefPts ? Math.round(Number(spcBefPts.getAttribute('val') || '0') / 100) : null;
+  const spcAft = pPr ? qn(pPr, NS_A, 'spcAft') : null;
+  const spcAftPts = spcAft ? dn(spcAft, NS_A, 'spcPts') : null;
+  const spaceAfter = spcAftPts ? Math.round(Number(spcAftPts.getAttribute('val') || '0') / 100) : null;
   // Default run properties (defRPr) for font size fallback
-  const defRPr = pPrBody.match(/<a:defRPr\b([^>]*)/);
-  const defSz = defRPr ? attr(defRPr[1], 'sz') : null;
+  const defRPr = pPr ? qn(pPr, NS_A, 'defRPr') : null;
+  const defSz = defRPr?.getAttribute('sz');
   const defaultFontSize = defSz ? Math.round(Number(defSz) / 100) : null;
   return { runs, align, bullet, bulletColor, indent, marginLeft, lineHeight, spaceBefore, spaceAfter, defaultFontSize };
 }
 
 // ── Shape position/size ──
-function parseTransform(xml) {
-  const off = xml.match(/<a:off\s+x="(-?\d+)"\s+y="(-?\d+)"/);
-  const ext = xml.match(/<a:ext\s+cx="(\d+)"\s+cy="(\d+)"/);
-  const rot = xml.match(/<a:xfrm[^>]*\brot="(-?\d+)"/);
+function parseTransform(el) {
+  // a:xfrm (inside p:spPr) or p:xfrm (inside p:graphicFrame)
+  const xfrm = dn(el, NS_A, 'xfrm') || dn(el, NS_P, 'xfrm');
+  if (!xfrm) return { x: 0, y: 0, w: 0, h: 0, rot: 0 };
+  const off = qn(xfrm, NS_A, 'off');
+  const ext = qn(xfrm, NS_A, 'ext');
+  const rot = xfrm.getAttribute('rot');
   return {
-    x: off ? emuToPx(off[1]) : 0, y: off ? emuToPx(off[2]) : 0,
-    w: ext ? emuToPx(ext[1]) : 0, h: ext ? emuToPx(ext[2]) : 0,
-    rot: rot ? Number(rot[1]) / 60000 : 0
+    x: off ? emuToPx(off.getAttribute('x') || '0') : 0,
+    y: off ? emuToPx(off.getAttribute('y') || '0') : 0,
+    w: ext ? emuToPx(ext.getAttribute('cx') || '0') : 0,
+    h: ext ? emuToPx(ext.getAttribute('cy') || '0') : 0,
+    rot: rot ? Number(rot) / 60000 : 0
   };
 }
 
 // ── Table ──
-function parseTable(tblXml) {
+function parseTable(tblEl) {
   const rows = [];
-  for (const trMatch of tblXml.matchAll(/<a:tr\b[^>]*>([\s\S]*?)<\/a:tr>/g)) {
+  for (const tr of qnAll(tblEl, NS_A, 'tr')) {
     const cells = [];
-    for (const tcMatch of trMatch[1].matchAll(/<a:tc\b([^>]*)>([\s\S]*?)<\/a:tc>/g)) {
+    for (const tc of qnAll(tr, NS_A, 'tc')) {
       const paragraphs = [];
-      for (const pMatch of tcMatch[2].matchAll(/<a:p>([\s\S]*?)<\/a:p>/g)) {
-        paragraphs.push(parseParagraph(pMatch[1]));
+      const txBody = qn(tc, NS_A, 'txBody');
+      if (txBody) {
+        for (const p of qnAll(txBody, NS_A, 'p')) paragraphs.push(parseParagraph(p));
       }
-      const fill = parseFill(tcMatch[2]);
-      const gridSpan = attr(tcMatch[1], 'gridSpan');
-      const rowSpan = attr(tcMatch[1], 'rowSpan');
+      const tcPr = qn(tc, NS_A, 'tcPr');
+      const fill = tcPr ? parseFill(tcPr) : null;
+      const gridSpan = tc.getAttribute('gridSpan');
+      const rowSpan = tc.getAttribute('rowSpan');
       cells.push({ paragraphs, fill, gridSpan: gridSpan ? parseInt(gridSpan) : 1, rowSpan: rowSpan ? parseInt(rowSpan) : 1 });
     }
     rows.push(cells);
@@ -311,60 +353,60 @@ function parseTable(tblXml) {
 }
 
 // ── Shape parser ──
-function parseShape(spXml, relMap) {
-  const tf = parseTransform(spXml);
+function parseShape(spEl, relMap) {
+  const tf = parseTransform(spEl);
   // Image via blip
-  const blip = spXml.match(/r:embed="(rId\d+)"/);
-  if (blip && relMap[blip[1]] && /\.(png|jpe?g|gif|bmp|svg|webp|emf|wmf|tiff?)$/i.test(relMap[blip[1]])) {
-    return { type: 'image', ...tf, target: relMap[blip[1]] };
+  const blip = dn(spEl, NS_A, 'blip');
+  const embedId = blip ? (blip.getAttributeNS(NS_R, 'embed') || blip.getAttribute('r:embed')) : null;
+  if (embedId && relMap[embedId] && /\.(png|jpe?g|gif|bmp|svg|webp|emf|wmf|tiff?)$/i.test(relMap[embedId])) {
+    return { type: 'image', ...tf, target: relMap[embedId] };
   }
   // Table
-  const tbl = spXml.match(/<a:tbl>([\s\S]*?)<\/a:tbl>/);
-  if (tbl) return { type: 'table', ...tf, rows: parseTable(tbl[1]) };
+  const tblEl = dn(spEl, NS_A, 'tbl');
+  if (tblEl) return { type: 'table', ...tf, rows: parseTable(tblEl) };
   // Text body
-  const txBody = spXml.match(/<p:txBody>([\s\S]*?)<\/p:txBody>/);
+  const txBody = dn(spEl, NS_P, 'txBody');
   if (!txBody) return null;
   const paragraphs = [];
-  for (const m of txBody[1].matchAll(/<a:p>([\s\S]*?)<\/a:p>/g)) {
-    const p = parseParagraph(m[1]);
-    if (p.runs.length) paragraphs.push(p);
+  for (const p of qnAll(txBody, NS_A, 'p')) {
+    const para = parseParagraph(p);
+    if (para.runs.length) paragraphs.push(para);
   }
   if (!paragraphs.length) return null;
-  // Shape styles
-  const bgColor = parseFill(spXml);
-  const line = parseLine(spXml);
+  // Shape styles — look specifically at spPr
+  const spPr = dn(spEl, NS_P, 'spPr');
+  const bgColor = spPr ? parseFill(spPr) : null;
+  const line = spPr ? parseLine(spPr) : null;
   // Text body properties
-  const bodyPr = txBody[1].match(/<a:bodyPr\b([^>]*)/);
-  const bodyAttrs = bodyPr ? bodyPr[1] : '';
-  const anchor = attr(bodyAttrs, 'anchor'); // t, ctr, b
-  const lIns = attr(bodyAttrs, 'lIns'); const rIns = attr(bodyAttrs, 'rIns');
-  const tIns = attr(bodyAttrs, 'tIns'); const bIns = attr(bodyAttrs, 'bIns');
+  const bodyPr = qn(txBody, NS_A, 'bodyPr');
+  const anchor = bodyPr?.getAttribute('anchor');
+  const lIns = bodyPr?.getAttribute('lIns'); const rIns = bodyPr?.getAttribute('rIns');
+  const tIns = bodyPr?.getAttribute('tIns'); const bIns = bodyPr?.getAttribute('bIns');
   const margin = {
     l: lIns ? emuToPx(lIns) : 7, r: rIns ? emuToPx(rIns) : 7,
     t: tIns ? emuToPx(tIns) : 4, b: bIns ? emuToPx(bIns) : 4
   };
   // Preset geometry (rounded rect, etc.)
-  const prstGeom = spXml.match(/<a:prstGeom\s+prst="([^"]+)"/);
-  const geom = prstGeom ? prstGeom[1] : 'rect';
+  const prstGeom = spPr ? dn(spPr, NS_A, 'prstGeom') : null;
+  const geom = prstGeom ? (prstGeom.getAttribute('prst') || 'rect') : 'rect';
   return { type: 'text', ...tf, paragraphs, bgColor, line, anchor, margin, geom };
 }
 
-// ── Group shapes (recursive) ──
-function parseGroupShapes(grpXml, relMap) {
+// ── Group shapes (recursive, direct children only) ──
+function parseGroupShapes(grpEl, relMap) {
   const shapes = [];
-  // Child shapes
-  for (const m of grpXml.matchAll(/<p:sp>([\s\S]*?)<\/p:sp>/g)) {
-    const s = parseShape(m[1], relMap); if (s) shapes.push(s);
+  for (const sp of qnAll(grpEl, NS_P, 'sp')) {
+    const s = parseShape(sp, relMap); if (s) shapes.push(s);
   }
-  for (const m of grpXml.matchAll(/<p:pic>([\s\S]*?)<\/p:pic>/g)) {
-    const s = parseShape(m[1], relMap); if (s) shapes.push(s);
+  for (const pic of qnAll(grpEl, NS_P, 'pic')) {
+    const s = parseShape(pic, relMap); if (s) shapes.push(s);
   }
-  for (const m of grpXml.matchAll(/<p:cxnSp>([\s\S]*?)<\/p:cxnSp>/g)) {
-    const s = parseShape(m[1], relMap); if (s) shapes.push(s);
+  for (const cxn of qnAll(grpEl, NS_P, 'cxnSp')) {
+    const s = parseShape(cxn, relMap); if (s) shapes.push(s);
   }
-  // Nested groups
-  for (const m of grpXml.matchAll(/<p:grpSp>([\s\S]*?)<\/p:grpSp>/g)) {
-    shapes.push(...parseGroupShapes(m[1], relMap));
+  // Nested groups — recursive with direct children only
+  for (const subGrp of qnAll(grpEl, NS_P, 'grpSp')) {
+    shapes.push(...parseGroupShapes(subGrp, relMap));
   }
   return shapes;
 }
@@ -372,7 +414,14 @@ function parseGroupShapes(grpXml, relMap) {
 function buildRelMap(relsXml) {
   const map = {};
   if (!relsXml) return map;
-  for (const m of relsXml.matchAll(/Id="(rId\d+)"[^>]*Target="([^"]+)"/g)) map[m[1]] = m[2];
+  try {
+    const doc = parseXml(relsXml);
+    for (const rel of doc.getElementsByTagName('Relationship')) {
+      const id = rel.getAttribute('Id');
+      const target = rel.getAttribute('Target');
+      if (id && target) map[id] = target;
+    }
+  } catch {}
   return map;
 }
 
@@ -385,43 +434,56 @@ function resolvePath(target) {
 
 async function getSlideSize(zip) {
   try {
-    const xml = await zip.file('ppt/presentation.xml')?.async('string');
-    if (!xml) return { w: 960, h: 540 };
-    const m = xml.match(/<p:sldSz\s+cx="(\d+)"\s+cy="(\d+)"/);
-    if (m) return { w: emuToPx(m[1]), h: emuToPx(m[2]) };
+    const xmlStr = await zip.file('ppt/presentation.xml')?.async('string');
+    if (!xmlStr) return { w: 960, h: 540 };
+    const doc = parseXml(xmlStr);
+    const sldSz = dn(doc, NS_P, 'sldSz');
+    if (sldSz) return { w: emuToPx(sldSz.getAttribute('cx') || '0'), h: emuToPx(sldSz.getAttribute('cy') || '0') };
   } catch {}
   return { w: 960, h: 540 };
 }
 
 // ── Slide layout/master background ──
-async function getLayoutBg(slideXml, relsXml, zip) {
+async function getLayoutBg(slideDoc, relsXml, zip) {
   // Slide's own background
-  const slideBg = slideXml.match(/<p:bg>([\s\S]*?)<\/p:bg>/);
-  if (slideBg) { const c = parseFill(slideBg[1]) || parseColor(slideBg[1]); if (c) return c; }
+  const slideBg = dn(slideDoc, NS_P, 'bg');
+  if (slideBg) { const c = parseFill(slideBg) || parseColor(slideBg); if (c) return c; }
   // Find layout from rels
   if (!relsXml) return null;
-  const layoutRel = relsXml.match(/Target="([^"]*slideLayout[^"]*)"/);
-  if (!layoutRel) return null;
-  const layoutPath = resolvePath(layoutRel[1]);
+  const relsDoc = parseXml(relsXml);
+  let layoutTarget = null;
+  for (const rel of relsDoc.getElementsByTagName('Relationship')) {
+    const t = rel.getAttribute('Target') || '';
+    if (/slideLayout/i.test(t)) { layoutTarget = t; break; }
+  }
+  if (!layoutTarget) return null;
+  const layoutPath = resolvePath(layoutTarget);
   try {
-    const layoutXml = await zip.file(layoutPath)?.async('string');
-    if (!layoutXml) return null;
-    const bg = layoutXml.match(/<p:bg>([\s\S]*?)<\/p:bg>/);
-    if (bg) { const c = parseColor(bg[1]); if (c) return c; }
+    const layoutXmlStr = await zip.file(layoutPath)?.async('string');
+    if (!layoutXmlStr) return null;
+    const layoutDoc = parseXml(layoutXmlStr);
+    const bg = dn(layoutDoc, NS_P, 'bg');
+    if (bg) { const c = parseColor(bg); if (c) return c; }
     // Check master from layout rels
     const layoutNum = layoutPath.match(/slideLayout(\d+)/)?.[1];
     const layoutRelsPath = `ppt/slideLayouts/_rels/slideLayout${layoutNum}.xml.rels`;
-    const layoutRels = await zip.file(layoutRelsPath)?.async('string').catch(() => null);
-    if (!layoutRels) return null;
-    const masterRel = layoutRels.match(/Target="([^"]*slideMaster[^"]*)"/);
-    if (!masterRel) return null;
-    const masterPath = masterRel[1].startsWith('/') ? masterRel[1].slice(1) : 'ppt/slideLayouts/' + masterRel[1];
+    const layoutRelsStr = await zip.file(layoutRelsPath)?.async('string').catch(() => null);
+    if (!layoutRelsStr) return null;
+    const layoutRelsDoc = parseXml(layoutRelsStr);
+    let masterTarget = null;
+    for (const rel of layoutRelsDoc.getElementsByTagName('Relationship')) {
+      const t = rel.getAttribute('Target') || '';
+      if (/slideMaster/i.test(t)) { masterTarget = t; break; }
+    }
+    if (!masterTarget) return null;
+    const masterPath = masterTarget.startsWith('/') ? masterTarget.slice(1) : 'ppt/slideLayouts/' + masterTarget;
     const mParts = masterPath.split('/'); const mStack = [];
     for (const p of mParts) { if (p === '..') mStack.pop(); else if (p !== '.') mStack.push(p); }
-    const masterXml = await zip.file(mStack.join('/'))?.async('string');
-    if (!masterXml) return null;
-    const masterBg = masterXml.match(/<p:bg>([\s\S]*?)<\/p:bg>/);
-    if (masterBg) return parseColor(masterBg[1]);
+    const masterXmlStr = await zip.file(mStack.join('/'))?.async('string');
+    if (!masterXmlStr) return null;
+    const masterDoc = parseXml(masterXmlStr);
+    const masterBg = dn(masterDoc, NS_P, 'bg');
+    if (masterBg) return parseColor(masterBg);
   } catch {}
   return null;
 }
@@ -549,23 +611,28 @@ async function buildShapeElement(shape, relMap, zip, scaleX, scaleY, objectUrls)
   return el;
 }
 
-async function buildSlideElement(slideXml, relsXml, zip, slideSize, objectUrls) {
+async function buildSlideElement(slideXmlStr, relsXml, zip, slideSize, objectUrls) {
+  const slideDoc = parseXml(slideXmlStr);
   const relMap = buildRelMap(relsXml);
-  const bgColor = await getLayoutBg(slideXml, relsXml, zip) || '#ffffff';
+  const bgColor = await getLayoutBg(slideDoc, relsXml, zip) || '#ffffff';
 
   // Check for background image fill
   let bgImageUrl = null;
-  const bgBlip = slideXml.match(/<p:bg>[\s\S]*?r:embed="(rId\d+)"[\s\S]*?<\/p:bg>/);
-  if (bgBlip && relMap[bgBlip[1]]) {
-    const bgPath = resolvePath(relMap[bgBlip[1]]);
-    try {
-      const bgFile = zip.file(bgPath);
-      if (bgFile) {
-        const bgBlob = await bgFile.async('blob');
-        bgImageUrl = URL.createObjectURL(bgBlob);
-        objectUrls.push(bgImageUrl);
-      }
-    } catch {}
+  const slideBgEl = dn(slideDoc, NS_P, 'bg');
+  if (slideBgEl) {
+    const bgBlip = dn(slideBgEl, NS_A, 'blip');
+    const bgEmbed = bgBlip ? (bgBlip.getAttributeNS(NS_R, 'embed') || bgBlip.getAttribute('r:embed')) : null;
+    if (bgEmbed && relMap[bgEmbed]) {
+      const bgPath = resolvePath(relMap[bgEmbed]);
+      try {
+        const bgFile = zip.file(bgPath);
+        if (bgFile) {
+          const bgBlob = await bgFile.async('blob');
+          bgImageUrl = URL.createObjectURL(bgBlob);
+          objectUrls.push(bgImageUrl);
+        }
+      } catch {}
+    }
   }
 
   const slide = document.createElement('div');
@@ -575,17 +642,16 @@ async function buildSlideElement(slideXml, relsXml, zip, slideSize, objectUrls) 
   if (bgImageUrl) slideCss += `background-image:url(${bgImageUrl});background-size:cover;background-position:center;`;
   slide.style.cssText = slideCss;
 
-  // Collect all shapes from various containers
+  // Collect shapes from spTree — direct children only (fixes duplicate shapes in groups)
   const allShapes = [];
-  const collect = (xml) => {
-    for (const m of xml.matchAll(/<p:sp>([\s\S]*?)<\/p:sp>/g)) { const s = parseShape(m[1], relMap); if (s) allShapes.push(s); }
-    for (const m of xml.matchAll(/<p:pic>([\s\S]*?)<\/p:pic>/g)) { const s = parseShape(m[1], relMap); if (s) allShapes.push(s); }
-    for (const m of xml.matchAll(/<p:cxnSp>([\s\S]*?)<\/p:cxnSp>/g)) { const s = parseShape(m[1], relMap); if (s) allShapes.push(s); }
-    for (const m of xml.matchAll(/<p:grpSp>([\s\S]*?)<\/p:grpSp>/g)) { allShapes.push(...parseGroupShapes(m[1], relMap)); }
-    // graphicFrame (charts, tables, etc.)
-    for (const m of xml.matchAll(/<p:graphicFrame>([\s\S]*?)<\/p:graphicFrame>/g)) { const s = parseShape(m[1], relMap); if (s) allShapes.push(s); }
-  };
-  collect(slideXml);
+  const spTree = dn(slideDoc, NS_P, 'spTree');
+  if (spTree) {
+    for (const sp of qnAll(spTree, NS_P, 'sp')) { const s = parseShape(sp, relMap); if (s) allShapes.push(s); }
+    for (const pic of qnAll(spTree, NS_P, 'pic')) { const s = parseShape(pic, relMap); if (s) allShapes.push(s); }
+    for (const cxn of qnAll(spTree, NS_P, 'cxnSp')) { const s = parseShape(cxn, relMap); if (s) allShapes.push(s); }
+    for (const grp of qnAll(spTree, NS_P, 'grpSp')) { allShapes.push(...parseGroupShapes(grp, relMap)); }
+    for (const gf of qnAll(spTree, NS_P, 'graphicFrame')) { const s = parseShape(gf, relMap); if (s) allShapes.push(s); }
+  }
 
   const scaleX = 100 / slideSize.w;
   const scaleY = 100 / slideSize.h;
