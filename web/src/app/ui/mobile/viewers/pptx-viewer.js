@@ -1528,10 +1528,60 @@ async function drawShapeOnCanvas(ctx, shape, zip, canvasW, canvasH, slideSize, s
   ctx.restore();
 }
 
-// Collect non-placeholder shapes from layout/master (background design elements)
-async function getLayoutShapes(relsXml, zip, phStyles) {
+// Collect visual shapes from a layout/master document (design elements)
+function collectDocShapes(doc, relMap, phStyles) {
   const shapes = [];
-  if (!relsXml) return shapes;
+  const spTree = dn(doc, NS_P, 'spTree');
+  if (!spTree) return shapes;
+  const shapeTypes = new Set(['sp', 'pic', 'cxnSp', 'grpSp']);
+  for (const child of spTree.children) {
+    if (child.namespaceURI !== NS_P || !shapeTypes.has(child.localName)) continue;
+    if (child.localName === 'grpSp') {
+      shapes.push(...parseGroupShapes(child, relMap, phStyles));
+    } else {
+      // For placeholder shapes: only render if they have visual fill (background area)
+      // Skip placeholder text (slide provides its own content)
+      const ph = child.localName === 'sp' ? extractPhFromShape(child) : null;
+      const s = parseShape(child, relMap, phStyles);
+      if (s) {
+        if (ph) {
+          // Placeholder: render fill/border only, strip text
+          if (s.bgColor || s.line || s.blipTarget) {
+            s.paragraphs = [];
+            shapes.push(s);
+          }
+          // Skip purely textual placeholders (no visual decoration)
+        } else {
+          shapes.push(s);
+        }
+      }
+    }
+  }
+  return shapes;
+}
+
+// Build a relMap for a given XML file's rels
+async function buildRelMapForPath(zip, xmlPath) {
+  const dir = xmlPath.replace(/[^/]+$/, '');
+  const fileName = xmlPath.split('/').pop();
+  const relsPath = dir + '_rels/' + fileName + '.rels';
+  const relsStr = await zip.file(relsPath)?.async('string').catch(() => null);
+  const relMap = {};
+  if (relsStr) {
+    const doc = parseXml(relsStr);
+    for (const rel of doc.getElementsByTagName('Relationship')) {
+      const id = rel.getAttribute('Id'), t = rel.getAttribute('Target');
+      if (id && t) relMap[id] = resolvePathFrom(dir, t);
+    }
+  }
+  return relMap;
+}
+
+// Collect shapes from layout and master (rendered behind slide content)
+async function getLayoutShapes(relsXml, zip, phStyles) {
+  const masterShapes = [];
+  const layoutShapes = [];
+  if (!relsXml) return [];
   try {
     const relsDoc = parseXml(relsXml);
     let layoutTarget = null;
@@ -1539,44 +1589,45 @@ async function getLayoutShapes(relsXml, zip, phStyles) {
       const t = rel.getAttribute('Target') || '';
       if (/slideLayout/i.test(t)) { layoutTarget = t; break; }
     }
-    if (!layoutTarget) return shapes;
+    if (!layoutTarget) return [];
     const layoutPath = resolvePath(layoutTarget);
     const layoutXmlStr = await zip.file(layoutPath)?.async('string');
-    if (!layoutXmlStr) return shapes;
+    if (!layoutXmlStr) return [];
     const layoutDoc = parseXml(layoutXmlStr);
+    const layoutRelMap = await buildRelMapForPath(zip, layoutPath);
 
-    // Build layout relMap for image references
-    const layoutDir = layoutPath.replace(/[^/]+$/, '');
-    const layoutNum = layoutPath.match(/slideLayout(\d+)/)?.[1];
-    const layoutRelsPath = `ppt/slideLayouts/_rels/slideLayout${layoutNum}.xml.rels`;
-    const layoutRelsStr = await zip.file(layoutRelsPath)?.async('string').catch(() => null);
-    const layoutRelMap = {};
-    if (layoutRelsStr) {
-      const ld = parseXml(layoutRelsStr);
-      for (const rel of ld.getElementsByTagName('Relationship')) {
-        const id = rel.getAttribute('Id'), t = rel.getAttribute('Target');
-        if (id && t) layoutRelMap[id] = resolvePathFrom(layoutDir, t);
-      }
-    }
+    // Check if layout wants to show master shapes (default: yes)
+    const cSld = dn(layoutDoc, NS_P, 'cSld');
+    const showMasterSp = layoutDoc.documentElement?.getAttribute('showMasterSp') !== '0';
 
-    // Collect non-placeholder shapes from layout spTree (design elements only)
-    const layoutSpTree = dn(layoutDoc, NS_P, 'spTree');
-    if (layoutSpTree) {
-      const shapeTypes = new Set(['sp', 'pic', 'cxnSp', 'grpSp']);
-      for (const child of layoutSpTree.children) {
-        if (child.namespaceURI !== NS_P || !shapeTypes.has(child.localName)) continue;
-        // Skip placeholder shapes (those are handled by text inheritance)
-        if (child.localName === 'sp' && extractPhFromShape(child)) continue;
-        if (child.localName === 'grpSp') {
-          shapes.push(...parseGroupShapes(child, layoutRelMap, phStyles));
-        } else {
-          const s = parseShape(child, layoutRelMap, phStyles);
-          if (s) shapes.push(s);
+    // Collect master shapes first (bottom layer)
+    if (showMasterSp) {
+      const layoutNum = layoutPath.match(/slideLayout(\d+)/)?.[1];
+      const layoutRelsPath = `ppt/slideLayouts/_rels/slideLayout${layoutNum}.xml.rels`;
+      const layoutRelsStr = await zip.file(layoutRelsPath)?.async('string').catch(() => null);
+      if (layoutRelsStr) {
+        const layoutRelsDoc = parseXml(layoutRelsStr);
+        let masterTarget = null;
+        for (const rel of layoutRelsDoc.getElementsByTagName('Relationship')) {
+          const t = rel.getAttribute('Target') || '';
+          if (/slideMaster/i.test(t)) { masterTarget = t; break; }
+        }
+        if (masterTarget) {
+          const masterPath = resolvePathFrom(layoutPath.replace(/[^/]+$/, ''), masterTarget);
+          const masterXmlStr = await zip.file(masterPath)?.async('string');
+          if (masterXmlStr) {
+            const masterDoc = parseXml(masterXmlStr);
+            const masterRelMap = await buildRelMapForPath(zip, masterPath);
+            masterShapes.push(...collectDocShapes(masterDoc, masterRelMap, phStyles));
+          }
         }
       }
     }
+
+    // Collect layout shapes (middle layer, above master)
+    layoutShapes.push(...collectDocShapes(layoutDoc, layoutRelMap, phStyles));
   } catch {}
-  return shapes;
+  return [...masterShapes, ...layoutShapes];
 }
 
 async function buildSlideCanvas(slideXmlStr, relsXml, zip, slideSize, objectUrls) {
