@@ -368,7 +368,9 @@ function parseTable(tblEl) {
         for (const p of qnAll(txBody, NS_A, 'p')) paragraphs.push(parseParagraph(p));
       }
       const tcPr = qn(tc, NS_A, 'tcPr');
-      const fill = tcPr ? parseFill(tcPr) : null;
+      // Cell fill: use direct child lookup (qn) to avoid picking up border fills from lnB/lnT/lnL/lnR
+      const directSolid = tcPr ? qn(tcPr, NS_A, 'solidFill') : null;
+      const fill = directSolid ? parseColor(directSolid) : null;
       // Border colors
       const borderColor = tcPr ? (() => {
         for (const side of ['lnB', 'lnT', 'lnL', 'lnR']) {
@@ -1142,7 +1144,7 @@ function drawTable(ctx, shape, sx, sy, sw, sh, scale) {
   // Calculate column positions from parsed widths or equal distribution
   const totalGridW = shape.colWidths?.length ? shape.colWidths.reduce((a, b) => a + b, 0) : 1;
   const colXs = [0]; // cumulative x positions as fraction of sw
-  if (shape.colWidths?.length) {
+  if (shape.colWidths?.length && totalGridW > 0) {
     let acc = 0;
     for (const w of shape.colWidths) { acc += w; colXs.push(acc / totalGridW); }
   } else {
@@ -1152,7 +1154,7 @@ function drawTable(ctx, shape, sx, sy, sw, sh, scale) {
   // Row positions from parsed heights or equal distribution
   const totalGridH = shape.rowHeights?.length ? shape.rowHeights.reduce((a, b) => a + b, 0) : 1;
   const rowYs = [0];
-  if (shape.rowHeights?.length) {
+  if (shape.rowHeights?.length && totalGridH > 0) {
     let acc = 0;
     for (const h of shape.rowHeights) { acc += h; rowYs.push(acc / totalGridH); }
   } else {
@@ -1160,6 +1162,8 @@ function drawTable(ctx, shape, sx, sy, sw, sh, scale) {
   }
 
   const padding = 4 * scale;
+  const defaultFamily = resolveFont(themeFontMinor) || 'sans-serif';
+  const defaultTextColor = themeColors.tx1 || '#1e293b';
 
   for (let ri = 0; ri < rowCount; ri++) {
     const row = shape.rows[ri];
@@ -1186,30 +1190,125 @@ function drawTable(ctx, shape, sx, sy, sw, sh, scale) {
       ctx.lineWidth = scale;
       ctx.strokeRect(cx, cy, cw, ch);
 
-      // Cell text
-      const defaultFamily = resolveFont(themeFontMinor) || 'sans-serif';
-      ctx.fillStyle = themeColors.tx1 || '#1e293b';
+      // Cell text — mirror drawTextShape logic with bullet, bold/italic/underline inheritance
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(cx, cy, cw, ch);
+      ctx.clip();
+
       let textY = cy + padding;
+      const cellMaxW = cw - padding * 2;
+
       for (const para of cell.paragraphs) {
         const lh = para.lineHeight || 1.35;
+        const spaceBefore = (para.spaceBefore || 0) * scale * 4 / 3;
+        textY += spaceBefore;
+
+        // Build segments (same logic as drawTextShape)
+        const segments = [];
+        if (para.bullet) {
+          const bulletText = para.bullet === 'auto' ? '• ' : `${para.bullet} `;
+          const bFs = para.defaultFontSize || 12;
+          segments.push({
+            text: bulletText,
+            fontSize: bFs,
+            font: `${ptToPx(bFs) * scale}px ${defaultFamily}`,
+            color: para.bulletColor || defaultTextColor,
+            underline: false, strike: false
+          });
+        }
         for (const run of para.runs) {
-          if (run.text === '\n') { textY += 10 * scale * lh; continue; }
-          const fs = run.fontSize || para.defaultFontSize || 10;
-          const pxFs = ptToPx(fs) * scale;
-          ctx.font = `${run.italic ? 'italic ' : ''}${run.bold ? '700 ' : ''}${pxFs}px ${resolveFont(run.font) || defaultFamily}`;
-          if (run.color) ctx.fillStyle = run.color;
-          else ctx.fillStyle = themeColors.tx1 || '#1e293b';
-          const lines = wrapText(ctx, run.text, cw - padding * 2);
-          for (const line of lines) {
-            textY += pxFs * lh;
-            if (textY > cy + ch) break;
-            let drawX = cx + padding;
-            if (para.align === 'center') drawX = cx + (cw - ctx.measureText(line).width) / 2;
-            else if (para.align === 'right') drawX = cx + cw - padding - ctx.measureText(line).width;
-            ctx.fillText(line, drawX, textY);
+          if (run.text === '\n') { segments.push({ text: '\n' }); continue; }
+          const fs = run.fontSize || para.defaultFontSize || 12;
+          const isBold = run.bold || para.defaultBold || false;
+          const isItalic = run.italic || para.defaultItalic || false;
+          const runFont = run.font || para.defaultFont;
+          segments.push({
+            text: run.text,
+            fontSize: fs,
+            font: `${isItalic ? 'italic ' : ''}${isBold ? '700 ' : ''}${ptToPx(fs) * scale}px ${resolveFont(runFont) || defaultFamily}`,
+            color: run.color || para.defaultColor || defaultTextColor,
+            underline: run.underline || para.defaultUnderline || false,
+            strike: run.strike || para.defaultStrike || false
+          });
+        }
+
+        if (!segments.length) continue;
+
+        // Wrap and draw segments line by line
+        const maxFs = Math.max(...segments.filter(s => s.fontSize).map(s => s.fontSize), 12);
+        const lineH = ptToPx(maxFs) * scale * lh;
+
+        // Simple segment-aware line wrapping
+        let lineSegs = []; // segments on current line
+        let lineW = 0;
+
+        const flushLine = () => {
+          if (!lineSegs.length) return;
+          textY += lineH;
+          if (textY > cy + ch) return;
+          let drawX = cx + padding;
+          const totalW = lineSegs.reduce((a, s) => a + s.measuredW, 0);
+          if (para.align === 'center') drawX = cx + (cw - totalW) / 2;
+          else if (para.align === 'right') drawX = cx + cw - padding - totalW;
+
+          for (const seg of lineSegs) {
+            ctx.font = seg.font;
+            ctx.fillStyle = seg.color;
+            ctx.fillText(seg.text, drawX, textY);
+            // Underline
+            if (seg.underline) {
+              ctx.beginPath();
+              ctx.strokeStyle = seg.color;
+              ctx.lineWidth = Math.max(1, scale);
+              ctx.moveTo(drawX, textY + 2 * scale);
+              ctx.lineTo(drawX + seg.measuredW, textY + 2 * scale);
+              ctx.stroke();
+            }
+            // Strikethrough
+            if (seg.strike) {
+              ctx.beginPath();
+              ctx.strokeStyle = seg.color;
+              ctx.lineWidth = Math.max(1, scale);
+              const strikeY = textY - ptToPx(maxFs) * scale * 0.3;
+              ctx.moveTo(drawX, strikeY);
+              ctx.lineTo(drawX + seg.measuredW, strikeY);
+              ctx.stroke();
+            }
+            drawX += seg.measuredW;
+          }
+          lineSegs = [];
+          lineW = 0;
+        };
+
+        for (const seg of segments) {
+          if (seg.text === '\n') { flushLine(); continue; }
+          ctx.font = seg.font;
+          // Break segment text into wrappable tokens
+          const words = wrapText(ctx, seg.text, cellMaxW);
+          if (words.length <= 1) {
+            // Fits on one line or single token
+            const tw = ctx.measureText(seg.text).width;
+            if (lineW + tw > cellMaxW && lineSegs.length > 0) flushLine();
+            lineSegs.push({ ...seg, text: seg.text, measuredW: tw });
+            lineW += tw;
+          } else {
+            // Multi-line wrap needed
+            for (let wi = 0; wi < words.length; wi++) {
+              const word = words[wi];
+              const tw = ctx.measureText(word).width;
+              if (wi > 0) flushLine();
+              lineSegs.push({ ...seg, text: word, measuredW: tw });
+              lineW += tw;
+            }
           }
         }
+        flushLine();
+
+        const spaceAfter = (para.spaceAfter || 1) * scale * 4 / 3;
+        textY += spaceAfter;
       }
+      ctx.restore();
     }
   }
 }
