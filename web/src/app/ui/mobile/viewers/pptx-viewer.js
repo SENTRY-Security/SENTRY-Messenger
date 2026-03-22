@@ -1410,6 +1410,57 @@ function renderSlideToCanvas(canvas, slideData, slideSize, zip, objectUrls) {
 }
 
 // ═══════════════════════════════════════
+// Thumbnail — render first slide to canvas for chat bubble preview
+// ═══════════════════════════════════════
+export async function renderPptxThumbnail(buffer, canvas) {
+  if (!canvas) return false;
+  try {
+    const JSZip = await ensureJSZip();
+    const zip = await JSZip.loadAsync(buffer);
+    const slideSize = await getSlideSize(zip);
+    const slideXml = await zip.file('ppt/slides/slide1.xml')?.async('string');
+    if (!slideXml) return false;
+    const slideRels = await zip.file('ppt/slides/_rels/slide1.xml.rels')?.async('string').catch(() => null);
+    // Parse theme for font resolution
+    try {
+      const themeStr = await zip.file('ppt/theme/theme1.xml')?.async('string');
+      if (themeStr) {
+        const themeDoc = parseXml(themeStr);
+        const majorFont = dn(themeDoc, NS_A, 'majorFont');
+        const minorFont = dn(themeDoc, NS_A, 'minorFont');
+        themeFontMajor = majorFont ? (qn(majorFont, NS_A, 'latin')?.getAttribute('typeface') || null) : null;
+        themeFontMinor = minorFont ? (qn(minorFont, NS_A, 'latin')?.getAttribute('typeface') || null) : null;
+      }
+    } catch {}
+    const objectUrls = [];
+    const slideData = await buildSlideCanvas(slideXml, slideRels, zip, slideSize, objectUrls);
+    // Render to canvas at thumbnail size
+    const targetW = 240;
+    const aspect = slideSize.h / slideSize.w;
+    const targetH = Math.round(targetW * aspect);
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(targetW * dpr);
+    canvas.height = Math.round(targetH * dpr);
+    canvas.style.width = targetW + 'px';
+    canvas.style.height = targetH + 'px';
+    const ctx = canvas.getContext('2d');
+    const scale = canvas.width / slideSize.w;
+    ctx.fillStyle = slideData.bgColor;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (slideData.bgImage) ctx.drawImage(slideData.bgImage, 0, 0, canvas.width, canvas.height);
+    for (const shape of slideData.shapes) {
+      await drawShapeOnCanvas(ctx, shape, zip, canvas.width, canvas.height, slideSize, scale, objectUrls);
+    }
+    // Cleanup object URLs
+    for (const u of objectUrls) { try { URL.revokeObjectURL(u); } catch {} }
+    return true;
+  } catch (err) {
+    log({ pptxThumbnailError: err?.message || err });
+    return false;
+  }
+}
+
+// ═══════════════════════════════════════
 // Main Viewer — Vertical scroll layout
 // ═══════════════════════════════════════
 export async function renderPptxViewer({ url, blob, name, modalApi }) {
