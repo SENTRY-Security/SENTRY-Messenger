@@ -387,8 +387,18 @@
 .modal.zip-modal {
   padding: 0 !important;
   padding-top: 0 !important;
+  flex-direction: row;
   align-items: stretch;
   overflow: hidden;
+}
+
+/* Override styles.css safe-zone pseudo-elements that steal 48px from fullscreen viewers */
+.modal.pdf-modal::before, .modal.pdf-modal::after,
+.modal.excel-modal::before, .modal.excel-modal::after,
+.modal.word-modal::before, .modal.word-modal::after,
+.modal.pptx-modal::before, .modal.pptx-modal::after,
+.modal.zip-modal::before, .modal.zip-modal::after {
+  display: none;
 }
 
 .modal.pdf-modal {
