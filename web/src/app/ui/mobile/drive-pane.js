@@ -1270,10 +1270,11 @@ export function initDrivePane({
       return;
     }
 
-    // Clear stale viewer modal classes before opening a new viewer
+    // Clear stale modal classes before opening a new viewer
     const modalEl = document.getElementById('modal');
     if (modalEl) {
       modalEl.classList.remove(
+        'loading-modal', 'progress-modal',
         'pdf-modal', 'excel-modal', 'word-modal', 'pptx-modal', 'zip-modal'
       );
     }

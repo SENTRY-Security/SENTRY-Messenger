@@ -387,7 +387,6 @@
 .modal.zip-modal {
   padding: 0 !important;
   padding-top: 0 !important;
-  flex-direction: row;
   align-items: stretch;
   overflow: hidden;
 }
