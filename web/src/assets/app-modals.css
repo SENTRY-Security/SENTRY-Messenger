@@ -958,28 +958,91 @@
   min-height: 100%;
 }
 
-/* docx-preview generated styles overrides */
-.word-doc-container .docx-wrapper {
-  background: #e2e8f0 !important;
-  padding: 16px 0 !important;
+/* Self-rendered Word document styles */
+.word-page {
+  background: #fff;
+  max-width: 800px;
+  margin: 16px auto;
+  padding: 40px 36px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
+  box-sizing: border-box;
+  font-family: 'Calibri', 'Arial', 'Helvetica Neue', sans-serif;
+  font-size: 11pt;
+  line-height: 1.5;
+  color: #1e293b;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
-.word-doc-container .docx-wrapper > section.docx {
-  background: #fff !important;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.12) !important;
-  margin: 0 auto 16px !important;
-  max-width: 100% !important;
-  box-sizing: border-box !important;
+.word-p { margin: 0 0 4pt 0; }
+.word-empty { margin: 0; min-height: 1em; }
+.word-h { margin: 12pt 0 4pt 0; color: #0f172a; }
+h1.word-h { font-size: 20pt; }
+h2.word-h { font-size: 16pt; }
+h3.word-h { font-size: 13pt; }
+h4.word-h { font-size: 11pt; }
+h5.word-h { font-size: 10pt; }
+h6.word-h { font-size: 9pt; }
+
+.word-link { color: #2563eb; text-decoration: underline; }
+.word-tab { display: inline-block; min-width: 36pt; }
+
+.word-list-bullet {
+  display: inline-block;
+  width: 18pt;
+  margin-left: -18pt;
+  text-align: center;
+  color: #334155;
+}
+.word-list-num {
+  display: inline-block;
+  width: 24pt;
+  margin-left: -24pt;
+  text-align: right;
+  padding-right: 6pt;
+  color: #334155;
+}
+
+.word-page-break {
+  page-break-before: always;
+  border-top: 1px dashed #cbd5e1;
+  margin: 24pt 0;
+}
+
+/* Tables */
+.word-tbl-wrap {
+  overflow-x: auto;
+  margin: 8pt 0;
+  -webkit-overflow-scrolling: touch;
+}
+.word-tbl {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: inherit;
+}
+.word-tbl-bordered .word-tc {
+  border: 1px solid #94a3b8;
+}
+.word-tc {
+  padding: 4pt 6pt;
+  vertical-align: top;
+}
+.word-tc .word-p { margin: 0 0 2pt 0; }
+.word-tc .word-p:last-child { margin-bottom: 0; }
+.word-tc-merged { display: none; }
+
+.word-page img {
+  max-width: 100%;
+  height: auto;
 }
 
 @media (max-width: 640px) {
   .word-toolbar { padding: 8px 10px; }
-  .word-doc-container .docx-wrapper {
-    padding: 8px 0 !important;
-  }
-  .word-doc-container .docx-wrapper > section.docx {
-    margin: 0 auto 8px !important;
-    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.1) !important;
+  .word-page {
+    margin: 8px auto;
+    padding: 24px 16px;
+    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.1);
+    font-size: 10pt;
   }
 }
 
