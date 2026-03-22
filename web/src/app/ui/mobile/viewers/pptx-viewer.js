@@ -388,6 +388,7 @@ function parseTable(tblEl) {
 // ── Shape parser ──
 function parseShape(spEl, relMap, phStyles) {
   const tf = parseTransform(spEl);
+  const hasOwnTransform = !!(dn(spEl, NS_A, 'xfrm') || dn(spEl, NS_P, 'xfrm'));
   // Image via blip
   const blip = dn(spEl, NS_A, 'blip');
   const embedId = blip ? (blip.getAttributeNS(NS_R, 'embed') || blip.getAttribute('r:embed')) : null;
@@ -402,6 +403,17 @@ function parseShape(spEl, relMap, phStyles) {
   if (tblEl) { const tbl = parseTable(tblEl); return { type: 'table', ...tf, ...tbl }; }
   // Placeholder type from nvSpPr/nvPr/ph
   const phInfo = extractPhFromShape(spEl);
+  // Inherit position/size from layout/master placeholder if shape has no xfrm
+  if (phInfo && phStyles && !hasOwnTransform) {
+    const phKey = phInfo.type + (phInfo.idx ? ':' + phInfo.idx : '');
+    const phDef = phStyles[phKey] || phStyles[phInfo.type];
+    const phTf = phDef?._transform;
+    if (phTf && phTf.w && phTf.h) {
+      tf.x = phTf.x; tf.y = phTf.y;
+      tf.w = phTf.w; tf.h = phTf.h;
+      if (phTf.rot) tf.rot = phTf.rot;
+    }
+  }
   // Shape styles — look specifically at spPr
   const spPr = dn(spEl, NS_P, 'spPr');
   const bgColor = spPr ? parseFill(spPr) : null;
@@ -424,6 +436,7 @@ function parseShape(spEl, relMap, phStyles) {
     const phKey = phInfo.type + (phInfo.idx ? ':' + phInfo.idx : '');
     const phDefs = phStyles[phKey] || phStyles[phInfo.type] || {};
     for (const [lvl, val] of Object.entries(phDefs)) {
+      if (lvl === '_transform') continue;
       if (!levelDefaults[lvl]) levelDefaults[lvl] = val;
       else {
         // Fill in missing properties from placeholder
@@ -641,6 +654,8 @@ function extractPlaceholderStylesFromDoc(doc) {
   for (const sp of qnAll(spTree, NS_P, 'sp')) {
     const phInfo = extractPhFromShape(sp);
     if (!phInfo) continue;
+    // Extract transform (position/size) from layout/master placeholder
+    const tf = parseTransform(sp);
     const txBody = dn(sp, NS_P, 'txBody');
     const lstStyle = txBody ? qn(txBody, NS_A, 'lstStyle') : null;
     const defaults = extractLstStyleDefaults(lstStyle);
@@ -665,6 +680,7 @@ function extractPlaceholderStylesFromDoc(doc) {
       }
     }
     const key = phInfo.type + (phInfo.idx ? ':' + phInfo.idx : '');
+    defaults._transform = tf;
     phStyles[key] = defaults;
     // Also store by type alone for fallback
     if (!phStyles[phInfo.type] || Object.keys(phStyles[phInfo.type]).length === 0) {
