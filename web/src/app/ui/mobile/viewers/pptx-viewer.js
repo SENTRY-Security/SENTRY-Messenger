@@ -386,7 +386,7 @@ function parseTable(tblEl) {
 }
 
 // ── Shape parser ──
-function parseShape(spEl, relMap) {
+function parseShape(spEl, relMap, phStyles) {
   const tf = parseTransform(spEl);
   // Image via blip
   const blip = dn(spEl, NS_A, 'blip');
@@ -400,6 +400,8 @@ function parseShape(spEl, relMap) {
   // Table
   const tblEl = dn(spEl, NS_A, 'tbl');
   if (tblEl) { const tbl = parseTable(tblEl); return { type: 'table', ...tf, ...tbl }; }
+  // Placeholder type from nvSpPr/nvPr/ph
+  const phInfo = extractPhFromShape(spEl);
   // Shape styles — look specifically at spPr
   const spPr = dn(spEl, NS_P, 'spPr');
   const bgColor = spPr ? parseFill(spPr) : null;
@@ -414,21 +416,22 @@ function parseShape(spEl, relMap) {
   const lstStyle = txBody ? qn(txBody, NS_A, 'lstStyle') : null;
   const levelDefaults = {};
   if (lstStyle) {
-    const lvlNames = ['defPPr', 'lvl1pPr', 'lvl2pPr', 'lvl3pPr', 'lvl4pPr', 'lvl5pPr'];
-    for (let li = 0; li < lvlNames.length; li++) {
-      const lvlPPr = qn(lstStyle, NS_A, lvlNames[li]);
-      if (!lvlPPr) continue;
-      const dr = qn(lvlPPr, NS_A, 'defRPr');
-      if (dr) {
-        const sz = dr.getAttribute('sz');
-        const c = parseColor(dr);
-        const b = dr.getAttribute('b') === '1';
-        const latin = qn(dr, NS_A, 'latin');
-        levelDefaults[li === 0 ? 0 : li - 1] = {
-          fontSize: sz ? Math.round(Number(sz) / 100) : null,
-          color: c, bold: b,
-          font: latin ? latin.getAttribute('typeface') : null
-        };
+    const defs = extractLstStyleDefaults(lstStyle);
+    Object.assign(levelDefaults, defs);
+  }
+  // Merge placeholder styles from layout/master (lower priority)
+  if (phInfo && phStyles) {
+    const phKey = phInfo.type + (phInfo.idx ? ':' + phInfo.idx : '');
+    const phDefs = phStyles[phKey] || phStyles[phInfo.type] || {};
+    for (const [lvl, val] of Object.entries(phDefs)) {
+      if (!levelDefaults[lvl]) levelDefaults[lvl] = val;
+      else {
+        // Fill in missing properties from placeholder
+        const ld = levelDefaults[lvl];
+        if (!ld.fontSize && val.fontSize) ld.fontSize = val.fontSize;
+        if (!ld.color && val.color) ld.color = val.color;
+        if (!ld.bold && val.bold) ld.bold = val.bold;
+        if (!ld.font && val.font) ld.font = val.font;
       }
     }
   }
@@ -436,8 +439,8 @@ function parseShape(spEl, relMap) {
     for (const p of qnAll(txBody, NS_A, 'p')) {
       const para = parseParagraph(p);
       if (para.runs.length) paragraphs.push(para);
-      // Apply lstStyle defaults if paragraph/runs lack properties
-      const lvlDef = levelDefaults[para.indent] || levelDefaults[0];
+      // Apply level defaults (lstStyle + placeholder) if paragraph/runs lack properties
+      const lvlDef = levelDefaults[para.indent] || levelDefaults['def'] || levelDefaults[0];
       if (lvlDef) {
         if (!para.defaultFontSize && lvlDef.fontSize) para.defaultFontSize = lvlDef.fontSize;
         if (!para.defaultColor && lvlDef.color) para.defaultColor = lvlDef.color;
@@ -468,7 +471,7 @@ function parseShape(spEl, relMap) {
 
 // ── Group shapes (recursive, direct children only) ──
 // Transforms child coordinates from group's child space (chOff/chExt) to parent space (off/ext)
-function parseGroupShapes(grpEl, relMap) {
+function parseGroupShapes(grpEl, relMap, phStyles) {
   const shapes = [];
 
   // Read group transform: off/ext define position in parent, chOff/chExt define child coordinate space
@@ -501,18 +504,18 @@ function parseGroupShapes(grpEl, relMap) {
   };
 
   for (const sp of qnAll(grpEl, NS_P, 'sp')) {
-    const s = parseShape(sp, relMap); if (s) shapes.push(mapCoords(s));
+    const s = parseShape(sp, relMap, phStyles); if (s) shapes.push(mapCoords(s));
   }
   for (const pic of qnAll(grpEl, NS_P, 'pic')) {
-    const s = parseShape(pic, relMap); if (s) shapes.push(mapCoords(s));
+    const s = parseShape(pic, relMap, phStyles); if (s) shapes.push(mapCoords(s));
   }
   for (const cxn of qnAll(grpEl, NS_P, 'cxnSp')) {
-    const s = parseShape(cxn, relMap); if (s) shapes.push(mapCoords(s));
+    const s = parseShape(cxn, relMap, phStyles); if (s) shapes.push(mapCoords(s));
   }
   // Nested groups — recursive; sub-group shapes are already in sub-group parent space,
   // so mapCoords transforms them to this group's parent space
   for (const subGrp of qnAll(grpEl, NS_P, 'grpSp')) {
-    for (const s of parseGroupShapes(subGrp, relMap)) shapes.push(mapCoords(s));
+    for (const s of parseGroupShapes(subGrp, relMap, phStyles)) shapes.push(mapCoords(s));
   }
   return shapes;
 }
@@ -592,6 +595,158 @@ async function getLayoutBg(slideDoc, relsXml, zip) {
     if (masterBg) return parseColor(masterBg);
   } catch {}
   return null;
+}
+
+// ── Extract placeholder text styles from layout/master ──
+function extractLstStyleDefaults(lstStyleEl) {
+  const defaults = {};
+  if (!lstStyleEl) return defaults;
+  const lvlNames = ['defPPr', 'lvl1pPr', 'lvl2pPr', 'lvl3pPr', 'lvl4pPr', 'lvl5pPr'];
+  for (let i = 0; i < lvlNames.length; i++) {
+    const lvlPPr = qn(lstStyleEl, NS_A, lvlNames[i]);
+    if (!lvlPPr) continue;
+    const dr = qn(lvlPPr, NS_A, 'defRPr');
+    if (!dr) continue;
+    const sz = dr.getAttribute('sz');
+    const c = parseColor(dr);
+    const b = dr.getAttribute('b') === '1';
+    const it = dr.getAttribute('i') === '1';
+    const latin = qn(dr, NS_A, 'latin');
+    const ea = qn(dr, NS_A, 'ea');
+    const lvlKey = i === 0 ? 'def' : i - 1;
+    defaults[lvlKey] = {
+      fontSize: sz ? Math.round(Number(sz) / 100) : null,
+      color: c, bold: b, italic: it,
+      font: latin ? latin.getAttribute('typeface') : (ea ? ea.getAttribute('typeface') : null)
+    };
+  }
+  return defaults;
+}
+
+function extractPhFromShape(spEl) {
+  // Look for <p:nvSpPr><p:nvPr><p:ph type="..." idx="..."/>
+  const nvSpPr = qn(spEl, NS_P, 'nvSpPr');
+  if (!nvSpPr) return null;
+  const nvPr = qn(nvSpPr, NS_P, 'nvPr');
+  if (!nvPr) return null;
+  const ph = qn(nvPr, NS_P, 'ph');
+  if (!ph) return null;
+  return { type: ph.getAttribute('type') || 'body', idx: ph.getAttribute('idx') || '' };
+}
+
+function extractPlaceholderStylesFromDoc(doc) {
+  const phStyles = {};
+  const spTree = dn(doc, NS_P, 'spTree') || dn(doc, NS_P, 'cSld');
+  if (!spTree) return phStyles;
+  for (const sp of qnAll(spTree, NS_P, 'sp')) {
+    const phInfo = extractPhFromShape(sp);
+    if (!phInfo) continue;
+    const txBody = dn(sp, NS_P, 'txBody');
+    const lstStyle = txBody ? qn(txBody, NS_A, 'lstStyle') : null;
+    const defaults = extractLstStyleDefaults(lstStyle);
+    // Also check inline paragraphs for their defRPr (some layouts define style inline)
+    if (txBody && Object.keys(defaults).length === 0) {
+      const paras = qnAll(txBody, NS_A, 'p');
+      for (const p of paras) {
+        const pPr = qn(p, NS_A, 'pPr');
+        const dr = pPr ? qn(pPr, NS_A, 'defRPr') : null;
+        if (dr) {
+          const sz = dr.getAttribute('sz');
+          const c = parseColor(dr);
+          const b = dr.getAttribute('b') === '1';
+          const latin = qn(dr, NS_A, 'latin');
+          defaults[0] = {
+            fontSize: sz ? Math.round(Number(sz) / 100) : null,
+            color: c, bold: b, italic: dr.getAttribute('i') === '1',
+            font: latin ? latin.getAttribute('typeface') : null
+          };
+          break;
+        }
+      }
+    }
+    const key = phInfo.type + (phInfo.idx ? ':' + phInfo.idx : '');
+    phStyles[key] = defaults;
+    // Also store by type alone for fallback
+    if (!phStyles[phInfo.type] || Object.keys(phStyles[phInfo.type]).length === 0) {
+      phStyles[phInfo.type] = defaults;
+    }
+  }
+  return phStyles;
+}
+
+async function getPlaceholderStyles(relsXml, zip) {
+  const result = {};
+  if (!relsXml) return result;
+  try {
+    const relsDoc = parseXml(relsXml);
+    let layoutTarget = null;
+    for (const rel of relsDoc.getElementsByTagName('Relationship')) {
+      const t = rel.getAttribute('Target') || '';
+      if (/slideLayout/i.test(t)) { layoutTarget = t; break; }
+    }
+    if (!layoutTarget) return result;
+    const layoutPath = resolvePath(layoutTarget);
+    const layoutXmlStr = await zip.file(layoutPath)?.async('string');
+    if (!layoutXmlStr) return result;
+    const layoutDoc = parseXml(layoutXmlStr);
+    // Extract styles from layout placeholders
+    const layoutStyles = extractPlaceholderStylesFromDoc(layoutDoc);
+    Object.assign(result, layoutStyles);
+
+    // Also extract from txStyles in layout (rare but possible)
+    // Now check slide master
+    const layoutNum = layoutPath.match(/slideLayout(\d+)/)?.[1];
+    const layoutRelsPath = `ppt/slideLayouts/_rels/slideLayout${layoutNum}.xml.rels`;
+    const layoutRelsStr = await zip.file(layoutRelsPath)?.async('string').catch(() => null);
+    if (!layoutRelsStr) return result;
+    const layoutRelsDoc = parseXml(layoutRelsStr);
+    let masterTarget = null;
+    for (const rel of layoutRelsDoc.getElementsByTagName('Relationship')) {
+      const t = rel.getAttribute('Target') || '';
+      if (/slideMaster/i.test(t)) { masterTarget = t; break; }
+    }
+    if (!masterTarget) return result;
+    const masterPath = masterTarget.startsWith('/') ? masterTarget.slice(1) : 'ppt/slideLayouts/' + masterTarget;
+    const mParts = masterPath.split('/'); const mStack = [];
+    for (const p of mParts) { if (p === '..') mStack.pop(); else if (p !== '.') mStack.push(p); }
+    const resolvedMasterPath = mStack.join('/');
+    const masterXmlStr = await zip.file(resolvedMasterPath)?.async('string');
+    if (!masterXmlStr) return result;
+    const masterDoc = parseXml(masterXmlStr);
+    // Extract from master placeholders (lower priority)
+    const masterStyles = extractPlaceholderStylesFromDoc(masterDoc);
+    for (const [key, val] of Object.entries(masterStyles)) {
+      if (!result[key] || Object.keys(result[key]).length === 0) result[key] = val;
+    }
+    // Extract from master txStyles (p:txStyles) — title/body/other style
+    const txStyles = dn(masterDoc, NS_P, 'txStyles');
+    if (txStyles) {
+      const styleMap = { titleStyle: 'title', bodyStyle: 'body', otherStyle: 'other' };
+      for (const [tag, phType] of Object.entries(styleMap)) {
+        const styleEl = qn(txStyles, NS_P, tag);
+        if (styleEl) {
+          const defs = extractLstStyleDefaults(styleEl);
+          if (!result[phType] || Object.keys(result[phType]).length === 0) {
+            result[phType] = defs;
+          } else {
+            // Fill in missing levels
+            for (const [lvl, val] of Object.entries(defs)) {
+              if (!result[phType][lvl]) result[phType][lvl] = val;
+            }
+          }
+          // ctrTitle uses titleStyle as well
+          if (phType === 'title' && (!result['ctrTitle'] || Object.keys(result['ctrTitle']).length === 0)) {
+            result['ctrTitle'] = defs;
+          }
+          // subTitle uses bodyStyle
+          if (phType === 'body' && (!result['subTitle'] || Object.keys(result['subTitle']).length === 0)) {
+            result['subTitle'] = defs;
+          }
+        }
+      }
+    }
+  } catch {}
+  return result;
 }
 
 // ═══════════════════════════════════════
@@ -1193,6 +1348,9 @@ async function buildSlideCanvas(slideXmlStr, relsXml, zip, slideSize, objectUrls
   const relMap = buildRelMap(relsXml);
   const bgColor = await getLayoutBg(slideDoc, relsXml, zip) || '#ffffff';
 
+  // Get placeholder text styles from layout/master for font size inheritance
+  const phStyles = await getPlaceholderStyles(relsXml, zip);
+
   // Check for background image
   let bgImage = null;
   const slideBgEl = dn(slideDoc, NS_P, 'bg');
@@ -1209,11 +1367,11 @@ async function buildSlideCanvas(slideXmlStr, relsXml, zip, slideSize, objectUrls
   const allShapes = [];
   const spTree = dn(slideDoc, NS_P, 'spTree');
   if (spTree) {
-    for (const sp of qnAll(spTree, NS_P, 'sp')) { const s = parseShape(sp, relMap); if (s) allShapes.push(s); }
-    for (const pic of qnAll(spTree, NS_P, 'pic')) { const s = parseShape(pic, relMap); if (s) allShapes.push(s); }
-    for (const cxn of qnAll(spTree, NS_P, 'cxnSp')) { const s = parseShape(cxn, relMap); if (s) allShapes.push(s); }
-    for (const grp of qnAll(spTree, NS_P, 'grpSp')) { allShapes.push(...parseGroupShapes(grp, relMap)); }
-    for (const gf of qnAll(spTree, NS_P, 'graphicFrame')) { const s = parseShape(gf, relMap); if (s) allShapes.push(s); }
+    for (const sp of qnAll(spTree, NS_P, 'sp')) { const s = parseShape(sp, relMap, phStyles); if (s) allShapes.push(s); }
+    for (const pic of qnAll(spTree, NS_P, 'pic')) { const s = parseShape(pic, relMap, phStyles); if (s) allShapes.push(s); }
+    for (const cxn of qnAll(spTree, NS_P, 'cxnSp')) { const s = parseShape(cxn, relMap, phStyles); if (s) allShapes.push(s); }
+    for (const grp of qnAll(spTree, NS_P, 'grpSp')) { allShapes.push(...parseGroupShapes(grp, relMap, phStyles)); }
+    for (const gf of qnAll(spTree, NS_P, 'graphicFrame')) { const s = parseShape(gf, relMap, phStyles); if (s) allShapes.push(s); }
   }
 
   // Return a render function that draws onto a sized canvas
