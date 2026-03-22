@@ -201,7 +201,7 @@ function parseFill(el) {
   if (!el) return null;
   const solid = dn(el, NS_A, 'solidFill');
   if (solid) return parseColor(solid);
-  // Gradient fill → CSS linear-gradient
+  // Gradient fill → CSS linear-gradient with correct angle from <a:lin ang="...">
   const gradFill = dn(el, NS_A, 'gradFill');
   if (gradFill) {
     const stops = [];
@@ -210,7 +210,12 @@ function parseFill(el) {
       const c = parseColor(gs);
       if (c) stops.push(`${c} ${pos}%`);
     }
-    if (stops.length >= 2) return `linear-gradient(180deg,${stops.join(',')})`;
+    // Parse gradient angle: OOXML ang is in 60000ths of a degree, convert to CSS degrees
+    // OOXML: 0=left→right, 5400000=top→bottom; CSS: 0deg=bottom→top, 90deg=left→right
+    const lin = dn(gradFill, NS_A, 'lin');
+    const ooAngle = lin ? Number(lin.getAttribute('ang') || '0') / 60000 : 270;
+    const cssAngle = Math.round(ooAngle + 90) % 360;
+    if (stops.length >= 2) return `linear-gradient(${cssAngle}deg,${stops.join(',')})`;
     if (stops.length === 1) return stops[0].split(' ')[0];
   }
   return null;
@@ -540,19 +545,16 @@ function parseGroupShapes(grpEl, relMap, phStyles) {
     return { ...s, x: gx + (s.x - cox) * sx, y: gy + (s.y - coy) * sy, w: s.w * sx, h: s.h * sy };
   };
 
-  for (const sp of qnAll(grpEl, NS_P, 'sp')) {
-    const s = parseShape(sp, relMap, phStyles); if (s) shapes.push(mapCoords(s));
-  }
-  for (const pic of qnAll(grpEl, NS_P, 'pic')) {
-    const s = parseShape(pic, relMap, phStyles); if (s) shapes.push(mapCoords(s));
-  }
-  for (const cxn of qnAll(grpEl, NS_P, 'cxnSp')) {
-    const s = parseShape(cxn, relMap, phStyles); if (s) shapes.push(mapCoords(s));
-  }
-  // Nested groups — recursive; sub-group shapes are already in sub-group parent space,
-  // so mapCoords transforms them to this group's parent space
-  for (const subGrp of qnAll(grpEl, NS_P, 'grpSp')) {
-    for (const s of parseGroupShapes(subGrp, relMap, phStyles)) shapes.push(mapCoords(s));
+  // Iterate children in document order to preserve z-order within the group
+  const grpShapeTypes = new Set(['sp', 'pic', 'cxnSp', 'grpSp']);
+  for (const child of grpEl.children) {
+    if (child.namespaceURI !== NS_P || !grpShapeTypes.has(child.localName)) continue;
+    if (child.localName === 'grpSp') {
+      for (const s of parseGroupShapes(child, relMap, phStyles)) shapes.push(mapCoords(s));
+    } else {
+      const s = parseShape(child, relMap, phStyles);
+      if (s) shapes.push(mapCoords(s));
+    }
   }
   return shapes;
 }
@@ -966,9 +968,20 @@ function drawTextShape(ctx, shape, sx, sy, sw, sh, scale, relMap) {
   const contentW = sw - padL - padR;
   // normAutofit: scale font sizes by fontScale percentage
   const fScale = (shape.fontScale || 100) / 100;
-  // Smart default text color: use white on dark backgrounds
+  // Smart default text color: use white on dark backgrounds (solid, gradient, or blip)
   const shapeBg = shape.bgColor;
-  const darkBg = shapeBg && typeof shapeBg === 'string' && !shapeBg.startsWith('linear') && isDarkColor(shapeBg);
+  let darkBg = false;
+  if (shapeBg && typeof shapeBg === 'string') {
+    if (shapeBg.startsWith('linear-gradient')) {
+      // Check first gradient stop color
+      const firstColor = shapeBg.match(/#[0-9a-fA-F]{6}/);
+      darkBg = firstColor ? isDarkColor(firstColor[0]) : false;
+    } else {
+      darkBg = isDarkColor(shapeBg);
+    }
+  } else if (shape.blipTarget) {
+    darkBg = false; // can't detect image brightness, default to dark text
+  }
   const defaultTextColor = darkBg ? '#ffffff' : (themeColors.tx1 || '#1e293b');
 
   // Measure total content height for vertical alignment
@@ -1531,15 +1544,20 @@ async function buildSlideCanvas(slideXmlStr, relsXml, zip, slideSize, objectUrls
     }
   }
 
-  // Collect shapes
+  // Collect shapes in document order (preserves z-order: later elements render on top)
   const allShapes = [];
   const spTree = dn(slideDoc, NS_P, 'spTree');
   if (spTree) {
-    for (const sp of qnAll(spTree, NS_P, 'sp')) { const s = parseShape(sp, relMap, phStyles); if (s) allShapes.push(s); }
-    for (const pic of qnAll(spTree, NS_P, 'pic')) { const s = parseShape(pic, relMap, phStyles); if (s) allShapes.push(s); }
-    for (const cxn of qnAll(spTree, NS_P, 'cxnSp')) { const s = parseShape(cxn, relMap, phStyles); if (s) allShapes.push(s); }
-    for (const grp of qnAll(spTree, NS_P, 'grpSp')) { allShapes.push(...parseGroupShapes(grp, relMap, phStyles)); }
-    for (const gf of qnAll(spTree, NS_P, 'graphicFrame')) { const s = parseShape(gf, relMap, phStyles); if (s) allShapes.push(s); }
+    const shapeTypes = new Set(['sp', 'pic', 'cxnSp', 'grpSp', 'graphicFrame']);
+    for (const child of spTree.children) {
+      if (child.namespaceURI !== NS_P || !shapeTypes.has(child.localName)) continue;
+      if (child.localName === 'grpSp') {
+        allShapes.push(...parseGroupShapes(child, relMap, phStyles));
+      } else {
+        const s = parseShape(child, relMap, phStyles);
+        if (s) allShapes.push(s);
+      }
+    }
   }
 
   // Return a render function that draws onto a sized canvas
