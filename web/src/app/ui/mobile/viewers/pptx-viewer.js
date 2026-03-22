@@ -332,8 +332,18 @@ function parseTransform(el) {
 
 // ── Table ──
 function parseTable(tblEl) {
+  // Parse column widths from tblGrid
+  const colWidths = [];
+  const tblGrid = qn(tblEl, NS_A, 'tblGrid');
+  if (tblGrid) {
+    for (const gc of qnAll(tblGrid, NS_A, 'gridCol')) {
+      colWidths.push(emuToPx(gc.getAttribute('w') || '0'));
+    }
+  }
+  const rowHeights = [];
   const rows = [];
   for (const tr of qnAll(tblEl, NS_A, 'tr')) {
+    rowHeights.push(emuToPx(tr.getAttribute('h') || '0'));
     const cells = [];
     for (const tc of qnAll(tr, NS_A, 'tc')) {
       const paragraphs = [];
@@ -343,13 +353,23 @@ function parseTable(tblEl) {
       }
       const tcPr = qn(tc, NS_A, 'tcPr');
       const fill = tcPr ? parseFill(tcPr) : null;
+      // Border colors
+      const borderColor = tcPr ? (() => {
+        for (const side of ['lnB', 'lnT', 'lnL', 'lnR']) {
+          const ln = qn(tcPr, NS_A, side);
+          if (ln) { const c = parseFill(ln); if (c) return c; }
+        }
+        return null;
+      })() : null;
       const gridSpan = tc.getAttribute('gridSpan');
       const rowSpan = tc.getAttribute('rowSpan');
-      cells.push({ paragraphs, fill, gridSpan: gridSpan ? parseInt(gridSpan) : 1, rowSpan: rowSpan ? parseInt(rowSpan) : 1 });
+      const hMerge = tc.getAttribute('hMerge') === '1';
+      const vMerge = tc.getAttribute('vMerge') === '1';
+      cells.push({ paragraphs, fill, borderColor, gridSpan: gridSpan ? parseInt(gridSpan) : 1, rowSpan: rowSpan ? parseInt(rowSpan) : 1, hMerge, vMerge });
     }
     rows.push(cells);
   }
-  return rows;
+  return { rows, colWidths, rowHeights };
 }
 
 // ── Shape parser ──
@@ -366,7 +386,7 @@ function parseShape(spEl, relMap) {
   }
   // Table
   const tblEl = dn(spEl, NS_A, 'tbl');
-  if (tblEl) return { type: 'table', ...tf, rows: parseTable(tblEl) };
+  if (tblEl) { const tbl = parseTable(tblEl); return { type: 'table', ...tf, ...tbl }; }
   // Shape styles — look specifically at spPr
   const spPr = dn(spEl, NS_P, 'spPr');
   const bgColor = spPr ? parseFill(spPr) : null;
@@ -388,8 +408,10 @@ function parseShape(spEl, relMap) {
   const anchor = bodyPr?.getAttribute('anchor');
   const wrapAttr = bodyPr?.getAttribute('wrap'); // "none" = no wrapping
   const noWrap = wrapAttr === 'none';
-  // Auto-fit: spAutoFit = shrink to fit, noAutofit = fixed size
+  // Auto-fit modes
   const autoFit = bodyPr ? !!dn(bodyPr, NS_A, 'spAutoFit') : false;
+  const normAutofit = bodyPr ? dn(bodyPr, NS_A, 'normAutofit') : null;
+  const fontScale = normAutofit ? (Number(normAutofit.getAttribute('fontScale') || '100000') / 1000) : 100;
   const lIns = bodyPr?.getAttribute('lIns'); const rIns = bodyPr?.getAttribute('rIns');
   const tIns = bodyPr?.getAttribute('tIns'); const bIns = bodyPr?.getAttribute('bIns');
   const margin = {
@@ -398,7 +420,7 @@ function parseShape(spEl, relMap) {
   };
   // Return shape if it has text OR visual fill/border (decorative shapes)
   if (!paragraphs.length && !bgColor && !line) return null;
-  return { type: 'text', ...tf, paragraphs, bgColor, line, anchor, margin, geom, noWrap, autoFit };
+  return { type: 'text', ...tf, paragraphs, bgColor, line, anchor, margin, geom, noWrap, autoFit, fontScale };
 }
 
 // ── Group shapes (recursive, direct children only) ──
@@ -675,10 +697,25 @@ function measureParagraphHeight(ctx, para, shapeW, margin, scale, autoNum) {
   return totalH;
 }
 
+// Detect if a color is "dark" (luminance < 0.4)
+function isDarkColor(hex) {
+  if (!hex || !hex.startsWith('#') || hex.length < 7) return false;
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  return (0.299 * r + 0.587 * g + 0.114 * b) < 0.4;
+}
+
 function drawTextShape(ctx, shape, sx, sy, sw, sh, scale, relMap) {
   const m = shape.margin || { l: 7, r: 7, t: 4, b: 4 };
   const padL = m.l * scale, padR = m.r * scale, padT = m.t * scale, padB = m.b * scale;
   const contentW = sw - padL - padR;
+  // normAutofit: scale font sizes by fontScale percentage
+  const fScale = (shape.fontScale || 100) / 100;
+  // Smart default text color: use white on dark backgrounds
+  const shapeBg = shape.bgColor;
+  const darkBg = shapeBg && typeof shapeBg === 'string' && !shapeBg.startsWith('linear') && isDarkColor(shapeBg);
+  const defaultTextColor = darkBg ? '#ffffff' : (themeColors.tx1 || '#1e293b');
 
   // Measure total content height for vertical alignment
   let totalContentH = 0;
@@ -708,22 +745,22 @@ function drawTextShape(ctx, shape, sx, sy, sw, sh, scale, relMap) {
     const segments = [];
     if (para.bullet) {
       const bulletText = para.bullet === 'auto' ? `${autoNum.n++}. ` : `${para.bullet} `;
-      const bFs = para.defaultFontSize || 12;
+      const bFs = (para.defaultFontSize || 12) * fScale;
       segments.push({
         text: bulletText,
         font: `${ptToPx(bFs) * scale}px ${resolveFont(themeFontMinor) || 'sans-serif'}`,
-        color: para.bulletColor || shape.paragraphs[0]?.runs[0]?.color || themeColors.tx1 || '#1e293b',
+        color: para.bulletColor || shape.paragraphs[0]?.runs[0]?.color || defaultTextColor,
         fontSize: bFs, underline: false, strike: false, baseline: null
       });
     }
     for (const run of para.runs) {
       if (run.text === '\n') { segments.push({ text: '\n' }); continue; }
-      const fs = run.fontSize || para.defaultFontSize || 12;
+      const fs = (run.fontSize || para.defaultFontSize || 12) * fScale;
       const effectiveFs = run.baseline ? fs * 0.65 : fs;
       segments.push({
         text: run.text,
         font: `${run.italic ? 'italic ' : ''}${run.bold ? '700 ' : ''}${ptToPx(effectiveFs) * scale}px ${resolveFont(run.font) || resolveFont(themeFontMinor) || 'sans-serif'}`,
-        color: run.color || themeColors.tx1 || '#1e293b',
+        color: run.color || defaultTextColor,
         fontSize: fs, underline: run.underline, strike: run.strike, baseline: run.baseline
       });
     }
@@ -843,19 +880,43 @@ function drawTable(ctx, shape, sx, sy, sw, sh, scale) {
   const rowCount = shape.rows.length;
   const colCount = Math.max(...shape.rows.map(r => r.length));
   if (!colCount) return;
-  const cellW = sw / colCount;
-  const cellH = sh / rowCount;
-  const fontSize = 10 * scale;
+
+  // Calculate column positions from parsed widths or equal distribution
+  const totalGridW = shape.colWidths?.length ? shape.colWidths.reduce((a, b) => a + b, 0) : 1;
+  const colXs = [0]; // cumulative x positions as fraction of sw
+  if (shape.colWidths?.length) {
+    let acc = 0;
+    for (const w of shape.colWidths) { acc += w; colXs.push(acc / totalGridW); }
+  } else {
+    for (let i = 1; i <= colCount; i++) colXs.push(i / colCount);
+  }
+
+  // Row positions from parsed heights or equal distribution
+  const totalGridH = shape.rowHeights?.length ? shape.rowHeights.reduce((a, b) => a + b, 0) : 1;
+  const rowYs = [0];
+  if (shape.rowHeights?.length) {
+    let acc = 0;
+    for (const h of shape.rowHeights) { acc += h; rowYs.push(acc / totalGridH); }
+  } else {
+    for (let i = 1; i <= rowCount; i++) rowYs.push(i / rowCount);
+  }
+
   const padding = 4 * scale;
 
   for (let ri = 0; ri < rowCount; ri++) {
     const row = shape.rows[ri];
+    let colIdx = 0;
     for (let ci = 0; ci < row.length; ci++) {
       const cell = row[ci];
-      const cx = sx + ci * cellW;
-      const cy = sy + ri * cellH;
-      const cw = cellW * (cell.gridSpan || 1);
-      const ch = cellH * (cell.rowSpan || 1);
+      if (cell.hMerge || cell.vMerge) { colIdx += (cell.gridSpan || 1); continue; }
+
+      const cx = sx + colXs[colIdx] * sw;
+      const cy = sy + rowYs[ri] * sh;
+      const endCol = Math.min(colIdx + (cell.gridSpan || 1), colXs.length - 1);
+      const endRow = Math.min(ri + (cell.rowSpan || 1), rowYs.length - 1);
+      const cw = (colXs[endCol] - colXs[colIdx]) * sw;
+      const ch = (rowYs[endRow] - rowYs[ri]) * sh;
+      colIdx += (cell.gridSpan || 1);
 
       // Cell background
       if (cell.fill) {
@@ -863,26 +924,31 @@ function drawTable(ctx, shape, sx, sy, sw, sh, scale) {
         ctx.fillRect(cx, cy, cw, ch);
       }
       // Cell border
-      ctx.strokeStyle = '#cbd5e1';
+      ctx.strokeStyle = cell.borderColor || '#cbd5e1';
       ctx.lineWidth = scale;
       ctx.strokeRect(cx, cy, cw, ch);
 
       // Cell text
-      ctx.font = `${fontSize}px ${resolveFont(themeFontMinor) || 'sans-serif'}`;
+      const defaultFamily = resolveFont(themeFontMinor) || 'sans-serif';
       ctx.fillStyle = themeColors.tx1 || '#1e293b';
-      let textY = cy + padding + fontSize;
-      const autoNum = { n: 1 };
+      let textY = cy + padding;
       for (const para of cell.paragraphs) {
+        const lh = para.lineHeight || 1.35;
         for (const run of para.runs) {
-          if (run.text === '\n') { textY += fontSize * 1.3; continue; }
-          const fs = run.fontSize || 10;
-          ctx.font = buildCanvasFont(run, 10).replace(/(\d+(?:\.\d+)?)px/, (_, n) => `${Number(n) * scale}px`);
+          if (run.text === '\n') { textY += 10 * scale * lh; continue; }
+          const fs = run.fontSize || para.defaultFontSize || 10;
+          const pxFs = ptToPx(fs) * scale;
+          ctx.font = `${run.italic ? 'italic ' : ''}${run.bold ? '700 ' : ''}${pxFs}px ${resolveFont(run.font) || defaultFamily}`;
           if (run.color) ctx.fillStyle = run.color;
+          else ctx.fillStyle = themeColors.tx1 || '#1e293b';
           const lines = wrapText(ctx, run.text, cw - padding * 2);
           for (const line of lines) {
+            textY += pxFs * lh;
             if (textY > cy + ch) break;
-            ctx.fillText(line, cx + padding, textY);
-            textY += fs * scale * 4 / 3 * 1.3;
+            let drawX = cx + padding;
+            if (para.align === 'center') drawX = cx + (cw - ctx.measureText(line).width) / 2;
+            else if (para.align === 'right') drawX = cx + cw - padding - ctx.measureText(line).width;
+            ctx.fillText(line, drawX, textY);
           }
         }
       }
@@ -1030,14 +1096,17 @@ async function drawShapeOnCanvas(ctx, shape, zip, canvasW, canvasH, slideSize, s
         if (shape.fillMode === 'stretch') {
           ctx.drawImage(img, sx, sy, sw, sh);
         } else {
+          // Cover-fit: fill shape bounds, crop excess (matches PPT behavior)
           const imgW = img.width, imgH = img.height;
           const imgAspect = imgW / imgH;
           const shapeAspect = sw / sh;
           let dw, dh, dx, dy;
           if (imgAspect > shapeAspect) {
-            dw = sw; dh = sw / imgAspect; dx = sx; dy = sy + (sh - dh) / 2;
-          } else {
+            // Image wider than shape: match height, crop sides
             dh = sh; dw = sh * imgAspect; dy = sy; dx = sx + (sw - dw) / 2;
+          } else {
+            // Image taller than shape: match width, crop top/bottom
+            dw = sw; dh = sw / imgAspect; dx = sx; dy = sy + (sh - dh) / 2;
           }
           ctx.drawImage(img, dx, dy, dw, dh);
         }
@@ -1236,6 +1305,106 @@ export async function renderPptxViewer({ url, blob, name, modalApi }) {
 
     pageLabel.textContent = `${slideEls.length} ${t('viewer.pptxSlides')}`;
 
+    // ── Pinch-to-zoom ──
+    let zoomScale = 1;
+    let zoomOriginX = 0, zoomOriginY = 0;
+    let panX = 0, panY = 0;
+    let pinchStartDist = 0;
+    let pinchStartScale = 1;
+    let pinchMidX = 0, pinchMidY = 0;
+    let panStartX = 0, panStartY = 0;
+    let panStartPanX = 0, panStartPanY = 0;
+    let isPanning = false;
+
+    function applyZoom() {
+      stageEl.style.transformOrigin = `${zoomOriginX}px ${zoomOriginY}px`;
+      stageEl.style.transform = `translate(${panX}px, ${panY}px) scale(${zoomScale})`;
+    }
+
+    function resetZoom() {
+      zoomScale = 1; panX = 0; panY = 0;
+      stageEl.style.transform = '';
+      stageEl.style.transformOrigin = '';
+    }
+
+    function getTouchDist(t1, t2) {
+      const dx = t1.clientX - t2.clientX;
+      const dy = t1.clientY - t2.clientY;
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    const onTouchStart = (e) => {
+      if (e.touches.length === 2) {
+        e.preventDefault();
+        const t0 = e.touches[0], t1 = e.touches[1];
+        pinchStartDist = getTouchDist(t0, t1);
+        pinchStartScale = zoomScale;
+        const rect = stageEl.getBoundingClientRect();
+        pinchMidX = ((t0.clientX + t1.clientX) / 2 - rect.left) / zoomScale - panX / zoomScale;
+        pinchMidY = ((t0.clientY + t1.clientY) / 2 - rect.top) / zoomScale - panY / zoomScale;
+        zoomOriginX = pinchMidX;
+        zoomOriginY = pinchMidY;
+        isPanning = false;
+      } else if (e.touches.length === 1 && zoomScale > 1) {
+        isPanning = true;
+        panStartX = e.touches[0].clientX;
+        panStartY = e.touches[0].clientY;
+        panStartPanX = panX;
+        panStartPanY = panY;
+      }
+    };
+
+    const onTouchMove = (e) => {
+      if (e.touches.length === 2) {
+        e.preventDefault();
+        const dist = getTouchDist(e.touches[0], e.touches[1]);
+        const newScale = Math.max(1, Math.min(5, pinchStartScale * (dist / pinchStartDist)));
+        zoomScale = newScale;
+
+        // Adjust pan to keep pinch center stable
+        if (zoomScale <= 1) { panX = 0; panY = 0; }
+        applyZoom();
+      } else if (e.touches.length === 1 && isPanning && zoomScale > 1) {
+        e.preventDefault();
+        panX = panStartPanX + (e.touches[0].clientX - panStartX);
+        panY = panStartPanY + (e.touches[0].clientY - panStartY);
+        applyZoom();
+      }
+    };
+
+    const onTouchEnd = (e) => {
+      if (e.touches.length < 2) {
+        if (zoomScale <= 1.05) resetZoom();
+        isPanning = false;
+      }
+    };
+
+    // Double-tap to reset zoom
+    let lastTap = 0;
+    const onDoubleTap = (e) => {
+      if (e.touches.length !== 1) return;
+      const now = Date.now();
+      if (now - lastTap < 300) {
+        e.preventDefault();
+        if (zoomScale > 1.05) {
+          resetZoom();
+        } else {
+          zoomScale = 2.5;
+          const rect = stageEl.getBoundingClientRect();
+          zoomOriginX = (e.touches[0].clientX - rect.left);
+          zoomOriginY = (e.touches[0].clientY - rect.top);
+          panX = 0; panY = 0;
+          applyZoom();
+        }
+      }
+      lastTap = now;
+    };
+
+    stageEl.addEventListener('touchstart', onTouchStart, { passive: false });
+    stageEl.addEventListener('touchstart', onDoubleTap, { passive: false });
+    stageEl.addEventListener('touchmove', onTouchMove, { passive: false });
+    stageEl.addEventListener('touchend', onTouchEnd, { passive: true });
+
     // Scroll-based page tracking
     let scrollTick = false;
     const onScroll = () => {
@@ -1279,6 +1448,11 @@ export async function renderPptxViewer({ url, blob, name, modalApi }) {
       if (typeof prevCleanup === 'function') prevCleanup();
       cleanup();
       stageEl.removeEventListener('scroll', onScroll);
+      stageEl.removeEventListener('touchstart', onTouchStart);
+      stageEl.removeEventListener('touchstart', onDoubleTap);
+      stageEl.removeEventListener('touchmove', onTouchMove);
+      stageEl.removeEventListener('touchend', onTouchEnd);
+      resetZoom();
       modalEl.classList.remove('pptx-modal');
       closeModal?.();
       activePptxCleanup = null;
