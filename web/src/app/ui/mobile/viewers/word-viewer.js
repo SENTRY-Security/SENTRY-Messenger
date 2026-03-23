@@ -822,12 +822,10 @@ function renderDocBinary(buffer) {
     }
 
     // ── Table handling ──
-    // Detect table via PAPX inTable flag, or fallback: presence of \x07 (cell mark) in text
     const hasCellMark = paraText.indexOf('\x07') !== -1;
-    const isTable = paraProps.inTable || hasCellMark;
 
-    if (isTable) {
-      // Split cells by \x07 (cell mark)
+    if (paraProps.inTable) {
+      // ── PAPX-based table (preferred path) ──
       const cells = paraText.split('\x07');
       let cellCp = cpStart;
       for (let ci = 0; ci < cells.length; ci++) {
@@ -835,57 +833,68 @@ function renderDocBinary(buffer) {
         if (cellText || ci < cells.length - 1) {
           tableRow.push({ text: cellText, cpStart: cellCp });
         }
-        cellCp += cellText.length + 1; // +1 for \x07
+        cellCp += cellText.length + 1;
       }
-
-      // Row end: PAPX flag, or fallback heuristic — paragraph is just a cell mark
-      // (row-end paragraph in Word binary is typically a lone \x07 or empty)
-      const isRowEnd = paraProps.tableRowEnd ||
-        (hasCellMark && !paraProps.inTable && tableRow.length > 0);
-
-      if (isRowEnd) {
+      if (paraProps.tableRowEnd) {
         if (!inTable) { html.push('<div class="word-tbl-wrap"><table class="word-tbl word-tbl-bordered">'); inTable = true; }
-
-        // Row style from TAP properties
         const rowStyle = [];
-        if (paraProps.rowHeight) {
-          rowStyle.push(`height:${paraProps.rowHeight}pt`);
-        }
+        if (paraProps.rowHeight) rowStyle.push(`height:${paraProps.rowHeight}pt`);
         html.push(`<tr${rowStyle.length ? ` style="${rowStyle.join(';')}"` : ''}>`);
-
-        // Filter out empty trailing cell (row-end marker)
-        let dataCells = tableRow;
-        while (dataCells.length > 1 && !dataCells[dataCells.length - 1].text.trim()) {
-          dataCells = dataCells.slice(0, -1);
-        }
-        for (let ci = 0; ci < dataCells.length; ci++) {
-          const cell = dataCells[ci];
+        // Remove trailing empty cells (row-end marker)
+        while (tableRow.length > 1 && !tableRow[tableRow.length - 1].text.trim()) tableRow.pop();
+        for (let ci = 0; ci < tableRow.length; ci++) {
+          const cell = tableRow[ci];
           const tdStyle = [];
-          // Apply cell width from sprmTDefTable
-          if (paraProps.cellWidths && ci < paraProps.cellWidths.length) {
-            tdStyle.push(`width:${paraProps.cellWidths[ci]}pt`);
-          }
-          // Apply cell shading
-          if (paraProps.cellShds && ci < paraProps.cellShds.length && paraProps.cellShds[ci]) {
-            tdStyle.push(`background-color:${paraProps.cellShds[ci]}`);
-          }
-          // Vertical merge
+          if (paraProps.cellWidths && ci < paraProps.cellWidths.length) tdStyle.push(`width:${paraProps.cellWidths[ci]}pt`);
+          if (paraProps.cellShds && ci < paraProps.cellShds.length && paraProps.cellShds[ci]) tdStyle.push(`background-color:${paraProps.cellShds[ci]}`);
           let skipCell = false;
           if (paraProps.cellTCs && ci < paraProps.cellTCs.length) {
             const tc = paraProps.cellTCs[ci];
-            if (tc.fVertMerge && !tc.fVertRestart) {
-              skipCell = true; // continuation of vertical merge — hide cell
-            }
+            if (tc.fVertMerge && !tc.fVertRestart) skipCell = true;
           }
           if (skipCell) {
             html.push('<td class="word-tc word-tc-merged" style="display:none"></td>');
           } else {
-            const styleAttr2 = tdStyle.length ? ` style="${tdStyle.join(';')}"` : '';
-            html.push(`<td class="word-tc"${styleAttr2}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts)}</td>`);
+            const sa = tdStyle.length ? ` style="${tdStyle.join(';')}"` : '';
+            html.push(`<td class="word-tc"${sa}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts)}</td>`);
           }
         }
         html.push('</tr>');
         tableRow = [];
+      }
+    } else if (hasCellMark) {
+      // ── Fallback: detect table from \x07 cell marks ──
+      // In Word binary, each cell ends with \x07, and each row ends with an
+      // extra \x07 (row-end mark). So consecutive \x07\x07 = row boundary.
+      // Split by \x07 and group into rows: content segments are cells,
+      // empty segments signal row boundaries.
+      const segments = paraText.split('\x07');
+      const fallbackRows = [];
+      let rowCells = [];
+      let cellCp = cpStart;
+
+      for (let si = 0; si < segments.length; si++) {
+        const seg = segments[si];
+        if (seg) {
+          rowCells.push({ text: seg, cpStart: cellCp });
+        } else if (rowCells.length > 0) {
+          // Empty segment after content = row boundary (\x07\x07)
+          fallbackRows.push(rowCells);
+          rowCells = [];
+        }
+        cellCp += seg.length + 1; // +1 for the \x07
+      }
+      if (rowCells.length > 0) fallbackRows.push(rowCells);
+
+      if (fallbackRows.length > 0) {
+        if (!inTable) { html.push('<div class="word-tbl-wrap"><table class="word-tbl word-tbl-bordered">'); inTable = true; }
+        for (const row of fallbackRows) {
+          html.push('<tr>');
+          for (const cell of row) {
+            html.push(`<td class="word-tc">${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts)}</td>`);
+          }
+          html.push('</tr>');
+        }
       }
     } else {
       // ── Close open table ──
