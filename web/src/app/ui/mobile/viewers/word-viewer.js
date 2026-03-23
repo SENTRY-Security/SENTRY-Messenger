@@ -1791,13 +1791,24 @@ function renderDocBinary(buffer) {
           for (let si = 0; si < segments.length; si++) {
             const seg = segments[si];
             if (seg.length === 0 && tableRow.length > 0) {
-              // Empty segment = row-end marker → flush accumulated cells as <tr>
-              if (tblRowIdx < tblAllRowEnds.length) {
-                flushRow(tblAllRowEnds[tblRowIdx].props);
+              // Empty segment = row-end marker → flush accumulated cells as <tr>.
+              // If tableRow has more cells than the current rowEnd's cellCount,
+              // the first cells belong to the PREVIOUS row — flush them first.
+              const reProps = tblRowIdx < tblAllRowEnds.length ? tblAllRowEnds[tblRowIdx].props : null;
+              const expectedCells = reProps?.cellCount || reProps?.cellWidths?.length || tableRow.length;
+              while (tableRow.length > expectedCells && tblRowIdx < tblAllRowEnds.length) {
+                // Peel off the first expectedCells cells as a complete row
+                const prevReProps = tblAllRowEnds[tblRowIdx].props;
+                const prevCc = prevReProps.cellCount || prevReProps.cellWidths?.length || tableRow.length;
+                const overflow = tableRow.splice(prevCc);
+                flushRow(prevReProps);
                 tblRowIdx++;
-              } else {
-                // No more rowEnd metadata — flush as plain row
-                flushRow(paraProps);
+                tableRow = overflow;
+              }
+              // Now flush the current row
+              if (tableRow.length > 0) {
+                const curReProps = tblRowIdx < tblAllRowEnds.length ? tblAllRowEnds[tblRowIdx].props : paraProps;
+                flushRow(curReProps);
                 tblRowIdx++;
               }
             } else if (si < segments.length - 1) {
