@@ -2405,45 +2405,55 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
       var docPageMargins = typeof docResult === 'object' ? docResult.pageMargins : null;
       // Handle async OLE chart decompression (deflate)
       if (docResult._oleChartAsync) {
-        try {
-          const { raw } = docResult._oleChartAsync;
-          const ds = new DecompressionStream('raw');
-          const writer = ds.writable.getWriter();
-          const reader = ds.readable.getReader();
-          writer.write(raw);
-          writer.close();
-          const chunks = [];
-          let done = false;
-          const readAll = async () => {
-            while (!done) {
-              const { value, done: d } = await reader.read();
-              if (d) { done = true; break; }
-              chunks.push(value);
-            }
-            const total = chunks.reduce((s, c) => s + c.length, 0);
-            const result = new Uint8Array(total);
-            let off = 0;
-            for (const c of chunks) { result.set(c, off); off += c.length; }
-            return new TextDecoder().decode(result);
-          };
-          readAll().then(xml => {
-            const chartHtml = parseOdfChartXml(xml);
-            if (chartHtml) {
-              // Replace placeholder with actual chart
-              const placeholder = document.getElementById('word-ole-chart-placeholder');
-              if (placeholder) {
-                placeholder.outerHTML = chartHtml;
-              } else {
-                const pageEl = document.querySelector('.word-page');
-                if (pageEl) {
-                  const tmp = document.createElement('div');
-                  tmp.innerHTML = chartHtml;
-                  pageEl.appendChild(tmp.firstElementChild || tmp);
-                }
+        const removePlaceholder = () => {
+          const ph = document.getElementById('word-ole-chart-placeholder');
+          if (ph) ph.remove();
+        };
+        if (typeof DecompressionStream === 'undefined') {
+          // Browser doesn't support DecompressionStream — remove placeholder
+          setTimeout(removePlaceholder, 0);
+        } else {
+          try {
+            const { raw } = docResult._oleChartAsync;
+            const ds = new DecompressionStream('deflate-raw');
+            const writer = ds.writable.getWriter();
+            const reader = ds.readable.getReader();
+            writer.write(raw);
+            writer.close();
+            const chunks = [];
+            let done = false;
+            const readAll = async () => {
+              while (!done) {
+                const { value, done: d } = await reader.read();
+                if (d) { done = true; break; }
+                chunks.push(value);
               }
-            }
-          }).catch(() => {});
-        } catch {}
+              const total = chunks.reduce((s, c) => s + c.length, 0);
+              const result = new Uint8Array(total);
+              let off = 0;
+              for (const c of chunks) { result.set(c, off); off += c.length; }
+              return new TextDecoder().decode(result);
+            };
+            readAll().then(xml => {
+              const chartHtml = parseOdfChartXml(xml);
+              if (chartHtml) {
+                const placeholder = document.getElementById('word-ole-chart-placeholder');
+                if (placeholder) {
+                  placeholder.outerHTML = chartHtml;
+                } else {
+                  const pageEl = document.querySelector('.word-page');
+                  if (pageEl) {
+                    const tmp = document.createElement('div');
+                    tmp.innerHTML = chartHtml;
+                    pageEl.appendChild(tmp.firstElementChild || tmp);
+                  }
+                }
+              } else {
+                removePlaceholder();
+              }
+            }).catch(removePlaceholder);
+          } catch { removePlaceholder(); }
+        }
       }
     } else {
       throw new Error('NOT_DOCX');
