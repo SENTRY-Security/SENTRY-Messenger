@@ -1757,11 +1757,15 @@ function renderDocBinary(buffer) {
             let csAttr = '';
             if (spanCount > 1) {
               csAttr = ` colspan="${spanCount}"`;
-            } else if (!tcs) {
-              // Fallback only when no TC info: last cell spans remaining columns
-              const isLast = ci === tableRow.length - 1;
-              const remaining = tblMaxCols - tableRow.length;
-              if (isLast && remaining > 0) csAttr = ` colspan="${remaining + 1}"`;
+            } else {
+              // Last visible cell spans remaining grid columns when row has fewer cells
+              const visibleCount = tableRow.length - hSkip.size;
+              const isLastVisible = (() => { for (let k = ci + 1; k < tableRow.length; k++) { if (!hSkip.has(k)) return false; } return true; })();
+              if (isLastVisible && visibleCount < tblMaxCols) {
+                const usedCols = visibleCount + [...hSkip].reduce((sum, idx) => sum + (hSpans[idx] > 1 ? hSpans[idx] - 1 : 0), 0);
+                const remaining = tblMaxCols - usedCols;
+                if (remaining > 1) csAttr = ` colspan="${remaining}"`;
+              }
             }
             // Vertical merge start → rowspan
             let rsAttr = '';
@@ -1876,7 +1880,15 @@ function renderDocBinary(buffer) {
               // Horizontal merge
               let csAttr = '';
               if (spanCnt > 1) csAttr = ` colspan="${spanCnt}"`;
-              else if (!tcs) { const isLastCell = ci === cellCount - 1; const remCols = tblMaxCols - cellCount; if (isLastCell && remCols > 0) csAttr = ` colspan="${remCols + 1}"`; }
+              else {
+                // Last visible cell spans remaining grid columns
+                const visCnt = cellCount - hSkip2.size;
+                const isLastVis = (() => { for (let k = ci + 1; k < cellCount; k++) { if (!hSkip2.has(k)) return false; } return true; })();
+                if (isLastVis && visCnt < tblMaxCols) {
+                  const remaining = tblMaxCols - visCnt;
+                  if (remaining > 1) csAttr = ` colspan="${remaining}"`;
+                }
+              }
               // Vertical merge
               let rsAttr = '';
               if (tc?.fVertRestart) {
