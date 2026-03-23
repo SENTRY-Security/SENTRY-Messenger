@@ -405,7 +405,7 @@ function parseSprms(data, offset, length) {
       }
       case 0x2A48: props.istdChar = data[pos] | (data[pos + 1] << 8); break; // character style index (2 bytes)
       case 0x6A03: props.picLocation = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24); break; // sprmCPicLocation
-      case 0x0806: props.fData = toggleVal(data[pos]); break; // sprmCFData — marks picture char
+      case 0x0806: props.fData = data[pos] === 1; break; // sprmCFData — marks picture char
       case 0x484B: { // sprmCHpsPos - vertical position (superscript/subscript)
         const hpsPos = data[pos] | (data[pos + 1] << 8);
         if (hpsPos > 0 && hpsPos < 0x8000) props.vertAlign = 'super';
@@ -419,9 +419,9 @@ function parseSprms(data, offset, length) {
         props.align = ['left', 'center', 'right', 'justify'][jc] || 'left';
         break;
       }
-      case 0x2407: props.pageBreakBefore = toggleVal(data[pos]); break; // sprmPFPageBreakBefore (ispmd=7)
-      case 0x2416: props.inTable = toggleVal(data[pos]); break; // sprmPFInTable (ispmd=22)
-      case 0x2417: props.tableRowEnd = toggleVal(data[pos]); break; // sprmPFTtp (ispmd=23)
+      case 0x2407: props.pageBreakBefore = data[pos] === 1; break; // sprmPFPageBreakBefore
+      case 0x2416: props.inTable = data[pos] === 1; break; // sprmPFInTable
+      case 0x2417: props.tableRowEnd = data[pos] === 1; break; // sprmPFTtp
       case 0x460B: case 0xA413: // sprmPDyaBefore (Word 97 / Word 2000+)
         props.spaceBefore = (data[pos] | (data[pos + 1] << 8)) / 20; break;
       case 0x460C: case 0xA414: // sprmPDyaAfter (Word 97 / Word 2000+)
@@ -523,16 +523,32 @@ function parseSprms(data, offset, length) {
         }
         props.cellWidths = cellWidths;
         props.cellCount = itcMac;
-        // Parse TC structures (20 bytes each) for borders/shading
+        // Parse TC structures (20 bytes each) for merge flags + borders
         const tcBase = pos + 1 + boundaryBytes;
         if (1 + boundaryBytes + itcMac * 20 <= opSize) {
           const cellTCs = [];
           for (let c = 0; c < itcMac; c++) {
             const tcOff = tcBase + c * 20;
             const tcFlags = data[tcOff] | (data[tcOff + 1] << 8);
+            const fFirstMerged = !!(tcFlags & 0x0001); // horizontal merge start
+            const fMerged = !!(tcFlags & 0x0002);       // horizontal merge continuation
             const fVertMerge = !!(tcFlags & 0x0020);
             const fVertRestart = !!(tcFlags & 0x0040);
-            cellTCs.push({ fVertMerge, fVertRestart });
+            // Per-cell borders: TC offset 4-20 = 4 BRC structures (top, left, bottom, right) × 4 bytes each
+            const parseBrc = (off) => {
+              const bw = data[off]; // border width in 1/8 pt
+              const bType = data[off + 1]; // border type (0=none, 1=single, etc.)
+              if (bw === 0 && bType === 0) return null;
+              const cr = data[off + 2], cg = data[off + 3]; // simplified: ico index or direct
+              return { width: Math.max(1, Math.round(bw / 8)), color: '#000' };
+            };
+            const borders = {
+              top: parseBrc(tcOff + 4),
+              left: parseBrc(tcOff + 8),
+              bottom: parseBrc(tcOff + 12),
+              right: parseBrc(tcOff + 16)
+            };
+            cellTCs.push({ fFirstMerged, fMerged, fVertMerge, fVertRestart, borders });
           }
           props.cellTCs = cellTCs;
         }
@@ -585,7 +601,18 @@ function parseSprms(data, offset, length) {
       case 0xD605: { // sprmTTableBorders - table border definition (older format)
         // 6 borders × 8 bytes = 48 bytes (top, left, bottom, right, insideH, insideV)
         if (opSize >= 48) {
-          props.tableBorders = true; // just flag that borders exist
+          const parseTblBrc = (off) => {
+            const w = data[pos + off];
+            if (w === 0) return null;
+            return Math.max(1, Math.round(w / 8)) + 'px solid #000';
+          };
+          props.tblBorderTop = parseTblBrc(0);
+          props.tblBorderLeft = parseTblBrc(8);
+          props.tblBorderBottom = parseTblBrc(16);
+          props.tblBorderRight = parseTblBrc(24);
+          props.tblBorderInsideH = parseTblBrc(32);
+          props.tblBorderInsideV = parseTblBrc(40);
+          props.tableBorders = true;
         }
         break;
       }
@@ -1405,6 +1432,8 @@ function renderDocBinary(buffer) {
         tblRowIdx = 0;
         tblMaxCols = 0;
         let maxTblWidth = 0;
+        let tblAlign = '';
+        let tblHasBorders = false;
         for (const re of tblAllRowEnds) {
           const cw = re.props.cellWidths;
           if (cw) {
@@ -1412,10 +1441,17 @@ function renderDocBinary(buffer) {
             const w = cw.reduce((s, v) => s + v, 0);
             if (w > maxTblWidth) maxTblWidth = w;
           }
+          if (re.props.tableAlign) tblAlign = re.props.tableAlign;
+          if (re.props.tableBorders) tblHasBorders = true;
         }
         const fixedClass = maxTblWidth > 0 ? ' word-tbl-fixed' : '';
-        const tblStyle = maxTblWidth > 0 ? ` style="width:${maxTblWidth}pt"` : '';
-        html.push(`<div class="word-tbl-wrap"><table class="word-tbl word-tbl-bordered${fixedClass}"${tblStyle}>`);
+        const borderedClass = tblHasBorders ? ' word-tbl-bordered' : '';
+        const tblStyles = [];
+        if (maxTblWidth > 0) tblStyles.push(`width:${maxTblWidth}pt`);
+        if (tblAlign === 'center') tblStyles.push('margin-left:auto;margin-right:auto');
+        else if (tblAlign === 'right') tblStyles.push('margin-left:auto');
+        const tblStyle = tblStyles.length ? ` style="${tblStyles.join(';')}"` : '';
+        html.push(`<div class="word-tbl-wrap"><table class="word-tbl${borderedClass}${fixedClass}"${tblStyle}>`);
         inTable = true;
       }
 
@@ -1425,11 +1461,37 @@ function renderDocBinary(buffer) {
         const cs2 = paraProps.cellShds;
         const tcs = paraProps.cellTCs;
         if (tableRow.length > 0) {
-          html.push('<tr>');
+          // Row height
+          const trStyle = [];
+          if (paraProps.rowHeight) {
+            trStyle.push(`height:${paraProps.rowHeight}pt`);
+            if (paraProps.rowHeightExact) trStyle.push('overflow:hidden');
+          }
+          const trAttr = trStyle.length ? ` style="${trStyle.join(';')}"` : '';
+          html.push(`<tr${trAttr}>`);
+
+          // Pre-calculate horizontal merge spans (fFirstMerged + fMerged)
+          const hSpans = new Array(tableRow.length).fill(1);
+          const hSkip = new Set();
+          if (tcs) {
+            for (let ci = 0; ci < tableRow.length; ci++) {
+              if (tcs[ci]?.fFirstMerged) {
+                let span = 1;
+                for (let ni = ci + 1; ni < tableRow.length; ni++) {
+                  if (tcs[ni]?.fMerged) { span++; hSkip.add(ni); }
+                  else break;
+                }
+                hSpans[ci] = span;
+              }
+            }
+          }
+
           for (let ci = 0; ci < tableRow.length; ci++) {
+            // Skip horizontal merge continuation cells
+            if (hSkip.has(ci)) continue;
             const cell = tableRow[ci];
             const tc = tcs?.[ci];
-            // Vertical merge: fVertMerge without fVertRestart = continuation → hide
+            // Vertical merge continuation → hide
             if (tc?.fVertMerge && !tc.fVertRestart) {
               html.push('<td class="word-tc" style="display:none"></td>');
               continue;
@@ -1437,11 +1499,25 @@ function renderDocBinary(buffer) {
             const tdStyle = [];
             if (cw && ci < cw.length) tdStyle.push(`width:${cw[ci]}pt`);
             if (cs2 && ci < cs2.length && cs2[ci]) tdStyle.push(`background-color:${cs2[ci]}`);
-            // colspan: last cell spans remaining columns
-            const isLast = ci === tableRow.length - 1;
-            const remaining = tblMaxCols - tableRow.length;
-            const csAttr = isLast && remaining > 0 ? ` colspan="${remaining + 1}"` : '';
-            // Vertical merge: fVertRestart = start → calculate rowspan
+            // Per-cell borders (from TC structure)
+            if (tc?.borders) {
+              const b = tc.borders;
+              if (b.top) tdStyle.push(`border-top:${b.top.width}px solid ${b.top.color}`);
+              if (b.bottom) tdStyle.push(`border-bottom:${b.bottom.width}px solid ${b.bottom.color}`);
+              if (b.left) tdStyle.push(`border-left:${b.left.width}px solid ${b.left.color}`);
+              if (b.right) tdStyle.push(`border-right:${b.right.width}px solid ${b.right.color}`);
+            }
+            // Horizontal merge colspan
+            let csAttr = '';
+            if (hSpans[ci] > 1) {
+              csAttr = ` colspan="${hSpans[ci]}"`;
+            } else {
+              // Fallback: last cell spans remaining columns if row has fewer cells
+              const isLast = ci === tableRow.length - 1;
+              const remaining = tblMaxCols - tableRow.length + hSkip.size;
+              if (isLast && remaining > 0) csAttr = ` colspan="${remaining + 1}"`;
+            }
+            // Vertical merge start → rowspan
             let rsAttr = '';
             if (tc?.fVertRestart && tblAllRowEnds.length > 0) {
               let span = 1;
@@ -1476,25 +1552,46 @@ function renderDocBinary(buffer) {
             const cw = paraProps.cellWidths || reProps.cellWidths;
             const cs2 = paraProps.cellShds || reProps.cellShds;
             const tcs = reProps.cellTCs;
-            html.push('<tr>');
+            // Row height
+            const trS = [];
+            if (reProps.rowHeight) { trS.push(`height:${reProps.rowHeight}pt`); if (reProps.rowHeightExact) trS.push('overflow:hidden'); }
+            html.push(`<tr${trS.length ? ` style="${trS.join(';')}"` : ''}>`);
+            // Pre-calc horizontal merge
+            const hSpans2 = new Array(cellCount).fill(1);
+            const hSkip2 = new Set();
+            if (tcs) {
+              for (let ci2 = 0; ci2 < cellCount; ci2++) {
+                if (tcs[ci2]?.fFirstMerged) {
+                  let sp = 1;
+                  for (let ni = ci2 + 1; ni < cellCount; ni++) { if (tcs[ni]?.fMerged) { sp++; hSkip2.add(ni); } else break; }
+                  hSpans2[ci2] = sp;
+                }
+              }
+            }
             for (let ci = 0; ci < cellCount && segIdx < segments.length; ci++) {
               const seg = segments[segIdx];
+              if (hSkip2.has(ci)) { cellCp += seg.length + 1; segIdx++; continue; }
               const tc = tcs?.[ci];
-              // Vertical merge continuation → hide
               if (tc?.fVertMerge && !tc.fVertRestart) {
                 html.push('<td class="word-tc" style="display:none"></td>');
-                cellCp += seg.length + 1;
-                segIdx++;
-                continue;
+                cellCp += seg.length + 1; segIdx++; continue;
               }
               const tdStyle = [];
               if (cw && ci < cw.length) tdStyle.push(`width:${cw[ci]}pt`);
               if (cs2 && ci < cs2.length && cs2[ci]) tdStyle.push(`background-color:${cs2[ci]}`);
-              // colspan: last cell spans remaining columns
-              const isLastCell = ci === cellCount - 1;
-              const remCols = tblMaxCols - cellCount;
-              const csAttr = isLastCell && remCols > 0 ? ` colspan="${remCols + 1}"` : '';
-              // Vertical merge start → calculate rowspan
+              // Per-cell borders
+              if (tc?.borders) {
+                const b = tc.borders;
+                if (b.top) tdStyle.push(`border-top:${b.top.width}px solid ${b.top.color}`);
+                if (b.bottom) tdStyle.push(`border-bottom:${b.bottom.width}px solid ${b.bottom.color}`);
+                if (b.left) tdStyle.push(`border-left:${b.left.width}px solid ${b.left.color}`);
+                if (b.right) tdStyle.push(`border-right:${b.right.width}px solid ${b.right.color}`);
+              }
+              // Horizontal merge
+              let csAttr = '';
+              if (hSpans2[ci] > 1) csAttr = ` colspan="${hSpans2[ci]}"`;
+              else { const isLastCell = ci === cellCount - 1; const remCols = tblMaxCols - cellCount + hSkip2.size; if (isLastCell && remCols > 0) csAttr = ` colspan="${remCols + 1}"`; }
+              // Vertical merge
               let rsAttr = '';
               if (tc?.fVertRestart) {
                 let span = 1;
