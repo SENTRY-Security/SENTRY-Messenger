@@ -2627,20 +2627,116 @@ function renderOmml(el) {
   return parts.join('');
 }
 
-// ── Table rendering ──
+// ── OOXML border element → CSS string helper ──
+function parseBorderEl(bdr) {
+  if (!bdr) return null;
+  const bVal = getAttr(bdr, 'val');
+  if (!bVal || bVal === 'nil' || bVal === 'none') return null;
+  const bSz = getAttr(bdr, 'sz');
+  const bColor = getAttr(bdr, 'color');
+  const width = bSz ? Math.max(1, Math.round(Number(bSz) / 8)) : 1;
+  const color = bColor && bColor !== 'auto' ? `#${bColor}` : '#000';
+  // ECMA-376 §17.4.39: map border style names to CSS
+  const styleMap = { single: 'solid', double: 'double', dotted: 'dotted', dashed: 'dashed',
+    dashSmallGap: 'dashed', dotDash: 'dashed', dotDotDash: 'dashed', triple: 'double',
+    thinThickSmallGap: 'solid', thickThinSmallGap: 'solid', thinThickThinSmallGap: 'solid',
+    thinThickMediumGap: 'solid', thickThinMediumGap: 'solid', thinThickThinMediumGap: 'solid',
+    thinThickLargeGap: 'solid', thickThinLargeGap: 'solid', thinThickThinLargeGap: 'solid',
+    wave: 'solid', doubleWave: 'double', dashDotStroked: 'dashed', threeDEmboss: 'ridge',
+    threeDEngrave: 'groove', outset: 'outset', inset: 'inset' };
+  const cssStyle = styleMap[bVal] || 'solid';
+  return `${width}px ${cssStyle} ${color}`;
+}
+
+// ── Table rendering (ECMA-376 §17.4 Table Properties) ──
 function renderTable(tblEl, styles, relMap, imageData, numbering, listCounters, docDefaults) {
-  const html = ['<div class="word-tbl-wrap"><table class="word-tbl">'];
   const tblPr = dn(tblEl, NS_W, 'tblPr');
-  let tblBorders = true;
+
+  // ── §17.4.63 tblW — Table Width ──
+  const tblStyles = [];
+  let tblClasses = 'word-tbl';
+  let hasExplicitWidth = false;
+  if (tblPr) {
+    const tblW = dn(tblPr, NS_W, 'tblW');
+    if (tblW) {
+      const w = getAttr(tblW, 'w');
+      const type = getAttr(tblW, 'type');
+      if (w && type === 'dxa') { tblStyles.push(`width:${Math.round(Number(w) / 20)}pt`); hasExplicitWidth = true; }
+      else if (w && type === 'pct') { tblStyles.push(`width:${(Number(w) / 50)}%`); hasExplicitWidth = true; }
+      else if (w && type === 'auto') { /* auto = browser default */ }
+    }
+
+    // ── §17.4.29 jc — Table Alignment ──
+    const tblJc = dn(tblPr, NS_W, 'jc');
+    if (tblJc) {
+      const jcVal = getAttr(tblJc, 'val');
+      if (jcVal === 'center') tblStyles.push('margin-left:auto', 'margin-right:auto');
+      else if (jcVal === 'right' || jcVal === 'end') tblStyles.push('margin-left:auto');
+    }
+
+    // ── §17.4.51 tblInd — Table Indent from Leading Margin ──
+    const tblInd = dn(tblPr, NS_W, 'tblInd');
+    if (tblInd) {
+      const indW = getAttr(tblInd, 'w');
+      const indType = getAttr(tblInd, 'type');
+      if (indW && indType === 'dxa') tblStyles.push(`margin-left:${Math.round(Number(indW) / 20)}pt`);
+    }
+
+    // ── §17.4.53 tblLayout — Table Layout (fixed / auto) ──
+    const tblLayout = dn(tblPr, NS_W, 'tblLayout');
+    if (tblLayout) {
+      const layoutType = getAttr(tblLayout, 'type');
+      if (layoutType === 'fixed') tblClasses += ' word-tbl-fixed';
+    }
+
+    // ── §17.4.46 tblCellSpacing — Table Cell Spacing ──
+    const tblCellSpacing = dn(tblPr, NS_W, 'tblCellSpacing');
+    if (tblCellSpacing) {
+      const csW = getAttr(tblCellSpacing, 'w');
+      const csType = getAttr(tblCellSpacing, 'type');
+      if (csW && csType === 'dxa') {
+        const csPt = Math.round(Number(csW) / 20);
+        tblStyles.push(`border-spacing:${csPt}pt`);
+        tblStyles.push('border-collapse:separate');
+      }
+    }
+  }
+
+  // ── §17.4.40 tblBorders — Table Borders (granular per-side) ──
+  // Parse individual border styles instead of just a boolean flag.
+  // These serve as defaults for cells that don't define their own tcBorders.
+  const defBorders = { top: null, bottom: null, left: null, right: null, insideH: null, insideV: null };
+  let hasTblBorders = false;
   if (tblPr) {
     const borders = dn(tblPr, NS_W, 'tblBorders');
     if (borders) {
-      const top = dn(borders, NS_W, 'top');
-      const insideH = dn(borders, NS_W, 'insideH');
-      tblBorders = !!(top && getAttr(top, 'val') !== 'none') || !!(insideH && getAttr(insideH, 'val') !== 'none');
+      for (const side of ['top', 'bottom', 'left', 'right', 'insideH', 'insideV']) {
+        const bdr = dn(borders, NS_W, side);
+        const parsed = parseBorderEl(bdr);
+        if (parsed) { defBorders[side] = parsed; hasTblBorders = true; }
+      }
     }
   }
-  if (tblBorders) html[0] = '<div class="word-tbl-wrap"><table class="word-tbl word-tbl-bordered">';
+  if (hasTblBorders) tblClasses += ' word-tbl-bordered';
+
+  // ── §17.4.42 tblCellMar — Table Default Cell Margins ──
+  const defCellMar = { top: null, bottom: null, start: null, end: null };
+  if (tblPr) {
+    const tblCellMar = dn(tblPr, NS_W, 'tblCellMar');
+    if (tblCellMar) {
+      for (const [xmlSide, key] of [['top','top'],['bottom','bottom'],['start','start'],['left','start'],['end','end'],['right','end']]) {
+        const m = dn(tblCellMar, NS_W, xmlSide);
+        if (m) {
+          const mw = getAttr(m, 'w');
+          const mt = getAttr(m, 'type');
+          if (mw && mt === 'dxa') defCellMar[key] = Math.round(Number(mw) / 20);
+        }
+      }
+    }
+  }
+
+  const tblStyleAttr = tblStyles.length ? ` style="${tblStyles.join(';')}"` : '';
+  const html = [`<div class="word-tbl-wrap"><table class="${tblClasses}"${tblStyleAttr}>`];
 
   // Grid columns
   const tblGrid = dn(tblEl, NS_W, 'tblGrid');
@@ -2654,54 +2750,97 @@ function renderTable(tblEl, styles, relMap, imageData, numbering, listCounters, 
     html.push('</colgroup>');
   }
 
-  for (const tr of dnAll(tblEl, NS_W, 'tr')) {
-    // Skip rows that are not direct children of tblEl
-    if (tr.parentNode !== tblEl) continue;
-    html.push('<tr>');
-    for (const tc of dnAll(tr, NS_W, 'tc')) {
-      if (tc.parentNode !== tr) continue;
+  const allRows = Array.from(dnAll(tblEl, NS_W, 'tr')).filter(r => r.parentNode === tblEl);
+  const totalRows = allRows.length;
+
+  for (let rowIdx = 0; rowIdx < totalRows; rowIdx++) {
+    const tr = allRows[rowIdx];
+
+    // ── §17.4.81 trPr — Table Row Properties ──
+    const trPr = dn(tr, NS_W, 'trPr');
+    const trStyles = [];
+    if (trPr) {
+      // §17.4.82 trHeight — Row Height
+      const trHeight = dn(trPr, NS_W, 'trHeight');
+      if (trHeight) {
+        const hVal = getAttr(trHeight, 'val');
+        const hRule = getAttr(trHeight, 'hRule');
+        if (hVal) {
+          const hPt = Math.round(Number(hVal) / 20);
+          if (hRule === 'exact') { trStyles.push(`height:${hPt}pt`, 'overflow:hidden'); }
+          else { trStyles.push(`min-height:${hPt}pt`, `height:${hPt}pt`); }
+        }
+      }
+    }
+    const trStyleAttr = trStyles.length ? ` style="${trStyles.join(';')}"` : '';
+    html.push(`<tr${trStyleAttr}>`);
+
+    const cells = Array.from(tr.children).filter(c => c.localName === 'tc');
+    let gridColIdx = 0; // track grid column for border logic
+
+    for (let cellIdx = 0; cellIdx < cells.length; cellIdx++) {
+      const tc = cells[cellIdx];
       const tcPr = dn(tc, NS_W, 'tcPr');
       const cellStyle = [];
       let colspan = '';
       let rowspan = '';
+      let curGridSpan = 1;
 
       if (tcPr) {
-        const gridSpan = dn(tcPr, NS_W, 'gridSpan');
-        if (gridSpan) {
-          const gs = getAttr(gridSpan, 'val');
-          if (gs && Number(gs) > 1) colspan = ` colspan="${gs}"`;
+        // §17.4.17 gridSpan — Horizontal Span (colspan)
+        const gridSpanEl = dn(tcPr, NS_W, 'gridSpan');
+        if (gridSpanEl) {
+          const gs = getAttr(gridSpanEl, 'val');
+          if (gs && Number(gs) > 1) { colspan = ` colspan="${gs}"`; curGridSpan = Number(gs); }
         }
+
+        // §17.4.22 hMerge — Legacy Horizontal Merge (ECMA-376 §17.4.22)
+        const hMerge = dn(tcPr, NS_W, 'hMerge');
+        if (hMerge) {
+          const hm = getAttr(hMerge, 'val');
+          if (!hm || hm === 'continue') {
+            html.push('<td class="word-tc-merged" style="display:none"></td>');
+            gridColIdx += curGridSpan;
+            continue;
+          }
+          // val="restart" — calculate colspan by counting subsequent continuation cells
+          if (hm === 'restart') {
+            let hSpan = 1;
+            for (let ni = cellIdx + 1; ni < cells.length; ni++) {
+              const nextPr = dn(cells[ni], NS_W, 'tcPr');
+              const nextHm = nextPr ? dn(nextPr, NS_W, 'hMerge') : null;
+              if (nextHm) {
+                const nextVal = getAttr(nextHm, 'val');
+                if (!nextVal || nextVal === 'continue') { hSpan++; continue; }
+              }
+              break;
+            }
+            if (hSpan > 1) colspan = ` colspan="${hSpan}"`;
+          }
+        }
+
+        // §17.4.85 vMerge — Vertical Merge
         const vMerge = dn(tcPr, NS_W, 'vMerge');
         if (vMerge) {
           const vm = getAttr(vMerge, 'val');
           if (!vm || vm === 'continue') {
-            html.push(`<td class="word-tc-merged" style="display:none"></td>`);
+            html.push('<td class="word-tc-merged" style="display:none"></td>');
+            gridColIdx += curGridSpan;
             continue;
           }
           // val="restart" — calculate rowspan by counting subsequent continuation rows
           if (vm === 'restart') {
-            const allRows = dnAll(tblEl, NS_W, 'tr').filter(r => r.parentNode === tblEl);
-            const curRowIdx = allRows.indexOf(tr);
-            // Calculate grid column index (accounting for gridSpan in preceding cells)
-            const curCells = Array.from(tr.children).filter(c => c.localName === 'tc');
-            let gridCol = 0;
-            for (const c of curCells) {
-              if (c === tc) break;
-              const cPr = dn(c, NS_W, 'tcPr');
-              const gs = cPr ? dn(cPr, NS_W, 'gridSpan') : null;
-              gridCol += gs ? (parseInt(getAttr(gs, 'val')) || 1) : 1;
-            }
             let span = 1;
-            for (let nr = curRowIdx + 1; nr < allRows.length; nr++) {
+            for (let nr = rowIdx + 1; nr < totalRows; nr++) {
               const nextCells = Array.from(allRows[nr].children).filter(c => c.localName === 'tc');
               // Find cell at same grid column in next row
               let col = 0, nextTc = null;
               for (const c of nextCells) {
-                if (col === gridCol) { nextTc = c; break; }
+                if (col === gridColIdx) { nextTc = c; break; }
                 const cPr = dn(c, NS_W, 'tcPr');
                 const gs = cPr ? dn(cPr, NS_W, 'gridSpan') : null;
                 col += gs ? (parseInt(getAttr(gs, 'val')) || 1) : 1;
-                if (col > gridCol) break;
+                if (col > gridColIdx) break;
               }
               if (!nextTc) break;
               const nextTcPr = dn(nextTc, NS_W, 'tcPr');
@@ -2715,40 +2854,95 @@ function renderTable(tblEl, styles, relMap, imageData, numbering, listCounters, 
             if (span > 1) rowspan = ` rowspan="${span}"`;
           }
         }
+
+        // §17.4.33 shd — Cell Shading
         const shd = dn(tcPr, NS_W, 'shd');
         if (shd) {
           const fill = getAttr(shd, 'fill');
           if (fill && fill !== 'auto') cellStyle.push(`background-color:#${fill}`);
         }
+
+        // §17.4.84 vAlign — Vertical Alignment
         const vAlign = dn(tcPr, NS_W, 'vAlign');
         if (vAlign) {
           const va = getAttr(vAlign, 'val');
           if (va === 'center') cellStyle.push('vertical-align:middle');
           else if (va === 'bottom') cellStyle.push('vertical-align:bottom');
         }
-        // Cell borders
+
+        // §17.4.66 tcBorders — Cell Borders (per-cell override)
         const tcBorders = dn(tcPr, NS_W, 'tcBorders');
+        let hasCellBorders = false;
         if (tcBorders) {
           for (const [side, cssProp] of [['top','border-top'],['bottom','border-bottom'],['left','border-left'],['right','border-right']]) {
-            const bdr = dn(tcBorders, NS_W, side);
-            if (bdr) {
-              const bVal = getAttr(bdr, 'val');
-              if (bVal && bVal !== 'nil' && bVal !== 'none') {
-                const bSz = getAttr(bdr, 'sz');
-                const bColor = getAttr(bdr, 'color');
-                const width = bSz ? Math.max(1, Math.round(Number(bSz) / 8)) : 1;
-                const color = bColor && bColor !== 'auto' ? `#${bColor}` : '#000';
-                cellStyle.push(`${cssProp}:${width}px solid ${color}`);
-              }
-            }
+            const parsed = parseBorderEl(dn(tcBorders, NS_W, side));
+            if (parsed) { cellStyle.push(`${cssProp}:${parsed}`); hasCellBorders = true; }
           }
         }
+        // Fall back to tblBorders defaults when no tcBorders defined
+        if (!hasCellBorders && hasTblBorders) {
+          const isFirstRow = rowIdx === 0;
+          const isLastRow = rowIdx === totalRows - 1;
+          const isFirstCol = cellIdx === 0;
+          const isLastCol = cellIdx === cells.length - 1;
+          // Top: use tblBorders.top for first row, insideH for others
+          const topBdr = isFirstRow ? defBorders.top : defBorders.insideH;
+          if (topBdr) cellStyle.push(`border-top:${topBdr}`);
+          // Bottom: use tblBorders.bottom for last row, insideH for others
+          const botBdr = isLastRow ? defBorders.bottom : defBorders.insideH;
+          if (botBdr) cellStyle.push(`border-bottom:${botBdr}`);
+          // Left: use tblBorders.left for first col, insideV for others
+          const leftBdr = isFirstCol ? defBorders.left : defBorders.insideV;
+          if (leftBdr) cellStyle.push(`border-left:${leftBdr}`);
+          // Right: use tblBorders.right for last col, insideV for others
+          const rightBdr = isLastCol ? defBorders.right : defBorders.insideV;
+          if (rightBdr) cellStyle.push(`border-right:${rightBdr}`);
+        }
+
+        // §17.4.68 tcW — Cell Width
         const tcW = dn(tcPr, NS_W, 'tcW');
         if (tcW) {
           const w = getAttr(tcW, 'w');
           const type = getAttr(tcW, 'type');
           if (w && type === 'dxa') cellStyle.push(`width:${Math.round(Number(w) / 20)}pt`);
           else if (w && type === 'pct') cellStyle.push(`width:${(Number(w) / 50)}%`);
+        }
+
+        // §17.4.43 tcMar — Cell Margins (per-cell override)
+        const tcMar = dn(tcPr, NS_W, 'tcMar');
+        if (tcMar) {
+          const sides = [['top','padding-top'],['bottom','padding-bottom'],['start','padding-left'],['left','padding-left'],['end','padding-right'],['right','padding-right']];
+          for (const [xmlSide, cssProp] of sides) {
+            const m = dn(tcMar, NS_W, xmlSide);
+            if (m) {
+              const mw = getAttr(m, 'w');
+              const mt = getAttr(m, 'type');
+              if (mw && mt === 'dxa') cellStyle.push(`${cssProp}:${Math.round(Number(mw) / 20)}pt`);
+            }
+          }
+        } else if (defCellMar.top !== null || defCellMar.bottom !== null || defCellMar.start !== null || defCellMar.end !== null) {
+          // Apply table-level default cell margins
+          if (defCellMar.top !== null) cellStyle.push(`padding-top:${defCellMar.top}pt`);
+          if (defCellMar.bottom !== null) cellStyle.push(`padding-bottom:${defCellMar.bottom}pt`);
+          if (defCellMar.start !== null) cellStyle.push(`padding-left:${defCellMar.start}pt`);
+          if (defCellMar.end !== null) cellStyle.push(`padding-right:${defCellMar.end}pt`);
+        }
+
+        // §17.4.87 textDirection — Text Direction in Cell
+        const textDir = dn(tcPr, NS_W, 'textDirection');
+        if (textDir) {
+          const tdVal = getAttr(textDir, 'val');
+          // ECMA-376: btLr = bottom-to-top left-to-right, tbRl = top-to-bottom right-to-left
+          if (tdVal === 'btLr') cellStyle.push('writing-mode:vertical-lr', 'transform:rotate(180deg)');
+          else if (tdVal === 'tbRl' || tdVal === 'tbRlV') cellStyle.push('writing-mode:vertical-rl');
+          else if (tdVal === 'lrTbV') cellStyle.push('writing-mode:horizontal-tb');
+        }
+
+        // §17.4.30 noWrap — Don't Wrap Cell Content
+        const noWrap = dn(tcPr, NS_W, 'noWrap');
+        if (noWrap) {
+          const nwVal = getAttr(noWrap, 'val');
+          if (nwVal !== '0' && nwVal !== 'false') cellStyle.push('white-space:nowrap');
         }
       }
 
@@ -2765,6 +2959,7 @@ function renderTable(tblEl, styles, relMap, imageData, numbering, listCounters, 
       }
 
       html.push('</td>');
+      gridColIdx += curGridSpan;
     }
     html.push('</tr>');
   }
