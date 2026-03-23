@@ -3,6 +3,16 @@ import { escapeHtml } from '../ui-utils.js';
 import { t } from '/locales/index.js';
 
 const JSZIP_URL = '/assets/libs/jszip.min.js';
+
+function toRoman(n) {
+  const vals = [1000,900,500,400,100,90,50,40,10,9,5,4,1];
+  const syms = ['M','CM','D','CD','C','XC','L','XL','X','IX','V','IV','I'];
+  let r = '';
+  for (let i = 0; i < vals.length && n > 0; i++) {
+    while (n >= vals[i]) { r += syms[i]; n -= vals[i]; }
+  }
+  return r;
+}
 let activeWordCleanup = null;
 
 async function ensureJSZip() {
@@ -560,10 +570,111 @@ function parseSprms(data, offset, length) {
         }
         break;
       }
+
+      // ── Section (SEP) properties ──
+      case 0xB017: { // sprmSDxaLeft - left margin (twips)
+        let v = data[pos] | (data[pos + 1] << 8);
+        if (v > 0x7FFF) v -= 0x10000;
+        props.marginLeft = v / 20;
+        break;
+      }
+      case 0xB018: { // sprmSDxaRight - right margin (twips)
+        let v = data[pos] | (data[pos + 1] << 8);
+        if (v > 0x7FFF) v -= 0x10000;
+        props.marginRight = v / 20;
+        break;
+      }
+      case 0x9023: { // sprmSDyaTop - top margin (twips)
+        let v = data[pos] | (data[pos + 1] << 8);
+        if (v > 0x7FFF) v -= 0x10000;
+        props.marginTop = v / 20;
+        break;
+      }
+      case 0x9024: { // sprmSDyaBottom - bottom margin (twips)
+        let v = data[pos] | (data[pos + 1] << 8);
+        if (v > 0x7FFF) v -= 0x10000;
+        props.marginBottom = v / 20;
+        break;
+      }
     }
     pos += opSize;
   }
   return props;
+}
+
+// ── Parse list definitions (LSTF) and overrides (LFO) ──
+function parseLists(tableStream, fib) {
+  const lists = new Map(); // lsid → { levels: [{ nfc, iStartAt, bulletChar }] }
+  const lfoMap = []; // index 1-based → lsid
+
+  // 1) Parse PlfLst (FIB index 37)
+  try {
+    const lstPair = fib.fibPair(37);
+    if (lstPair.lcb > 2) {
+      let pos = lstPair.fc;
+      const end = lstPair.fc + lstPair.lcb;
+      const cLst = tableStream[pos] | (tableStream[pos + 1] << 8);
+      pos += 2;
+      // Read LSTF entries (28 bytes each)
+      const lstfEntries = [];
+      for (let i = 0; i < cLst && pos + 28 <= end; i++) {
+        const lsid = tableStream[pos] | (tableStream[pos+1]<<8) | (tableStream[pos+2]<<16) | (tableStream[pos+3]<<24);
+        const flags = tableStream[pos + 24] | (tableStream[pos + 25] << 8);
+        const fSimple = !!(flags & 1);
+        lstfEntries.push({ lsid, fSimple });
+        pos += 28;
+      }
+      // Read LVLF entries for each list
+      for (const entry of lstfEntries) {
+        const lvlCount = entry.fSimple ? 1 : 9;
+        const levels = [];
+        for (let lv = 0; lv < lvlCount && pos + 28 <= end; lv++) {
+          const iStartAt = tableStream[pos] | (tableStream[pos+1]<<8) | (tableStream[pos+2]<<16) | (tableStream[pos+3]<<24);
+          const nfc = tableStream[pos + 4]; // number format
+          const jc = tableStream[pos + 5];
+          const cbPapx = tableStream[pos + 24];
+          const cbChpx = tableStream[pos + 25];
+          pos += 28; // LVLF size
+          pos += cbPapx; // skip PAPX grpprl
+          pos += cbChpx; // skip CHPX grpprl
+          // Read number text (xst): 2-byte count + unicode chars
+          if (pos + 2 <= end) {
+            const cch = tableStream[pos] | (tableStream[pos + 1] << 8);
+            pos += 2;
+            let bulletChar = '';
+            if (nfc === 23 || nfc === 255) {
+              // Bullet: read first char as bullet symbol
+              if (cch > 0 && pos + 2 <= end) {
+                bulletChar = String.fromCharCode(tableStream[pos] | (tableStream[pos + 1] << 8));
+              }
+            }
+            pos += cch * 2;
+            levels.push({ nfc, iStartAt, jc, bulletChar });
+          }
+        }
+        lists.set(entry.lsid, { levels, fSimple: entry.fSimple });
+      }
+    }
+  } catch { /* skip */ }
+
+  // 2) Parse PlfLfo (FIB index 38) — maps ilfo (1-based) to lsid
+  try {
+    const lfoPair = fib.fibPair(38);
+    if (lfoPair.lcb > 4) {
+      let pos = lfoPair.fc;
+      const end = lfoPair.fc + lfoPair.lcb;
+      const cLfo = tableStream[pos] | (tableStream[pos+1]<<8) | (tableStream[pos+2]<<16) | (tableStream[pos+3]<<24);
+      pos += 4;
+      // Each LFO = 16 bytes
+      for (let i = 0; i < cLfo && pos + 16 <= end; i++) {
+        const lsid = tableStream[pos] | (tableStream[pos+1]<<8) | (tableStream[pos+2]<<16) | (tableStream[pos+3]<<24);
+        lfoMap.push(lsid); // lfoMap[0] = ilfo 1
+        pos += 16;
+      }
+    }
+  } catch { /* skip */ }
+
+  return { lists, lfoMap };
 }
 
 // ── Parse font table (SttbfFfn) ──
@@ -1138,6 +1249,10 @@ function renderDocBinary(buffer) {
   let fonts = [];
   try { fonts = parseFontTable(tableStream, ftPair.fc, ftPair.lcb); } catch { /* use empty */ }
 
+  // Parse list definitions (LSTF/LFO)
+  let listData = { lists: new Map(), lfoMap: [] };
+  try { listData = parseLists(tableStream, fib); } catch { /* use empty */ }
+
   // Parse STSH (Style Sheet) for style-based formatting (FIB index 1)
   let styles = new Map();
   try {
@@ -1173,19 +1288,30 @@ function renderDocBinary(buffer) {
   // DOP page margins (FIB index 31 = fcDop/lcbDop)
   // Note: DOP field offsets vary by Word version; disabled until verified
   let pageMargins = null;
-  /* try {
-    const dopPair = fib.fibPair(31);
-    if (dopPair.lcb >= 28 && dopPair.fc + dopPair.lcb <= tableStream.length) {
-      const dopView = new DataView(tableStream.buffer, tableStream.byteOffset + dopPair.fc, dopPair.lcb);
-      const dyaTop = dopView.getUint16(2, true) / 20;
-      const dyaBottom = dopView.getUint16(4, true) / 20;
-      const dxaLeft = dopView.getUint16(6, true) / 20;
-      const dxaRight = dopView.getUint16(10, true) / 20;
-      if (dxaLeft > 0 || dxaRight > 0 || dyaTop > 0 || dyaBottom > 0) {
-        pageMargins = { top: dyaTop, bottom: dyaBottom, left: dxaLeft, right: dxaRight };
+  // Parse section properties (margins) from PlcfSed → SEPX
+  try {
+    const sedPair = fib.fibPair(28); // fcPlcfSed/lcbPlcfSed
+    if (sedPair.lcb >= 16) {
+      const sedView = new DataView(tableStream.buffer, tableStream.byteOffset + sedPair.fc, sedPair.lcb);
+      const nSections = Math.floor((sedPair.lcb - 4) / 16); // (n+1)*4 CPs + n*12 SEDs
+      if (nSections >= 1) {
+        // Read first section's SED
+        const sedOff = (nSections + 1) * 4; // skip CPs
+        const fcSepx = sedView.getInt32(sedOff + 2, true); // offset 2 in SED
+        if (fcSepx >= 0 && fcSepx + 2 < wordDoc.length) {
+          const cb = wordDoc[fcSepx] | (wordDoc[fcSepx + 1] << 8);
+          if (cb > 0 && fcSepx + 2 + cb <= wordDoc.length) {
+            const sepProps = parseSprms(wordDoc, fcSepx + 2, cb);
+            const left = sepProps.marginLeft || 72; // default 1 inch = 1440 twips = 72pt
+            const right = sepProps.marginRight || 72;
+            if (left > 0 || right > 0) {
+              pageMargins = { left, right };
+            }
+          }
+        }
       }
     }
-  } catch {} */
+  } catch { /* skip */ }
 
   // Style resolver: merge base style props with direct props
   function resolveStyle(istd) {
@@ -1209,6 +1335,9 @@ function renderDocBinary(buffer) {
   let inTable = false;
   let tableRow = [];
   let tblMaxCols = 0;
+  let tblAllRowEnds = []; // all rowEndRuns for current table
+  const listCounters = {}; // track numbering per list+level
+  let tblRowIdx = 0; // current row index within the table
   let cp = 0;
 
   const paragraphs = text.split('\r');
@@ -1246,10 +1375,11 @@ function renderDocBinary(buffer) {
 
       if (!inTable) {
         // Find ALL tableRowEnd runs for this table to determine maxCols and table width
-        const allRowEnds = paraRuns.filter(r => r.props.tableRowEnd && r.cpStart >= cpStart);
+        tblAllRowEnds = paraRuns.filter(r => r.props.tableRowEnd && r.cpStart >= cpStart);
+        tblRowIdx = 0;
         tblMaxCols = 0;
         let maxTblWidth = 0;
-        for (const re of allRowEnds) {
+        for (const re of tblAllRowEnds) {
           const cw = re.props.cellWidths;
           if (cw) {
             if (cw.length > tblMaxCols) tblMaxCols = cw.length;
@@ -1267,23 +1397,42 @@ function renderDocBinary(buffer) {
         // Row-end paragraph — flush accumulated tableRow cells as a <tr>
         const cw = paraProps.cellWidths;
         const cs2 = paraProps.cellShds;
+        const tcs = paraProps.cellTCs;
         if (tableRow.length > 0) {
           html.push('<tr>');
           for (let ci = 0; ci < tableRow.length; ci++) {
             const cell = tableRow[ci];
+            const tc = tcs?.[ci];
+            // Vertical merge: fVertMerge without fVertRestart = continuation → hide
+            if (tc?.fVertMerge && !tc.fVertRestart) {
+              html.push('<td class="word-tc" style="display:none"></td>');
+              continue;
+            }
             const tdStyle = [];
             if (cw && ci < cw.length) tdStyle.push(`width:${cw[ci]}pt`);
             if (cs2 && ci < cs2.length && cs2[ci]) tdStyle.push(`background-color:${cs2[ci]}`);
             // colspan: last cell spans remaining columns
             const isLast = ci === tableRow.length - 1;
             const remaining = tblMaxCols - tableRow.length;
-            const cs = isLast && remaining > 0 ? ` colspan="${remaining + 1}"` : '';
+            const csAttr = isLast && remaining > 0 ? ` colspan="${remaining + 1}"` : '';
+            // Vertical merge: fVertRestart = start → calculate rowspan
+            let rsAttr = '';
+            if (tc?.fVertRestart && tblAllRowEnds.length > 0) {
+              let span = 1;
+              for (let nr = tblRowIdx + 1; nr < tblAllRowEnds.length; nr++) {
+                const ntc = tblAllRowEnds[nr].props.cellTCs?.[ci];
+                if (ntc?.fVertMerge && !ntc.fVertRestart) span++;
+                else break;
+              }
+              if (span > 1) rsAttr = ` rowspan="${span}"`;
+            }
             const sa = tdStyle.length ? ` style="${tdStyle.join(';')}"` : '';
-            html.push(`<td class="word-tc"${cs}${sa}>${cell.html}</td>`);
+            html.push(`<td class="word-tc"${rsAttr}${csAttr}${sa}>${cell.html}</td>`);
           }
           html.push('</tr>');
         }
         tableRow = [];
+        tblRowIdx++;
       } else {
         // Cell content paragraph — accumulate
         const cellMarkCount = (paraText.match(/\x07/g) || []).length;
@@ -1300,9 +1449,18 @@ function renderDocBinary(buffer) {
             const cellCount = reProps.cellWidths?.length || reProps.cellCount || 4;
             const cw = paraProps.cellWidths || reProps.cellWidths;
             const cs2 = paraProps.cellShds || reProps.cellShds;
+            const tcs = reProps.cellTCs;
             html.push('<tr>');
             for (let ci = 0; ci < cellCount && segIdx < segments.length; ci++) {
               const seg = segments[segIdx];
+              const tc = tcs?.[ci];
+              // Vertical merge continuation → hide
+              if (tc?.fVertMerge && !tc.fVertRestart) {
+                html.push('<td class="word-tc" style="display:none"></td>');
+                cellCp += seg.length + 1;
+                segIdx++;
+                continue;
+              }
               const tdStyle = [];
               if (cw && ci < cw.length) tdStyle.push(`width:${cw[ci]}pt`);
               if (cs2 && ci < cs2.length && cs2[ci]) tdStyle.push(`background-color:${cs2[ci]}`);
@@ -1310,12 +1468,24 @@ function renderDocBinary(buffer) {
               const isLastCell = ci === cellCount - 1;
               const remCols = tblMaxCols - cellCount;
               const csAttr = isLastCell && remCols > 0 ? ` colspan="${remCols + 1}"` : '';
+              // Vertical merge start → calculate rowspan
+              let rsAttr = '';
+              if (tc?.fVertRestart) {
+                let span = 1;
+                for (let nr = ri + 1; nr < rowEndRuns.length; nr++) {
+                  const ntc = rowEndRuns[nr].props.cellTCs?.[ci];
+                  if (ntc?.fVertMerge && !ntc.fVertRestart) span++;
+                  else break;
+                }
+                if (span > 1) rsAttr = ` rowspan="${span}"`;
+              }
               const sa = tdStyle.length ? ` style="${tdStyle.join(';')}"` : '';
-              html.push(`<td class="word-tc"${csAttr}${sa}>${renderFormattedRun(seg, cellCp, charRuns, fonts, dataStream, oleChart, artImages)}</td>`);
+              html.push(`<td class="word-tc"${rsAttr}${csAttr}${sa}>${renderFormattedRun(seg, cellCp, charRuns, fonts, dataStream, oleChart, artImages)}</td>`);
               cellCp += seg.length + 1;
               segIdx++;
             }
             html.push('</tr>');
+            tblRowIdx++;
             // Skip row-end marker cell
             if (segIdx < segments.length) {
               cellCp += segments[segIdx].length + 1;
@@ -1407,7 +1577,7 @@ function renderDocBinary(buffer) {
             continue;
           }
         }
-        html.push('</table></div>'); inTable = false; tableRow = []; tblMaxCols = 0;
+        html.push('</table></div>'); inTable = false; tableRow = []; tblMaxCols = 0; tblAllRowEnds = []; tblRowIdx = 0;
       }
 
       // Build paragraph style
@@ -1456,9 +1626,29 @@ function renderDocBinary(buffer) {
           // List paragraph — render with bullet/number prefix
           const lvl = paraProps.ilvl || 0;
           const indent = (lvl + 1) * 24;
-          const bullets = ['•', '◦', '▪', '•', '◦', '▪', '•', '◦', '▪'];
-          const bullet = bullets[lvl] || '•';
-          html.push(`<p class="word-p word-list"${styleAttr} style="padding-left:${indent}pt;${styleParts.join(';')}"><span class="word-list-bullet">${bullet}</span>${content}</p>`);
+          // Resolve list definition from LSTF/LFO
+          let marker = '';
+          const lsid = paraProps.ilfo > 0 ? listData.lfoMap[paraProps.ilfo - 1] : undefined;
+          const lstDef = lsid !== undefined ? listData.lists.get(lsid) : null;
+          const lvlDef = lstDef?.levels?.[lstDef.fSimple ? 0 : lvl];
+          if (lvlDef && lvlDef.nfc !== 23 && lvlDef.nfc !== 255) {
+            // Numbered list — track counter per ilfo+lvl
+            const counterKey = `${paraProps.ilfo}-${lvl}`;
+            if (!listCounters[counterKey]) listCounters[counterKey] = lvlDef.iStartAt || 1;
+            const num = listCounters[counterKey]++;
+            if (lvlDef.nfc === 0) marker = `${num}.`;
+            else if (lvlDef.nfc === 1) marker = toRoman(num) + '.';
+            else if (lvlDef.nfc === 2) marker = toRoman(num).toLowerCase() + '.';
+            else if (lvlDef.nfc === 3) marker = String.fromCharCode(64 + ((num - 1) % 26) + 1) + '.';
+            else if (lvlDef.nfc === 4) marker = String.fromCharCode(96 + ((num - 1) % 26) + 1) + '.';
+            else marker = `${num}.`;
+          } else {
+            // Bullet list
+            const bc = lvlDef?.bulletChar;
+            const defaultBullets = ['•', '◦', '▪', '•', '◦', '▪', '•', '◦', '▪'];
+            marker = (bc && bc.charCodeAt(0) > 0x20) ? bc : defaultBullets[lvl] || '•';
+          }
+          html.push(`<p class="word-p word-list"${styleAttr} style="padding-left:${indent}pt;${styleParts.join(';')}"><span class="word-list-bullet">${escapeHtml(marker)}</span>${content}</p>`);
         } else {
           html.push(`<p class="word-p"${styleAttr}>${content}</p>`);
         }
