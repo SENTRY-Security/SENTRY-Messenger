@@ -354,25 +354,34 @@ export class MessageRenderer {
         this.scrollEl = scrollEl || null;
         this.callbacks = callbacks;
         this.shimmerIds = new Set();
-        this._previewLoadedSet = new WeakSet(); // track which containers have been loaded
+        this._previewLoadedSet = new WeakSet();
+        this._previewObserver = null;
+        this._pendingObserve = []; // elements queued before observer is ready
+    }
+
+    /** Lazily create the IntersectionObserver (needs scrollEl to be in DOM) */
+    _ensurePreviewObserver() {
+        if (this._previewObserver) return this._previewObserver;
         this._previewObserver = new IntersectionObserver((entries) => {
             for (const entry of entries) {
                 const el = entry.target;
                 if (entry.isIntersecting) {
-                    // Enter viewport → load preview if not loaded yet
                     if (!this._previewLoadedSet.has(el) && el._lazyMedia) {
                         this._previewLoadedSet.add(el);
                         this._loadFilePreview(el, el._lazyMedia);
                     }
                 } else {
-                    // Leave viewport → release heavy previews to free memory
                     if (this._previewLoadedSet.has(el) && el._lazyMedia && el._lazyType === 'heavy') {
                         this._previewLoadedSet.delete(el);
                         this._releaseFilePreview(el);
                     }
                 }
             }
-        }, { rootMargin: '200px 0px' }); // start loading 200px before entering viewport
+        }, { root: this.scrollEl || null, rootMargin: '200px 0px' });
+        // Flush any elements queued before observer was created
+        for (const el of this._pendingObserve) this._previewObserver.observe(el);
+        this._pendingObserve = [];
+        return this._previewObserver;
     }
 
     /**
@@ -604,7 +613,8 @@ export class MessageRenderer {
             this._showPreviewSpinner(container);
             container._lazyMedia = media;
             container._lazyType = 'heavy';
-            this._previewObserver.observe(container);
+            // Defer observe until element is in DOM (next microtask)
+            queueMicrotask(() => this._ensurePreviewObserver().observe(container));
         } else {
             const generic = document.createElement('div');
             generic.className = 'message-file-preview-generic';
@@ -924,8 +934,9 @@ export class MessageRenderer {
         this.shimmerIds = shimmerIds || new Set();
 
         // Clear list — disconnect observer to release references to old elements
-        this._previewObserver.disconnect();
+        if (this._previewObserver) { this._previewObserver.disconnect(); this._previewObserver = null; }
         this._previewLoadedSet = new WeakSet();
+        this._pendingObserve = [];
         const prevCount = this.listEl.childElementCount;
         this.listEl.innerHTML = '';
 
