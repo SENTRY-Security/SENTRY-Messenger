@@ -376,8 +376,18 @@ function parseSprms(data, offset, length) {
       case 0x2407: props.pageBreakBefore = toggleVal(data[pos]); break; // sprmPFPageBreakBefore (ispmd=7)
       case 0x2416: props.inTable = toggleVal(data[pos]); break; // sprmPFInTable (ispmd=22)
       case 0x2417: props.tableRowEnd = toggleVal(data[pos]); break; // sprmPFTtp (ispmd=23)
-      case 0x460B: props.spaceBefore = (data[pos] | (data[pos + 1] << 8)) / 20; break; // sprmPDyaBefore
-      case 0x460C: props.spaceAfter = (data[pos] | (data[pos + 1] << 8)) / 20; break; // sprmPDyaAfter
+      case 0x260A: props.ilvl = data[pos]; break; // sprmPIlvl (list level 0-8)
+      case 0x460B: { // sprmPIlfo (list override) OR sprmPDyaBefore (Word 97)
+        const val0B = data[pos] | (data[pos + 1] << 8);
+        // Heuristic: list override indices are typically small (< 100)
+        // DyaBefore values are typically large (>= 100 twips)
+        if (val0B < 100) props.ilfo = val0B;
+        else props.spaceBefore = val0B / 20;
+        break;
+      }
+      case 0xA413: props.spaceBefore = (data[pos] | (data[pos + 1] << 8)) / 20; break; // sprmPDyaBefore (Word 2000+)
+      case 0x460C: case 0xA414: // sprmPDyaAfter (Word 97 / Word 2000+)
+        props.spaceAfter = (data[pos] | (data[pos + 1] << 8)) / 20; break;
       case 0x840E: case 0x845E: { // sprmPDxaLeft / sprmPDxaLeft80
         const val = data[pos] | (data[pos + 1] << 8);
         props.indentLeft = (val > 0x7FFF ? val - 0x10000 : val) / 20;
@@ -658,9 +668,10 @@ function parseParaFormatting(wordDoc, tableStream, fc, lcb, pieces) {
         cb = cbRaw * 2;
       }
       if (cb < 2 || grpStart + cb > 512) continue;
-      // Skip 2-byte istd (style index)
+      // First 2 bytes are istd (style index), then grpprl (sprms)
+      const istd = page[grpStart] | (page[grpStart + 1] << 8);
       const props = parseSprms(page, grpStart + 2, cb - 2);
-      if (Object.keys(props).length === 0) continue;
+      props._istd = istd;
 
       const cpS = fcToCp(fcStart, pieces);
       const cpE = fcToCp(fcEnd, pieces);
@@ -669,6 +680,87 @@ function parseParaFormatting(wordDoc, tableStream, fc, lcb, pieces) {
   }
   runs.sort((a, b) => a.cpStart - b.cpStart);
   return runs;
+}
+
+// ── Parse STSH (Style Sheet) ──
+// FibRgFcLcb97 index 1 = fcStshf/lcbStshf
+// Returns a map: istd → { name, type, basedOn, props }
+function parseStyleSheet(tableStream, fc, lcb) {
+  const styles = new Map();
+  if (!lcb || fc + lcb > tableStream.length) return styles;
+
+  const view = new DataView(tableStream.buffer, tableStream.byteOffset + fc, lcb);
+  // STSHI header: first 2 bytes = cbStshi (size of STSHI structure)
+  const cbStshi = view.getUint16(0, true);
+  if (cbStshi < 2 || 2 + cbStshi > lcb) return styles;
+  // STSHI: bytes 0-1 = cstd (number of styles)
+  const stshiView = new DataView(tableStream.buffer, tableStream.byteOffset + fc + 2, Math.min(cbStshi, lcb - 2));
+  const cstd = stshiView.getUint16(0, true);
+  const cbSTDBaseInFile = stshiView.getUint16(2, true); // size of STD base
+
+  // Skip past STSHI header to the STD array
+  let offset = 2 + cbStshi;
+
+  for (let istd = 0; istd < cstd && offset + 2 <= lcb; istd++) {
+    const cbStd = view.getUint16(offset, true);
+    if (cbStd === 0) { offset += 2; continue; }
+    if (offset + 2 + cbStd > lcb) break;
+
+    const stdStart = offset + 2;
+    try {
+      // STD structure:
+      // Bytes 0-1: sti (style identifier) in bits 0-11, sgc in bits 12-15
+      const stiSgc = view.getUint16(stdStart, true);
+      const sti = stiSgc & 0x0FFF;
+      const sgc = (stiSgc >> 12) & 0x0F; // 1=paragraph, 2=character, 3=table
+      // Bytes 2-3: istdBase (based-on style)
+      const istdBase = view.getUint16(stdStart + 2, true);
+      // Bytes 4: cupx (number of UPX in style)
+      // Byte 5 is padding info
+
+      // Parse GrpUpx (formatting properties)
+      // Skip the fixed part to find the style name + UPX
+      const nameOffset = stdStart + cbSTDBaseInFile;
+      if (nameOffset >= stdStart + cbStd) { offset += 2 + cbStd; continue; }
+
+      // Style name: first 2 bytes = length, then Unicode chars
+      let styleName = '';
+      if (nameOffset + 2 <= fc + lcb) {
+        const nameLen = view.getUint16(nameOffset, true);
+        if (nameLen > 0 && nameLen < 200) {
+          const nameStart = nameOffset + 2;
+          for (let i = 0; i < nameLen && nameStart + i * 2 + 1 < stdStart + cbStd; i++) {
+            const ch = view.getUint16(nameStart + i * 2, true);
+            if (ch === 0) break;
+            styleName += String.fromCharCode(ch);
+          }
+        }
+      }
+
+      // Determine basic props from sti (built-in style identifier)
+      const styleProps = {};
+      // sti 0 = Normal, sti 1 = Heading 1, sti 2 = Heading 2, ..., sti 9 = Heading 9
+      if (sti >= 1 && sti <= 9) {
+        styleProps.outlineLvl = sti - 1;
+        styleProps.bold = true;
+        // Default heading sizes
+        const headingSizes = [null, 28, 24, 22, 20, 18, 16, 14, 13, 12];
+        if (headingSizes[sti]) styleProps.fontSize = headingSizes[sti];
+      }
+
+      styles.set(istd, {
+        name: styleName,
+        type: sgc,
+        basedOn: istdBase === 0x0FFF ? -1 : istdBase,
+        sti,
+        props: styleProps,
+      });
+    } catch { /* skip malformed style */ }
+
+    offset += 2 + cbStd;
+  }
+
+  return styles;
 }
 
 // ── Build formatted HTML from .doc binary ──
@@ -699,6 +791,13 @@ function renderDocBinary(buffer) {
   let fonts = [];
   try { fonts = parseFontTable(tableStream, ftPair.fc, ftPair.lcb); } catch { /* use empty */ }
 
+  // Parse STSH (Style Sheet) for style-based formatting (FIB index 1)
+  let styles = new Map();
+  try {
+    const stshPair = fib.fibPair(1);
+    styles = parseStyleSheet(tableStream, stshPair.fc, stshPair.lcb);
+  } catch { /* proceed without styles */ }
+
   // Parse character and paragraph formatting (non-fatal if these fail)
   let charRuns = [], paraRuns = [];
   try {
@@ -711,6 +810,19 @@ function renderDocBinary(buffer) {
     const papxPair = fib.fibPair(13);
     paraRuns = parseParaFormatting(wordDoc, tableStream, papxPair.fc, papxPair.lcb, pieces);
   } catch { /* proceed without paragraph formatting */ }
+
+  // Apply style properties to paragraph runs (style provides defaults, direct PAPX overrides)
+  if (styles.size > 0) {
+    for (const pr of paraRuns) {
+      const istd = pr.props._istd;
+      if (istd !== undefined && styles.has(istd)) {
+        const style = styles.get(istd);
+        // Merge: style props as defaults, direct props override
+        const merged = { ...style.props, ...pr.props };
+        pr.props = merged;
+      }
+    }
+  }
 
   // Parse DOP (Document Properties) for page margins (FIB index 31)
   let pageMargins = null;
@@ -857,6 +969,14 @@ function renderDocBinary(buffer) {
 
         if (headingLevel >= 1 && headingLevel <= 6) {
           html.push(`<h${headingLevel} class="word-h"${styleAttr}>${content}</h${headingLevel}>`);
+        } else if (paraProps.ilfo && paraProps.ilfo > 0) {
+          // List paragraph: render with bullet/number marker
+          const lvl = paraProps.ilvl || 0;
+          const indent = 18 + lvl * 18; // indent per level
+          // Determine bullet vs number (heuristic: odd ilfo = bullet, even = number)
+          const markers = ['•', '◦', '▪', '•', '◦', '▪', '•', '◦', '▪'];
+          const marker = markers[lvl] || '•';
+          html.push(`<p class="word-p word-list" style="padding-left:${indent}pt;text-indent:-12pt${styleAttr ? ';' + styleParts.join(';') : ''}"><span class="word-list-marker">${marker} </span>${content}</p>`);
         } else {
           html.push(`<p class="word-p"${styleAttr}>${content}</p>`);
         }
@@ -870,23 +990,105 @@ function renderDocBinary(buffer) {
   return { html: html.join(''), pageMargins };
 }
 
-// Special chars to strip from display (field codes, picture placeholders, cell marks)
-const SPECIAL_CHAR_RE = /[\x01\x07\x08\x13\x14\x15]/g;
+// Special chars to strip from display (picture placeholders, cell marks)
+// Note: \x13 \x14 \x15 are field delimiters, handled by the field state machine
+const SPECIAL_CHAR_RE = /[\x01\x07\x08]/g;
 
 // Render text with character formatting applied.
 // `text` is raw paragraph text (including special chars), `cpOffset` is the CP of text[0].
 // We iterate by raw position to keep CP alignment with charRuns, but skip special chars in output.
 function renderFormattedRun(text, cpOffset, charRuns, fonts) {
   if (!text) return '';
+
+  // ── Field code state machine ──
+  // Pre-scan to identify field regions: \x13 = begin, \x14 = separator, \x15 = end
+  // For HYPERLINK fields, extract URL from instruction and wrap display text in <a>
+  const fieldRegions = []; // { type, url, displayStart, displayEnd }
+  const fieldStack = []; // nested field support
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    if (ch === 0x13) {
+      fieldStack.push({ instrStart: i + 1, instrEnd: -1, displayStart: -1, displayEnd: -1 });
+    } else if (ch === 0x14 && fieldStack.length > 0) {
+      const f = fieldStack[fieldStack.length - 1];
+      f.instrEnd = i;
+      f.displayStart = i + 1;
+    } else if (ch === 0x15 && fieldStack.length > 0) {
+      const f = fieldStack.pop();
+      if (f.displayStart >= 0) f.displayEnd = i;
+      else { f.instrEnd = i; f.displayEnd = i; }
+      // Parse instruction
+      if (f.instrEnd > f.instrStart) {
+        const instr = text.slice(f.instrStart, f.instrEnd).replace(SPECIAL_CHAR_RE, '').trim();
+        const hm = instr.match(/^HYPERLINK\s+"([^"]+)"/i) || instr.match(/^HYPERLINK\s+(\S+)/i);
+        if (hm) {
+          fieldRegions.push({ type: 'hyperlink', url: hm[1], displayStart: f.displayStart, displayEnd: f.displayEnd });
+        }
+      }
+    }
+  }
+
+  // Build a set of positions to skip (field delimiters + instruction text)
+  const skipRanges = []; // [start, end) ranges to skip
+  for (const f of fieldRegions) {
+    // Skip from \x13 to display start (instruction part)
+    // The \x13 char itself is at displayStart - instrLen - 2... let's use fieldStack data
+  }
+  // Simpler approach: mark positions as field-instruction (hidden) or field-display (visible)
+  const posFlags = new Uint8Array(text.length);
+  // 0 = normal, 1 = field delimiter (skip), 2 = field instruction (skip), 3 = field display (wrap in <a>)
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    if (ch === 0x13 || ch === 0x14 || ch === 0x15) posFlags[i] = 1;
+  }
+  // Re-scan to mark instruction vs display regions
+  const fieldStack2 = [];
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    if (ch === 0x13) {
+      fieldStack2.push({ inInstr: true });
+    } else if (ch === 0x14 && fieldStack2.length) {
+      fieldStack2[fieldStack2.length - 1].inInstr = false;
+    } else if (ch === 0x15 && fieldStack2.length) {
+      fieldStack2.pop();
+    } else if (fieldStack2.length > 0) {
+      if (fieldStack2[fieldStack2.length - 1].inInstr) {
+        posFlags[i] = 2; // instruction text — skip
+      }
+    }
+  }
+
+  // Find which field region covers a display position
+  function findFieldUrl(textPos) {
+    for (const f of fieldRegions) {
+      if (textPos >= f.displayStart && textPos < f.displayEnd) return f.url;
+    }
+    return null;
+  }
+
   const parts = [];
   let pos = 0;
+  let currentFieldUrl = null;
 
   while (pos < text.length) {
-    // Skip special chars (they occupy CP space but produce no output)
-    if (SPECIAL_CHAR_RE.test(text[pos])) {
-      SPECIAL_CHAR_RE.lastIndex = 0; // reset regex state
+    // Skip field delimiters and instruction text
+    if (posFlags[pos] === 1 || posFlags[pos] === 2) {
       pos++;
       continue;
+    }
+    // Skip other special chars
+    if (SPECIAL_CHAR_RE.test(text[pos])) {
+      SPECIAL_CHAR_RE.lastIndex = 0;
+      pos++;
+      continue;
+    }
+
+    // Check if we're entering/leaving a hyperlink field
+    const fieldUrl = findFieldUrl(pos);
+    if (fieldUrl !== currentFieldUrl) {
+      if (currentFieldUrl) parts.push('</a>');
+      if (fieldUrl) parts.push(`<a href="${escapeHtml(fieldUrl)}" class="word-link" target="_blank" rel="noopener">`);
+      currentFieldUrl = fieldUrl;
     }
 
     const cpPos = cpOffset + pos;
@@ -955,6 +1157,7 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts) {
     }
     pos = runEnd;
   }
+  if (currentFieldUrl) parts.push('</a>');
   return parts.join('');
 }
 

@@ -388,7 +388,19 @@
   padding: 0 !important;
   padding-top: 0 !important;
   align-items: stretch;
+  justify-content: stretch;
   overflow: hidden;
+}
+/* Ensure all viewer modals are truly edge-to-edge */
+.modal.pdf-modal .modal-panel,
+.modal.excel-modal .modal-panel,
+.modal.word-modal .modal-panel,
+.modal.pptx-modal .modal-panel,
+.modal.zip-modal .modal-panel {
+  border: none !important;
+  box-shadow: none !important;
+  max-width: none !important;
+  border-radius: 0 !important;
 }
 
 /* Override styles.css safe-zone pseudo-elements that steal 48px from fullscreen viewers */
@@ -1049,6 +1061,22 @@ h6.word-h { font-size: 9pt; }
 .word-tc .word-p { margin: 0 0 2pt 0; }
 .word-tc .word-p:last-child { margin-bottom: 0; }
 .word-tc-merged { display: none; }
+
+/* Tab stops: render as inline-block with min-width */
+.word-tab {
+  display: inline-block;
+  min-width: 2em;
+  white-space: pre;
+}
+
+/* Hyperlinks in .doc */
+.word-link {
+  color: #2563eb;
+  text-decoration: underline;
+}
+.word-link:hover {
+  color: #1d4ed8;
+}
 
 .word-page img {
   max-width: 100%;
