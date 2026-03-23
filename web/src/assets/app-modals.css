@@ -1117,6 +1117,17 @@ h6.word-h { font-size: 9pt; }
 .word-page img {
   max-width: 100%;
   height: auto;
+  display: inline-block;
+}
+.word-img { margin: 4pt 0; }
+.word-list {
+  position: relative;
+}
+.word-list .word-list-bullet {
+  position: absolute;
+  left: 0;
+  width: 18pt;
+  text-align: center;
 }
 
 @media (max-width: 640px) {

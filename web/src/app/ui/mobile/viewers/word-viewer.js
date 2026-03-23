@@ -859,6 +859,7 @@ function renderDocBinary(buffer) {
     return fallbackRender(wordDoc);
   }
   const tableStream = ole2.getStream(fib.tableName);
+  const dataStream = ole2.getStream('Data'); // OLE2 Data stream — contains embedded images
 
   // Parse piece table for text + FC mapping
   // FibRgFcLcb97 index 33 = fcClx/lcbClx
@@ -949,7 +950,7 @@ function renderDocBinary(buffer) {
             html.push('<td class="word-tc word-tc-merged" style="display:none"></td>');
           } else {
             const sa = tdStyle.length ? ` style="${tdStyle.join(';')}"` : '';
-            html.push(`<td class="word-tc"${sa}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts)}</td>`);
+            html.push(`<td class="word-tc"${sa}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream)}</td>`);
           }
         }
         html.push('</tr>');
@@ -988,7 +989,7 @@ function renderDocBinary(buffer) {
             const cell = row[ci];
             const isLast = ci === row.length - 1;
             const cs = isLast && row.length < maxCols ? ` colspan="${maxCols - ci}"` : '';
-            html.push(`<td class="word-tc"${cs}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts)}</td>`);
+            html.push(`<td class="word-tc"${cs}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream)}</td>`);
           }
           html.push('</tr>');
         }
@@ -1002,7 +1003,7 @@ function renderDocBinary(buffer) {
         const visTxt = paraText.replace(/[\x01\x07\x08\x13\x14\x15]/g, '').trim();
         if (nextHasCell && visTxt) {
           // Add as full-width continuation row within the table
-          html.push(`<tr><td class="word-tc" colspan="99">${renderFormattedRun(paraText, cpStart, charRuns, fonts)}</td></tr>`);
+          html.push(`<tr><td class="word-tc" colspan="99">${renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream)}</td></tr>`);
           cp = cpEnd + 1;
           continue; // skip normal paragraph rendering
         }
@@ -1037,7 +1038,7 @@ function renderDocBinary(buffer) {
       } else {
         // Pass raw paraText + cpStart — renderFormattedRun skips special chars internally
         // to maintain correct CP↔formatting alignment
-        const content = renderFormattedRun(paraText, cpStart, charRuns, fonts);
+        const content = renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream);
 
         // Detect heading: use outlineLvl (0-8) from paragraph Sprm, or fall back to font size
         let headingLevel = 0;
@@ -1056,6 +1057,13 @@ function renderDocBinary(buffer) {
 
         if (headingLevel >= 1 && headingLevel <= 6) {
           html.push(`<h${headingLevel} class="word-h"${styleAttr}>${content}</h${headingLevel}>`);
+        } else if (paraProps.ilfo && paraProps.ilfo > 0) {
+          // List paragraph — render with bullet/number prefix
+          const lvl = paraProps.ilvl || 0;
+          const indent = (lvl + 1) * 24;
+          const bullets = ['•', '◦', '▪', '•', '◦', '▪', '•', '◦', '▪'];
+          const bullet = bullets[lvl] || '•';
+          html.push(`<p class="word-p word-list"${styleAttr} style="padding-left:${indent}pt;${styleParts.join(';')}"><span class="word-list-bullet">${bullet}</span>${content}</p>`);
         } else {
           html.push(`<p class="word-p"${styleAttr}>${content}</p>`);
         }
@@ -1075,15 +1083,27 @@ const SPECIAL_CHAR_RE = /[\x01\x07\x08\x13\x14\x15]/g;
 // Render text with character formatting applied.
 // `text` is raw paragraph text (including special chars), `cpOffset` is the CP of text[0].
 // We iterate by raw position to keep CP alignment with charRuns, but skip special chars in output.
-function renderFormattedRun(text, cpOffset, charRuns, fonts) {
+// `dataStream` is the OLE2 Data stream for extracting inline pictures (may be null).
+function renderFormattedRun(text, cpOffset, charRuns, fonts, dataStream) {
   if (!text) return '';
   const parts = [];
   let pos = 0;
 
   while (pos < text.length) {
-    // Skip special chars (they occupy CP space but produce no output)
-    if (SPECIAL_CHAR_RE.test(text[pos])) {
-      SPECIAL_CHAR_RE.lastIndex = 0; // reset regex state
+    // Handle special chars
+    const ch = text[pos];
+    if (ch === '\x01' && dataStream) {
+      // Picture placeholder — check if charRun has sprmCPicLocation
+      const cpPos2 = cpOffset + pos;
+      const picRun = charRuns.find(r => r.cpStart <= cpPos2 && r.cpEnd > cpPos2);
+      if (picRun?.props?.picLocation !== undefined) {
+        const imgHtml = extractDocImage(dataStream, picRun.props.picLocation);
+        if (imgHtml) { parts.push(imgHtml); pos++; continue; }
+      }
+      pos++; continue; // no image found, skip placeholder
+    }
+    if (SPECIAL_CHAR_RE.test(ch)) {
+      SPECIAL_CHAR_RE.lastIndex = 0;
       pos++;
       continue;
     }
