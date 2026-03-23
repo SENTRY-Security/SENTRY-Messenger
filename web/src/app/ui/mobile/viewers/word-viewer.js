@@ -2514,11 +2514,27 @@ function renderTable(tblEl, styles, relMap, imageData, numbering, listCounters) 
           if (vm === 'restart') {
             const allRows = dnAll(tblEl, NS_W, 'tr').filter(r => r.parentNode === tblEl);
             const curRowIdx = allRows.indexOf(tr);
-            const cellIdx = Array.from(tr.children).filter(c => c.localName === 'tc').indexOf(tc);
+            // Calculate grid column index (accounting for gridSpan in preceding cells)
+            const curCells = Array.from(tr.children).filter(c => c.localName === 'tc');
+            let gridCol = 0;
+            for (const c of curCells) {
+              if (c === tc) break;
+              const cPr = dn(c, NS_W, 'tcPr');
+              const gs = cPr ? dn(cPr, NS_W, 'gridSpan') : null;
+              gridCol += gs ? (parseInt(getAttr(gs, 'val')) || 1) : 1;
+            }
             let span = 1;
             for (let nr = curRowIdx + 1; nr < allRows.length; nr++) {
               const nextCells = Array.from(allRows[nr].children).filter(c => c.localName === 'tc');
-              const nextTc = nextCells[cellIdx];
+              // Find cell at same grid column in next row
+              let col = 0, nextTc = null;
+              for (const c of nextCells) {
+                if (col === gridCol) { nextTc = c; break; }
+                const cPr = dn(c, NS_W, 'tcPr');
+                const gs = cPr ? dn(cPr, NS_W, 'gridSpan') : null;
+                col += gs ? (parseInt(getAttr(gs, 'val')) || 1) : 1;
+                if (col > gridCol) break;
+              }
               if (!nextTc) break;
               const nextTcPr = dn(nextTc, NS_W, 'tcPr');
               const nextVm = nextTcPr ? dn(nextTcPr, NS_W, 'vMerge') : null;
