@@ -319,7 +319,9 @@ function parseSprms(data, offset, length) {
         // and sprmTDefTableShd80(0xD609) all use 2-byte size prefix per [MS-DOC]
         if (sprm === 0xD608 || sprm === 0xD609 || sprm === 0xD612 || sprm === 0xD613 ||
             sprm === 0xD634 || sprm === 0xD670) {
-          opSize = pos + 1 < end ? (data[pos] | (data[pos + 1] << 8)) : 0;
+          // 2-byte cb: value includes the first byte of cb itself, so actual data = cb - 1
+          const cb2 = pos + 1 < end ? (data[pos] | (data[pos + 1] << 8)) : 0;
+          opSize = cb2 > 0 ? cb2 - 1 : 0;
           pos += 2;
         } else {
           opSize = pos < end ? data[pos++] : 0;
@@ -508,14 +510,15 @@ function parseSprms(data, offset, length) {
         break;
       }
       case 0xD612: { // sprmTDefTableShd - cell shading for the row
-        // Array of SHD structures (10 bytes each) for each cell
-        if (opSize < 2) break;
+        // Array of SHD structures (10 bytes each): cvFore(4) + cvBack(4) + ipat(2)
+        if (opSize < 10) break;
         const nCells = Math.floor(opSize / 10);
         const cellShds = [];
         for (let c = 0; c < nCells; c++) {
           const shdOff = pos + c * 10;
-          // SHD80 structure: foreground color (COLORREF) + background color (COLORREF) + pattern
-          // Simplified: read background COLORREF (bytes 4-6)
+          const ipat = data[shdOff + 8] | (data[shdOff + 9] << 8);
+          // ipat=0 means auto/transparent; cvBack byte 7 = 0xFF means auto color
+          if (ipat === 0 || data[shdOff + 7] === 0xFF) { cellShds.push(null); continue; }
           const r = data[shdOff + 4], g = data[shdOff + 5], b = data[shdOff + 6];
           if (r === 0xFF && g === 0xFF && b === 0xFF) cellShds.push(null);
           else cellShds.push('#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join(''));
@@ -524,11 +527,13 @@ function parseSprms(data, offset, length) {
         break;
       }
       case 0xD613: { // sprmTDefTableShd2nd/sprmTCellShd - alternate cell shading format
-        if (opSize < 2) break;
+        if (opSize < 10) break;
         const nCells2 = Math.floor(opSize / 10);
         const cellShds2 = [];
         for (let c = 0; c < nCells2; c++) {
           const shdOff = pos + c * 10;
+          const ipat2 = data[shdOff + 8] | (data[shdOff + 9] << 8);
+          if (ipat2 === 0 || data[shdOff + 7] === 0xFF) { cellShds2.push(null); continue; }
           const r = data[shdOff + 4], g = data[shdOff + 5], b = data[shdOff + 6];
           if (r === 0xFF && g === 0xFF && b === 0xFF) cellShds2.push(null);
           else cellShds2.push('#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join(''));
@@ -1457,6 +1462,13 @@ function renderDocBinary(buffer) {
     cp = cpEnd + 1; // +1 for the \r separator
   }
   if (inTable) html.push('</table></div>');
+
+  // Append any remaining OfficeArt images not consumed by \x01 placeholders
+  if (artImages.length > 0) {
+    for (const img of artImages) html.push(`<div class="word-p">${img}</div>`);
+  }
+  // Append OLE chart if not yet consumed
+  if (oleChartHtml) html.push(oleChartHtml);
 
   return { html: html.join(''), pageMargins, _oleChartAsync };
 }
@@ -2454,6 +2466,24 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
     docContainer.appendChild(page);
     stageEl.appendChild(docContainer);
     if (loadingEl) loadingEl.remove();
+
+    // Auto-scale fixed-width tables that overflow their container
+    requestAnimationFrame(() => {
+      const pageWidth = page.clientWidth - parseFloat(getComputedStyle(page).paddingLeft) - parseFloat(getComputedStyle(page).paddingRight);
+      page.querySelectorAll('.word-tbl-fixed').forEach(tbl => {
+        const tblWidth = tbl.scrollWidth;
+        if (tblWidth > pageWidth && pageWidth > 0) {
+          const scale = pageWidth / tblWidth;
+          const wrap = tbl.closest('.word-tbl-wrap');
+          if (wrap) {
+            wrap.style.overflow = 'hidden';
+            tbl.style.transformOrigin = 'top left';
+            tbl.style.transform = `scale(${scale.toFixed(4)})`;
+            tbl.style.marginBottom = `-${tblWidth * (1 - scale)}px`;
+          }
+        }
+      });
+    });
 
     // Download
     const downloadBtn = body.querySelector('#wordDownload');

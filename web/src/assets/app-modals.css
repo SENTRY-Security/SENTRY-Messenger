@@ -1091,11 +1091,9 @@ h6.word-h { font-size: 9pt; }
   width: 100%;
   font-size: inherit;
 }
-/* Tables with explicit pt widths use fixed layout for accurate cell sizing */
+/* Tables with explicit pt widths: fixed layout, auto-scale to fit */
 .word-tbl-fixed {
   table-layout: fixed;
-  width: auto;
-  max-width: 100%;
 }
 .word-tbl-bordered .word-tc {
   border: 1px solid #94a3b8;
