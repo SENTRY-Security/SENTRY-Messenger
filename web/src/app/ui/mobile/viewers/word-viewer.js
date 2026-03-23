@@ -594,7 +594,7 @@ function parseCharFormatting(wordDoc, tableStream, fc, lcb, pieces) {
   const n = Math.floor((lcb - 4) / 8);
   // Read FCs and PNs
   for (let i = 0; i < n; i++) {
-    const pn = tsView.getUint32(fc + (n + 1) * 4 + i * 4, true);
+    const pn = tsView.getUint32(fc + (n + 1) * 4 + i * 4, true) & 0x3FFFFF; // 22-bit page number
     // Read FKP page from WordDocument (512 bytes)
     const pageOff = pn * 512;
     if (pageOff + 512 > wordDoc.length) continue;
@@ -635,7 +635,7 @@ function parseParaFormatting(wordDoc, tableStream, fc, lcb, pieces) {
   const tsView = new DataView(tableStream.buffer, tableStream.byteOffset, tableStream.byteLength);
   const n = Math.floor((lcb - 4) / 8);
   for (let i = 0; i < n; i++) {
-    const pn = tsView.getUint32(fc + (n + 1) * 4 + i * 4, true);
+    const pn = tsView.getUint32(fc + (n + 1) * 4 + i * 4, true) & 0x3FFFFF; // 22-bit page number
     const pageOff = pn * 512;
     if (pageOff + 512 > wordDoc.length) continue;
     const page = wordDoc.slice(pageOff, pageOff + 512);
@@ -841,15 +841,18 @@ function extractDocImage(dataStream, offset) {
     const recLen = rh.getUint32(4, true);
     artOff += 8;
 
-    if (recLen === 0 || artOff + recLen > artEnd + 8) break;
+    if (recLen === 0 || artOff + recLen > artEnd) break;
 
-    // Container records (recVer=0xF): recurse into children
-    if (recVer === 0xF) continue; // children follow inline
+    // Container records (recVer=0xF): children are inline at artOff
+    // Don't advance by recLen — let the while loop process each child record
+    if (recVer === 0xF) continue;
 
-    // OfficeArtFBSE (0xF007): wrapper around BLIP — skip 36-byte header + nameData
+    // OfficeArtFBSE (0xF007): wrapper around BLIP
+    // FBSE body = 36 bytes after the 8-byte header (already consumed).
+    // Byte 33 of body = cbName. Embedded BLIP follows after 36 + cbName bytes.
     if (recType === 0xF007 && recLen > 36) {
       const cbName = dataStream[artOff + 33] || 0;
-      artOff += 36 + cbName; // skip FBSE header, continue to parse embedded BLIP
+      artOff += 36 + cbName; // skip FBSE fixed part + nameData
       continue;
     }
 
