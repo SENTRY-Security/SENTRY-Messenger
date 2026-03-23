@@ -1094,6 +1094,7 @@ h6.word-h { font-size: 9pt; }
 /* Tables with explicit pt widths: fixed layout, auto-scale to fit */
 .word-tbl-fixed {
   table-layout: fixed;
+  width: auto; /* override .word-tbl width:100% so inline width takes effect */
 }
 .word-tbl-bordered .word-tc {
   border: 1px solid #94a3b8;

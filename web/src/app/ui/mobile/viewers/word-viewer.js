@@ -1208,6 +1208,7 @@ function renderDocBinary(buffer) {
   const html = [];
   let inTable = false;
   let tableRow = [];
+  let tblMaxCols = 0;
   let cp = 0;
 
   const paragraphs = text.split('\r');
@@ -1244,12 +1245,20 @@ function renderDocBinary(buffer) {
       // Single-paragraph tables: all cells in one paragraph separated by \x07.
 
       if (!inTable) {
-        // Find the first tableRowEnd to get cellWidths for table width calculation
-        const firstRowEnd = paraRuns.find(r => r.props.tableRowEnd && r.cpStart >= cpStart);
-        const firstCw = firstRowEnd?.props?.cellWidths || paraProps.cellWidths;
-        const tblWidth = firstCw ? firstCw.reduce((s, w) => s + w, 0) : 0;
-        const fixedClass = tblWidth > 0 ? ' word-tbl-fixed' : '';
-        const tblStyle = tblWidth > 0 ? ` style="width:${tblWidth}pt"` : '';
+        // Find ALL tableRowEnd runs for this table to determine maxCols and table width
+        const allRowEnds = paraRuns.filter(r => r.props.tableRowEnd && r.cpStart >= cpStart);
+        tblMaxCols = 0;
+        let maxTblWidth = 0;
+        for (const re of allRowEnds) {
+          const cw = re.props.cellWidths;
+          if (cw) {
+            if (cw.length > tblMaxCols) tblMaxCols = cw.length;
+            const w = cw.reduce((s, v) => s + v, 0);
+            if (w > maxTblWidth) maxTblWidth = w;
+          }
+        }
+        const fixedClass = maxTblWidth > 0 ? ' word-tbl-fixed' : '';
+        const tblStyle = maxTblWidth > 0 ? ` style="width:${maxTblWidth}pt"` : '';
         html.push(`<div class="word-tbl-wrap"><table class="word-tbl word-tbl-bordered${fixedClass}"${tblStyle}>`);
         inTable = true;
       }
@@ -1265,8 +1274,12 @@ function renderDocBinary(buffer) {
             const tdStyle = [];
             if (cw && ci < cw.length) tdStyle.push(`width:${cw[ci]}pt`);
             if (cs2 && ci < cs2.length && cs2[ci]) tdStyle.push(`background-color:${cs2[ci]}`);
+            // colspan: last cell spans remaining columns
+            const isLast = ci === tableRow.length - 1;
+            const remaining = tblMaxCols - tableRow.length;
+            const cs = isLast && remaining > 0 ? ` colspan="${remaining + 1}"` : '';
             const sa = tdStyle.length ? ` style="${tdStyle.join(';')}"` : '';
-            html.push(`<td class="word-tc"${sa}>${cell.html}</td>`);
+            html.push(`<td class="word-tc"${cs}${sa}>${cell.html}</td>`);
           }
           html.push('</tr>');
         }
@@ -1293,8 +1306,12 @@ function renderDocBinary(buffer) {
               const tdStyle = [];
               if (cw && ci < cw.length) tdStyle.push(`width:${cw[ci]}pt`);
               if (cs2 && ci < cs2.length && cs2[ci]) tdStyle.push(`background-color:${cs2[ci]}`);
+              // colspan: last cell spans remaining columns
+              const isLastCell = ci === cellCount - 1;
+              const remCols = tblMaxCols - cellCount;
+              const csAttr = isLastCell && remCols > 0 ? ` colspan="${remCols + 1}"` : '';
               const sa = tdStyle.length ? ` style="${tdStyle.join(';')}"` : '';
-              html.push(`<td class="word-tc"${sa}>${renderFormattedRun(seg, cellCp, charRuns, fonts, dataStream, oleChartHtml, artImages)}</td>`);
+              html.push(`<td class="word-tc"${csAttr}${sa}>${renderFormattedRun(seg, cellCp, charRuns, fonts, dataStream, oleChartHtml, artImages)}</td>`);
               cellCp += seg.length + 1;
               segIdx++;
             }
@@ -1390,7 +1407,7 @@ function renderDocBinary(buffer) {
             continue;
           }
         }
-        html.push('</table></div>'); inTable = false; tableRow = [];
+        html.push('</table></div>'); inTable = false; tableRow = []; tblMaxCols = 0;
       }
 
       // Build paragraph style
@@ -2468,7 +2485,9 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
             wrap.style.overflow = 'hidden';
             tbl.style.transformOrigin = 'top left';
             tbl.style.transform = `scale(${scale.toFixed(4)})`;
-            tbl.style.marginBottom = `-${tblWidth * (1 - scale)}px`;
+            // Compensate for the vertical space freed by scaling
+            const tblHeight = tbl.offsetHeight;
+            tbl.style.marginBottom = `-${(tblHeight * (1 - scale)).toFixed(0)}px`;
           }
         }
       });
