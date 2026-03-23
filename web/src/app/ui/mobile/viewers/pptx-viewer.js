@@ -250,7 +250,25 @@ function parseLine(el) {
   const w = ln.getAttribute('w');
   const color = parseFill(ln);
   if (!color || color === 'none') return null;
-  return { width: w ? Math.max(1, emuToPx(w)) : 1, color: typeof color === 'string' && color.startsWith('#') ? color : '#94a3b8' };
+  // Dash style
+  const prstDash = dn(ln, NS_A, 'prstDash');
+  const dashVal = prstDash ? prstDash.getAttribute('val') : null;
+  let dash = null;
+  if (dashVal) {
+    const dashMap = {
+      'dot': [2, 4], 'sysDot': [1, 3], 'dash': [6, 4], 'sysDash': [4, 3],
+      'dashDot': [6, 3, 2, 3], 'lgDash': [10, 4], 'lgDashDot': [10, 3, 2, 3],
+      'lgDashDotDot': [10, 3, 2, 3, 2, 3]
+    };
+    dash = dashMap[dashVal] || null;
+  }
+  const cap = ln.getAttribute('cap'); // flat, rnd, sq
+  return {
+    width: w ? Math.max(1, emuToPx(w)) : 1,
+    color: typeof color === 'string' ? color : '#94a3b8',
+    dash,
+    cap: cap === 'rnd' ? 'round' : cap === 'sq' ? 'square' : 'butt'
+  };
 }
 
 // ── Text Run ──
@@ -488,6 +506,22 @@ function parseShape(spEl, relMap, phStyles) {
   // Preset geometry (rounded rect, etc.)
   const prstGeom = spPr ? dn(spPr, NS_A, 'prstGeom') : null;
   const geom = prstGeom ? (prstGeom.getAttribute('prst') || 'rect') : 'rect';
+  // Shadow effect (outerShdw)
+  let shadow = null;
+  const effectLst = spPr ? dn(spPr, NS_A, 'effectLst') : null;
+  if (effectLst) {
+    const outerShdw = dn(effectLst, NS_A, 'outerShdw');
+    if (outerShdw) {
+      const blurRad = outerShdw.getAttribute('blurRad');
+      const dist = outerShdw.getAttribute('dist');
+      const dir = outerShdw.getAttribute('dir');
+      const shdColor = parseColor(outerShdw);
+      const blur = blurRad ? emuToPx(blurRad) : 4;
+      const d = dist ? emuToPx(dist) : 3;
+      const angle = dir ? Number(dir) / 60000 * (Math.PI / 180) : Math.PI / 4;
+      shadow = { blur, dx: d * Math.cos(angle), dy: d * Math.sin(angle), color: shdColor || 'rgba(0,0,0,0.3)' };
+    }
+  }
   // Text body
   const txBody = dn(spEl, NS_P, 'txBody');
   const paragraphs = [];
@@ -556,7 +590,7 @@ function parseShape(spEl, relMap, phStyles) {
   const blipTarget = isImageRef ? relMap[embedId] : null;
   // Return shape if it has text OR visual fill/border/blip (decorative shapes)
   if (!paragraphs.length && !bgColor && !line && !blipTarget) return null;
-  return { type: 'text', ...tf, paragraphs, bgColor, blipTarget, line, anchor, margin, geom, noWrap, autoFit, fontScale };
+  return { type: 'text', ...tf, paragraphs, bgColor, blipTarget, line, anchor, margin, geom, noWrap, autoFit, fontScale, shadow };
 }
 
 // ── Group shapes (recursive, direct children only) ──
@@ -1687,6 +1721,107 @@ function drawGeomPath(ctx, geom, sx, sy, sw, sh) {
       }
       break;
     }
+    case 'trapezoid': {
+      const inset = sw * 0.2;
+      ctx.moveTo(sx + inset, sy); ctx.lineTo(sx + sw - inset, sy);
+      ctx.lineTo(sx + sw, sy + sh); ctx.lineTo(sx, sy + sh);
+      break;
+    }
+    case 'parallelogram': {
+      const off = sw * 0.2;
+      ctx.moveTo(sx + off, sy); ctx.lineTo(sx + sw, sy);
+      ctx.lineTo(sx + sw - off, sy + sh); ctx.lineTo(sx, sy + sh);
+      break;
+    }
+    case 'pentagon': {
+      const cx = sx + sw / 2;
+      for (let i = 0; i < 5; i++) {
+        const a = -Math.PI / 2 + (i * 2 * Math.PI) / 5;
+        const px = cx + (sw / 2) * Math.cos(a), py = sy + sh / 2 + (sh / 2) * Math.sin(a);
+        i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+      }
+      break;
+    }
+    case 'octagon': {
+      const d = Math.min(sw, sh) * 0.29;
+      ctx.moveTo(sx + d, sy); ctx.lineTo(sx + sw - d, sy);
+      ctx.lineTo(sx + sw, sy + d); ctx.lineTo(sx + sw, sy + sh - d);
+      ctx.lineTo(sx + sw - d, sy + sh); ctx.lineTo(sx + d, sy + sh);
+      ctx.lineTo(sx, sy + sh - d); ctx.lineTo(sx, sy + d);
+      break;
+    }
+    case 'chevron':
+    case 'homePlate': {
+      const notch = sw * 0.25;
+      ctx.moveTo(sx, sy); ctx.lineTo(sx + sw - notch, sy);
+      ctx.lineTo(sx + sw, sy + sh / 2); ctx.lineTo(sx + sw - notch, sy + sh);
+      ctx.lineTo(sx, sy + sh);
+      if (geom === 'chevron') ctx.lineTo(sx + notch, sy + sh / 2);
+      break;
+    }
+    case 'flowChartProcess':
+      ctx.rect(sx, sy, sw, sh);
+      break;
+    case 'flowChartDecision': {
+      ctx.moveTo(sx + sw / 2, sy); ctx.lineTo(sx + sw, sy + sh / 2);
+      ctx.lineTo(sx + sw / 2, sy + sh); ctx.lineTo(sx, sy + sh / 2);
+      break;
+    }
+    case 'flowChartTerminator': {
+      const r = sh / 2;
+      ctx.moveTo(sx + r, sy); ctx.lineTo(sx + sw - r, sy);
+      ctx.arc(sx + sw - r, sy + r, r, -Math.PI / 2, Math.PI / 2);
+      ctx.lineTo(sx + r, sy + sh);
+      ctx.arc(sx + r, sy + r, r, Math.PI / 2, -Math.PI / 2);
+      break;
+    }
+    case 'line': {
+      ctx.moveTo(sx, sy); ctx.lineTo(sx + sw, sy + sh);
+      break;
+    }
+    case 'heart': {
+      const hw = sw / 2, hh = sh;
+      ctx.moveTo(sx + hw, sy + hh * 0.3);
+      ctx.bezierCurveTo(sx + hw, sy, sx, sy, sx, sy + hh * 0.3);
+      ctx.bezierCurveTo(sx, sy + hh * 0.6, sx + hw, sy + hh * 0.8, sx + hw, sy + hh);
+      ctx.bezierCurveTo(sx + hw, sy + hh * 0.8, sx + sw, sy + hh * 0.6, sx + sw, sy + hh * 0.3);
+      ctx.bezierCurveTo(sx + sw, sy, sx + hw, sy, sx + hw, sy + hh * 0.3);
+      break;
+    }
+    case 'cloud': {
+      const cx2 = sx + sw / 2, cy2 = sy + sh / 2;
+      ctx.ellipse(cx2 - sw * 0.15, cy2 + sh * 0.1, sw * 0.35, sh * 0.3, 0, 0, Math.PI * 2);
+      ctx.ellipse(cx2 + sw * 0.2, cy2 + sh * 0.05, sw * 0.3, sh * 0.28, 0, 0, Math.PI * 2);
+      ctx.ellipse(cx2, cy2 - sh * 0.15, sw * 0.32, sh * 0.28, 0, 0, Math.PI * 2);
+      break;
+    }
+    case 'star4': case 'star6': case 'star8': case 'star10':
+    case 'star12': case 'star16': case 'star24': case 'star32': {
+      const nPoints = parseInt(geom.replace('star', '')) || 4;
+      const cx3 = sx + sw / 2, cy3 = sy + sh / 2;
+      const outerR = Math.min(sw, sh) / 2;
+      const innerR = outerR * 0.4;
+      for (let i = 0; i < nPoints * 2; i++) {
+        const angle = -Math.PI / 2 + (i * Math.PI) / nPoints;
+        const r = i % 2 === 0 ? outerR : innerR;
+        const px = cx3 + r * Math.cos(angle), py = cy3 + r * Math.sin(angle);
+        i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+      }
+      break;
+    }
+    case 'wedgeRoundRectCallout':
+    case 'wedgeRectCallout': {
+      const cr = geom.includes('Round') ? Math.min(sw, sh) * 0.08 : 0;
+      if (cr > 0) {
+        ctx.moveTo(sx + cr, sy); ctx.lineTo(sx + sw - cr, sy); ctx.arcTo(sx + sw, sy, sx + sw, sy + cr, cr);
+        ctx.lineTo(sx + sw, sy + sh - cr); ctx.arcTo(sx + sw, sy + sh, sx + sw - cr, sy + sh, cr);
+        ctx.lineTo(sx + cr, sy + sh); ctx.arcTo(sx, sy + sh, sx, sy + sh - cr, cr);
+        ctx.lineTo(sx, sy + cr); ctx.arcTo(sx, sy, sx + cr, sy, cr);
+      } else {
+        ctx.rect(sx, sy, sw, sh);
+      }
+      break;
+    }
     default:
       // Fallback: rectangle
       ctx.rect(sx, sy, sw, sh);
@@ -1764,6 +1899,14 @@ async function drawShapeOnCanvas(ctx, shape, zip, canvasW, canvasH, slideSize, s
       } catch (_e) { /* blip fill failed, continue with text */ }
     }
 
+    // Apply shadow effect before fill
+    if (shape.shadow) {
+      ctx.shadowColor = shape.shadow.color;
+      ctx.shadowBlur = shape.shadow.blur * scale;
+      ctx.shadowOffsetX = shape.shadow.dx * scale;
+      ctx.shadowOffsetY = shape.shadow.dy * scale;
+    }
+
     // Draw shape fill using geometry path
     if (shape.bgColor || shape.line) {
       drawGeomPath(ctx, geom, sx, sy, sw, sh);
@@ -1775,11 +1918,21 @@ async function drawShapeOnCanvas(ctx, shape, zip, canvasW, canvasH, slideSize, s
       if (shape.line) {
         ctx.strokeStyle = shape.line.color;
         ctx.lineWidth = shape.line.width * scale;
+        if (shape.line.dash) ctx.setLineDash(shape.line.dash.map(v => v * scale));
+        if (shape.line.cap) ctx.lineCap = shape.line.cap;
         ctx.stroke();
+        if (shape.line.dash) ctx.setLineDash([]);
       }
     }
+    // Reset shadow before text rendering
+    if (shape.shadow) {
+      ctx.shadowColor = 'transparent';
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 0;
+    }
 
-    // Draw text — no clipping (PPT text commonly overflows shape bounds)
+    // Draw text
     if (shape.paragraphs && shape.paragraphs.length) {
       drawTextShape(ctx, shape, sx, sy, sw, sh, scale, {}, slideBgColor);
     }
