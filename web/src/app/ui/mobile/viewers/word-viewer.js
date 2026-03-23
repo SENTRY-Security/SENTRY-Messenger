@@ -2773,3 +2773,112 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
 
   return true;
 }
+
+/**
+ * Render a Word doc/docx file as a thumbnail preview for chat messages.
+ * Returns a DOM element (div) containing a scaled-down rendered preview.
+ * @param {ArrayBuffer} buffer - file content
+ * @returns {HTMLElement|null}
+ */
+export function renderWordThumbnail(buffer) {
+  try {
+    const bytes = new Uint8Array(buffer);
+    let resultHtml = '';
+
+    // Detect format
+    const isDocx = bytes[0] === 0x50 && bytes[1] === 0x4B;
+    const isOle2 = bytes[0] === 0xD0 && bytes[1] === 0xCF && bytes[2] === 0x11 && bytes[3] === 0xE0;
+
+    if (isOle2) {
+      const docResult = renderDocBinary(buffer);
+      resultHtml = typeof docResult === 'string' ? docResult : docResult.html;
+    } else if (isDocx) {
+      // Quick DOCX render — extract document.xml and render paragraphs
+      resultHtml = renderDocxThumbnailHtml(buffer);
+    }
+
+    if (!resultHtml || resultHtml.length < 20) return null;
+
+    // Create a scaled-down preview container
+    const wrapper = document.createElement('div');
+    wrapper.className = 'word-thumb-wrap';
+    wrapper.style.cssText = 'width:100%;height:100%;overflow:hidden;position:relative;background:#fff;border-radius:4px;';
+
+    const inner = document.createElement('div');
+    inner.className = 'word-page';
+    inner.style.cssText = 'transform-origin:top left;transform:scale(0.28);width:357%;padding:12pt 16pt;font-size:11pt;line-height:1.4;color:#1e293b;pointer-events:none;';
+    inner.innerHTML = resultHtml;
+    wrapper.appendChild(inner);
+
+    return wrapper;
+  } catch {
+    return null;
+  }
+}
+
+/** Minimal DOCX text extraction for thumbnail (no full parse) */
+function renderDocxThumbnailHtml(buffer) {
+  try {
+    // Quick ZIP parse to find word/document.xml
+    const bytes = new Uint8Array(buffer);
+    let eocdPos = bytes.length - 22;
+    while (eocdPos > 0 && !(bytes[eocdPos]===0x50 && bytes[eocdPos+1]===0x4B && bytes[eocdPos+2]===0x05 && bytes[eocdPos+3]===0x06)) eocdPos--;
+    if (eocdPos <= 0) return '';
+    const cdOff = bytes[eocdPos+16]|(bytes[eocdPos+17]<<8)|(bytes[eocdPos+18]<<16)|(bytes[eocdPos+19]<<24);
+    const numEntries = bytes[eocdPos+10]|(bytes[eocdPos+11]<<8);
+
+    let docXmlData = null;
+    let p = cdOff;
+    for (let i = 0; i < numEntries && p + 46 <= bytes.length; i++) {
+      const compSize = bytes[p+20]|(bytes[p+21]<<8)|(bytes[p+22]<<16)|(bytes[p+23]<<24);
+      const uncompSize = bytes[p+24]|(bytes[p+25]<<8)|(bytes[p+26]<<16)|(bytes[p+27]<<24);
+      const nameLen = bytes[p+28]|(bytes[p+29]<<8);
+      const extraLen = bytes[p+30]|(bytes[p+31]<<8);
+      const commentLen = bytes[p+32]|(bytes[p+33]<<8);
+      const localOff = bytes[p+42]|(bytes[p+43]<<8)|(bytes[p+44]<<16)|(bytes[p+45]<<24);
+      const method = bytes[p+10]|(bytes[p+11]<<8);
+      const name = new TextDecoder().decode(bytes.slice(p+46, p+46+nameLen));
+      if (name === 'word/document.xml') {
+        const lnLen = bytes[localOff+26]|(bytes[localOff+27]<<8);
+        const leLen = bytes[localOff+28]|(bytes[localOff+29]<<8);
+        const dataStart = localOff + 30 + lnLen + leLen;
+        if (method === 0) {
+          docXmlData = bytes.slice(dataStart, dataStart + compSize);
+        } else {
+          // Deflate — need DecompressionStream (async not available here)
+          // Return empty, let full viewer handle it
+          return '';
+        }
+        break;
+      }
+      p += 46 + nameLen + extraLen + commentLen;
+    }
+    if (!docXmlData) return '';
+
+    const xml = new TextDecoder().decode(docXmlData);
+    // Quick paragraph extraction
+    const parts = [];
+    const paraRe = /<w:p[\s>][\s\S]*?<\/w:p>/g;
+    let match;
+    let count = 0;
+    while ((match = paraRe.exec(xml)) !== null && count < 30) {
+      const paraXml = match[0];
+      // Extract text runs
+      const texts = [];
+      const tRe = /<w:t[^>]*>([^<]*)<\/w:t>/g;
+      let tm;
+      while ((tm = tRe.exec(paraXml)) !== null) texts.push(tm[1]);
+      const text = texts.join('');
+      if (text) {
+        // Check for bold
+        const isBold = paraXml.includes('<w:b/>') || paraXml.includes('<w:b ');
+        const content = escapeHtml(text);
+        parts.push(`<p class="word-p" style="margin:0 0 4pt 0${isBold ? ';font-weight:bold' : ''}">${content}</p>`);
+        count++;
+      }
+    }
+    return parts.join('');
+  } catch {
+    return '';
+  }
+}

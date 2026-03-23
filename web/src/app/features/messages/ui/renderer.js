@@ -9,6 +9,7 @@ import { resolveContactAvatarUrl } from '../../../ui/mobile/contact-core-store.j
 import { downloadAndDecrypt } from '../../media.js';
 import { renderPdfViewer, cleanupPdfViewer, getPdfJsLibrary } from '../../../ui/mobile/viewers/pdf-viewer.js';
 import { isPptxMime, isPptxFilename, renderPptxThumbnail } from '../../../ui/mobile/viewers/pptx-viewer.js';
+import { isWordMime, isWordFilename, renderWordThumbnail } from '../../../ui/mobile/viewers/word-viewer.js';
 import { logMsgEvent } from '../../../lib/logging.js';
 import {
     consumeReplayPlaceholderReveal,
@@ -401,6 +402,41 @@ export class MessageRenderer {
         }
     }
 
+    async _renderWordThumbnail(media, placeholder, container) {
+        try {
+            let buffer = null;
+            const directUrl = media?.previewUrl || media?.preview?.localUrl || media?.localUrl || null;
+            if (directUrl) {
+                const res = await fetch(directUrl);
+                if (!res.ok) throw new Error('word fetch failed');
+                buffer = await res.arrayBuffer();
+            } else if (media?.objectKey && media?.envelope) {
+                const { blob } = await downloadAndDecrypt({
+                    key: media.objectKey,
+                    envelope: media.envelope,
+                    messageKeyB64: media.messageKey_b64 || media.message_key_b64 || null
+                });
+                buffer = await blob.arrayBuffer();
+            } else if (media?.chunked && media?.baseKey && media?.manifestEnvelope) {
+                const { blob } = await downloadAndDecrypt({
+                    key: media.baseKey,
+                    envelope: media.manifestEnvelope,
+                    messageKeyB64: media.messageKey_b64 || media.message_key_b64 || null,
+                    chunked: true
+                });
+                buffer = await blob.arrayBuffer();
+            } else {
+                return; // keep icon fallback
+            }
+            const thumb = renderWordThumbnail(buffer);
+            if (thumb && placeholder.parentNode) {
+                placeholder.replaceWith(thumb);
+            }
+        } catch {
+            // Keep existing icon fallback
+        }
+    }
+
     _attachMediaLoadScrollGuard(el) {
         if (!el) return;
         const eventName = el.tagName === 'VIDEO' ? 'loadedmetadata' : 'load';
@@ -462,6 +498,13 @@ export class MessageRenderer {
             pptxCanvas.dataset.previewState = 'loading';
             container.appendChild(pptxCanvas);
             this._renderPptxThumbnail(media, pptxCanvas, container);
+        } else if (isWordMime(type) || isWordFilename(media?.name)) {
+            const wordDiv = document.createElement('div');
+            wordDiv.className = 'message-file-preview-generic';
+            wordDiv.innerHTML = '<svg class="icon file-type-icon" style="color:#2563eb"><use href="#i-file-text"/></svg>';
+            container.appendChild(wordDiv);
+            // Async: try to render actual preview
+            this._renderWordThumbnail(media, wordDiv, container);
         } else {
             const generic = document.createElement('div');
             generic.className = 'message-file-preview-generic';
