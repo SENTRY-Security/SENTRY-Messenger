@@ -25,6 +25,14 @@ const cssContent = readFileSync(cssPath, 'utf-8');
 const viewerPath = resolve(__dirname, '../web/src/app/ui/mobile/viewers/word-viewer.js');
 const viewerSource = readFileSync(viewerPath, 'utf-8');
 
+// Read JSZip source for DOCX support
+const jszipPath = resolve(__dirname, '../web/src/assets/libs/jszip.min.js');
+const jszipSource = readFileSync(jszipPath, 'utf-8');
+
+// Detect file type
+const isDocx = inputFile.endsWith('.docx') || inputFile.endsWith('.docm') ||
+  (docBytes[0] === 0x50 && docBytes[1] === 0x4B && docBytes[2] === 0x03 && docBytes[3] === 0x04);
+
 // Build a self-contained HTML page that renders the doc
 const html = `<!DOCTYPE html>
 <html><head>
@@ -54,9 +62,9 @@ ${cssContent.split('\n').filter(l => l.includes('word-tbl') || l.includes('word-
 </style>
 </head><body>
 <div id="output">Loading...</div>
+<script>${jszipSource}</script>
 <script>
 // Minimal stubs + capture all console output
-window.JSZip = null;
 const _origLog = console.log, _origInfo = console.info, _origWarn = console.warn;
 console.log = (...a) => { _origLog(...a); };
 console.info = (...a) => { _origLog('[INFO]', ...a); };
@@ -83,11 +91,18 @@ async function main() {
     const bytes = new Uint8Array(ab);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
 
-    const result = renderDocBinary(bytes.buffer);
-    document.getElementById('output').innerHTML = result.html;
+    const isDocx = ${isDocx};
+    if (isDocx) {
+      // DOCX: use JSZip + renderDocxToHtml
+      const zip = await JSZip.loadAsync(ab);
+      const result = await renderDocxToHtml(zip);
+      document.getElementById('output').innerHTML = result.html;
+    } else {
+      // OLE2 .doc
+      const result = renderDocBinary(bytes.buffer);
+      document.getElementById('output').innerHTML = result.html;
+    }
     window.__renderDone = true;
-    // Collect console logs for diagnosis
-    window.__logs = window.__logs || [];
   } catch (e) {
     document.getElementById('output').textContent = 'ERROR: ' + e.message + '\\n' + e.stack;
     window.__renderDone = true;
@@ -106,7 +121,8 @@ const browser = await chromium.launch({
   executablePath: '/root/.cache/ms-playwright/chromium-1194/chrome-linux/chrome',
   args: ['--no-sandbox', '--disable-setuid-sandbox']
 });
-const page = await browser.newPage({ viewport: { width: 420, height: 2000 } });
+const vpWidth = parseInt(process.env.VP_WIDTH) || 420;
+const page = await browser.newPage({ viewport: { width: vpWidth, height: 2000 } });
 await page.goto('file://' + tempHtml);
 // Capture console logs
 page.on('console', msg => console.log('[browser]', msg.text()));
@@ -180,7 +196,7 @@ const diag = await page.evaluate(() => {
 console.log('Diagnostic:', JSON.stringify(diag, null, 2));
 // Get actual content height
 const bodyHeight = await page.evaluate(() => document.body.scrollHeight);
-await page.setViewportSize({ width: 420, height: Math.min(bodyHeight + 40, 8000) });
+await page.setViewportSize({ width: vpWidth, height: Math.min(bodyHeight + 40, 16000) });
 await page.screenshot({ path: outputFile, fullPage: true });
 await browser.close();
 

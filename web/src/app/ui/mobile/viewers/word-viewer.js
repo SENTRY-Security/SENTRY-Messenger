@@ -2190,7 +2190,7 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts, dataStream, oleChar
       if (p.fontSize) css.push(`font-size:${p.fontSize}pt`);
       if (p.color) css.push(`color:${p.color}`);
       if (p.highlight) css.push(`background-color:${p.highlight}`);
-      if (p.fontIdx !== undefined && fonts[p.fontIdx]) css.push(`font-family:"${fonts[p.fontIdx]}",sans-serif`);
+      if (p.fontIdx !== undefined && fonts[p.fontIdx]) css.push(`font-family:'${fonts[p.fontIdx]}',sans-serif`);
       if (p.smallCaps && !p.allCaps) css.push('font-variant:small-caps');
       if (p.allCaps) css.push('text-transform:uppercase');
       if (p.vertAlign) css.push(`vertical-align:${p.vertAlign};font-size:0.75em`);
@@ -2634,7 +2634,7 @@ function runPropsToStyle(props) {
 
   if (props.fontSize) parts.push(`font-size:${props.fontSize}pt`);
   if (props.color) parts.push(`color:${props.color}`);
-  if (props.font) parts.push(`font-family:"${props.font}",sans-serif`);
+  if (props.font) parts.push(`font-family:'${props.font}',sans-serif`);
   if (props.highlight) parts.push(`background-color:${props.highlight}`);
   if (props.vertAlign) parts.push(`vertical-align:${props.vertAlign};font-size:0.75em`);
 
