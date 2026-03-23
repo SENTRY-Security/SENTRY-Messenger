@@ -1627,15 +1627,10 @@ function renderDocBinary(buffer) {
         let tblHasBorders = false;
         let tblIndent = 0;
         let tblCellSpacing = 0;
-        // Build unified column grid from the row with the most columns
-        let tblColWidths = null; // unified column widths for colgroup
         for (const re of tblAllRowEnds) {
           const cw = re.props.cellWidths;
           if (cw) {
-            if (cw.length > tblMaxCols) {
-              tblMaxCols = cw.length;
-              tblColWidths = cw; // use widths from the row with most columns
-            }
+            if (cw.length > tblMaxCols) tblMaxCols = cw.length;
             const w = cw.reduce((s, v) => s + v, 0);
             if (w > maxTblWidth) maxTblWidth = w;
           }
@@ -1656,14 +1651,6 @@ function renderDocBinary(buffer) {
         }
         const tblStyle = tblStyles.length ? ` style="${tblStyles.join(';')}"` : '';
         html.push(`<div class="word-tbl-wrap"><table class="word-tbl${borderedClass}${fixedClass}"${tblStyle}>`);
-        // Generate <colgroup> for consistent column grid across all rows
-        if (tblColWidths && tblColWidths.length > 0) {
-          html.push('<colgroup>');
-          for (const w of tblColWidths) {
-            html.push(w > 0 ? `<col style="width:${w}pt">` : '<col>');
-          }
-          html.push('</colgroup>');
-        }
         inTable = true;
       }
 
@@ -1712,7 +1699,6 @@ function renderDocBinary(buffer) {
               continue;
             }
             const tdStyle = [];
-            // Cell width: only set when no colgroup, or for colspan sum width
             const spanCount = hSpans[ci];
             if (cw && ci < cw.length) {
               if (spanCount > 1) {
@@ -1720,8 +1706,9 @@ function renderDocBinary(buffer) {
                 let sumW = 0;
                 for (let si = ci; si < ci + spanCount && si < cw.length; si++) sumW += cw[si];
                 if (sumW > 0) tdStyle.push(`width:${sumW}pt`);
+              } else {
+                tdStyle.push(`width:${cw[ci]}pt`);
               }
-              // Single cell: colgroup handles width, skip per-cell width
             }
             if (cs2 && ci < cs2.length && cs2[ci]) tdStyle.push(`background-color:${cs2[ci]}`);
             // Per-cell borders (from TC BRC80 structure + color vector override)
@@ -1836,12 +1823,15 @@ function renderDocBinary(buffer) {
                 cellCp += seg.length + 1; segIdx++; continue;
               }
               const tdStyle = [];
-              // Cell width: only for colspan sum (colgroup handles single cells)
               const spanCnt = hSpans2[ci];
-              if (spanCnt > 1 && cw) {
-                let sumW = 0;
-                for (let si = ci; si < ci + spanCnt && si < cw.length; si++) sumW += cw[si];
-                if (sumW > 0) tdStyle.push(`width:${sumW}pt`);
+              if (cw && ci < cw.length) {
+                if (spanCnt > 1) {
+                  let sumW = 0;
+                  for (let si = ci; si < ci + spanCnt && si < cw.length; si++) sumW += cw[si];
+                  if (sumW > 0) tdStyle.push(`width:${sumW}pt`);
+                } else {
+                  tdStyle.push(`width:${cw[ci]}pt`);
+                }
               }
               if (cs2 && ci < cs2.length && cs2[ci]) tdStyle.push(`background-color:${cs2[ci]}`);
               // Per-cell borders (with color vector override)
