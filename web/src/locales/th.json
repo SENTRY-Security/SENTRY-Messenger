@@ -860,6 +860,7 @@
     "excelLoadFailed": "โหลด Excel ล้มเหลว: {{error}}",
     "downloadWord": "ดาวน์โหลด Word",
     "wordLoadFailed": "โหลด Word ล้มเหลว: {{error}}",
+    "wordOldFormat": "ไฟล์นี้เป็นรูปแบบ .doc เก่า รองรับเฉพาะ .docx สำหรับดูตัวอย่างออนไลน์ กรุณาดาวน์โหลดและเปิดด้วยแอปอื่น",
     "downloadZip": "ดาวน์โหลดไฟล์บีบอัด",
     "zipFiles": "ไฟล์",
     "zipLoadFailed": "โหลดไฟล์บีบอัดล้มเหลว: {{error}}",

@@ -863,6 +863,7 @@
     "excelLoadFailed": "Excel load failed: {{error}}",
     "downloadWord": "Download Word",
     "wordLoadFailed": "Word load failed: {{error}}",
+    "wordOldFormat": "This file is in the old .doc format. Only .docx files can be previewed online. Please download and open with another app.",
     "downloadZip": "Download archive",
     "zipFiles": "files",
     "zipLoadFailed": "Archive load failed: {{error}}",

@@ -860,6 +860,7 @@
     "excelLoadFailed": "Excel 로드 실패: {{error}}",
     "downloadWord": "Word 다운로드",
     "wordLoadFailed": "Word 로드 실패: {{error}}",
+    "wordOldFormat": "이 파일은 이전 .doc 형식입니다. .docx 파일만 온라인 미리보기가 가능합니다. 다운로드하여 다른 앱으로 열어주세요.",
     "downloadZip": "압축 파일 다운로드",
     "zipFiles": "개 파일",
     "zipLoadFailed": "압축 파일 로드 실패: {{error}}",

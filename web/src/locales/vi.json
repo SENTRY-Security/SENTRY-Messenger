@@ -860,6 +860,7 @@
     "excelLoadFailed": "Tải Excel thất bại: {{error}}",
     "downloadWord": "Tải Word",
     "wordLoadFailed": "Tải Word thất bại: {{error}}",
+    "wordOldFormat": "Tệp này có định dạng .doc cũ. Chỉ hỗ trợ xem trước .docx trực tuyến. Vui lòng tải xuống và mở bằng ứng dụng khác.",
     "downloadZip": "Tải tệp nén",
     "zipFiles": "tệp",
     "zipLoadFailed": "Tải tệp nén thất bại: {{error}}",

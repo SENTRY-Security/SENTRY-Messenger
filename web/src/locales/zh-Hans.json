@@ -862,6 +862,7 @@
     "excelLoadFailed": "Excel 加载失败：{{error}}",
     "downloadWord": "下载 Word",
     "wordLoadFailed": "Word 加载失败：{{error}}",
+    "wordOldFormat": "此文件为旧版 .doc 格式，仅支持 .docx 在线预览。请下载后使用其他应用打开。",
     "downloadZip": "下载压缩档",
     "zipFiles": "个文件",
     "zipLoadFailed": "压缩档加载失败：{{error}}",

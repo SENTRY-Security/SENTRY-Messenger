@@ -860,6 +860,7 @@
     "excelLoadFailed": "Excel の読み込みに失敗しました：{{error}}",
     "downloadWord": "Word をダウンロード",
     "wordLoadFailed": "Word の読み込みに失敗しました：{{error}}",
+    "wordOldFormat": "このファイルは旧形式の .doc です。.docx ファイルのみオンラインプレビューが可能です。ダウンロードして他のアプリで開いてください。",
     "downloadZip": "アーカイブをダウンロード",
     "zipFiles": "ファイル",
     "zipLoadFailed": "アーカイブの読み込みに失敗しました：{{error}}",

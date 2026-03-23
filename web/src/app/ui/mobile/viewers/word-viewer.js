@@ -736,7 +736,7 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
     log({ wordViewerError: err?.message || err });
     const isOldDoc = err?.message === 'NOT_DOCX';
     const errorMsg = isOldDoc
-      ? t('viewer.wordOldFormat', { fallback: '此檔案為舊版 .doc 格式，僅支援 .docx 線上預覽。請下載後使用其他應用程式開啟。' })
+      ? (t('viewer.wordOldFormat') || '此檔案為舊版 .doc 格式，僅支援 .docx 線上預覽。請下載後使用其他應用程式開啟。')
       : t('viewer.wordLoadFailed', { error: err?.message || err });
     if (stageEl) {
       stageEl.innerHTML = `
