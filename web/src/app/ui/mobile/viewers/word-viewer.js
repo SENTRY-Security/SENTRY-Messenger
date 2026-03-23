@@ -1913,24 +1913,57 @@ function buildRelMap(relsXml) {
 // ── Parse styles.xml ──
 function parseStyles(stylesXml) {
   const styles = {};
-  if (!stylesXml) return styles;
+  const docDefaults = { pPr: {}, rPr: {} };
+  if (!stylesXml) return { styles, docDefaults };
   const doc = parseXml(stylesXml);
+
+  // Parse docDefaults (§17.7.5.1)
+  const defEl = dn(doc, NS_W, 'docDefaults');
+  if (defEl) {
+    const rPrDef = dn(defEl, NS_W, 'rPrDefault');
+    if (rPrDef) { const rPr = dn(rPrDef, NS_W, 'rPr'); if (rPr) Object.assign(docDefaults.rPr, parseRunProps(rPr)); }
+    const pPrDef = dn(defEl, NS_W, 'pPrDefault');
+    if (pPrDef) { const pPr = dn(pPrDef, NS_W, 'pPr'); if (pPr) Object.assign(docDefaults.pPr, parseParagraphProps(pPr)); }
+  }
+
+  // First pass: parse all styles raw
   for (const styleEl of dnAll(doc, NS_W, 'style')) {
     const id = styleEl.getAttribute('w:styleId') || styleEl.getAttributeNS(NS_W, 'styleId');
     if (!id) continue;
     const type = styleEl.getAttribute('w:type') || styleEl.getAttributeNS(NS_W, 'type');
     const nameEl = dn(styleEl, NS_W, 'name');
     const styleName = nameEl?.getAttribute('w:val') || nameEl?.getAttributeNS(NS_W, 'val') || '';
+    const basedOnEl = dn(styleEl, NS_W, 'basedOn');
+    const basedOn = basedOnEl ? (getAttr(basedOnEl, 'val') || '') : '';
     const pPr = dn(styleEl, NS_W, 'pPr');
     const rPr = dn(styleEl, NS_W, 'rPr');
     styles[id] = {
-      type,
-      name: styleName,
-      pPr: pPr ? parseParagraphProps(pPr) : {},
-      rPr: rPr ? parseRunProps(rPr) : {}
+      type, name: styleName, basedOn,
+      _pPr: pPr ? parseParagraphProps(pPr) : {},
+      _rPr: rPr ? parseRunProps(rPr) : {},
+      pPr: null, rPr: null // resolved later
     };
   }
-  return styles;
+
+  // Second pass: resolve basedOn chains (merge parent → child)
+  function resolve(id, visited) {
+    const s = styles[id];
+    if (!s || s.pPr !== null) return s; // already resolved
+    if (visited.has(id)) { s.pPr = { ...s._pPr }; s.rPr = { ...s._rPr }; return s; } // cycle
+    visited.add(id);
+    if (s.basedOn && styles[s.basedOn]) {
+      const parent = resolve(s.basedOn, visited);
+      s.pPr = { ...docDefaults.pPr, ...parent.pPr, ...s._pPr };
+      s.rPr = { ...docDefaults.rPr, ...parent.rPr, ...s._rPr };
+    } else {
+      s.pPr = { ...docDefaults.pPr, ...s._pPr };
+      s.rPr = { ...docDefaults.rPr, ...s._rPr };
+    }
+    return s;
+  }
+  for (const id of Object.keys(styles)) resolve(id, new Set());
+
+  return { styles, docDefaults };
 }
 
 // ── Parse numbering.xml ──
@@ -1947,9 +1980,11 @@ function parseNumbering(numXml) {
       if (ilvl === null) continue;
       const numFmt = dn(lvl, NS_W, 'numFmt');
       const lvlText = dn(lvl, NS_W, 'lvlText');
+      const startEl = dn(lvl, NS_W, 'start');
       levels[ilvl] = {
         numFmt: getAttr(numFmt, 'val') || 'bullet',
-        lvlText: getAttr(lvlText, 'val') || ''
+        lvlText: getAttr(lvlText, 'val') || '',
+        start: startEl ? parseInt(getAttr(startEl, 'val') || '1') : 1
       };
     }
     result.abstractNums[absId] = levels;
@@ -2171,7 +2206,7 @@ async function renderDocxToHtml(zip) {
   const numXml = await zip.file(`${docDir}numbering.xml`)?.async('string').catch(() => null);
 
   const relMap = buildRelMap(relsXml);
-  const styles = parseStyles(stylesXml);
+  const { styles, docDefaults } = parseStyles(stylesXml);
   const numbering = parseNumbering(numXml);
 
   // Load all images as data URLs
@@ -2200,9 +2235,9 @@ async function renderDocxToHtml(zip) {
 
   for (const child of body.children) {
     if (child.localName === 'p') {
-      html.push(renderParagraph(child, styles, numbering, relMap, imageData, listCounters));
+      html.push(renderParagraph(child, styles, numbering, relMap, imageData, listCounters, docDefaults));
     } else if (child.localName === 'tbl') {
-      html.push(renderTable(child, styles, relMap, imageData, numbering, listCounters));
+      html.push(renderTable(child, styles, relMap, imageData, numbering, listCounters, docDefaults));
     } else if (child.localName === 'sectPr') {
       // Section properties (page size, margins) - skip
     }
@@ -2211,7 +2246,7 @@ async function renderDocxToHtml(zip) {
   return { html: html.join(''), objectUrls: Object.values(imageData) };
 }
 
-function renderParagraph(pEl, styles, numbering, relMap, imageData, listCounters) {
+function renderParagraph(pEl, styles, numbering, relMap, imageData, listCounters, docDefaults) {
   const pPr = dn(pEl, NS_W, 'pPr');
   const props = parseParagraphProps(pPr);
 
@@ -2231,7 +2266,9 @@ function renderParagraph(pEl, styles, numbering, relMap, imageData, listCounters
     else if (sName === 'title') headingLevel = 1;
     else if (sName === 'subtitle') headingLevel = 2;
   } else {
-    styleProps = props;
+    // No explicit style — apply docDefaults as base
+    styleProps = { ...docDefaults.pPr, ...props };
+    styleRProps = { ...docDefaults.rPr };
   }
 
   // Build inline style
@@ -2256,13 +2293,27 @@ function renderParagraph(pEl, styles, numbering, relMap, imageData, listCounters
     const levels = absId ? numbering.abstractNums[absId] : null;
     const lvlDef = levels?.[props.ilvl] || levels?.['0'];
     if (lvlDef) {
-      const isBullet = lvlDef.numFmt === 'bullet';
-      if (isBullet) {
-        listPrefix = '<span class="word-list-bullet">\u2022</span>';
+      if (lvlDef.numFmt === 'bullet') {
+        // Use lvlText character if available, otherwise default bullet
+        const bc = lvlDef.lvlText || '\u2022';
+        const bulletChar = bc.replace(/%\d/g, ''); // strip level placeholders
+        listPrefix = `<span class="word-list-bullet">${escapeHtml(bulletChar || '\u2022')}</span>`;
       } else {
         const key = `${props.numId}-${props.ilvl}`;
-        listCounters[key] = (listCounters[key] || 0) + 1;
-        listPrefix = `<span class="word-list-num">${listCounters[key]}.</span>`;
+        if (!listCounters[key]) listCounters[key] = lvlDef.start || 1;
+        const num = listCounters[key]++;
+        // Format number based on numFmt
+        let formatted;
+        const fmt = lvlDef.numFmt;
+        if (fmt === 'upperRoman') formatted = toRoman(num);
+        else if (fmt === 'lowerRoman') formatted = toRoman(num).toLowerCase();
+        else if (fmt === 'upperLetter') formatted = String.fromCharCode(64 + ((num - 1) % 26) + 1);
+        else if (fmt === 'lowerLetter') formatted = String.fromCharCode(96 + ((num - 1) % 26) + 1);
+        else formatted = String(num);
+        // Apply lvlText pattern (e.g., "%1." → "1.", "%1)" → "1)")
+        let text = lvlDef.lvlText || `%1.`;
+        text = text.replace(/%\d/g, formatted);
+        listPrefix = `<span class="word-list-num">${escapeHtml(text)}</span>`;
       }
       if (!styleProps.indentLeft) styleParts.push(`padding-left:${(parseInt(props.ilvl) + 1) * 24}pt`);
     }
@@ -2480,7 +2531,7 @@ function renderOmml(el) {
 }
 
 // ── Table rendering ──
-function renderTable(tblEl, styles, relMap, imageData, numbering, listCounters) {
+function renderTable(tblEl, styles, relMap, imageData, numbering, listCounters, docDefaults) {
   const html = ['<div class="word-tbl-wrap"><table class="word-tbl">'];
   const tblPr = dn(tblEl, NS_W, 'tblPr');
   let tblBorders = true;
@@ -2610,9 +2661,9 @@ function renderTable(tblEl, styles, relMap, imageData, numbering, listCounters) 
       // Cell content (paragraphs)
       for (const cellChild of tc.children) {
         if (cellChild.localName === 'p') {
-          html.push(renderParagraph(cellChild, styles, numbering || {}, relMap, imageData, listCounters || {}));
+          html.push(renderParagraph(cellChild, styles, numbering || {}, relMap, imageData, listCounters || {}, docDefaults));
         } else if (cellChild.localName === 'tbl') {
-          html.push(renderTable(cellChild, styles, relMap, imageData, numbering, listCounters));
+          html.push(renderTable(cellChild, styles, relMap, imageData, numbering, listCounters, docDefaults));
         }
       }
 
