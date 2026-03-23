@@ -1203,7 +1203,8 @@ function drawTextShape(ctx, shape, sx, sy, sw, sh, scale, relMap, slideBgColor) 
         ctx.fillText(seg.text, drawX, segY);
 
         const tw = ctx.measureText(seg.text).width;
-        const ulOffset = Math.max(2, ptToPx(effectiveFs) * scale * 0.12);
+        const segFs = seg.fontSize || maxFs;
+        const ulOffset = Math.max(2, ptToPx(segFs) * scale * 0.12);
         if (seg.underline || isLink) {
           ctx.beginPath();
           ctx.strokeStyle = isLink ? '#0563C1' : (seg.color || '#000');
@@ -1216,7 +1217,7 @@ function drawTextShape(ctx, shape, sx, sy, sw, sh, scale, relMap, slideBgColor) 
           ctx.beginPath();
           ctx.strokeStyle = seg.color || '#000';
           ctx.lineWidth = Math.max(1, scale);
-          const strikeY = segY - ptToPx(effectiveFs) * scale * 0.35;
+          const strikeY = segY - ptToPx(segFs) * scale * 0.35;
           ctx.moveTo(drawX, strikeY);
           ctx.lineTo(drawX + tw, strikeY);
           ctx.stroke();
