@@ -1662,294 +1662,155 @@ function renderDocBinary(buffer) {
         inTable = true;
       }
 
+      // ── Flush helper: render tableRow as <tr> using rowEnd properties ──
+      function flushRow(rowProps) {
+        if (tableRow.length === 0) return;
+        const cw = rowProps?.cellWidths;
+        const cs2 = rowProps?.cellShds;
+        const tcs = rowProps?.cellTCs;
+        const trStyle = [];
+        if (rowProps?.rowHeight) {
+          trStyle.push(`height:${rowProps.rowHeight}pt`);
+          if (rowProps.rowHeightExact) trStyle.push('overflow:hidden');
+        }
+        html.push(`<tr${trStyle.length ? ` style="${trStyle.join(';')}"` : ''}>`);
+        // Horizontal merge spans
+        const hSpans = new Array(tableRow.length).fill(1);
+        const hSkip = new Set();
+        if (tcs) {
+          for (let ci = 0; ci < tableRow.length; ci++) {
+            if (tcs[ci]?.fFirstMerged) {
+              let span = 1;
+              for (let ni = ci + 1; ni < tableRow.length; ni++) {
+                if (tcs[ni]?.fMerged) { span++; hSkip.add(ni); } else break;
+              }
+              hSpans[ci] = span;
+            }
+          }
+        }
+        const totalDocRows = tblAllRowEnds.length;
+        for (let ci = 0; ci < tableRow.length; ci++) {
+          if (hSkip.has(ci)) continue;
+          const cell = tableRow[ci];
+          const tc = tcs?.[ci];
+          if (tc?.fVertMerge && !tc.fVertRestart) {
+            html.push('<td class="word-tc" style="display:none"></td>');
+            continue;
+          }
+          const tdStyle = [];
+          const spanCount = hSpans[ci];
+          if (cw && ci < cw.length) {
+            if (spanCount > 1) {
+              let sumW = 0;
+              for (let si2 = ci; si2 < ci + spanCount && si2 < cw.length; si2++) sumW += cw[si2];
+              if (sumW > 0) tdStyle.push(`width:${sumW}pt`);
+            } else {
+              tdStyle.push(`width:${cw[ci]}pt`);
+            }
+          }
+          if (cs2 && ci < cs2.length && cs2[ci]) tdStyle.push(`background-color:${cs2[ci]}`);
+          let hasCellBorder = false;
+          if (tc?.borders) {
+            const b = tc.borders;
+            const topColor = rowProps?._brcTopCv?.[ci] || b.top?.color;
+            const leftColor = rowProps?._brcLeftCv?.[ci] || b.left?.color;
+            const bottomColor = rowProps?._brcBottomCv?.[ci] || b.bottom?.color;
+            const rightColor = rowProps?._brcRightCv?.[ci] || b.right?.color;
+            if (b.top) { tdStyle.push(`border-top:${b.top.width}px ${b.top.style} ${topColor}`); hasCellBorder = true; }
+            if (b.bottom) { tdStyle.push(`border-bottom:${b.bottom.width}px ${b.bottom.style} ${bottomColor}`); hasCellBorder = true; }
+            if (b.left) { tdStyle.push(`border-left:${b.left.width}px ${b.left.style} ${leftColor}`); hasCellBorder = true; }
+            if (b.right) { tdStyle.push(`border-right:${b.right.width}px ${b.right.style} ${rightColor}`); hasCellBorder = true; }
+          }
+          if (!hasCellBorder && rowProps?.tableBorders) {
+            const isFirstRow = tblRowIdx === 0;
+            const isLastRow = tblRowIdx === totalDocRows - 1;
+            const isFirstCol = ci === 0;
+            const isLastCol = ci === tableRow.length - 1;
+            const topB = isFirstRow ? rowProps.tblBorderTop : rowProps.tblBorderInsideH;
+            const botB = isLastRow ? rowProps.tblBorderBottom : rowProps.tblBorderInsideH;
+            const leftB = isFirstCol ? rowProps.tblBorderLeft : rowProps.tblBorderInsideV;
+            const rightB = isLastCol ? rowProps.tblBorderRight : rowProps.tblBorderInsideV;
+            if (topB) tdStyle.push(`border-top:${topB}`);
+            if (botB) tdStyle.push(`border-bottom:${botB}`);
+            if (leftB) tdStyle.push(`border-left:${leftB}`);
+            if (rightB) tdStyle.push(`border-right:${rightB}`);
+          }
+          if (rowProps?.cellPadding) {
+            const cp2 = rowProps.cellPadding;
+            if (cp2.top) tdStyle.push(`padding-top:${cp2.top}pt`);
+            if (cp2.bottom) tdStyle.push(`padding-bottom:${cp2.bottom}pt`);
+            if (cp2.left) tdStyle.push(`padding-left:${cp2.left}pt`);
+            if (cp2.right) tdStyle.push(`padding-right:${cp2.right}pt`);
+          }
+          if (tc?.fVertical) tdStyle.push('writing-mode:vertical-lr', 'transform:rotate(180deg)');
+          else if (tc?.fBackward) tdStyle.push('writing-mode:vertical-rl');
+          let csAttr = '';
+          if (spanCount > 1) {
+            csAttr = ` colspan="${spanCount}"`;
+          } else {
+            const visibleCount = tableRow.length - hSkip.size;
+            const isLastVisible = (() => { for (let k = ci + 1; k < tableRow.length; k++) { if (!hSkip.has(k)) return false; } return true; })();
+            if (isLastVisible && visibleCount < tblMaxCols) {
+              const usedCols = visibleCount + [...hSkip].reduce((sum, idx) => sum + (hSpans[idx] > 1 ? hSpans[idx] - 1 : 0), 0);
+              const remaining = tblMaxCols - usedCols;
+              if (remaining > 0) csAttr = ` colspan="${remaining + 1}"`;
+            }
+          }
+          let rsAttr = '';
+          if (tc?.fVertRestart && tblAllRowEnds.length > 0) {
+            let span = 1;
+            for (let nr = tblRowIdx + 1; nr < tblAllRowEnds.length; nr++) {
+              const ntc = tblAllRowEnds[nr].props.cellTCs?.[ci];
+              if (ntc?.fVertMerge && !ntc.fVertRestart) span++;
+              else break;
+            }
+            if (span > 1) rsAttr = ` rowspan="${span}"`;
+          }
+          const sa = tdStyle.length ? ` style="${tdStyle.join(';')}"` : '';
+          html.push(`<td class="word-tc"${rsAttr}${csAttr}${sa}>${cell.html}</td>`);
+        }
+        html.push('</tr>');
+        tableRow = [];
+      }
+
       if (paraProps.tableRowEnd) {
         // Row-end paragraph — flush accumulated tableRow cells as a <tr>
-        const cw = paraProps.cellWidths;
-        const cs2 = paraProps.cellShds;
-        const tcs = paraProps.cellTCs;
-        if (tableRow.length > 0) {
-          // Row height
-          const trStyle = [];
-          if (paraProps.rowHeight) {
-            trStyle.push(`height:${paraProps.rowHeight}pt`);
-            if (paraProps.rowHeightExact) trStyle.push('overflow:hidden');
-          }
-          const trAttr = trStyle.length ? ` style="${trStyle.join(';')}"` : '';
-          html.push(`<tr${trAttr}>`);
-
-          // Pre-calculate horizontal merge spans (fFirstMerged + fMerged)
-          const hSpans = new Array(tableRow.length).fill(1);
-          const hSkip = new Set();
-          if (tcs) {
-            for (let ci = 0; ci < tableRow.length; ci++) {
-              if (tcs[ci]?.fFirstMerged) {
-                let span = 1;
-                for (let ni = ci + 1; ni < tableRow.length; ni++) {
-                  if (tcs[ni]?.fMerged) { span++; hSkip.add(ni); }
-                  else break;
-                }
-                hSpans[ci] = span;
-              }
-            }
-          }
-
-          // Determine table row/col count for tblBorders fallback
-          const totalDocRows = tblAllRowEnds.length;
-          const visibleCellCount = tableRow.length - hSkip.size;
-          for (let ci = 0; ci < tableRow.length; ci++) {
-            // Skip horizontal merge continuation cells
-            if (hSkip.has(ci)) continue;
-            const cell = tableRow[ci];
-            const tc = tcs?.[ci];
-            // Vertical merge continuation → hide
-            if (tc?.fVertMerge && !tc.fVertRestart) {
-              html.push('<td class="word-tc" style="display:none"></td>');
-              continue;
-            }
-            const tdStyle = [];
-            const spanCount = hSpans[ci];
-            if (cw && ci < cw.length) {
-              if (spanCount > 1) {
-                // colspan: sum widths of all spanned columns
-                let sumW = 0;
-                for (let si = ci; si < ci + spanCount && si < cw.length; si++) sumW += cw[si];
-                if (sumW > 0) tdStyle.push(`width:${sumW}pt`);
-              } else {
-                tdStyle.push(`width:${cw[ci]}pt`);
-              }
-            }
-            if (cs2 && ci < cs2.length && cs2[ci]) tdStyle.push(`background-color:${cs2[ci]}`);
-            // Per-cell borders (from TC BRC80 structure + color vector override)
-            let hasCellBorder = false;
-            if (tc?.borders) {
-              const b = tc.borders;
-              const topColor = paraProps._brcTopCv?.[ci] || b.top?.color;
-              const leftColor = paraProps._brcLeftCv?.[ci] || b.left?.color;
-              const bottomColor = paraProps._brcBottomCv?.[ci] || b.bottom?.color;
-              const rightColor = paraProps._brcRightCv?.[ci] || b.right?.color;
-              if (b.top) { tdStyle.push(`border-top:${b.top.width}px ${b.top.style} ${topColor}`); hasCellBorder = true; }
-              if (b.bottom) { tdStyle.push(`border-bottom:${b.bottom.width}px ${b.bottom.style} ${bottomColor}`); hasCellBorder = true; }
-              if (b.left) { tdStyle.push(`border-left:${b.left.width}px ${b.left.style} ${leftColor}`); hasCellBorder = true; }
-              if (b.right) { tdStyle.push(`border-right:${b.right.width}px ${b.right.style} ${rightColor}`); hasCellBorder = true; }
-            }
-            // Fall back to tblBorders (granular insideH/insideV) when no TC borders
-            if (!hasCellBorder && paraProps.tableBorders) {
-              const isFirstRow = tblRowIdx === 0;
-              const isLastRow = tblRowIdx === totalDocRows - 1;
-              const isFirstCol = ci === 0;
-              const isLastCol = ci === tableRow.length - 1;
-              const topB = isFirstRow ? paraProps.tblBorderTop : paraProps.tblBorderInsideH;
-              const botB = isLastRow ? paraProps.tblBorderBottom : paraProps.tblBorderInsideH;
-              const leftB = isFirstCol ? paraProps.tblBorderLeft : paraProps.tblBorderInsideV;
-              const rightB = isLastCol ? paraProps.tblBorderRight : paraProps.tblBorderInsideV;
-              if (topB) tdStyle.push(`border-top:${topB}`);
-              if (botB) tdStyle.push(`border-bottom:${botB}`);
-              if (leftB) tdStyle.push(`border-left:${leftB}`);
-              if (rightB) tdStyle.push(`border-right:${rightB}`);
-            }
-            // Cell padding (from sprmTCellPadding)
-            if (paraProps.cellPadding) {
-              const cp = paraProps.cellPadding;
-              if (cp.top) tdStyle.push(`padding-top:${cp.top}pt`);
-              if (cp.bottom) tdStyle.push(`padding-bottom:${cp.bottom}pt`);
-              if (cp.left) tdStyle.push(`padding-left:${cp.left}pt`);
-              if (cp.right) tdStyle.push(`padding-right:${cp.right}pt`);
-            }
-            // Text direction (from TC flags: fVertical, fBackward)
-            if (tc?.fVertical) {
-              tdStyle.push('writing-mode:vertical-lr', 'transform:rotate(180deg)');
-            } else if (tc?.fBackward) {
-              tdStyle.push('writing-mode:vertical-rl');
-            }
-            // Horizontal merge colspan
-            let csAttr = '';
-            if (spanCount > 1) {
-              csAttr = ` colspan="${spanCount}"`;
-            } else {
-              // Last visible cell spans remaining grid columns when row has fewer cells
-              const visibleCount = tableRow.length - hSkip.size;
-              const isLastVisible = (() => { for (let k = ci + 1; k < tableRow.length; k++) { if (!hSkip.has(k)) return false; } return true; })();
-              if (isLastVisible && visibleCount < tblMaxCols) {
-                // usedCols = grid columns consumed by all visible cells + extra from hmerge
-                const usedCols = visibleCount + [...hSkip].reduce((sum, idx) => sum + (hSpans[idx] > 1 ? hSpans[idx] - 1 : 0), 0);
-                // remaining = extra grid columns this last cell must span beyond its own 1
-                const remaining = tblMaxCols - usedCols;
-                if (remaining > 0) csAttr = ` colspan="${remaining + 1}"`;
-              }
-            }
-            // Vertical merge start → rowspan
-            let rsAttr = '';
-            if (tc?.fVertRestart && tblAllRowEnds.length > 0) {
-              let span = 1;
-              for (let nr = tblRowIdx + 1; nr < tblAllRowEnds.length; nr++) {
-                const ntc = tblAllRowEnds[nr].props.cellTCs?.[ci];
-                if (ntc?.fVertMerge && !ntc.fVertRestart) span++;
-                else break;
-              }
-              if (span > 1) rsAttr = ` rowspan="${span}"`;
-            }
-            const sa = tdStyle.length ? ` style="${tdStyle.join(';')}"` : '';
-            html.push(`<td class="word-tc"${rsAttr}${csAttr}${sa}>${cell.html}</td>`);
-          }
-          html.push('</tr>');
-        }
-        tableRow = [];
+        flushRow(paraProps);
         tblRowIdx++;
       } else {
         // Cell content paragraph — accumulate
         const cellMarkCount = (paraText.match(/\x07/g) || []).length;
         if (cellMarkCount > 1) {
-          // Single-paragraph with multiple cells (old format)
-          // Each row = cellCount data cells + 1 row-end marker cell (\x07)
+          // ── Unified multi-cell paragraph handler ──
+          // Split by \x07 to get segments. Row boundaries are detected by empty
+          // segments (two consecutive \x07 = cell-end + row-end mark).
+          // Each detected row is flushed via flushRow() using tblAllRowEnds[tblRowIdx].
           const segments = paraText.split('\x07');
           let cellCp = cpStart;
-          // Find rowEndRuns for this paragraph, filtered to the SAME table grid.
-          const curBound0 = tblAllRowEnds[0]?.props._cellBoundaries?.[0];
-          const rowEndRuns = paraRuns.filter(r => {
-            if (!r.props.tableRowEnd || r.cpStart < cpStart || r.cpStart > cpEnd + 200) return false;
-            // Only include rowEnds from the same table grid
-            const rb0 = r.props._cellBoundaries?.[0];
-            if (curBound0 !== undefined && rb0 !== undefined && rb0 !== curBound0) return false;
-            return true;
-          });
-          let segIdx = 0;
-          for (let ri = 0; ri < rowEndRuns.length && segIdx < segments.length; ri++) {
-            const reProps = rowEndRuns[ri].props;
-            const cellCount = reProps.cellWidths?.length || reProps.cellCount || 4;
-            // Check if we have enough segments to fill this entire row.
-            const segsNeeded = cellCount + 1; // data cells + row-end marker
-            const segsAvail = segments.length - segIdx;
-            if (segsAvail < segsNeeded) {
-              // Not enough segments — push remaining as partial cells to tableRow
-              // for the next tableRowEnd paragraph to flush
-              while (segIdx < segments.length) {
-                const seg = segments[segIdx];
-                const segText = seg.replace(/[\x01-\x08\x13-\x15]/g, '').trim();
-                if (segText) {
-                  const cellHtml = renderFormattedRun(seg, cellCp, charRuns, fonts, dataStream, oleChart, artImages, paraProps._charProps);
-                  tableRow.push({ html: cellHtml, closed: false });
-                }
-                cellCp += seg.length + 1;
-                segIdx++;
+
+          for (let si = 0; si < segments.length; si++) {
+            const seg = segments[si];
+            if (seg.length === 0 && tableRow.length > 0) {
+              // Empty segment = row-end marker → flush accumulated cells as <tr>
+              if (tblRowIdx < tblAllRowEnds.length) {
+                flushRow(tblAllRowEnds[tblRowIdx].props);
+                tblRowIdx++;
+              } else {
+                // No more rowEnd metadata — flush as plain row
+                flushRow(paraProps);
+                tblRowIdx++;
               }
-              break; // exit rowEnd loop — let subsequent paragraphs fill remaining cells
+            } else if (si < segments.length - 1) {
+              // Data segment — push as cell
+              const cellHtml = renderFormattedRun(seg, cellCp, charRuns, fonts, dataStream, oleChart, artImages, paraProps._charProps);
+              tableRow.push({ html: cellHtml, closed: true });
+            } else if (seg.length > 0) {
+              // Last segment with content (no trailing \x07) — start of next row's cell
+              const cellHtml = renderFormattedRun(seg, cellCp, charRuns, fonts, dataStream, oleChart, artImages, paraProps._charProps);
+              tableRow.push({ html: cellHtml, closed: false });
             }
-            const cw = paraProps.cellWidths || reProps.cellWidths;
-            const cs2 = paraProps.cellShds || reProps.cellShds;
-            const tcs = reProps.cellTCs;
-            // Row height
-            const trS = [];
-            if (reProps.rowHeight) { trS.push(`height:${reProps.rowHeight}pt`); if (reProps.rowHeightExact) trS.push('overflow:hidden'); }
-            html.push(`<tr${trS.length ? ` style="${trS.join(';')}"` : ''}>`);
-            // Pre-calc horizontal merge
-            const hSpans2 = new Array(cellCount).fill(1);
-            const hSkip2 = new Set();
-            if (tcs) {
-              for (let ci2 = 0; ci2 < cellCount; ci2++) {
-                if (tcs[ci2]?.fFirstMerged) {
-                  let sp = 1;
-                  for (let ni = ci2 + 1; ni < cellCount; ni++) { if (tcs[ni]?.fMerged) { sp++; hSkip2.add(ni); } else break; }
-                  hSpans2[ci2] = sp;
-                }
-              }
-            }
-            for (let ci = 0; ci < cellCount && segIdx < segments.length; ci++) {
-              const seg = segments[segIdx];
-              if (hSkip2.has(ci)) { cellCp += seg.length + 1; segIdx++; continue; }
-              const tc = tcs?.[ci];
-              if (tc?.fVertMerge && !tc.fVertRestart) {
-                html.push('<td class="word-tc" style="display:none"></td>');
-                cellCp += seg.length + 1; segIdx++; continue;
-              }
-              const tdStyle = [];
-              const spanCnt = hSpans2[ci];
-              if (cw && ci < cw.length) {
-                if (spanCnt > 1) {
-                  let sumW = 0;
-                  for (let si = ci; si < ci + spanCnt && si < cw.length; si++) sumW += cw[si];
-                  if (sumW > 0) tdStyle.push(`width:${sumW}pt`);
-                } else {
-                  tdStyle.push(`width:${cw[ci]}pt`);
-                }
-              }
-              if (cs2 && ci < cs2.length && cs2[ci]) tdStyle.push(`background-color:${cs2[ci]}`);
-              // Per-cell borders (with color vector override)
-              let hasCellBdr = false;
-              if (tc?.borders) {
-                const b = tc.borders;
-                const topC = reProps._brcTopCv?.[ci] || b.top?.color;
-                const leftC = reProps._brcLeftCv?.[ci] || b.left?.color;
-                const bottomC = reProps._brcBottomCv?.[ci] || b.bottom?.color;
-                const rightC = reProps._brcRightCv?.[ci] || b.right?.color;
-                if (b.top) { tdStyle.push(`border-top:${b.top.width}px ${b.top.style} ${topC}`); hasCellBdr = true; }
-                if (b.bottom) { tdStyle.push(`border-bottom:${b.bottom.width}px ${b.bottom.style} ${bottomC}`); hasCellBdr = true; }
-                if (b.left) { tdStyle.push(`border-left:${b.left.width}px ${b.left.style} ${leftC}`); hasCellBdr = true; }
-                if (b.right) { tdStyle.push(`border-right:${b.right.width}px ${b.right.style} ${rightC}`); hasCellBdr = true; }
-              }
-              // tblBorders fallback (granular insideH/insideV)
-              if (!hasCellBdr && reProps.tableBorders) {
-                const isFirstRow = ri === 0;
-                const isLastRow = ri === rowEndRuns.length - 1;
-                const isFirstCol = ci === 0;
-                const isLastCol = ci === cellCount - 1;
-                const topB = isFirstRow ? reProps.tblBorderTop : reProps.tblBorderInsideH;
-                const botB = isLastRow ? reProps.tblBorderBottom : reProps.tblBorderInsideH;
-                const leftB = isFirstCol ? reProps.tblBorderLeft : reProps.tblBorderInsideV;
-                const rightB = isLastCol ? reProps.tblBorderRight : reProps.tblBorderInsideV;
-                if (topB) tdStyle.push(`border-top:${topB}`);
-                if (botB) tdStyle.push(`border-bottom:${botB}`);
-                if (leftB) tdStyle.push(`border-left:${leftB}`);
-                if (rightB) tdStyle.push(`border-right:${rightB}`);
-              }
-              // Cell padding
-              if (reProps.cellPadding) {
-                const cp = reProps.cellPadding;
-                if (cp.top) tdStyle.push(`padding-top:${cp.top}pt`);
-                if (cp.bottom) tdStyle.push(`padding-bottom:${cp.bottom}pt`);
-                if (cp.left) tdStyle.push(`padding-left:${cp.left}pt`);
-                if (cp.right) tdStyle.push(`padding-right:${cp.right}pt`);
-              }
-              // Text direction
-              if (tc?.fVertical) tdStyle.push('writing-mode:vertical-lr', 'transform:rotate(180deg)');
-              else if (tc?.fBackward) tdStyle.push('writing-mode:vertical-rl');
-              // Horizontal merge
-              let csAttr = '';
-              if (spanCnt > 1) csAttr = ` colspan="${spanCnt}"`;
-              else {
-                // Last visible cell spans remaining grid columns
-                const visCnt = cellCount - hSkip2.size;
-                const isLastVis = (() => { for (let k = ci + 1; k < cellCount; k++) { if (!hSkip2.has(k)) return false; } return true; })();
-                if (isLastVis && visCnt < tblMaxCols) {
-                  const remaining = tblMaxCols - visCnt;
-                  if (remaining > 0) csAttr = ` colspan="${remaining + 1}"`;
-                }
-              }
-              // Vertical merge
-              let rsAttr = '';
-              if (tc?.fVertRestart) {
-                let span = 1;
-                for (let nr = ri + 1; nr < rowEndRuns.length; nr++) {
-                  const ntc = rowEndRuns[nr].props.cellTCs?.[ci];
-                  if (ntc?.fVertMerge && !ntc.fVertRestart) span++;
-                  else break;
-                }
-                if (span > 1) rsAttr = ` rowspan="${span}"`;
-              }
-              const sa = tdStyle.length ? ` style="${tdStyle.join(';')}"` : '';
-              html.push(`<td class="word-tc"${rsAttr}${csAttr}${sa}>${renderFormattedRun(seg, cellCp, charRuns, fonts, dataStream, oleChart, artImages, paraProps._charProps)}</td>`);
-              cellCp += seg.length + 1;
-              segIdx++;
-            }
-            html.push('</tr>');
-            tblRowIdx++;
-            // Skip row-end marker cell
-            if (segIdx < segments.length) {
-              cellCp += segments[segIdx].length + 1;
-              segIdx++;
-            }
+            cellCp += seg.length + 1;
           }
-          // Any remaining segments (after all rowEnds or partial row) are already
-          // pushed to tableRow by the partial-row handler above.
         } else if (cellMarkCount === 1) {
           // Single cell end (\x07) — this paragraph is one cell in a multi-paragraph table
           const cellText = paraText.replace(/\x07$/, '');
@@ -3020,7 +2881,7 @@ function renderRuns(parentEl, styleRProps, styles, relMap, imageData) {
       // Text content — collect ALL w:t elements (runs can have multiple)
       const textEls = dnAll(child, NS_W, 't');
       if (textEls.length) {
-        const text = textEls.map(t => t.textContent || '').join('');
+        const text = Array.from(textEls).map(t => t.textContent || '').join('');
         const style = runPropsToStyle(runProps);
         if (style) {
           parts.push(`<span style="${style}">${escapeHtml(text)}</span>`);
