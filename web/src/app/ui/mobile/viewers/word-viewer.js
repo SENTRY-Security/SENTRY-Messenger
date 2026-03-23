@@ -943,7 +943,19 @@ function renderDocBinary(buffer) {
     // FibRgFcLcb97 index 13 = PlcfBtePapx
     const papxPair = fib.fibPair(13);
     paraRuns = parseParaFormatting(wordDoc, tableStream, papxPair.fc, papxPair.lcb, pieces);
-  } catch { /* proceed without paragraph formatting */ }
+  } catch (e) { console.warn('[word-viewer] PAPX parse error:', e); }
+
+  // Diagnostic (temporary) — helps identify parsing issues
+  console.info('[word-viewer] Parse results:', {
+    textLen: text.length, pieces: pieces.length,
+    charRuns: charRuns.length, paraRuns: paraRuns.length,
+    styles: styles.size, hasDataStream: !!dataStream,
+    inTableCount: paraRuns.filter(r => r.props.inTable).length,
+    rowEndCount: paraRuns.filter(r => r.props.tableRowEnd).length,
+    picLocationCount: charRuns.filter(r => r.props.picLocation !== undefined).length,
+    ilfoCount: paraRuns.filter(r => r.props.ilfo > 0).length,
+    cellMarkCount: (text.match(/\x07/g) || []).length,
+  });
 
   // DOP page margins (FIB index 31 = fcDop/lcbDop)
   // Note: DOP field offsets vary by Word version; disabled until verified
