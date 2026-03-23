@@ -187,168 +187,429 @@ function parseOLE2(buffer) {
   return { entries, getStream };
 }
 
-// ── Extract text from Word Binary (.doc) ──
-function extractDocText(buffer) {
-  const ole2 = parseOLE2(buffer);
-  const wordDoc = ole2.getStream('WordDocument');
-  if (!wordDoc) throw new Error('WordDocument stream not found');
+// ── Parse FIB (File Information Block) from WordDocument stream ──
+function parseFIB(wordDoc) {
+  const v = new DataView(wordDoc.buffer, wordDoc.byteOffset, wordDoc.byteLength);
+  if (v.getUint16(0, true) !== 0xA5EC) throw new Error('Invalid Word document magic');
+  const flags = v.getUint16(0x0A, true);
+  if (flags & 0x0100) throw new Error('ENCRYPTED');
 
-  const wdView = new DataView(wordDoc.buffer, wordDoc.byteOffset, wordDoc.byteLength);
-  const wIdent = wdView.getUint16(0, true);
-  if (wIdent !== 0xA5EC) throw new Error('Invalid Word document magic');
-
-  const flags = wdView.getUint16(0x0A, true);
-  const fEncrypted = !!(flags & 0x0100);
-  if (fEncrypted) throw new Error('ENCRYPTED');
-  const fWhichTblStm = !!(flags & 0x0200);
-
-  // Read FIB structure offsets
-  // fibBase: 0x00-0x1F (32 bytes)
-  // csw at 0x20, then fibRgW (csw * 2 bytes)
-  // cslw, then fibRgLw (cslw * 4 bytes)
-  // cbRgFcLcb, then fibRgFcLcb pairs (each 8 bytes: fc + lcb)
   let off = 0x20;
-  if (off + 2 > wordDoc.length) throw new Error('FIB too short');
-  const csw = wdView.getUint16(off, true);
-  off += 2 + csw * 2;
-  if (off + 2 > wordDoc.length) throw new Error('FIB too short');
-  const cslw = wdView.getUint16(off, true);
-  off += 2 + cslw * 4;
-  if (off + 2 > wordDoc.length) throw new Error('FIB too short');
-  const cbRgFcLcb = wdView.getUint16(off, true);
-  off += 2;
+  const csw = v.getUint16(off, true); off += 2 + csw * 2;
+  const cslw = v.getUint16(off, true); off += 2 + cslw * 4;
+  const cbRgFcLcb = v.getUint16(off, true); off += 2;
 
-  // CLX is at index 66 in fibRgFcLcb (Word 97+)
-  const clxIndex = 66;
-  if (clxIndex >= cbRgFcLcb) {
-    // Fallback: try raw text extraction
-    return fallbackTextExtract(wordDoc);
-  }
+  const fibPair = (idx) => idx < cbRgFcLcb
+    ? { fc: v.getUint32(off + idx * 8, true), lcb: v.getUint32(off + idx * 8 + 4, true) }
+    : { fc: 0, lcb: 0 };
 
-  const fcClx = wdView.getUint32(off + clxIndex * 8, true);
-  const lcbClx = wdView.getUint32(off + clxIndex * 8 + 4, true);
-  if (lcbClx === 0) return fallbackTextExtract(wordDoc);
+  return { flags, fibPair, tableName: (flags & 0x0200) ? '1Table' : '0Table' };
+}
 
-  // Get table stream
-  const tableName = fWhichTblStm ? '1Table' : '0Table';
-  const tableStream = ole2.getStream(tableName);
-  if (!tableStream || fcClx + lcbClx > tableStream.length) {
-    return fallbackTextExtract(wordDoc);
-  }
-
-  // Parse CLX: skip Prc records (0x01), find Pcdt (0x02)
-  let clxOff = fcClx;
+// ── Parse piece table → text + CP↔FC mapping ──
+function parsePieceTable(wordDoc, tableStream, fcClx, lcbClx) {
   const tsView = new DataView(tableStream.buffer, tableStream.byteOffset, tableStream.byteLength);
+  let clxOff = fcClx;
   while (clxOff < fcClx + lcbClx) {
     const type = tableStream[clxOff];
-    if (type === 0x01) {
-      const cbGrpprl = tsView.getUint16(clxOff + 1, true);
-      clxOff += 3 + cbGrpprl;
-    } else if (type === 0x02) {
-      clxOff += 1;
-      break;
-    } else {
-      break;
-    }
+    if (type === 0x01) { clxOff += 3 + tsView.getUint16(clxOff + 1, true); }
+    else if (type === 0x02) { clxOff += 1; break; }
+    else break;
   }
-
-  if (clxOff + 4 > tableStream.length) return fallbackTextExtract(wordDoc);
-  const lcbPcdt = tsView.getUint32(clxOff, true);
-  clxOff += 4;
-
-  // Piece table: (n+1) CPs (uint32) + n PCDs (8 bytes each)
-  // lcbPcdt = (n+1)*4 + n*8 → n = (lcbPcdt - 4) / 12
+  if (clxOff + 4 > tableStream.length) return null;
+  const lcbPcdt = tsView.getUint32(clxOff, true); clxOff += 4;
   const n = Math.floor((lcbPcdt - 4) / 12);
-  if (n <= 0) return fallbackTextExtract(wordDoc);
+  if (n <= 0) return null;
 
-  // Read character positions
   const cps = [];
-  for (let i = 0; i <= n; i++) {
-    cps.push(tsView.getUint32(clxOff + i * 4, true));
-  }
-
-  // Read piece descriptors and extract text
+  for (let i = 0; i <= n; i++) cps.push(tsView.getUint32(clxOff + i * 4, true));
   const pcdBase = clxOff + (n + 1) * 4;
-  const textParts = [];
+
+  const pieces = [];
+  const textChunks = [];
   for (let i = 0; i < n; i++) {
     const charCount = cps[i + 1] - cps[i];
     if (charCount <= 0) continue;
     const pcdOff = pcdBase + i * 8;
     if (pcdOff + 8 > tableStream.length) break;
-    const fc = tsView.getUint32(pcdOff + 2, true);
-    const fCompressed = !!(fc & 0x40000000);
-    const fcValue = fc & 0x3FFFFFFF;
+    const fcRaw = tsView.getUint32(pcdOff + 2, true);
+    const fCompressed = !!(fcRaw & 0x40000000);
+    const fcValue = fcRaw & 0x3FFFFFFF;
+    const fcStart = fCompressed ? fcValue / 2 : fcValue;
 
+    pieces.push({ cpStart: cps[i], cpEnd: cps[i + 1], fcStart, fCompressed });
     try {
       if (fCompressed) {
-        // ANSI text (1 byte per char)
-        const byteOff = fcValue / 2;
-        if (byteOff + charCount <= wordDoc.length) {
-          const bytes = wordDoc.slice(byteOff, byteOff + charCount);
-          textParts.push(new TextDecoder('windows-1252').decode(bytes));
+        if (fcStart + charCount <= wordDoc.length) {
+          textChunks.push(new TextDecoder('windows-1252').decode(wordDoc.slice(fcStart, fcStart + charCount)));
         }
       } else {
-        // Unicode text (2 bytes per char)
-        if (fcValue + charCount * 2 <= wordDoc.length) {
-          const bytes = wordDoc.slice(fcValue, fcValue + charCount * 2);
-          textParts.push(new TextDecoder('utf-16le').decode(bytes));
+        if (fcStart + charCount * 2 <= wordDoc.length) {
+          textChunks.push(new TextDecoder('utf-16le').decode(wordDoc.slice(fcStart, fcStart + charCount * 2)));
         }
       }
-    } catch { /* skip bad piece */ }
+    } catch { textChunks.push(''); }
   }
-
-  if (textParts.length === 0) return fallbackTextExtract(wordDoc);
-  return textParts.join('');
+  return { text: textChunks.join(''), pieces };
 }
 
-// Fallback: scan binary for readable text sequences
-function fallbackTextExtract(data) {
-  // Try to find text after FIB (typically starts at 0x200 or later)
+// ── Convert FC (file character position) to CP (character position) ──
+function fcToCp(fc, pieces) {
+  for (const p of pieces) {
+    let fcEnd;
+    if (p.fCompressed) {
+      fcEnd = p.fcStart + (p.cpEnd - p.cpStart);
+      if (fc >= p.fcStart && fc < fcEnd) return p.cpStart + (fc - p.fcStart);
+    } else {
+      fcEnd = p.fcStart + (p.cpEnd - p.cpStart) * 2;
+      if (fc >= p.fcStart && fc < fcEnd) return p.cpStart + Math.floor((fc - p.fcStart) / 2);
+    }
+  }
+  return -1;
+}
+
+// ── Parse Sprm (Single Property Modifier) operations ──
+function parseSprms(data, offset, length) {
+  const props = {};
+  let pos = offset;
+  const end = offset + length;
+  while (pos + 2 <= end) {
+    const sprm = data[pos] | (data[pos + 1] << 8);
+    pos += 2;
+    const spra = (sprm >> 13) & 0x07;
+    let opSize;
+    switch (spra) {
+      case 0: case 1: opSize = 1; break;
+      case 2: case 4: case 5: opSize = 2; break;
+      case 3: opSize = 4; break;
+      case 7: opSize = 3; break;
+      case 6: opSize = pos < end ? (data[pos++]) : 0; break;
+      default: opSize = 0;
+    }
+    if (pos + opSize > end) break;
+
+    switch (sprm) {
+      // Character properties
+      case 0x0835: props.bold = !!data[pos]; break;
+      case 0x0836: props.italic = !!data[pos]; break;
+      case 0x0837: props.strike = !!data[pos]; break;
+      case 0x2A3E: props.underline = data[pos] !== 0; break;
+      case 0x4A43: props.fontSize = (data[pos] | (data[pos + 1] << 8)) / 2; break;
+      case 0x6870: { // Text color (COLORREF: 0x00BBGGRR)
+        const r = data[pos], g = data[pos + 1], b = data[pos + 2];
+        if (r || g || b) props.color = '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+        break;
+      }
+      case 0x4A4F: case 0x4A50: case 0x4A51: // Font index
+        if (props.fontIdx === undefined) props.fontIdx = data[pos] | (data[pos + 1] << 8);
+        break;
+      // Paragraph properties
+      case 0x2403: case 0x2461: { // Justification
+        const jc = data[pos];
+        props.align = ['left', 'center', 'right', 'justify'][jc] || 'left';
+        break;
+      }
+      case 0x2407: props.inTable = !!data[pos]; break;
+      case 0x2416: props.tableRowEnd = !!data[pos]; break;
+      case 0x460B: props.spaceBefore = (data[pos] | (data[pos + 1] << 8)) / 20; break;
+      case 0x460C: props.spaceAfter = (data[pos] | (data[pos + 1] << 8)) / 20; break;
+      case 0x840E: case 0x845E: { // Left indent (twips)
+        const val = data[pos] | (data[pos + 1] << 8);
+        props.indentLeft = val / 20;
+        break;
+      }
+    }
+    pos += opSize;
+  }
+  return props;
+}
+
+// ── Parse font table (SttbfFfn) ──
+function parseFontTable(tableStream, fc, lcb) {
+  const fonts = [];
+  if (!lcb || fc + lcb > tableStream.length) return fonts;
+  const v = new DataView(tableStream.buffer, tableStream.byteOffset, tableStream.byteLength);
+  // SttbfFfn: 2-byte count, then entries
+  let pos = fc;
+  const extended = v.getUint16(pos, true) === 0xFFFF;
+  if (extended) pos += 2; // skip 0xFFFF marker
+  const cData = v.getUint16(pos, true); pos += 2;
+  const cbExtra = v.getUint16(pos, true); pos += 2;
+
+  for (let i = 0; i < cData && pos < fc + lcb; i++) {
+    // FFN structure: cbFfnM1 (1 byte) = total size - 1
+    if (pos >= fc + lcb) break;
+    const cbFfnM1 = tableStream[pos]; pos += 1;
+    const ffnEnd = pos + cbFfnM1;
+    if (ffnEnd > fc + lcb) break;
+    // Skip fixed part of FFN (39 bytes): prq, fTrueType, ff, wWeight, chs, ixchSzAlt, panose, etc.
+    const nameStart = pos + 39;
+    // Font name is null-terminated UTF-16LE starting at byte 40 of FFN
+    let name = '';
+    for (let j = nameStart; j + 1 < ffnEnd; j += 2) {
+      const ch = tableStream[j] | (tableStream[j + 1] << 8);
+      if (ch === 0) break;
+      name += String.fromCharCode(ch);
+    }
+    fonts.push(name || `Font${i}`);
+    pos = ffnEnd;
+  }
+  return fonts;
+}
+
+// ── Parse character formatting from PlcBteChpx ──
+function parseCharFormatting(wordDoc, tableStream, fc, lcb, pieces) {
+  const runs = []; // {cpStart, cpEnd, props}
+  if (!lcb || fc + lcb > tableStream.length) return runs;
+  const tsView = new DataView(tableStream.buffer, tableStream.byteOffset, tableStream.byteLength);
+  const n = Math.floor((lcb - 4) / 8);
+  // Read FCs and PNs
+  for (let i = 0; i < n; i++) {
+    const pn = tsView.getUint32(fc + (n + 1) * 4 + i * 4, true);
+    // Read FKP page from WordDocument (512 bytes)
+    const pageOff = pn * 512;
+    if (pageOff + 512 > wordDoc.length) continue;
+    const page = wordDoc.slice(pageOff, pageOff + 512);
+    const crun = page[511];
+    if (crun === 0) continue;
+
+    for (let r = 0; r < crun; r++) {
+      const rgfcOff = r * 4;
+      const fcStart = page[rgfcOff] | (page[rgfcOff + 1] << 8) | (page[rgfcOff + 2] << 16) | (page[rgfcOff + 3] << 24);
+      const fcEnd = page[rgfcOff + 4] | (page[rgfcOff + 5] << 8) | (page[rgfcOff + 6] << 16) | (page[rgfcOff + 7] << 24);
+      // BX entry: 1 byte offset (in 2-byte words within page)
+      const bxOff = (crun + 1) * 4 + r;
+      const chpxWordOff = page[bxOff];
+      if (chpxWordOff === 0) continue;
+      const chpxByteOff = chpxWordOff * 2;
+      if (chpxByteOff >= 511) continue;
+      const cb = page[chpxByteOff];
+      if (cb === 0 || chpxByteOff + 1 + cb > 512) continue;
+
+      const props = parseSprms(page, chpxByteOff + 1, cb);
+      if (Object.keys(props).length === 0) continue;
+
+      // Convert FC range to CP range
+      const cpS = fcToCp(fcStart, pieces);
+      const cpE = fcToCp(fcEnd, pieces);
+      if (cpS >= 0 && cpE > cpS) runs.push({ cpStart: cpS, cpEnd: cpE, props });
+    }
+  }
+  runs.sort((a, b) => a.cpStart - b.cpStart);
+  return runs;
+}
+
+// ── Parse paragraph formatting from PlcBtePapx ──
+function parseParaFormatting(wordDoc, tableStream, fc, lcb, pieces) {
+  const runs = [];
+  if (!lcb || fc + lcb > tableStream.length) return runs;
+  const tsView = new DataView(tableStream.buffer, tableStream.byteOffset, tableStream.byteLength);
+  const n = Math.floor((lcb - 4) / 8);
+  for (let i = 0; i < n; i++) {
+    const pn = tsView.getUint32(fc + (n + 1) * 4 + i * 4, true);
+    const pageOff = pn * 512;
+    if (pageOff + 512 > wordDoc.length) continue;
+    const page = wordDoc.slice(pageOff, pageOff + 512);
+    const crun = page[511];
+    if (crun === 0) continue;
+
+    for (let r = 0; r < crun; r++) {
+      const rgfcOff = r * 4;
+      const fcStart = page[rgfcOff] | (page[rgfcOff + 1] << 8) | (page[rgfcOff + 2] << 16) | (page[rgfcOff + 3] << 24);
+      const fcEnd = page[rgfcOff + 4] | (page[rgfcOff + 5] << 8) | (page[rgfcOff + 6] << 16) | (page[rgfcOff + 7] << 24);
+      // PAPX BX: 13 bytes (1 byte offset + 12 bytes PHE)
+      const bxBase = (crun + 1) * 4 + r * 13;
+      if (bxBase >= 511) continue;
+      const papxWordOff = page[bxBase];
+      if (papxWordOff === 0) continue;
+      const papxByteOff = papxWordOff * 2;
+      if (papxByteOff >= 511) continue;
+      let cb = page[papxByteOff];
+      let grpStart = papxByteOff + 1;
+      if (cb === 0 && grpStart < 511) {
+        cb = page[grpStart] * 2;
+        grpStart += 1;
+      }
+      if (cb < 2 || grpStart + cb > 512) continue;
+      // Skip 2-byte istd (style index)
+      const props = parseSprms(page, grpStart + 2, cb - 2);
+      if (Object.keys(props).length === 0) continue;
+
+      const cpS = fcToCp(fcStart, pieces);
+      const cpE = fcToCp(fcEnd, pieces);
+      if (cpS >= 0 && cpE > cpS) runs.push({ cpStart: cpS, cpEnd: cpE, props });
+    }
+  }
+  runs.sort((a, b) => a.cpStart - b.cpStart);
+  return runs;
+}
+
+// ── Build formatted HTML from .doc binary ──
+function renderDocBinary(buffer) {
+  const ole2 = parseOLE2(buffer);
+  const wordDoc = ole2.getStream('WordDocument');
+  if (!wordDoc) throw new Error('WordDocument stream not found');
+
+  const fib = parseFIB(wordDoc);
+  const tableStream = ole2.getStream(fib.tableName);
+
+  // Parse piece table for text + FC mapping
+  const clx = fib.fibPair(66);
+  if (!clx.lcb || !tableStream) return fallbackRender(wordDoc);
+  const ptResult = parsePieceTable(wordDoc, tableStream, clx.fc, clx.lcb);
+  if (!ptResult || !ptResult.text) return fallbackRender(wordDoc);
+
+  const { text, pieces } = ptResult;
+
+  // Parse font table
+  const ftPair = fib.fibPair(39);
+  const fonts = parseFontTable(tableStream, ftPair.fc, ftPair.lcb);
+
+  // Parse character and paragraph formatting
+  const chpxPair = fib.fibPair(10);
+  const papxPair = fib.fibPair(11);
+  const charRuns = parseCharFormatting(wordDoc, tableStream, chpxPair.fc, chpxPair.lcb, pieces);
+  const paraRuns = parseParaFormatting(wordDoc, tableStream, papxPair.fc, papxPair.lcb, pieces);
+
+  // Build paragraphs: split text by \r (paragraph mark) and \x07 (cell mark)
+  const html = [];
+  let inTable = false;
+  let tableRow = [];
+  let cp = 0;
+
+  const paragraphs = text.split('\r');
+  for (const paraText of paragraphs) {
+    const paraLen = paraText.length;
+    const cpStart = cp;
+    const cpEnd = cp + paraLen;
+
+    // Get paragraph props
+    let paraProps = {};
+    for (const pr of paraRuns) {
+      if (pr.cpStart <= cpStart && pr.cpEnd > cpStart) { paraProps = pr.props; break; }
+    }
+
+    // Check table state
+    if (paraProps.inTable) {
+      // Split cells by \x07
+      const cells = paraText.split('\x07');
+      for (const cellText of cells) {
+        if (cellText || cells.length > 1) tableRow.push(cellText);
+      }
+      if (paraProps.tableRowEnd) {
+        if (!inTable) { html.push('<div class="word-tbl-wrap"><table class="word-tbl word-tbl-bordered">'); inTable = true; }
+        html.push('<tr>');
+        for (const cell of tableRow) {
+          html.push(`<td class="word-tc">${renderFormattedRun(cell, cpStart, charRuns, fonts)}</td>`);
+        }
+        html.push('</tr>');
+        tableRow = [];
+      }
+    } else {
+      if (inTable) { html.push('</table></div>'); inTable = false; tableRow = []; }
+
+      // Clean special chars
+      const cleanText = paraText.replace(/[\x01\x08\x13\x14\x15\x07]/g, '');
+
+      // Build paragraph style
+      const styleParts = [];
+      if (paraProps.align && paraProps.align !== 'left') styleParts.push(`text-align:${paraProps.align}`);
+      if (paraProps.spaceBefore) styleParts.push(`margin-top:${paraProps.spaceBefore}pt`);
+      if (paraProps.spaceAfter) styleParts.push(`margin-bottom:${paraProps.spaceAfter}pt`);
+      if (paraProps.indentLeft) styleParts.push(`padding-left:${paraProps.indentLeft}pt`);
+      const styleAttr = styleParts.length ? ` style="${styleParts.join(';')}"` : '';
+
+      if (!cleanText.trim()) {
+        html.push(`<p class="word-p word-empty"${styleAttr}>&nbsp;</p>`);
+      } else {
+        const content = renderFormattedRun(cleanText, cpStart, charRuns, fonts);
+        // Detect if this looks like a heading (large font)
+        const firstCharRun = charRuns.find(r => r.cpStart <= cpStart && r.cpEnd > cpStart);
+        const fs = firstCharRun?.props?.fontSize;
+        if (fs && fs >= 18 && cleanText.trim().length < 200) {
+          const level = fs >= 28 ? 1 : fs >= 22 ? 2 : 3;
+          html.push(`<h${level} class="word-h"${styleAttr}>${content}</h${level}>`);
+        } else {
+          html.push(`<p class="word-p"${styleAttr}>${content}</p>`);
+        }
+      }
+    }
+
+    cp = cpEnd + 1; // +1 for the \r
+  }
+  if (inTable) html.push('</table></div>');
+
+  return html.join('');
+}
+
+// Render text with character formatting applied
+function renderFormattedRun(text, cpOffset, charRuns, fonts) {
+  if (!text) return '';
+  const parts = [];
+  let pos = 0;
+
+  while (pos < text.length) {
+    const cpPos = cpOffset + pos;
+    // Find formatting run covering this position
+    let run = null;
+    for (const r of charRuns) {
+      if (r.cpStart <= cpPos && r.cpEnd > cpPos) { run = r; break; }
+    }
+
+    // Find how far this run extends
+    let runEnd = text.length;
+    if (run) runEnd = Math.min(runEnd, run.cpEnd - cpOffset);
+    // Also check when next different run starts
+    for (const r of charRuns) {
+      if (r.cpStart > cpPos && r.cpStart - cpOffset < runEnd) {
+        runEnd = r.cpStart - cpOffset;
+        break;
+      }
+    }
+    if (runEnd <= pos) runEnd = pos + 1;
+
+    const chunk = text.slice(pos, runEnd);
+    const escaped = escapeHtml(chunk);
+
+    if (run && run.props) {
+      const p = run.props;
+      const css = [];
+      if (p.bold) css.push('font-weight:bold');
+      if (p.italic) css.push('font-style:italic');
+      if (p.underline && p.strike) css.push('text-decoration:underline line-through');
+      else if (p.underline) css.push('text-decoration:underline');
+      else if (p.strike) css.push('text-decoration:line-through');
+      if (p.fontSize) css.push(`font-size:${p.fontSize}pt`);
+      if (p.color) css.push(`color:${p.color}`);
+      if (p.fontIdx !== undefined && fonts[p.fontIdx]) css.push(`font-family:"${fonts[p.fontIdx]}",sans-serif`);
+
+      if (css.length) {
+        parts.push(`<span style="${css.join(';')}">${escaped}</span>`);
+      } else {
+        parts.push(escaped);
+      }
+    } else {
+      parts.push(escaped);
+    }
+    pos = runEnd;
+  }
+  return parts.join('');
+}
+
+// Fallback: scan binary for readable text
+function fallbackRender(wordDoc) {
   const parts = [];
   let current = '';
-  for (let i = 0x200; i < data.length; i++) {
-    const b = data[i];
-    if (b >= 0x20 && b < 0x7F) {
-      current += String.fromCharCode(b);
-    } else if (b === 0x0D || b === 0x0A) {
-      if (current.trim()) parts.push(current);
-      current = '';
-    } else if (b === 0x09) {
-      current += '\t';
-    } else {
-      if (current.length > 2) parts.push(current);
-      current = '';
-    }
+  for (let i = 0x200; i < wordDoc.length; i++) {
+    const b = wordDoc[i];
+    if (b >= 0x20 && b < 0x7F) current += String.fromCharCode(b);
+    else if (b === 0x0D || b === 0x0A) { if (current.trim()) parts.push(current); current = ''; }
+    else if (b === 0x09) current += '\t';
+    else { if (current.length > 2) parts.push(current); current = ''; }
   }
   if (current.trim()) parts.push(current);
-  if (parts.length === 0) throw new Error('No readable text found');
-  return parts.join('\r');
-}
-
-// Convert extracted .doc plain text to HTML
-function docTextToHtml(rawText) {
-  // Word uses \r for paragraph breaks, \x07 for table cell/row marks
-  // Clean up special chars
-  const cleaned = rawText
-    .replace(/\x07/g, '\t')      // Cell marks → tab
-    .replace(/\x01/g, '')         // Picture placeholders
-    .replace(/\x08/g, '')         // Drawing anchors
-    .replace(/\x13[^\x15]*\x15/g, '') // Field codes
-    .replace(/\x13|\x14|\x15/g, '')   // Remaining field markers
-    .replace(/\r\n/g, '\r')
-    .replace(/\n/g, '\r');
-
-  const paragraphs = cleaned.split('\r');
-  const html = [];
-  for (const para of paragraphs) {
-    const trimmed = para.trim();
-    if (!trimmed) {
-      html.push('<p class="word-p word-empty">&nbsp;</p>');
-    } else {
-      html.push(`<p class="word-p">${escapeHtml(trimmed)}</p>`);
-    }
-  }
-  return html.join('');
+  if (!parts.length) throw new Error('No readable text found');
+  return parts.map(p => `<p class="word-p">${escapeHtml(p)}</p>`).join('');
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1000,10 +1261,9 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
       objectUrls = result.objectUrls || [];
       resultHtml = result.html;
     } else if (isOle2) {
-      // Old .doc (OLE2 binary)
+      // Old .doc (OLE2 binary) — formatted rendering
       isDocFormat = true;
-      const rawText = extractDocText(arrayBuffer);
-      resultHtml = docTextToHtml(rawText);
+      resultHtml = renderDocBinary(arrayBuffer);
     } else {
       throw new Error('NOT_DOCX');
     }
