@@ -387,7 +387,9 @@ function parseTransform(el) {
     y: off ? emuToPx(off.getAttribute('y') || '0') : 0,
     w: ext ? emuToPx(ext.getAttribute('cx') || '0') : 0,
     h: ext ? emuToPx(ext.getAttribute('cy') || '0') : 0,
-    rot: rot ? Number(rot) / 60000 : 0
+    rot: rot ? Number(rot) / 60000 : 0,
+    flipH: xfrm.getAttribute('flipH') === '1',
+    flipV: xfrm.getAttribute('flipV') === '1'
   };
 }
 
@@ -499,10 +501,27 @@ function parseShape(spEl, relMap, phStyles) {
       if (phTf.rot) tf.rot = phTf.rot;
     }
   }
-  // Shape styles — look specifically at spPr
+  // Shape styles — look specifically at spPr, then a:style as fallback
   const spPr = dn(spEl, NS_P, 'spPr');
-  const bgColor = spPr ? parseFill(spPr) : null;
-  const line = spPr ? parseLine(spPr) : null;
+  let bgColor = spPr ? parseFill(spPr) : null;
+  let line = spPr ? parseLine(spPr) : null;
+  // Fallback to a:style theme references (fillRef, lnRef) when spPr has no explicit fill/line
+  if (!bgColor || !line) {
+    const styleEl = dn(spEl, NS_P, 'style');
+    if (styleEl) {
+      if (!bgColor) {
+        const fillRef = dn(styleEl, NS_A, 'fillRef');
+        if (fillRef) bgColor = parseColor(fillRef);
+      }
+      if (!line) {
+        const lnRef = dn(styleEl, NS_A, 'lnRef');
+        if (lnRef) {
+          const lnColor = parseColor(lnRef);
+          if (lnColor) line = { width: 1, color: lnColor, dash: null, cap: 'butt' };
+        }
+      }
+    }
+  }
   // Preset geometry (rounded rect, etc.)
   const prstGeom = spPr ? dn(spPr, NS_A, 'prstGeom') : null;
   const geom = prstGeom ? (prstGeom.getAttribute('prst') || 'rect') : 'rect';
@@ -576,6 +595,7 @@ function parseShape(spEl, relMap, phStyles) {
   const anchor = bodyPr?.getAttribute('anchor');
   const wrapAttr = bodyPr?.getAttribute('wrap'); // "none" = no wrapping
   const noWrap = wrapAttr === 'none';
+  const vertText = bodyPr?.getAttribute('vert'); // horz, vert, vert270, eaVert, wordArtVert
   // Auto-fit modes
   const autoFit = bodyPr ? !!dn(bodyPr, NS_A, 'spAutoFit') : false;
   const normAutofit = bodyPr ? dn(bodyPr, NS_A, 'normAutofit') : null;
@@ -590,7 +610,7 @@ function parseShape(spEl, relMap, phStyles) {
   const blipTarget = isImageRef ? relMap[embedId] : null;
   // Return shape if it has text OR visual fill/border/blip (decorative shapes)
   if (!paragraphs.length && !bgColor && !line && !blipTarget) return null;
-  return { type: 'text', ...tf, paragraphs, bgColor, blipTarget, line, anchor, margin, geom, noWrap, autoFit, fontScale, shadow };
+  return { type: 'text', ...tf, paragraphs, bgColor, blipTarget, line, anchor, margin, geom, noWrap, autoFit, fontScale, shadow, vertText };
 }
 
 // ── Group shapes (recursive, direct children only) ──
@@ -1069,6 +1089,18 @@ function isDarkColor(hex) {
 }
 
 function drawTextShape(ctx, shape, sx, sy, sw, sh, scale, relMap, slideBgColor) {
+  // Vertical text: rotate canvas context
+  const isVert = shape.vertText === 'vert' || shape.vertText === 'vert270' || shape.vertText === 'eaVert';
+  if (isVert) {
+    ctx.save();
+    const cx = sx + sw / 2, cy = sy + sh / 2;
+    ctx.translate(cx, cy);
+    ctx.rotate(shape.vertText === 'vert270' ? -Math.PI / 2 : Math.PI / 2);
+    ctx.translate(-cx, -cy);
+    // Swap effective width/height for text layout
+    const tmp = sw; sw = sh; sh = tmp;
+    sx = sx + (tmp - sw) / 2; sy = sy + (sh - tmp) / 2 + (tmp - sh) / 2;
+  }
   const m = shape.margin || { l: 7, r: 7, t: 4, b: 4 };
   const padL = m.l * scale, padR = m.r * scale, padT = m.t * scale, padB = m.b * scale;
   const contentW = sw - padL - padR;
@@ -1262,6 +1294,7 @@ function drawTextShape(ctx, shape, sx, sy, sw, sh, scale, relMap, slideBgColor) 
     }
     curY += spaceAfter;
   }
+  if (isVert) ctx.restore();
 }
 
 // ── Chart renderer (basic bar/line/pie from chart XML) ──
@@ -1837,6 +1870,13 @@ async function drawShapeOnCanvas(ctx, shape, zip, canvasW, canvasH, slideSize, s
   const sh = shape.h / slideSize.h * canvasH;
 
   ctx.save();
+  // Flip horizontal/vertical
+  if (shape.flipH || shape.flipV) {
+    const cx = sx + sw / 2, cy = sy + sh / 2;
+    ctx.translate(cx, cy);
+    ctx.scale(shape.flipH ? -1 : 1, shape.flipV ? -1 : 1);
+    ctx.translate(-cx, -cy);
+  }
   if (shape.rot) {
     const cx = sx + sw / 2, cy = sy + sh / 2;
     ctx.translate(cx, cy);
