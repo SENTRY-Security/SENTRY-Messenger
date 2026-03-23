@@ -415,14 +415,17 @@ function parseFontTable(tableStream, fc, lcb) {
     const cbFfnM1 = tableStream[pos]; pos += 1;
     const ffnEnd = pos + cbFfnM1;
     if (ffnEnd > fc + lcb) break;
-    // Skip fixed part of FFN (39 bytes): prq, fTrueType, ff, wWeight, chs, ixchSzAlt, panose, etc.
+    // Skip fixed part of FFN (39 bytes): prq+ff(1), wWeight(2), chs(1), ixchSzAlt(1), panose(10), fs(24)
     const nameStart = pos + 39;
-    // Font name is null-terminated UTF-16LE starting at byte 40 of FFN
+    // Font name is null-terminated UTF-16LE
     let name = '';
-    for (let j = nameStart; j + 1 < ffnEnd; j += 2) {
-      const ch = tableStream[j] | (tableStream[j + 1] << 8);
-      if (ch === 0) break;
-      name += String.fromCharCode(ch);
+    if (nameStart < ffnEnd && nameStart < tableStream.length - 1) {
+      for (let j = nameStart; j + 1 < ffnEnd && j + 1 < tableStream.length; j += 2) {
+        const ch = tableStream[j] | (tableStream[j + 1] << 8);
+        if (ch === 0) break;
+        name += String.fromCharCode(ch);
+        if (name.length > 256) break; // safety limit
+      }
     }
     fonts.push(name || `Font${i}`);
     pos = ffnEnd;
@@ -614,10 +617,7 @@ function renderDocBinary(buffer) {
         if (paraProps.firstLine > 0) styleParts.push(`text-indent:${paraProps.firstLine}pt`);
         else styleParts.push(`text-indent:${paraProps.firstLine}pt;padding-left:${(paraProps.indentLeft || 0) - paraProps.firstLine}pt`);
       }
-      if (paraProps.lineHeight) {
-        const lh = paraProps.lineHeight;
-        styleParts.push(`line-height:${lh.toString().endsWith('pt') ? lh : lh}`);
-      }
+      if (paraProps.lineHeight) styleParts.push(`line-height:${paraProps.lineHeight}`);
       const styleAttr = styleParts.length ? ` style="${styleParts.join(';')}"` : '';
 
       if (!cleanText.trim()) {
@@ -689,7 +689,7 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts) {
       // Apply text transforms before escaping
       let displayText = chunk;
       if (p.allCaps) displayText = displayText.toUpperCase();
-      else if (p.smallCaps) displayText = displayText.toUpperCase(); // approximate small-caps
+      // smallCaps: don't transform text — CSS font-variant handles it
       const escaped = escapeHtml(displayText);
 
       const css = [];
@@ -1100,10 +1100,7 @@ function renderParagraph(pEl, styles, numbering, relMap, imageData, listCounters
   if (styleProps.hanging) styleParts.push(`text-indent:-${styleProps.hanging}pt;padding-left:${(styleProps.indentLeft || 0) + styleProps.hanging}pt`);
   if (styleProps.spaceBefore) styleParts.push(`margin-top:${styleProps.spaceBefore}pt`);
   if (styleProps.spaceAfter) styleParts.push(`margin-bottom:${styleProps.spaceAfter}pt`);
-  if (styleProps.lineHeight) {
-    const lh = styleProps.lineHeight;
-    styleParts.push(`line-height:${lh.toString().endsWith('pt') ? lh : lh}`);
-  }
+  if (styleProps.lineHeight) styleParts.push(`line-height:${styleProps.lineHeight}`);
   if (styleProps.borderBottom) styleParts.push(`border-bottom:${styleProps.borderBottom}`);
   if (styleProps.bgColor) styleParts.push(`background-color:${styleProps.bgColor}`);
 
