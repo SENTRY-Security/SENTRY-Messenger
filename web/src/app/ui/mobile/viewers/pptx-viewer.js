@@ -1104,7 +1104,9 @@ function drawTextShape(ctx, shape, sx, sy, sw, sh, scale, relMap, slideBgColor) 
         fontSize: fs,
         underline: run.underline || para.defaultUnderline || false,
         strike: run.strike || para.defaultStrike || false,
-        baseline: run.baseline
+        baseline: run.baseline,
+        letterSpacing: run.letterSpacing,
+        hlinkRid: run.hlinkRid
       });
     }
 
@@ -1184,6 +1186,12 @@ function drawTextShape(ctx, shape, sx, sy, sw, sh, scale, relMap, slideBgColor) 
 
       for (const seg of line) {
         ctx.font = seg.font;
+        // Letter spacing (OOXML spc in 1/100 pt)
+        if (seg.letterSpacing && ctx.letterSpacing !== undefined) {
+          ctx.letterSpacing = `${seg.letterSpacing * scale}px`;
+        } else if (ctx.letterSpacing !== undefined) {
+          ctx.letterSpacing = '0px';
+        }
         // Hyperlinks: blue + underline
         const isLink = !!seg.hlinkRid;
         ctx.fillStyle = isLink ? '#0563C1' : (seg.color || '#000');
@@ -1487,7 +1495,9 @@ function drawTable(ctx, shape, sx, sy, sw, sh, scale) {
             font: `${isItalic ? 'italic ' : ''}${isBold ? '700 ' : ''}${ptToPx(fs) * scale}px ${resolveFont(runFont) || defaultFamily}`,
             color: run.color || para.defaultColor || defaultTextColor,
             underline: run.underline || para.defaultUnderline || false,
-            strike: run.strike || para.defaultStrike || false
+            strike: run.strike || para.defaultStrike || false,
+            letterSpacing: run.letterSpacing,
+            hlinkRid: run.hlinkRid
           });
         }
 
