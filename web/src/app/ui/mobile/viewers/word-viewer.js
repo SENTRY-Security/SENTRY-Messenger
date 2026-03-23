@@ -756,28 +756,28 @@ function parseStyleSheet(tableStream, fc, lcb) {
       // For paragraph styles (sgc=1): UPX[0] = UpxPapx, UPX[1] = UpxChpx
       // For character styles (sgc=2): UPX[0] = UpxChpx
       // For table styles (sgc=3): UPX[0] = UpxTapx, UPX[1] = UpxPapx, UPX[2] = UpxChpx
-      for (let u = 0; u < cupx && upxOff + 2 <= stdStart + cbStd; u++) {
-        const cbUpx = view.getUint16(upxOff, true);
-        const upxData = upxOff + 2;
-        if (cbUpx > 0 && upxData + cbUpx <= stdStart + cbStd) {
-          if (sgc === 1 && u === 0 && cbUpx >= 2) {
-            // UpxPapx: first 2 bytes = istd, rest = grpprl
-            const upxProps = parseSprms(new Uint8Array(tableStream.buffer, tableStream.byteOffset + fc + upxData + 2, cbUpx - 2), 0, cbUpx - 2);
-            Object.assign(styleProps, upxProps);
-          } else if (sgc === 1 && u === 1) {
-            // UpxChpx: grpprl only
-            const upxProps = parseSprms(new Uint8Array(tableStream.buffer, tableStream.byteOffset + fc + upxData, cbUpx), 0, cbUpx);
-            Object.assign(charProps, upxProps);
-          } else if (sgc === 2 && u === 0) {
-            // Character style: UpxChpx
-            const upxProps = parseSprms(new Uint8Array(tableStream.buffer, tableStream.byteOffset + fc + upxData, cbUpx), 0, cbUpx);
-            Object.assign(charProps, upxProps);
+      try {
+        for (let u = 0; u < cupx && upxOff + 2 <= stdStart + cbStd; u++) {
+          const cbUpx = view.getUint16(upxOff, true);
+          const upxData = upxOff + 2;
+          if (cbUpx > 0 && upxData + cbUpx <= stdStart + cbStd) {
+            // Create a safe copy to avoid out-of-bounds access
+            const absOff = fc + upxData;
+            if (absOff + cbUpx <= tableStream.length) {
+              const upxBytes = tableStream.slice(absOff, absOff + cbUpx);
+              if (sgc === 1 && u === 0 && cbUpx >= 2) {
+                // UpxPapx: first 2 bytes = istd, rest = grpprl
+                Object.assign(styleProps, parseSprms(upxBytes, 2, cbUpx - 2));
+              } else if ((sgc === 1 && u === 1) || (sgc === 2 && u === 0)) {
+                // UpxChpx: grpprl only
+                Object.assign(charProps, parseSprms(upxBytes, 0, cbUpx));
+              }
+            }
           }
+          upxOff += 2 + cbUpx;
+          if ((upxOff - stdStart) % 2 !== 0) upxOff++;
         }
-        // Advance past this UPX (align to 2-byte boundary)
-        upxOff += 2 + cbUpx;
-        if (upxOff % 2 !== 0) upxOff++;
-      }
+      } catch { /* skip malformed UPX */ }
 
       // Fallback: built-in heading detection from sti
       if (sti >= 1 && sti <= 9 && !styleProps.outlineLvl) {
@@ -801,82 +801,99 @@ function parseStyleSheet(tableStream, fc, lcb) {
 }
 
 // ── Extract inline picture from Data stream at given offset ──
-// Returns an <img> HTML string or '' if extraction fails.
-// PICF structure: 4-byte lcb + 2-byte cbHeader, then OfficeArt data at cbHeader offset.
-// OfficeArt inline BLIP containers: look for known BLIP signatures.
+// PICFAndOfficeArtData: PICF (68 bytes) + OfficeArt records
+// MS-DOC §2.9.177 PICF, §2.9.178 PICFAndOfficeArtData
 function extractDocImage(dataStream, offset) {
   if (!dataStream || offset < 0 || offset + 68 > dataStream.length) return '';
-  const dv = new DataView(dataStream.buffer, dataStream.byteOffset + offset, Math.min(dataStream.length - offset, dataStream.length));
-  const lcb = dv.getUint32(0, true);     // total size of PICF + picture data
-  const cbHeader = dv.getUint16(2, true); // size of PICF header (typically 0x44 = 68)
-  if (lcb < cbHeader || offset + lcb > dataStream.length) return '';
+  const avail = dataStream.length - offset;
+  const dv = new DataView(dataStream.buffer, dataStream.byteOffset + offset, avail);
+  const lcb = dv.getUint32(0, true);       // total size
+  const cbHeader = dv.getUint16(4, true);  // PICF header size (MUST be 0x44 = 68)
+  if (lcb < 68 || offset + lcb > dataStream.length) return '';
+  const mm = dv.getUint16(6, true);        // mfpf.mm: 0x0064=MM_SHAPE, 0x0066=MM_SHAPEFILE
 
-  // Picture dimensions from PICF (twips)
-  const dxaGoal = dv.getUint16(24, true); // original width in twips
-  const dyaGoal = dv.getUint16(26, true); // original height in twips
-  // Scale factors (1/1000 of 100%)
-  const mx = dv.getUint16(28, true);
-  const my = dv.getUint16(30, true);
-  const wPt = Math.round(dxaGoal * (mx / 1000) / 20);
-  const hPt = Math.round(dyaGoal * (my / 1000) / 20);
+  // PICMID starts at PICF offset 28 (§2.9.176)
+  const dxaGoal = dv.getUint16(28, true);  // original width in twips
+  const dyaGoal = dv.getUint16(30, true);  // original height in twips
+  const mx = dv.getUint16(32, true);       // horizontal scale (‰ of 100%)
+  const my = dv.getUint16(34, true);       // vertical scale
+  const wPt = mx && dxaGoal ? Math.round(dxaGoal * (mx / 1000) / 20) : 0;
+  const hPt = my && dyaGoal ? Math.round(dyaGoal * (my / 1000) / 20) : 0;
   const style = wPt && hPt ? `max-width:100%;width:${wPt}pt;height:auto` : 'max-width:100%;height:auto';
 
-  // Skip PICF header → OfficeArt data begins
-  let artOff = offset + cbHeader;
-  if (artOff >= offset + lcb) return '';
+  // OfficeArt data offset — after PICF header (+ optional filename for MM_SHAPEFILE)
+  let artOff = offset + 68;
+  if (mm === 0x0066 && artOff < offset + lcb) {
+    const cchPicName = dataStream[artOff];
+    artOff += 1 + cchPicName;
+  }
   const artEnd = offset + lcb;
+  if (artOff >= artEnd) return '';
 
-  // Scan for OfficeArt BLIP record header
-  // BLIP records start with recVer|recInstance (2 bytes) + recType (2 bytes) + recLen (4 bytes)
-  // Known BLIP types: 0xF01A-0xF01F (EMF, WMF, PICT, JPEG, PNG, DIB)
-  // Each BLIP has a fixed-size header (16-byte UID + optional tag), then raw image data.
-  while (artOff + 8 < artEnd) {
-    const rheader = new DataView(dataStream.buffer, dataStream.byteOffset + artOff, 8);
-    const recVerInst = rheader.getUint16(0, true);
-    const recType = rheader.getUint16(2, true);
-    const recLen = rheader.getUint32(4, true);
+  // Scan OfficeArt records for BLIP image data
+  // Record header: 2 bytes (recVer|recInstance) + 2 bytes recType + 4 bytes recLen
+  while (artOff + 8 <= artEnd) {
+    const rh = new DataView(dataStream.buffer, dataStream.byteOffset + artOff, 8);
+    const verInst = rh.getUint16(0, true);
+    const recVer = verInst & 0xF;
+    const recInst = (verInst >> 4) & 0xFFF;
+    const recType = rh.getUint16(2, true);
+    const recLen = rh.getUint32(4, true);
     artOff += 8;
 
-    // BLIP types
-    if (recType >= 0xF018 && recType <= 0xF117 && recLen > 0 && artOff + recLen <= artEnd) {
-      // Determine image format and header size
+    if (recLen === 0 || artOff + recLen > artEnd + 8) break;
+
+    // Container records (recVer=0xF): recurse into children
+    if (recVer === 0xF) continue; // children follow inline
+
+    // OfficeArtFBSE (0xF007): wrapper around BLIP — skip 36-byte header + nameData
+    if (recType === 0xF007 && recLen > 36) {
+      const cbName = dataStream[artOff + 33] || 0;
+      artOff += 36 + cbName; // skip FBSE header, continue to parse embedded BLIP
+      continue;
+    }
+
+    // OfficeArt BLIP types: 0xF01A-0xF02F
+    if (recType >= 0xF01A && recType <= 0xF02F && recLen > 20) {
       let imgOff = artOff;
       let mime = '';
+      const is2uid = (recInst & 1) === 1; // odd recInstance = 2-UID variant
+      const uidSkip = is2uid ? 32 : 16;
+
       if (recType === 0xF01D || recType === 0xF02D) {
-        // PNG: 16-byte UID + 1-byte tag = 17
-        imgOff += 17; mime = 'image/png';
-      } else if (recType === 0xF01E || recType === 0xF02E || recType === 0xF01F || recType === 0xF02F) {
-        // JPEG/JFIF: 16-byte UID + 1-byte tag = 17
-        imgOff += 17; mime = 'image/jpeg';
-      } else if (recType === 0xF01A || recType === 0xF02A) {
-        // EMF: 16-byte UID + 34 bytes metafile header
-        imgOff += 50; mime = 'image/x-emf'; // browsers can't display EMF
-      } else if (recType === 0xF01B || recType === 0xF02B) {
-        // WMF: similar header
-        imgOff += 50; mime = 'image/x-wmf';
+        mime = 'image/png';
+        imgOff += uidSkip + 1; // UIDs + tag
+      } else if (recType === 0xF01E || recType === 0xF02E) {
+        mime = 'image/png';
+        imgOff += uidSkip + 1;
+      } else if (recType === 0xF01F || recType === 0xF02F) {
+        mime = 'image/x-dib'; // DIB
+        imgOff += uidSkip + 1;
+      } else if (recType === 0xF01D) {
+        mime = 'image/jpeg';
+        imgOff += uidSkip + 1;
+      } else if (recType === 0xF01A || recType === 0xF02A ||
+                 recType === 0xF01B || recType === 0xF02B ||
+                 recType === 0xF01C || recType === 0xF02C) {
+        // EMF/WMF/PICT — metafile, skip (browsers can't render)
+        artOff += recLen; continue;
       } else {
-        // Unknown BLIP type, skip
-        artOff += recLen;
-        continue;
+        artOff += recLen; continue;
       }
-      // Check for dual-UID BLIP (recInstance bit indicates 2 UIDs = +16 bytes)
-      const recInst = (recVerInst >> 4) & 0xFFF;
-      if (recInst === 0x46B || recInst === 0x6E3 || recInst === 0x6E1 || recInst === 0x6E5 || recInst === 0x7A8) {
-        imgOff += 16; // second UID
-      }
+
       const imgLen = recLen - (imgOff - artOff);
       if (imgLen <= 0 || imgOff + imgLen > artEnd) { artOff += recLen; continue; }
 
-      // Skip non-renderable formats (EMF/WMF)
-      if (mime.includes('x-emf') || mime.includes('x-wmf')) {
-        // Try to find a PNG/JPEG fallback later in the stream
-        artOff += recLen;
-        continue;
-      }
+      // Validate image magic bytes
+      const b0 = dataStream[imgOff], b1 = dataStream[imgOff + 1];
+      if (b0 === 0x89 && b1 === 0x50) mime = 'image/png';       // PNG magic
+      else if (b0 === 0xFF && b1 === 0xD8) mime = 'image/jpeg';  // JPEG magic
+      else if (mime === 'image/x-dib') { artOff += recLen; continue; } // skip DIB
+
       const blob = new Blob([dataStream.slice(imgOff, imgOff + imgLen)], { type: mime });
-      const url = URL.createObjectURL(blob);
-      return `<img src="${url}" style="${style}" alt="" class="word-img">`;
+      return `<img src="${URL.createObjectURL(blob)}" style="${style}" alt="" class="word-img">`;
     }
+
     artOff += recLen;
   }
   return '';
@@ -932,13 +949,12 @@ function renderDocBinary(buffer) {
   } catch { /* proceed without paragraph formatting */ }
 
   // DOP page margins (FIB index 31 = fcDop/lcbDop)
+  // Note: DOP field offsets vary by Word version; disabled until verified
   let pageMargins = null;
-  try {
+  /* try {
     const dopPair = fib.fibPair(31);
     if (dopPair.lcb >= 28 && dopPair.fc + dopPair.lcb <= tableStream.length) {
       const dopView = new DataView(tableStream.buffer, tableStream.byteOffset + dopPair.fc, dopPair.lcb);
-      // DOP: dxaLeft (bytes 6-7), dxaRight (bytes 10-11), dyaTop (bytes 2-3), dyaBottom (bytes 4-5)
-      // These are in twips (1/20 pt)
       const dyaTop = dopView.getUint16(2, true) / 20;
       const dyaBottom = dopView.getUint16(4, true) / 20;
       const dxaLeft = dopView.getUint16(6, true) / 20;
@@ -947,7 +963,7 @@ function renderDocBinary(buffer) {
         pageMargins = { top: dyaTop, bottom: dyaBottom, left: dxaLeft, right: dxaRight };
       }
     }
-  } catch { /* use defaults */ }
+  } catch {} */
 
   // Style resolver: merge base style props with direct props
   function resolveStyle(istd) {
