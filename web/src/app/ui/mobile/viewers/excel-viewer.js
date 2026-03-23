@@ -197,3 +197,63 @@ export async function renderExcelViewer({ url, blob, name, modalApi }) {
 
   return true;
 }
+
+/**
+ * Render an Excel file as a thumbnail preview for chat messages.
+ * Extracts the first sheet and renders a few rows as a small HTML table.
+ * @param {ArrayBuffer} buffer - file content
+ * @returns {HTMLElement|null}
+ */
+export async function renderExcelThumbnail(buffer) {
+  try {
+    const XLSX = await getXlsx();
+    const wb = XLSX.read(new Uint8Array(buffer), { type: 'array' });
+    if (!wb.SheetNames.length) return null;
+
+    const sheet = wb.Sheets[wb.SheetNames[0]];
+    const ref = sheet['!ref'];
+    if (!ref) return null;
+
+    // Limit to first 12 rows for thumbnail
+    const range = XLSX.utils.decode_range(ref);
+    range.e.r = Math.min(range.e.r, 11);
+    range.e.c = Math.min(range.e.c, 7);
+    const limitedRef = XLSX.utils.encode_range(range);
+
+    const html = XLSX.utils.sheet_to_html(sheet, { editable: false, header: '', footer: '' });
+    // Extract just the table
+    const match = html.match(/<table[\s\S]*<\/table>/i);
+    if (!match) return null;
+
+    const wrapper = document.createElement('div');
+    wrapper.style.cssText = 'width:180px;height:120px;overflow:hidden;position:relative;background:#fff;border-radius:12px;';
+
+    const inner = document.createElement('div');
+    inner.style.cssText = 'transform-origin:top left;transform:scale(0.32);width:312%;pointer-events:none;';
+    inner.innerHTML = match[0];
+
+    // Style the table
+    const tbl = inner.querySelector('table');
+    if (tbl) {
+      tbl.style.cssText = 'border-collapse:collapse;font-size:9pt;line-height:1.2;color:#1e293b;width:100%;';
+      inner.querySelectorAll('td,th').forEach(cell => {
+        cell.style.cssText = 'border:1px solid #e2e8f0;padding:2px 4px;white-space:nowrap;max-width:80px;overflow:hidden;text-overflow:ellipsis;';
+      });
+      inner.querySelectorAll('th').forEach(cell => {
+        cell.style.cssText += 'background:#f1f5f9;font-weight:600;';
+      });
+    }
+    wrapper.appendChild(inner);
+
+    // File type badge
+    const ext = wb.SheetNames[0] ? 'XLSX' : 'XLS';
+    const badge = document.createElement('div');
+    badge.style.cssText = 'position:absolute;bottom:4px;right:4px;background:rgba(22,163,74,0.9);color:#fff;font-size:9px;font-weight:600;padding:2px 5px;border-radius:4px;line-height:1.2;pointer-events:none;letter-spacing:0.5px;';
+    badge.textContent = ext;
+    wrapper.appendChild(badge);
+
+    return wrapper;
+  } catch {
+    return null;
+  }
+}

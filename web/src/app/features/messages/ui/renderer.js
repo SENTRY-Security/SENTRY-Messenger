@@ -10,6 +10,7 @@ import { downloadAndDecrypt } from '../../media.js';
 import { renderPdfViewer, cleanupPdfViewer, getPdfJsLibrary } from '../../../ui/mobile/viewers/pdf-viewer.js';
 import { isPptxMime, isPptxFilename, renderPptxThumbnail } from '../../../ui/mobile/viewers/pptx-viewer.js';
 import { isWordMime, isWordFilename, renderWordThumbnail } from '../../../ui/mobile/viewers/word-viewer.js';
+import { isExcelMime, isExcelFilename, renderExcelThumbnail } from '../../../ui/mobile/viewers/excel-viewer.js';
 import { logMsgEvent } from '../../../lib/logging.js';
 import {
     consumeReplayPlaceholderReveal,
@@ -437,6 +438,48 @@ export class MessageRenderer {
         }
     }
 
+    async _renderExcelThumbnail(media, placeholder, container) {
+        try {
+            let buffer = null;
+            const directUrl = media?.previewUrl || media?.preview?.localUrl || media?.localUrl || null;
+            if (directUrl) {
+                const res = await fetch(directUrl);
+                if (!res.ok) throw new Error('excel fetch failed');
+                buffer = await res.arrayBuffer();
+            } else if (media?.objectKey && media?.envelope) {
+                const { blob } = await downloadAndDecrypt({
+                    key: media.objectKey,
+                    envelope: media.envelope,
+                    messageKeyB64: media.messageKey_b64 || media.message_key_b64 || null
+                });
+                buffer = await blob.arrayBuffer();
+            } else if (media?.chunked && media?.baseKey && media?.manifestEnvelope) {
+                const { blob } = await downloadAndDecrypt({
+                    key: media.baseKey,
+                    envelope: media.manifestEnvelope,
+                    messageKeyB64: media.messageKey_b64 || media.message_key_b64 || null,
+                    chunked: true
+                });
+                buffer = await blob.arrayBuffer();
+            } else {
+                return;
+            }
+            const thumb = await renderExcelThumbnail(buffer);
+            if (thumb && placeholder.parentNode) {
+                placeholder.replaceWith(thumb);
+            }
+        } catch {
+            // Keep existing icon fallback
+        }
+    }
+
+    _fileTypeBadge(label, color) {
+        const badge = document.createElement('div');
+        badge.style.cssText = `position:absolute;bottom:4px;right:4px;background:${color};color:#fff;font-size:9px;font-weight:600;padding:2px 5px;border-radius:4px;line-height:1.2;pointer-events:none;letter-spacing:0.5px;opacity:0.9;z-index:1;`;
+        badge.textContent = label;
+        return badge;
+    }
+
     _attachMediaLoadScrollGuard(el) {
         if (!el) return;
         const eventName = el.tagName === 'VIDEO' ? 'loadedmetadata' : 'load';
@@ -490,6 +533,7 @@ export class MessageRenderer {
             pdf.setAttribute('aria-label', media?.name || t('viewer.pdfPreview'));
             pdf.dataset.previewState = 'loading';
             container.appendChild(pdf);
+            container.appendChild(this._fileTypeBadge('PDF', '#dc2626'));
             renderPdfThumbnail(media, pdf);
         } else if (isPptxMime(type) || isPptxFilename(media?.name)) {
             const pptxCanvas = document.createElement('canvas');
@@ -497,14 +541,20 @@ export class MessageRenderer {
             pptxCanvas.setAttribute('aria-label', media?.name || 'PPTX preview');
             pptxCanvas.dataset.previewState = 'loading';
             container.appendChild(pptxCanvas);
+            container.appendChild(this._fileTypeBadge('PPTX', '#ea580c'));
             this._renderPptxThumbnail(media, pptxCanvas, container);
         } else if (isWordMime(type) || isWordFilename(media?.name)) {
             const wordDiv = document.createElement('div');
             wordDiv.className = 'message-file-preview-generic';
             wordDiv.innerHTML = '<svg class="icon file-type-icon" style="color:#2563eb"><use href="#i-file-text"/></svg>';
             container.appendChild(wordDiv);
-            // Async: try to render actual preview
             this._renderWordThumbnail(media, wordDiv, container);
+        } else if (isExcelMime(type) || isExcelFilename(media?.name)) {
+            const xlsDiv = document.createElement('div');
+            xlsDiv.className = 'message-file-preview-generic';
+            xlsDiv.innerHTML = '<svg class="icon file-type-icon" style="color:#16a34a"><use href="#i-file-spreadsheet"/></svg>';
+            container.appendChild(xlsDiv);
+            this._renderExcelThumbnail(media, xlsDiv, container);
         } else {
             const generic = document.createElement('div');
             generic.className = 'message-file-preview-generic';

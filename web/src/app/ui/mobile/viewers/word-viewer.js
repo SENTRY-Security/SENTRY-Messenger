@@ -1317,16 +1317,22 @@ function renderDocBinary(buffer) {
   function resolveStyle(istd) {
     const visited = new Set();
     const merged = {};
+    const mergedChar = {};
     let cur = istd;
     while (cur >= 0 && styles.has(cur) && !visited.has(cur)) {
       visited.add(cur);
       const s = styles.get(cur);
-      // Apply props (lower priority — don't overwrite direct/child props)
       for (const [k, v] of Object.entries(s.props)) {
         if (merged[k] === undefined) merged[k] = v;
       }
+      if (s.charProps) {
+        for (const [k, v] of Object.entries(s.charProps)) {
+          if (mergedChar[k] === undefined) mergedChar[k] = v;
+        }
+      }
       cur = s.basedOn;
     }
+    merged._charProps = mergedChar;
     return merged;
   }
 
@@ -1480,7 +1486,7 @@ function renderDocBinary(buffer) {
                 if (span > 1) rsAttr = ` rowspan="${span}"`;
               }
               const sa = tdStyle.length ? ` style="${tdStyle.join(';')}"` : '';
-              html.push(`<td class="word-tc"${rsAttr}${csAttr}${sa}>${renderFormattedRun(seg, cellCp, charRuns, fonts, dataStream, oleChart, artImages)}</td>`);
+              html.push(`<td class="word-tc"${rsAttr}${csAttr}${sa}>${renderFormattedRun(seg, cellCp, charRuns, fonts, dataStream, oleChart, artImages, paraProps._charProps)}</td>`);
               cellCp += seg.length + 1;
               segIdx++;
             }
@@ -1495,7 +1501,7 @@ function renderDocBinary(buffer) {
         } else if (cellMarkCount === 1) {
           // Single cell end (\x07) — this paragraph is one cell in a multi-paragraph table
           const cellText = paraText.replace(/\x07$/, '');
-          const cellHtml = renderFormattedRun(cellText, cpStart, charRuns, fonts, dataStream, oleChart, artImages);
+          const cellHtml = renderFormattedRun(cellText, cpStart, charRuns, fonts, dataStream, oleChart, artImages, paraProps._charProps);
           if (tableRow.length > 0 && !tableRow[tableRow.length - 1].closed) {
             tableRow[tableRow.length - 1].html += '<br>' + cellHtml;
             tableRow[tableRow.length - 1].closed = true;
@@ -1504,7 +1510,7 @@ function renderDocBinary(buffer) {
           }
         } else {
           // No \x07 — content continuation within a cell
-          const cellHtml = renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream, oleChart, artImages);
+          const cellHtml = renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream, oleChart, artImages, paraProps._charProps);
           if (tableRow.length > 0 && !tableRow[tableRow.length - 1].closed) {
             tableRow[tableRow.length - 1].html += '<br>' + cellHtml;
           } else {
@@ -1547,7 +1553,7 @@ function renderDocBinary(buffer) {
             const cell = row[ci];
             const isLast = ci === row.length - 1;
             const cs = isLast && row.length < maxCols ? ` colspan="${maxCols - ci}"` : '';
-            html.push(`<td class="word-tc"${cs}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream, oleChart, artImages)}</td>`);
+            html.push(`<td class="word-tc"${cs}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream, oleChart, artImages, paraProps._charProps)}</td>`);
           }
           html.push('</tr>');
         }
@@ -1572,7 +1578,7 @@ function renderDocBinary(buffer) {
           // Non-table paragraph between table rows — add as full-width row
           const visTxt = paraText.replace(/[\x01\x07\x08\x13\x14\x15]/g, '').trim();
           if (visTxt) {
-            html.push(`<tr><td class="word-tc" colspan="99">${renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream, oleChart, artImages)}</td></tr>`);
+            html.push(`<tr><td class="word-tc" colspan="99">${renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream, oleChart, artImages, paraProps._charProps)}</td></tr>`);
             cp = cpEnd + 1;
             continue;
           }
@@ -1611,7 +1617,7 @@ function renderDocBinary(buffer) {
       } else {
         // Pass raw paraText + cpStart — renderFormattedRun skips special chars internally
         // to maintain correct CP↔formatting alignment
-        const content = renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream, oleChart, artImages);
+        const content = renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream, oleChart, artImages, paraProps._charProps);
 
         // Detect heading: ONLY use outlineLvl from paragraph Sprm (MS-DOC standard)
         // No font-size heuristic — it causes false positives on bold paragraphs
@@ -1676,7 +1682,7 @@ const SPECIAL_CHAR_RE = /[\x01\x07\x08\x13\x14\x15]/g;
 // `text` is raw paragraph text (including special chars), `cpOffset` is the CP of text[0].
 // We iterate by raw position to keep CP alignment with charRuns, but skip special chars in output.
 // `dataStream` is the OLE2 Data stream for extracting inline pictures (may be null).
-function renderFormattedRun(text, cpOffset, charRuns, fonts, dataStream, oleChart, artImages) {
+function renderFormattedRun(text, cpOffset, charRuns, fonts, dataStream, oleChart, artImages, styleCharProps) {
   if (!text) return '';
   const parts = [];
   let pos = 0;
@@ -1793,7 +1799,8 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts, dataStream, oleChar
     }
 
     if (run && run.props) {
-      const p = run.props;
+      // Merge style charProps as fallback (direct props take precedence)
+      const p = styleCharProps ? Object.assign({}, styleCharProps, run.props) : run.props;
       // Skip hidden text
       if (p.vanish) { pos = runEnd; continue; }
 
@@ -2776,39 +2783,78 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
 
 /**
  * Render a Word doc/docx file as a thumbnail preview for chat messages.
- * Returns a DOM element (div) containing a scaled-down rendered preview.
+ * Only extracts the first ~10 paragraphs of plain text — lightweight, no full render.
  * @param {ArrayBuffer} buffer - file content
  * @returns {HTMLElement|null}
  */
 export function renderWordThumbnail(buffer) {
   try {
     const bytes = new Uint8Array(buffer);
-    let resultHtml = '';
+    const MAX_PARAS = 10;
+    const parts = [];
 
-    // Detect format
     const isDocx = bytes[0] === 0x50 && bytes[1] === 0x4B;
     const isOle2 = bytes[0] === 0xD0 && bytes[1] === 0xCF && bytes[2] === 0x11 && bytes[3] === 0xE0;
 
     if (isOle2) {
-      const docResult = renderDocBinary(buffer);
-      resultHtml = typeof docResult === 'string' ? docResult : docResult.html;
+      // Extract plain text from .doc via piece table (lightweight, no formatting render)
+      try {
+        const ole2 = parseOLE2(buffer);
+        const wordDoc = ole2.getStream('WordDocument');
+        const fib = parseFIB(wordDoc);
+        const tableStream = ole2.getStream(fib.tableName);
+        const clx = fib.fibPair(33);
+        const ptResult = parsePieceTable(wordDoc, tableStream, clx.fc, clx.lcb);
+        const paras = ptResult.text.split('\r');
+        let count = 0;
+        for (const p of paras) {
+          const clean = p.replace(/[\x00-\x1f]/g, '').trim();
+          if (!clean) continue;
+          parts.push(`<p style="margin:0 0 3pt 0">${escapeHtml(clean)}</p>`);
+          if (++count >= MAX_PARAS) break;
+        }
+      } catch { return null; }
     } else if (isDocx) {
-      // Quick DOCX render — extract document.xml and render paragraphs
-      resultHtml = renderDocxThumbnailHtml(buffer);
+      // Extract text from .docx via ZIP → word/document.xml (store or deflate)
+      try {
+        const xml = extractDocxXml(bytes);
+        if (!xml) return null;
+        const paraRe = /<w:p[\s>][\s\S]*?<\/w:p>/g;
+        let m, count = 0;
+        while ((m = paraRe.exec(xml)) !== null && count < MAX_PARAS) {
+          const texts = [];
+          const tRe = /<w:t[^>]*>([^<]*)<\/w:t>/g;
+          let tm;
+          while ((tm = tRe.exec(m[0])) !== null) texts.push(tm[1]);
+          const text = texts.join('');
+          if (!text) continue;
+          const isBold = m[0].includes('<w:b/>') || m[0].includes('<w:b ');
+          const isLarge = m[0].includes('<w:pStyle w:val="Heading') || m[0].includes('<w:pStyle w:val="Title');
+          let style = 'margin:0 0 3pt 0';
+          if (isBold) style += ';font-weight:bold';
+          if (isLarge) style += ';font-size:1.2em';
+          parts.push(`<p style="${style}">${escapeHtml(text)}</p>`);
+          count++;
+        }
+      } catch { return null; }
     }
 
-    if (!resultHtml || resultHtml.length < 20) return null;
+    if (!parts.length) return null;
 
-    // Create a scaled-down preview container
     const wrapper = document.createElement('div');
-    wrapper.className = 'word-thumb-wrap';
-    wrapper.style.cssText = 'width:100%;height:100%;overflow:hidden;position:relative;background:#fff;border-radius:4px;';
+    wrapper.style.cssText = 'width:180px;height:120px;overflow:hidden;position:relative;background:#fff;border-radius:12px;';
 
     const inner = document.createElement('div');
-    inner.className = 'word-page';
-    inner.style.cssText = 'transform-origin:top left;transform:scale(0.28);width:357%;padding:12pt 16pt;font-size:11pt;line-height:1.4;color:#1e293b;pointer-events:none;';
-    inner.innerHTML = resultHtml;
+    inner.style.cssText = 'transform-origin:top left;transform:scale(0.36);width:278%;padding:8pt 10pt;font-size:9pt;line-height:1.35;color:#1e293b;pointer-events:none;';
+    inner.innerHTML = parts.join('');
     wrapper.appendChild(inner);
+
+    // File type badge in bottom-right corner
+    const badge = document.createElement('div');
+    badge.style.cssText = 'position:absolute;bottom:4px;right:4px;background:rgba(37,99,235,0.9);color:#fff;font-size:9px;font-weight:600;padding:2px 5px;border-radius:4px;line-height:1.2;pointer-events:none;letter-spacing:0.5px;';
+    const ext = isDocx ? 'DOCX' : 'DOC';
+    badge.textContent = ext;
+    wrapper.appendChild(badge);
 
     return wrapper;
   } catch {
@@ -2816,69 +2862,30 @@ export function renderWordThumbnail(buffer) {
   }
 }
 
-/** Minimal DOCX text extraction for thumbnail (no full parse) */
-function renderDocxThumbnailHtml(buffer) {
-  try {
-    // Quick ZIP parse to find word/document.xml
-    const bytes = new Uint8Array(buffer);
-    let eocdPos = bytes.length - 22;
-    while (eocdPos > 0 && !(bytes[eocdPos]===0x50 && bytes[eocdPos+1]===0x4B && bytes[eocdPos+2]===0x05 && bytes[eocdPos+3]===0x06)) eocdPos--;
-    if (eocdPos <= 0) return '';
-    const cdOff = bytes[eocdPos+16]|(bytes[eocdPos+17]<<8)|(bytes[eocdPos+18]<<16)|(bytes[eocdPos+19]<<24);
-    const numEntries = bytes[eocdPos+10]|(bytes[eocdPos+11]<<8);
-
-    let docXmlData = null;
-    let p = cdOff;
-    for (let i = 0; i < numEntries && p + 46 <= bytes.length; i++) {
-      const compSize = bytes[p+20]|(bytes[p+21]<<8)|(bytes[p+22]<<16)|(bytes[p+23]<<24);
-      const uncompSize = bytes[p+24]|(bytes[p+25]<<8)|(bytes[p+26]<<16)|(bytes[p+27]<<24);
-      const nameLen = bytes[p+28]|(bytes[p+29]<<8);
-      const extraLen = bytes[p+30]|(bytes[p+31]<<8);
-      const commentLen = bytes[p+32]|(bytes[p+33]<<8);
-      const localOff = bytes[p+42]|(bytes[p+43]<<8)|(bytes[p+44]<<16)|(bytes[p+45]<<24);
-      const method = bytes[p+10]|(bytes[p+11]<<8);
-      const name = new TextDecoder().decode(bytes.slice(p+46, p+46+nameLen));
-      if (name === 'word/document.xml') {
-        const lnLen = bytes[localOff+26]|(bytes[localOff+27]<<8);
-        const leLen = bytes[localOff+28]|(bytes[localOff+29]<<8);
-        const dataStart = localOff + 30 + lnLen + leLen;
-        if (method === 0) {
-          docXmlData = bytes.slice(dataStart, dataStart + compSize);
-        } else {
-          // Deflate — need DecompressionStream (async not available here)
-          // Return empty, let full viewer handle it
-          return '';
-        }
-        break;
-      }
-      p += 46 + nameLen + extraLen + commentLen;
+/** Extract word/document.xml string from DOCX ZIP (sync, store-only) */
+function extractDocxXml(bytes) {
+  let eocdPos = bytes.length - 22;
+  while (eocdPos > 0 && !(bytes[eocdPos]===0x50 && bytes[eocdPos+1]===0x4B && bytes[eocdPos+2]===0x05 && bytes[eocdPos+3]===0x06)) eocdPos--;
+  if (eocdPos <= 0) return null;
+  const cdOff = bytes[eocdPos+16]|(bytes[eocdPos+17]<<8)|(bytes[eocdPos+18]<<16)|(bytes[eocdPos+19]<<24);
+  const numEntries = bytes[eocdPos+10]|(bytes[eocdPos+11]<<8);
+  let p = cdOff;
+  for (let i = 0; i < numEntries && p + 46 <= bytes.length; i++) {
+    const compSize = bytes[p+20]|(bytes[p+21]<<8)|(bytes[p+22]<<16)|(bytes[p+23]<<24);
+    const nameLen = bytes[p+28]|(bytes[p+29]<<8);
+    const extraLen = bytes[p+30]|(bytes[p+31]<<8);
+    const commentLen = bytes[p+32]|(bytes[p+33]<<8);
+    const localOff = bytes[p+42]|(bytes[p+43]<<8)|(bytes[p+44]<<16)|(bytes[p+45]<<24);
+    const method = bytes[p+10]|(bytes[p+11]<<8);
+    const name = new TextDecoder().decode(bytes.slice(p+46, p+46+nameLen));
+    if (name === 'word/document.xml') {
+      const lnLen = bytes[localOff+26]|(bytes[localOff+27]<<8);
+      const leLen = bytes[localOff+28]|(bytes[localOff+29]<<8);
+      const dataStart = localOff + 30 + lnLen + leLen;
+      if (method === 0) return new TextDecoder().decode(bytes.slice(dataStart, dataStart + compSize));
+      return null; // deflate — can't sync decompress
     }
-    if (!docXmlData) return '';
-
-    const xml = new TextDecoder().decode(docXmlData);
-    // Quick paragraph extraction
-    const parts = [];
-    const paraRe = /<w:p[\s>][\s\S]*?<\/w:p>/g;
-    let match;
-    let count = 0;
-    while ((match = paraRe.exec(xml)) !== null && count < 30) {
-      const paraXml = match[0];
-      // Extract text runs
-      const texts = [];
-      const tRe = /<w:t[^>]*>([^<]*)<\/w:t>/g;
-      let tm;
-      while ((tm = tRe.exec(paraXml)) !== null) texts.push(tm[1]);
-      const text = texts.join('');
-      if (text) {
-        // Check for bold
-        const isBold = paraXml.includes('<w:b/>') || paraXml.includes('<w:b ');
-        const content = escapeHtml(text);
-        parts.push(`<p class="word-p" style="margin:0 0 4pt 0${isBold ? ';font-weight:bold' : ''}">${content}</p>`);
-        count++;
-      }
-    }
-    return parts.join('');
-  } catch {
-    return '';
+    p += 46 + nameLen + extraLen + commentLen;
   }
+  return null;
 }
