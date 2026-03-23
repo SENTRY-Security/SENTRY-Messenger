@@ -2713,6 +2713,18 @@ async function findDocumentPath(zip) {
   return null;
 }
 
+// ── Flatten <w:sdt> containers: yield sdtContent children in place of sdt ──
+function* flattenSdt(parentChildren) {
+  for (const child of parentChildren) {
+    if (child.localName === 'sdt') {
+      const content = dn(child, NS_W, 'sdtContent');
+      if (content) yield* flattenSdt(content.children);
+    } else {
+      yield child;
+    }
+  }
+}
+
 // ── Build HTML from document.xml ──
 async function renderDocxToHtml(zip) {
   // Find main document part
@@ -2757,7 +2769,7 @@ async function renderDocxToHtml(zip) {
   // Track list state for numbering
   const listCounters = {};
 
-  for (const child of body.children) {
+  for (const child of flattenSdt(body.children)) {
     if (child.localName === 'p') {
       html.push(renderParagraph(child, styles, numbering, relMap, imageData, listCounters, docDefaults));
     } else if (child.localName === 'tbl') {
@@ -2869,7 +2881,7 @@ function renderParagraph(pEl, styles, numbering, relMap, imageData, listCounters
 
 function renderRuns(parentEl, styleRProps, styles, relMap, imageData) {
   const parts = [];
-  for (const child of parentEl.children) {
+  for (const child of flattenSdt(parentEl.children)) {
     if (child.localName === 'r') {
       // Text run
       const rPr = dn(child, NS_W, 'rPr');
@@ -3376,8 +3388,8 @@ function renderTable(tblEl, styles, relMap, imageData, numbering, listCounters, 
       const styleAttr = cellStyle.length ? ` style="${cellStyle.join(';')}"` : '';
       html.push(`<td class="word-tc"${colspan}${rowspan}${styleAttr}>`);
 
-      // Cell content (paragraphs)
-      for (const cellChild of tc.children) {
+      // Cell content (paragraphs) — flatten SDT wrappers
+      for (const cellChild of flattenSdt(tc.children)) {
         if (cellChild.localName === 'p') {
           html.push(renderParagraph(cellChild, styles, numbering || {}, relMap, imageData, listCounters || {}, docDefaults));
         } else if (cellChild.localName === 'tbl') {
