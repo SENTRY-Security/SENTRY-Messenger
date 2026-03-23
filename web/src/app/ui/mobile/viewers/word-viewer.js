@@ -1997,11 +1997,16 @@ function parseParagraphProps(pPr) {
   // Borders
   const pBdr = dn(pPr, NS_W, 'pBdr');
   if (pBdr) {
-    const bottom = dn(pBdr, NS_W, 'bottom');
-    if (bottom) {
-      const color = getAttr(bottom, 'color') || '000000';
-      const sz = getAttr(bottom, 'sz');
-      props.borderBottom = `${Math.max(1, Math.round(Number(sz || 4) / 8))}px solid #${color === 'auto' ? '000000' : color}`;
+    for (const [side, prop] of [['top','borderTop'],['bottom','borderBottom'],['left','borderLeft'],['right','borderRight']]) {
+      const bdr = dn(pBdr, NS_W, side);
+      if (bdr) {
+        const bVal = getAttr(bdr, 'val');
+        if (bVal && bVal !== 'none' && bVal !== 'nil') {
+          const color = getAttr(bdr, 'color') || '000000';
+          const sz = getAttr(bdr, 'sz');
+          props[prop] = `${Math.max(1, Math.round(Number(sz || 4) / 8))}px solid #${color === 'auto' ? '000000' : color}`;
+        }
+      }
     }
   }
   // Background/shading
@@ -2177,7 +2182,7 @@ async function renderDocxToHtml(zip) {
     if (child.localName === 'p') {
       html.push(renderParagraph(child, styles, numbering, relMap, imageData, listCounters));
     } else if (child.localName === 'tbl') {
-      html.push(renderTable(child, styles, relMap, imageData));
+      html.push(renderTable(child, styles, relMap, imageData, numbering, listCounters));
     } else if (child.localName === 'sectPr') {
       // Section properties (page size, margins) - skip
     }
@@ -2218,7 +2223,10 @@ function renderParagraph(pEl, styles, numbering, relMap, imageData, listCounters
   if (styleProps.spaceBefore) styleParts.push(`margin-top:${styleProps.spaceBefore}pt`);
   if (styleProps.spaceAfter) styleParts.push(`margin-bottom:${styleProps.spaceAfter}pt`);
   if (styleProps.lineHeight) styleParts.push(`line-height:${styleProps.lineHeight}`);
+  if (styleProps.borderTop) styleParts.push(`border-top:${styleProps.borderTop}`);
   if (styleProps.borderBottom) styleParts.push(`border-bottom:${styleProps.borderBottom}`);
+  if (styleProps.borderLeft) styleParts.push(`border-left:${styleProps.borderLeft}`);
+  if (styleProps.borderRight) styleParts.push(`border-right:${styleProps.borderRight}`);
   if (styleProps.bgColor) styleParts.push(`background-color:${styleProps.bgColor}`);
 
   // Numbering / list
@@ -2286,10 +2294,10 @@ function renderRuns(parentEl, styleRProps, styles, relMap, imageData) {
       const tab = dn(child, NS_W, 'tab');
       if (tab) parts.push('<span class="word-tab">\t</span>');
 
-      // Text content
-      const textEl = dn(child, NS_W, 't');
-      if (textEl) {
-        const text = textEl.textContent || '';
+      // Text content — collect ALL w:t elements (runs can have multiple)
+      const textEls = dnAll(child, NS_W, 't');
+      if (textEls.length) {
+        const text = textEls.map(t => t.textContent || '').join('');
         const style = runPropsToStyle(runProps);
         if (style) {
           parts.push(`<span style="${style}">${escapeHtml(text)}</span>`);
@@ -2452,7 +2460,7 @@ function renderOmml(el) {
 }
 
 // ── Table rendering ──
-function renderTable(tblEl, styles, relMap, imageData) {
+function renderTable(tblEl, styles, relMap, imageData, numbering, listCounters) {
   const html = ['<div class="word-tbl-wrap"><table class="word-tbl">'];
   const tblPr = dn(tblEl, NS_W, 'tblPr');
   let tblBorders = true;
@@ -2502,6 +2510,26 @@ function renderTable(tblEl, styles, relMap, imageData) {
             html.push(`<td class="word-tc-merged" style="display:none"></td>`);
             continue;
           }
+          // val="restart" — calculate rowspan by counting subsequent continuation rows
+          if (vm === 'restart') {
+            const allRows = dnAll(tblEl, NS_W, 'tr').filter(r => r.parentNode === tblEl);
+            const curRowIdx = allRows.indexOf(tr);
+            const cellIdx = Array.from(tr.children).filter(c => c.localName === 'tc').indexOf(tc);
+            let span = 1;
+            for (let nr = curRowIdx + 1; nr < allRows.length; nr++) {
+              const nextCells = Array.from(allRows[nr].children).filter(c => c.localName === 'tc');
+              const nextTc = nextCells[cellIdx];
+              if (!nextTc) break;
+              const nextTcPr = dn(nextTc, NS_W, 'tcPr');
+              const nextVm = nextTcPr ? dn(nextTcPr, NS_W, 'vMerge') : null;
+              if (nextVm) {
+                const nextVal = getAttr(nextVm, 'val');
+                if (!nextVal || nextVal === 'continue') { span++; continue; }
+              }
+              break;
+            }
+            if (span > 1) rowspan = ` rowspan="${span}"`;
+          }
         }
         const shd = dn(tcPr, NS_W, 'shd');
         if (shd) {
@@ -2513,6 +2541,23 @@ function renderTable(tblEl, styles, relMap, imageData) {
           const va = getAttr(vAlign, 'val');
           if (va === 'center') cellStyle.push('vertical-align:middle');
           else if (va === 'bottom') cellStyle.push('vertical-align:bottom');
+        }
+        // Cell borders
+        const tcBorders = dn(tcPr, NS_W, 'tcBorders');
+        if (tcBorders) {
+          for (const [side, cssProp] of [['top','border-top'],['bottom','border-bottom'],['left','border-left'],['right','border-right']]) {
+            const bdr = dn(tcBorders, NS_W, side);
+            if (bdr) {
+              const bVal = getAttr(bdr, 'val');
+              if (bVal && bVal !== 'nil' && bVal !== 'none') {
+                const bSz = getAttr(bdr, 'sz');
+                const bColor = getAttr(bdr, 'color');
+                const width = bSz ? Math.max(1, Math.round(Number(bSz) / 8)) : 1;
+                const color = bColor && bColor !== 'auto' ? `#${bColor}` : '#000';
+                cellStyle.push(`${cssProp}:${width}px solid ${color}`);
+              }
+            }
+          }
         }
         const tcW = dn(tcPr, NS_W, 'tcW');
         if (tcW) {
@@ -2529,9 +2574,9 @@ function renderTable(tblEl, styles, relMap, imageData) {
       // Cell content (paragraphs)
       for (const cellChild of tc.children) {
         if (cellChild.localName === 'p') {
-          html.push(renderParagraph(cellChild, styles, {}, relMap, imageData, {}));
+          html.push(renderParagraph(cellChild, styles, numbering || {}, relMap, imageData, listCounters || {}));
         } else if (cellChild.localName === 'tbl') {
-          html.push(renderTable(cellChild, styles, relMap, imageData));
+          html.push(renderTable(cellChild, styles, relMap, imageData, numbering, listCounters));
         }
       }
 
