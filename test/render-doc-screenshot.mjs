@@ -163,9 +163,19 @@ const diag = await page.evaluate(() => {
     });
     t2Dump.push({ r: ri, cells: cells2 });
   });
-  // Collect DOC-TBL debug logs
-  const debugLogs = (window.__docTblLogs || []).slice(0, 50);
-  return { tableCount: tables.length, t2Dump, debugLogs };
+  // Also dump table 1
+  const t1El = document.querySelectorAll('table')[0];
+  const t1Rows = t1El ? t1El.querySelectorAll('tr') : [];
+  const t1Dump = [];
+  t1Rows.forEach((tr, ri) => {
+    const tds3 = tr.querySelectorAll('td');
+    const cells2 = [];
+    tds3.forEach(td => {
+      cells2.push({ text: td.textContent.trim().slice(0, 60), cs: td.getAttribute('colspan') || '1', hidden: td.style.display === 'none' });
+    });
+    t1Dump.push({ r: ri, cells: cells2 });
+  });
+  return { tableCount: tables.length, t1Dump, t2Dump };
 });
 console.log('Diagnostic:', JSON.stringify(diag, null, 2));
 // Get actual content height

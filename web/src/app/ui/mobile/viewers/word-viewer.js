@@ -1803,10 +1803,15 @@ function renderDocBinary(buffer) {
           // Each row = cellCount data cells + 1 row-end marker cell (\x07)
           const segments = paraText.split('\x07');
           let cellCp = cpStart;
-          // Find rowEndRuns for this paragraph: search up to cpEnd + enough range to cover
-          // all cell content that follows (multi-paragraph cells can extend far beyond).
-          // Use a generous range but cap at the next non-table paragraph or table boundary.
-          const rowEndRuns = paraRuns.filter(r => r.props.tableRowEnd && r.cpStart >= cpStart && r.cpStart <= cpEnd + 200);
+          // Find rowEndRuns for this paragraph, filtered to the SAME table grid.
+          const curBound0 = tblAllRowEnds[0]?.props._cellBoundaries?.[0];
+          const rowEndRuns = paraRuns.filter(r => {
+            if (!r.props.tableRowEnd || r.cpStart < cpStart || r.cpStart > cpEnd + 200) return false;
+            // Only include rowEnds from the same table grid
+            const rb0 = r.props._cellBoundaries?.[0];
+            if (curBound0 !== undefined && rb0 !== undefined && rb0 !== curBound0) return false;
+            return true;
+          });
           let segIdx = 0;
           for (let ri = 0; ri < rowEndRuns.length && segIdx < segments.length; ri++) {
             const reProps = rowEndRuns[ri].props;
