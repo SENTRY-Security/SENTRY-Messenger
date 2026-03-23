@@ -801,6 +801,127 @@ function parseStyleSheet(tableStream, fc, lcb) {
   return styles;
 }
 
+// ── Render OLE embedded chart from ObjectPool package_stream ──
+// Parses ODF chart (application/vnd.oasis.opendocument.chart) ZIP and renders as HTML bar/line/pie chart.
+function renderOleChart(ole2) {
+  const pkg = ole2.getStream('package_stream');
+  if (!pkg || pkg[0] !== 0x50 || pkg[1] !== 0x4B) return ''; // not a ZIP
+
+  // Parse ZIP central directory
+  let eocdPos = pkg.length - 22;
+  while (eocdPos > 0 && !(pkg[eocdPos]===0x50&&pkg[eocdPos+1]===0x4B&&pkg[eocdPos+2]===0x05&&pkg[eocdPos+3]===0x06)) eocdPos--;
+  if (eocdPos <= 0) return '';
+  const cdOff = pkg[eocdPos+16]|(pkg[eocdPos+17]<<8)|(pkg[eocdPos+18]<<16)|(pkg[eocdPos+19]<<24);
+  const numEntries = pkg[eocdPos+10]|(pkg[eocdPos+11]<<8);
+
+  // Build file map
+  const zipFiles = {};
+  let p = cdOff;
+  for (let i = 0; i < numEntries && p + 46 <= pkg.length; i++) {
+    const method = pkg[p+10]|(pkg[p+11]<<8);
+    const compSize = pkg[p+20]|(pkg[p+21]<<8)|(pkg[p+22]<<16)|(pkg[p+23]<<24);
+    const nameLen = pkg[p+28]|(pkg[p+29]<<8);
+    const extraLen = pkg[p+30]|(pkg[p+31]<<8);
+    const commentLen = pkg[p+32]|(pkg[p+33]<<8);
+    const localOff = pkg[p+42]|(pkg[p+43]<<8)|(pkg[p+44]<<16)|(pkg[p+45]<<24);
+    const name = new TextDecoder().decode(pkg.slice(p+46, p+46+nameLen));
+    const lnLen = pkg[localOff+26]|(pkg[localOff+27]<<8);
+    const leLen = pkg[localOff+28]|(pkg[localOff+29]<<8);
+    zipFiles[name] = { method, compSize, dataStart: localOff + 30 + lnLen + leLen };
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+
+  // Extract content.xml
+  const entry = zipFiles['content.xml'];
+  if (!entry || entry.compSize <= 0) return '';
+  const raw = pkg.slice(entry.dataStart, entry.dataStart + entry.compSize);
+  if (entry.method === 0) return parseOdfChartXml(new TextDecoder().decode(raw));
+  // Method 8 = deflate — return raw data for async decompression by caller
+  return { _asyncChart: true, raw };
+}
+
+// Parse ODF chart XML and return HTML
+function parseOdfChartXml(xml) {
+  if (!xml || !xml.includes('chart:')) return '';
+
+  const chartClass = xml.match(/chart:class="chart:([^"]+)"/)?.[1] || 'bar';
+
+  // Extract table data
+  const rowMatches = xml.match(/<table:table-row[^>]*>[\s\S]*?<\/table:table-row>/g);
+  if (!rowMatches || rowMatches.length < 2) return '';
+
+  const rows = rowMatches.map(row => {
+    const cells = row.match(/<table:table-cell[^>]*(?:\/>|>[\s\S]*?<\/table:table-cell>)/g) || [];
+    return cells.map(c => {
+      const v = c.match(/office:value="([^"]+)"/)?.[1];
+      const s = c.match(/office:string-value="([^"]+)"/)?.[1];
+      const t = c.match(/<text:p>([^<]*)<\/text:p>/)?.[1];
+      return v ? parseFloat(v) : (s || t || '');
+    });
+  });
+
+  const headers = rows[0]; // First row = category labels
+  const dataRows = rows.slice(1); // Data rows
+  if (!dataRows.length) return '';
+
+  // Find max value for scaling
+  let maxVal = 0;
+  dataRows.forEach(r => r.forEach((v, i) => { if (i > 0 && typeof v === 'number') maxVal = Math.max(maxVal, v); }));
+  if (maxVal === 0) maxVal = 1;
+
+  // Colors for series
+  const colors = ['#3b82f6', '#f97316', '#eab308', '#22c55e', '#a855f7', '#ef4444'];
+
+  if (chartClass === 'bar') {
+    // Render bar chart as HTML/CSS
+    const seriesCount = headers.length - 1;
+    const catCount = dataRows.length;
+    const barWidth = Math.max(12, Math.floor(60 / seriesCount));
+
+    let html = '<div class="word-chart"><div class="word-chart-area">';
+    // Y-axis labels
+    html += '<div class="word-chart-yaxis">';
+    for (let i = 5; i >= 0; i--) {
+      const v = Math.round(maxVal * i / 5 * 10) / 10;
+      html += `<span>${v}</span>`;
+    }
+    html += '</div>';
+    // Bars
+    html += '<div class="word-chart-bars">';
+    dataRows.forEach((row, ri) => {
+      html += '<div class="word-chart-group">';
+      for (let si = 1; si < row.length && si <= seriesCount; si++) {
+        const val = typeof row[si] === 'number' ? row[si] : 0;
+        const pct = (val / maxVal * 100).toFixed(1);
+        const color = colors[(si - 1) % colors.length];
+        html += `<div class="word-chart-bar" style="height:${pct}%;background:${color};width:${barWidth}px" title="${headers[si]}: ${val}"></div>`;
+      }
+      html += `<div class="word-chart-cat">${typeof row[0] === 'string' ? row[0] : ''}</div>`;
+      html += '</div>';
+    });
+    html += '</div></div>';
+    // Legend
+    html += '<div class="word-chart-legend">';
+    for (let si = 1; si < headers.length; si++) {
+      html += `<span><i style="background:${colors[(si-1) % colors.length]}"></i>${headers[si]}</span>`;
+    }
+    html += '</div></div>';
+    return html;
+  }
+
+  // Fallback: show data as table
+  let html = '<table class="word-tbl word-tbl-bordered"><tr>';
+  headers.forEach(h => { html += `<th class="word-tc">${h}</th>`; });
+  html += '</tr>';
+  dataRows.forEach(row => {
+    html += '<tr>';
+    row.forEach(v => { html += `<td class="word-tc">${v}</td>`; });
+    html += '</tr>';
+  });
+  html += '</table>';
+  return html;
+}
+
 // ── Extract inline picture from Data stream at given offset ──
 // PICFAndOfficeArtData: PICF (68 bytes) + OfficeArt records
 // MS-DOC §2.9.177 PICF, §2.9.178 PICFAndOfficeArtData
@@ -908,7 +1029,17 @@ function renderDocBinary(buffer) {
     return fallbackRender(wordDoc);
   }
   const tableStream = ole2.getStream(fib.tableName);
-  const dataStream = ole2.getStream('Data'); // OLE2 Data stream — contains embedded images
+  const dataStream = ole2.getStream('Data');
+
+  // Pre-render OLE embedded objects (charts, etc.)
+  // Pre-render OLE charts — returns HTML string or {_asyncChart, raw} for deflate
+  let oleChartHtml = '';
+  let _oleChartAsync = null;
+  try {
+    const chartResult = renderOleChart(ole2);
+    if (typeof chartResult === 'string') oleChartHtml = chartResult;
+    else if (chartResult && chartResult._asyncChart) _oleChartAsync = chartResult;
+  } catch { /* skip */ }
 
   // Parse piece table for text + FC mapping
   // FibRgFcLcb97 index 33 = fcClx/lcbClx
@@ -1049,7 +1180,7 @@ function renderDocBinary(buffer) {
             const isLast = ci === rowCells.length - 1;
             const cs = isLast && rowCells.length < maxCols ? ` colspan="${maxCols - ci}"` : '';
             const sa = tdStyle.length ? ` style="${tdStyle.join(';')}"` : '';
-            html.push(`<td class="word-tc"${sa}${cs}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream)}</td>`);
+            html.push(`<td class="word-tc"${sa}${cs}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream, oleChartHtml)}</td>`);
           }
           html.push('</tr>');
           rowCells = [];
@@ -1060,7 +1191,7 @@ function renderDocBinary(buffer) {
       if (rowCells.length > 0) {
         html.push('<tr>');
         for (const cell of rowCells) {
-          html.push(`<td class="word-tc">${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream)}</td>`);
+          html.push(`<td class="word-tc">${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream, oleChartHtml)}</td>`);
         }
         html.push('</tr>');
       }
@@ -1098,7 +1229,7 @@ function renderDocBinary(buffer) {
             const cell = row[ci];
             const isLast = ci === row.length - 1;
             const cs = isLast && row.length < maxCols ? ` colspan="${maxCols - ci}"` : '';
-            html.push(`<td class="word-tc"${cs}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream)}</td>`);
+            html.push(`<td class="word-tc"${cs}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream, oleChartHtml)}</td>`);
           }
           html.push('</tr>');
         }
@@ -1112,7 +1243,7 @@ function renderDocBinary(buffer) {
         const visTxt = paraText.replace(/[\x01\x07\x08\x13\x14\x15]/g, '').trim();
         if (nextHasCell && visTxt) {
           // Add as full-width continuation row within the table
-          html.push(`<tr><td class="word-tc" colspan="99">${renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream)}</td></tr>`);
+          html.push(`<tr><td class="word-tc" colspan="99">${renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream, oleChartHtml)}</td></tr>`);
           cp = cpEnd + 1;
           continue; // skip normal paragraph rendering
         }
@@ -1147,7 +1278,7 @@ function renderDocBinary(buffer) {
       } else {
         // Pass raw paraText + cpStart — renderFormattedRun skips special chars internally
         // to maintain correct CP↔formatting alignment
-        const content = renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream);
+        const content = renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream, oleChartHtml);
 
         // Detect heading: ONLY use outlineLvl from paragraph Sprm (MS-DOC standard)
         // No font-size heuristic — it causes false positives on bold paragraphs
@@ -1175,7 +1306,7 @@ function renderDocBinary(buffer) {
   }
   if (inTable) html.push('</table></div>');
 
-  return { html: html.join(''), pageMargins };
+  return { html: html.join(''), pageMargins, _oleChartAsync };
 }
 
 // Special chars to strip from display (picture placeholders, cell marks, field markers)
@@ -1185,7 +1316,7 @@ const SPECIAL_CHAR_RE = /[\x01\x07\x08\x13\x14\x15]/g;
 // `text` is raw paragraph text (including special chars), `cpOffset` is the CP of text[0].
 // We iterate by raw position to keep CP alignment with charRuns, but skip special chars in output.
 // `dataStream` is the OLE2 Data stream for extracting inline pictures (may be null).
-function renderFormattedRun(text, cpOffset, charRuns, fonts, dataStream) {
+function renderFormattedRun(text, cpOffset, charRuns, fonts, dataStream, oleChartHtml) {
   if (!text) return '';
   const parts = [];
   let pos = 0;
@@ -1193,15 +1324,23 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts, dataStream) {
   while (pos < text.length) {
     // Handle special chars
     const ch = text[pos];
-    if (ch === '\x01' && dataStream) {
-      // Picture placeholder — check if charRun has sprmCPicLocation
+    if (ch === '\x01') {
+      // Picture or OLE object placeholder
       const cpPos2 = cpOffset + pos;
       const picRun = charRuns.find(r => r.cpStart <= cpPos2 && r.cpEnd > cpPos2);
-      if (picRun?.props?.picLocation !== undefined) {
-        const imgHtml = extractDocImage(dataStream, picRun.props.picLocation);
-        if (imgHtml) { parts.push(imgHtml); pos++; continue; }
+      if (picRun?.props?.picLocation !== undefined && dataStream) {
+        const loc = picRun.props.picLocation;
+        if (loc >= 0 && loc < 0x7FFFFFFF) {
+          const imgHtml = extractDocImage(dataStream, loc);
+          if (imgHtml) { parts.push(imgHtml); pos++; continue; }
+        }
+        // picLocation=0x7FFFFFFF or failed extraction → try OLE chart
+        if (oleChartHtml) { parts.push(oleChartHtml); oleChartHtml = ''; pos++; continue; }
+      } else if (oleChartHtml) {
+        // No picLocation but we have an OLE chart to show
+        parts.push(oleChartHtml); oleChartHtml = ''; pos++; continue;
       }
-      pos++; continue; // no image found, skip placeholder
+      pos++; continue;
     }
     if (SPECIAL_CHAR_RE.test(ch)) {
       SPECIAL_CHAR_RE.lastIndex = 0;
@@ -1945,6 +2084,44 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
       const docResult = renderDocBinary(arrayBuffer);
       resultHtml = typeof docResult === 'string' ? docResult : docResult.html;
       var docPageMargins = typeof docResult === 'object' ? docResult.pageMargins : null;
+      // Handle async OLE chart decompression (deflate)
+      if (docResult._oleChartAsync) {
+        try {
+          const { raw } = docResult._oleChartAsync;
+          const ds = new DecompressionStream('raw');
+          const writer = ds.writable.getWriter();
+          const reader = ds.readable.getReader();
+          writer.write(raw);
+          writer.close();
+          const chunks = [];
+          let done = false;
+          const readAll = async () => {
+            while (!done) {
+              const { value, done: d } = await reader.read();
+              if (d) { done = true; break; }
+              chunks.push(value);
+            }
+            const total = chunks.reduce((s, c) => s + c.length, 0);
+            const result = new Uint8Array(total);
+            let off = 0;
+            for (const c of chunks) { result.set(c, off); off += c.length; }
+            return new TextDecoder().decode(result);
+          };
+          readAll().then(xml => {
+            const chartHtml = parseOdfChartXml(xml);
+            if (chartHtml) {
+              // Insert chart into rendered page (replace placeholder)
+              const pageEl = document.querySelector('.word-page');
+              if (pageEl) {
+                const tmp = document.createElement('div');
+                tmp.innerHTML = chartHtml;
+                // Append at the end or find \x01 placeholder location
+                pageEl.appendChild(tmp.firstElementChild || tmp);
+              }
+            }
+          }).catch(() => {});
+        } catch {}
+      }
     } else {
       throw new Error('NOT_DOCX');
     }

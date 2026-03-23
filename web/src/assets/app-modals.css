@@ -1116,6 +1116,85 @@ h6.word-h { font-size: 9pt; }
   color: #1d4ed8;
 }
 
+/* Embedded chart */
+.word-chart {
+  margin: 12pt 0;
+  padding: 16px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+.word-chart-area {
+  display: flex;
+  align-items: flex-end;
+  height: 200px;
+  gap: 4px;
+}
+.word-chart-yaxis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  height: 100%;
+  font-size: 10px;
+  color: #64748b;
+  padding-right: 6px;
+  text-align: right;
+  min-width: 28px;
+}
+.word-chart-bars {
+  display: flex;
+  align-items: flex-end;
+  flex: 1;
+  height: 100%;
+  gap: 8px;
+  border-left: 1px solid #cbd5e1;
+  border-bottom: 1px solid #cbd5e1;
+  padding: 0 8px 0 4px;
+}
+.word-chart-group {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  flex: 1;
+  height: 100%;
+  position: relative;
+}
+.word-chart-bar {
+  border-radius: 2px 2px 0 0;
+  min-height: 2px;
+  transition: opacity 0.15s;
+}
+.word-chart-bar:hover { opacity: 0.8; }
+.word-chart-cat {
+  position: absolute;
+  bottom: -18px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  color: #64748b;
+  white-space: nowrap;
+}
+.word-chart-legend {
+  display: flex;
+  gap: 12px;
+  margin-top: 24px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.word-chart-legend span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #475569;
+}
+.word-chart-legend i {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
 .word-page img {
   max-width: 100%;
   height: auto;
