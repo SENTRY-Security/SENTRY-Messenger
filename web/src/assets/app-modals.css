@@ -1107,6 +1107,29 @@ h6.word-h { font-size: 9pt; }
 .word-tc .word-p:last-child { margin-bottom: 0; }
 .word-tc-merged { display: none; }
 
+/* Inline download confirm overlay (inside viewer, doesn't destroy modal body) */
+.word-confirm-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  background: rgba(0,0,0,0.5);
+  display: flex; align-items: center; justify-content: center;
+}
+.word-confirm-box {
+  background: var(--bg-secondary, #1e293b); border-radius: 12px;
+  padding: 20px 24px; max-width: 320px; width: 90%;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+}
+.word-confirm-msg {
+  color: var(--text-primary, #e2e8f0); font-size: 14px; line-height: 1.5;
+  margin-bottom: 16px;
+}
+.word-confirm-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.word-confirm-cancel, .word-confirm-ok {
+  padding: 8px 18px; border-radius: 8px; border: none;
+  font-size: 14px; cursor: pointer;
+}
+.word-confirm-cancel { background: var(--bg-tertiary, #334155); color: var(--text-secondary, #94a3b8); }
+.word-confirm-ok { background: var(--accent, #3b82f6); color: #fff; }
+
 /* Tab stops: render as inline-block with min-width */
 .word-tab {
   display: inline-block;

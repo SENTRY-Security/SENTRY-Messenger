@@ -583,18 +583,19 @@ export async function renderPdfViewer({ url, name, modalApi }) {
     };
     window.addEventListener('resize', handleResize);
 
-    // Download
+    // Download — inline confirm overlay (showConfirmModal destroys viewer)
     const downloadBtn = body.querySelector('#pdfDownload');
     downloadBtn?.addEventListener('click', (e) => {
       e.preventDefault();
       const proceed = () => triggerDownload(url, name || 'file.pdf');
-      if (typeof showConfirmModal === 'function') {
-        showConfirmModal({
-          title: t('viewer.downloadPdf'),
-          message: t('drive.downloadPdfConfirm'),
-          confirmLabel: t('drive.download'),
-          onConfirm: proceed
-        });
+      const msg = t('drive.downloadPdfConfirm');
+      if (msg) {
+        const overlay = document.createElement('div');
+        overlay.className = 'word-confirm-overlay';
+        overlay.innerHTML = `<div class="word-confirm-box"><div class="word-confirm-msg">${escapeHtml(msg)}</div><div class="word-confirm-actions"><button type="button" class="word-confirm-cancel">${escapeHtml(t('common.cancel'))}</button><button type="button" class="word-confirm-ok">${escapeHtml(t('drive.download') || t('modal.confirm'))}</button></div></div>`;
+        body.querySelector('.pdf-viewer')?.appendChild(overlay) || body.appendChild(overlay);
+        overlay.querySelector('.word-confirm-cancel')?.addEventListener('click', () => overlay.remove(), { once: true });
+        overlay.querySelector('.word-confirm-ok')?.addEventListener('click', () => { overlay.remove(); proceed(); }, { once: true });
         return;
       }
       const existing = document.querySelector('.pdf-confirm');
