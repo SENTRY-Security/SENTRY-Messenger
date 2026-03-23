@@ -415,11 +415,33 @@ function parseShape(spEl, relMap, phStyles) {
     // Pure image shape (no text) — return as image
     const blipFill = blip.parentElement;
     const hasStretch = blipFill ? !!dn(blipFill, NS_A, 'stretch') : false;
-    return { type: 'image', ...tf, target: relMap[embedId], fillMode: hasStretch ? 'stretch' : 'contain' };
+    // Parse srcRect (image cropping) — values in 1/1000ths of percent
+    const srcRectEl = blipFill ? dn(blipFill, NS_A, 'srcRect') : null;
+    let srcRect = null;
+    if (srcRectEl) {
+      const l = parseInt(srcRectEl.getAttribute('l') || '0', 10) / 100000;
+      const t = parseInt(srcRectEl.getAttribute('t') || '0', 10) / 100000;
+      const r = parseInt(srcRectEl.getAttribute('r') || '0', 10) / 100000;
+      const b = parseInt(srcRectEl.getAttribute('b') || '0', 10) / 100000;
+      if (l || t || r || b) srcRect = { l, t, r, b };
+    }
+    return { type: 'image', ...tf, target: relMap[embedId], fillMode: hasStretch ? 'stretch' : 'contain', srcRect };
   }
   // Table
   const tblEl = dn(spEl, NS_A, 'tbl');
   if (tblEl) { const tbl = parseTable(tblEl); return { type: 'table', ...tf, ...tbl }; }
+  // Chart (graphicFrame containing c:chart reference)
+  const graphicData = dn(spEl, NS_A, 'graphicData');
+  if (graphicData) {
+    const NS_C = 'http://schemas.openxmlformats.org/drawingml/2006/chart';
+    const chartEl = dn(graphicData, NS_C, 'chart') || graphicData.querySelector('chart');
+    if (chartEl) {
+      const chartRId = chartEl.getAttributeNS(NS_R, 'id') || chartEl.getAttribute('r:id');
+      if (chartRId && relMap[chartRId]) {
+        return { type: 'chart', ...tf, chartTarget: relMap[chartRId] };
+      }
+    }
+  }
   // Placeholder type from nvSpPr/nvPr/ph
   const phInfo = extractPhFromShape(spEl);
   // Inherit position/size from layout/master placeholder if shape has no xfrm
@@ -1170,6 +1192,170 @@ function drawTextShape(ctx, shape, sx, sy, sw, sh, scale, relMap, slideBgColor) 
   }
 }
 
+// ── Chart renderer (basic bar/line/pie from chart XML) ──
+async function drawChart(ctx, shape, sx, sy, sw, sh, scale, zip) {
+  try {
+    const chartPath = 'ppt/' + shape.chartTarget.replace(/^\.\.\//, '').replace(/^\//, '');
+    const chartFile = zip.file(chartPath) || zip.file(shape.chartTarget);
+    if (!chartFile) { drawChartPlaceholder(ctx, sx, sy, sw, sh, scale); return; }
+    const xml = await chartFile.async('text');
+    const doc = new DOMParser().parseFromString(xml, 'application/xml');
+    const NS_C = 'http://schemas.openxmlformats.org/drawingml/2006/chart';
+
+    // Extract series data
+    const series = [];
+    const serEls = doc.getElementsByTagNameNS(NS_C, 'ser');
+    for (const ser of serEls) {
+      const txEl = ser.getElementsByTagNameNS(NS_C, 'v');
+      const catEls = ser.getElementsByTagNameNS(NS_C, 'pt');
+      const numRef = ser.getElementsByTagNameNS(NS_C, 'numRef');
+      const vals = [];
+      // Try numRef → numCache → pt
+      const numCache = numRef.length ? numRef[0].getElementsByTagNameNS(NS_C, 'pt') : [];
+      const ptSource = numCache.length ? numCache : catEls;
+      for (const pt of ptSource) {
+        const vEl = pt.getElementsByTagNameNS(NS_C, 'v');
+        if (vEl.length) vals.push(parseFloat(vEl[0].textContent) || 0);
+      }
+      // Series name
+      const txRef = ser.getElementsByTagNameNS(NS_C, 'tx');
+      let name = '';
+      if (txRef.length) {
+        const sv = txRef[0].getElementsByTagNameNS(NS_C, 'v');
+        if (sv.length) name = sv[0].textContent || '';
+      }
+      if (vals.length) series.push({ name, vals });
+    }
+
+    // Extract category labels
+    const catLabels = [];
+    const catRef = doc.getElementsByTagNameNS(NS_C, 'cat');
+    if (catRef.length) {
+      const pts = catRef[0].getElementsByTagNameNS(NS_C, 'pt');
+      for (const pt of pts) {
+        const v = pt.getElementsByTagNameNS(NS_C, 'v');
+        catLabels.push(v.length ? v[0].textContent : '');
+      }
+    }
+
+    if (!series.length) { drawChartPlaceholder(ctx, sx, sy, sw, sh, scale); return; }
+
+    // Detect chart type
+    const isPie = xml.includes(':pieChart') || xml.includes(':pie3DChart');
+    const isLine = xml.includes(':lineChart') || xml.includes(':line3DChart');
+
+    // Colors
+    const colors = ['#3b82f6', '#f97316', '#eab308', '#22c55e', '#a855f7', '#ef4444', '#06b6d4', '#ec4899'];
+
+    const pad = 8 * scale;
+    const chartX = sx + pad * 3;
+    const chartY = sy + pad;
+    const chartW = sw - pad * 5;
+    const chartH = sh - pad * 4;
+
+    // Background
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(sx, sy, sw, sh);
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.lineWidth = scale;
+    ctx.strokeRect(sx, sy, sw, sh);
+
+    if (isPie && series.length) {
+      // Pie chart
+      const vals = series[0].vals;
+      const total = vals.reduce((s, v) => s + Math.abs(v), 0) || 1;
+      const cx = sx + sw / 2, cy = sy + sh / 2;
+      const r = Math.min(chartW, chartH) / 2.5;
+      let angle = -Math.PI / 2;
+      vals.forEach((v, i) => {
+        const slice = (Math.abs(v) / total) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.arc(cx, cy, r, angle, angle + slice);
+        ctx.closePath();
+        ctx.fillStyle = colors[i % colors.length];
+        ctx.fill();
+        angle += slice;
+      });
+    } else {
+      // Bar or line chart
+      const allVals = series.flatMap(s => s.vals);
+      const maxVal = Math.max(...allVals, 1);
+      const minVal = Math.min(...allVals, 0);
+      const range = maxVal - Math.min(minVal, 0) || 1;
+
+      // Y axis
+      ctx.fillStyle = '#64748b';
+      ctx.font = `${9 * scale}px sans-serif`;
+      ctx.textAlign = 'right';
+      for (let i = 0; i <= 4; i++) {
+        const yVal = Math.min(minVal, 0) + range * i / 4;
+        const yPos = chartY + chartH - (chartH * i / 4);
+        ctx.fillText(Math.round(yVal * 10) / 10, chartX - 4 * scale, yPos + 3 * scale);
+        ctx.strokeStyle = '#e2e8f0';
+        ctx.beginPath(); ctx.moveTo(chartX, yPos); ctx.lineTo(chartX + chartW, yPos); ctx.stroke();
+      }
+
+      const catCount = Math.max(...series.map(s => s.vals.length), 1);
+
+      if (isLine) {
+        // Line chart
+        series.forEach((s, si) => {
+          ctx.strokeStyle = colors[si % colors.length];
+          ctx.lineWidth = 2 * scale;
+          ctx.beginPath();
+          s.vals.forEach((v, vi) => {
+            const x = chartX + (vi + 0.5) * chartW / catCount;
+            const y = chartY + chartH - ((v - Math.min(minVal, 0)) / range) * chartH;
+            vi === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+          });
+          ctx.stroke();
+        });
+      } else {
+        // Bar chart
+        const groupW = chartW / catCount;
+        const barW = Math.max(2, (groupW * 0.7) / series.length);
+        for (let ci = 0; ci < catCount; ci++) {
+          series.forEach((s, si) => {
+            const v = s.vals[ci] || 0;
+            const barH = ((v - Math.min(minVal, 0)) / range) * chartH;
+            const x = chartX + ci * groupW + (groupW - barW * series.length) / 2 + si * barW;
+            const y = chartY + chartH - barH;
+            ctx.fillStyle = colors[si % colors.length];
+            ctx.fillRect(x, y, barW - scale, barH);
+          });
+        }
+      }
+
+      // Category labels
+      ctx.fillStyle = '#64748b';
+      ctx.font = `${8 * scale}px sans-serif`;
+      ctx.textAlign = 'center';
+      for (let ci = 0; ci < catCount; ci++) {
+        const label = catLabels[ci] || '';
+        if (label) {
+          const x = chartX + (ci + 0.5) * chartW / catCount;
+          ctx.fillText(label.slice(0, 8), x, chartY + chartH + 12 * scale);
+        }
+      }
+    }
+  } catch {
+    drawChartPlaceholder(ctx, sx, sy, sw, sh, scale);
+  }
+}
+
+function drawChartPlaceholder(ctx, sx, sy, sw, sh, scale) {
+  ctx.fillStyle = '#f8fafc';
+  ctx.fillRect(sx, sy, sw, sh);
+  ctx.strokeStyle = '#cbd5e1';
+  ctx.lineWidth = scale;
+  ctx.strokeRect(sx, sy, sw, sh);
+  ctx.fillStyle = '#94a3b8';
+  ctx.font = `${11 * scale}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.fillText('📊 Chart', sx + sw / 2, sy + sh / 2 + 4 * scale);
+}
+
 function drawTable(ctx, shape, sx, sy, sw, sh, scale) {
   if (!shape.rows || !shape.rows.length) return;
   const rowCount = shape.rows.length;
@@ -1485,27 +1671,35 @@ async function drawShapeOnCanvas(ctx, shape, zip, canvasW, canvasH, slideSize, s
     try {
       const img = await loadZipImage(zip, imgPath, objectUrls);
       if (img) {
-        if (shape.fillMode === 'stretch') {
-          ctx.drawImage(img, sx, sy, sw, sh);
+        const imgW = img.width, imgH = img.height;
+        // Apply srcRect cropping (values are fractions 0-1)
+        const crop = shape.srcRect;
+        const srcX = crop ? Math.round(imgW * crop.l) : 0;
+        const srcY = crop ? Math.round(imgH * crop.t) : 0;
+        const srcW = crop ? Math.round(imgW * (1 - crop.l - crop.r)) : imgW;
+        const srcH = crop ? Math.round(imgH * (1 - crop.t - crop.b)) : imgH;
+
+        if (shape.fillMode === 'stretch' || crop) {
+          // Stretch or cropped → draw source region into shape bounds
+          ctx.drawImage(img, srcX, srcY, srcW, srcH, sx, sy, sw, sh);
         } else {
           // Cover-fit: fill shape bounds, crop excess (matches PPT behavior)
-          const imgW = img.width, imgH = img.height;
-          const imgAspect = imgW / imgH;
+          const imgAspect = srcW / srcH;
           const shapeAspect = sw / sh;
           let dw, dh, dx, dy;
           if (imgAspect > shapeAspect) {
-            // Image wider than shape: match height, crop sides
             dh = sh; dw = sh * imgAspect; dy = sy; dx = sx + (sw - dw) / 2;
           } else {
-            // Image taller than shape: match width, crop top/bottom
             dw = sw; dh = sw / imgAspect; dx = sx; dy = sy + (sh - dh) / 2;
           }
-          ctx.drawImage(img, dx, dy, dw, dh);
+          ctx.drawImage(img, srcX, srcY, srcW, srcH, dx, dy, dw, dh);
         }
       }
     } catch {}
   } else if (shape.type === 'table') {
     drawTable(ctx, shape, sx, sy, sw, sh, scale);
+  } else if (shape.type === 'chart') {
+    await drawChart(ctx, shape, sx, sy, sw, sh, scale, zip);
   } else if (shape.type === 'text') {
     const geom = shape.geom || 'rect';
     const isRect = geom === 'rect';
