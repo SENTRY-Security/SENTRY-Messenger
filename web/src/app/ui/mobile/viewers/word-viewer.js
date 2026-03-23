@@ -373,8 +373,9 @@ function parseSprms(data, offset, length) {
         props.align = ['left', 'center', 'right', 'justify'][jc] || 'left';
         break;
       }
-      case 0x2407: props.inTable = toggleVal(data[pos]); break; // sprmPFInTable
-      case 0x2416: props.tableRowEnd = toggleVal(data[pos]); break; // sprmPFTtp
+      case 0x2407: props.pageBreakBefore = toggleVal(data[pos]); break; // sprmPFPageBreakBefore (ispmd=7)
+      case 0x2416: props.inTable = toggleVal(data[pos]); break; // sprmPFInTable (ispmd=22)
+      case 0x2417: props.tableRowEnd = toggleVal(data[pos]); break; // sprmPFTtp (ispmd=23)
       case 0x460B: props.spaceBefore = (data[pos] | (data[pos + 1] << 8)) / 20; break; // sprmPDyaBefore
       case 0x460C: props.spaceAfter = (data[pos] | (data[pos + 1] << 8)) / 20; break; // sprmPDyaAfter
       case 0x840E: case 0x845E: { // sprmPDxaLeft / sprmPDxaLeft80
@@ -409,7 +410,6 @@ function parseSprms(data, offset, length) {
         break;
       }
       case 0x2423: props.outlineLvl = data[pos]; break; // sprmPOutLvl (heading level)
-      case 0x2406: props.pageBreakBefore = toggleVal(data[pos]); break; // sprmPFPageBreakBefore
     }
     pos += opSize;
   }
@@ -654,7 +654,7 @@ function renderDocBinary(buffer) {
         // Detect heading: use outlineLvl (0-8) from paragraph Sprm, or fall back to font size
         let headingLevel = 0;
         if (paraProps.outlineLvl !== undefined && paraProps.outlineLvl <= 5) {
-          // outlineLvl 0-5 → Heading 1-6; outlineLvl 9 = body text (skip)
+          headingLevel = paraProps.outlineLvl + 1; // outlineLvl 0 = H1, ..., 5 = H6
         } else {
           // Heuristic: large bold text that's short = heading
           const firstCharRun = charRuns.find(r => r.cpStart <= cpStart && r.cpEnd > cpStart);

@@ -867,7 +867,10 @@
 }
 
 /* ── Word viewer ── */
-.modal.word-modal {}
+.modal.word-modal {
+  padding: 0;
+  padding-top: 0;
+}
 
 .modal.word-modal .modal-backdrop { background: #000; opacity: 0.5; }
 
@@ -875,6 +878,7 @@
   width: 100%;
   height: 100%;
   max-height: none;
+  border: none;
   border-radius: 0;
   background: #f8fafc;
   color: #1e293b;
