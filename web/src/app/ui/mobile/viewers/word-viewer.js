@@ -553,7 +553,8 @@ function renderDocBinary(buffer) {
   const tableStream = ole2.getStream(fib.tableName);
 
   // Parse piece table for text + FC mapping
-  const clx = fib.fibPair(66);
+  // FibRgFcLcb97 index 33 = fcClx/lcbClx
+  const clx = fib.fibPair(33);
   if (!clx.lcb || !tableStream) return fallbackRender(wordDoc);
   let ptResult;
   try { ptResult = parsePieceTable(wordDoc, tableStream, clx.fc, clx.lcb); } catch { /* fall through */ }
@@ -561,19 +562,21 @@ function renderDocBinary(buffer) {
 
   const { text, pieces } = ptResult;
 
-  // Parse font table
-  const ftPair = fib.fibPair(39);
+  // Parse font table (FibRgFcLcb97 index 15 = SttbfFfn)
+  const ftPair = fib.fibPair(15);
   let fonts = [];
   try { fonts = parseFontTable(tableStream, ftPair.fc, ftPair.lcb); } catch { /* use empty */ }
 
   // Parse character and paragraph formatting (non-fatal if these fail)
   let charRuns = [], paraRuns = [];
   try {
-    const chpxPair = fib.fibPair(10);
+    // FibRgFcLcb97 index 12 = PlcfBteChpx
+    const chpxPair = fib.fibPair(12);
     charRuns = parseCharFormatting(wordDoc, tableStream, chpxPair.fc, chpxPair.lcb, pieces);
   } catch { /* proceed without character formatting */ }
   try {
-    const papxPair = fib.fibPair(11);
+    // FibRgFcLcb97 index 13 = PlcfBtePapx
+    const papxPair = fib.fibPair(13);
     paraRuns = parseParaFormatting(wordDoc, tableStream, papxPair.fc, papxPair.lcb, pieces);
   } catch { /* proceed without paragraph formatting */ }
 
