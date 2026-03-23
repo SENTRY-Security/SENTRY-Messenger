@@ -304,15 +304,41 @@ function processDrawing(drawingEl, relMap, imageData) {
   return `<img src="${dataUrl}" style="${style}" alt="">`;
 }
 
+// ── Find the main document part from [Content_Types].xml ──
+async function findDocumentPath(zip) {
+  const ctXml = await zip.file('[Content_Types].xml')?.async('string').catch(() => null);
+  if (ctXml) {
+    const doc = parseXml(ctXml);
+    for (const override of doc.getElementsByTagName('Override')) {
+      const ct = override.getAttribute('ContentType') || '';
+      if (ct.includes('wordprocessingml.document.main')) {
+        const partName = override.getAttribute('PartName') || '';
+        return partName.startsWith('/') ? partName.slice(1) : partName;
+      }
+    }
+  }
+  // Fallback: try common paths
+  for (const p of ['word/document.xml', 'word/document2.xml']) {
+    if (zip.file(p)) return p;
+  }
+  return null;
+}
+
 // ── Build HTML from document.xml ──
 async function renderDocxToHtml(zip) {
-  // Load required files
-  const docXml = await zip.file('word/document.xml')?.async('string');
+  // Find main document part
+  const docPath = await findDocumentPath(zip);
+  if (!docPath) throw new Error('Missing word/document.xml');
+  const docXml = await zip.file(docPath)?.async('string');
   if (!docXml) throw new Error('Missing word/document.xml');
 
-  const relsXml = await zip.file('word/_rels/document.xml.rels')?.async('string').catch(() => null);
-  const stylesXml = await zip.file('word/styles.xml')?.async('string').catch(() => null);
-  const numXml = await zip.file('word/numbering.xml')?.async('string').catch(() => null);
+  // Derive base directory from document path (usually "word/")
+  const docDir = docPath.replace(/[^/]+$/, '');
+  const docFilename = docPath.split('/').pop();
+
+  const relsXml = await zip.file(`${docDir}_rels/${docFilename}.rels`)?.async('string').catch(() => null);
+  const stylesXml = await zip.file(`${docDir}styles.xml`)?.async('string').catch(() => null);
+  const numXml = await zip.file(`${docDir}numbering.xml`)?.async('string').catch(() => null);
 
   const relMap = buildRelMap(relsXml);
   const styles = parseStyles(stylesXml);
@@ -322,7 +348,7 @@ async function renderDocxToHtml(zip) {
   const imageData = {};
   for (const [rId, target] of Object.entries(relMap)) {
     if (/\.(png|jpg|jpeg|gif|bmp|svg|webp|tiff?)$/i.test(target)) {
-      const imgPath = target.startsWith('/') ? target.slice(1) : 'word/' + target;
+      const imgPath = target.startsWith('/') ? target.slice(1) : docDir + target;
       try {
         const imgBlob = await zip.file(imgPath)?.async('blob');
         if (imgBlob) {
@@ -659,6 +685,14 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
       throw new Error('No data source');
     }
 
+    // Check if this is a ZIP-based DOCX or an old binary .doc
+    const header = new Uint8Array(arrayBuffer, 0, 4);
+    const isZip = header[0] === 0x50 && header[1] === 0x4B && header[2] === 0x03 && header[3] === 0x04;
+    if (!isZip) {
+      // Old .doc (OLE2) or corrupted file — not supported for inline viewing
+      throw new Error('NOT_DOCX');
+    }
+
     const zip = await JSZip.loadAsync(arrayBuffer);
     const result = await renderDocxToHtml(zip);
     objectUrls = result.objectUrls || [];
@@ -700,10 +734,14 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
     };
   } catch (err) {
     log({ wordViewerError: err?.message || err });
+    const isOldDoc = err?.message === 'NOT_DOCX';
+    const errorMsg = isOldDoc
+      ? t('viewer.wordOldFormat', { fallback: '此檔案為舊版 .doc 格式，僅支援 .docx 線上預覽。請下載後使用其他應用程式開啟。' })
+      : t('viewer.wordLoadFailed', { error: err?.message || err });
     if (stageEl) {
       stageEl.innerHTML = `
         <div class="viewer-error-state">
-          <div class="viewer-error-msg">${escapeHtml(t('viewer.wordLoadFailed', { error: err?.message || err }))}</div>
+          <div class="viewer-error-msg">${escapeHtml(errorMsg)}</div>
           <button type="button" class="viewer-error-download" id="wordErrorDownload">
             <svg viewBox="0 0 16 16" width="16" height="16" fill="none"><path d="M8 2v8m0 0l-3-3m3 3l3-3M3 11v2h10v-2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
             ${t('viewer.downloadWord')}
