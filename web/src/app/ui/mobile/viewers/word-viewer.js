@@ -359,9 +359,14 @@ function parseSprms(data, offset, length) {
       case 0x0835: setToggle('bold', data[pos]); break;
       case 0x0836: setToggle('italic', data[pos]); break;
       case 0x0837: setToggle('strike', data[pos]); break;
+      case 0x0838: setToggle('outline', data[pos]); break; // sprmCFOutline
+      case 0x0839: setToggle('vanish', data[pos]); break; // hidden text
       case 0x083A: setToggle('smallCaps', data[pos]); break;
       case 0x083B: setToggle('allCaps', data[pos]); break;
-      case 0x0839: setToggle('vanish', data[pos]); break; // hidden text
+      case 0x083C: setToggle('shadow', data[pos]); break; // sprmCFShadow
+      case 0x0854: setToggle('imprint', data[pos]); break; // sprmCFImprint (engrave)
+      case 0x0858: setToggle('emboss', data[pos]); break; // sprmCFEmboss
+      case 0x0875: setToggle('dstrike', data[pos]); break; // sprmCFDStrike (double strikethrough)
       case 0x2A3E: { // sprmCKul - underline type
         const kul = data[pos];
         // 0=none,1=single,2=wordsOnly,3=double,4=dotted,5=dash,6=dashDot,7=dashDotDot,20=wave
@@ -387,8 +392,15 @@ function parseSprms(data, offset, length) {
         props.ulColor = '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
         break;
       }
-      case 0x4A4F: case 0x4A50: case 0x4A51: // sprmCRgFtc0/1/2 - font index
+      case 0x4A4F: // sprmCRgFtc0 - ASCII font index (highest priority)
+        props.fontIdx = data[pos] | (data[pos + 1] << 8);
+        break;
+      case 0x4A51: // sprmCRgFtc2 - non-EastAsia/non-ASCII font index (fallback)
         if (props.fontIdx === undefined) props.fontIdx = data[pos] | (data[pos + 1] << 8);
+        break;
+      case 0x4A50: // sprmCRgFtc1 - EastAsia font index (lowest priority)
+        if (props.fontIdx === undefined) props.fontIdx = data[pos] | (data[pos + 1] << 8);
+        if (props._fontIdxEA === undefined) props._fontIdxEA = data[pos] | (data[pos + 1] << 8);
         break;
       case 0x4845: { // sprmCIco - legacy color index (Word 97)
         const icoMap = [null, '#000000', '#0000ff', '#00ffff', '#00ff00', '#ff00ff',
@@ -409,10 +421,42 @@ function parseSprms(data, offset, length) {
       case 0x2A48: props.istdChar = data[pos] | (data[pos + 1] << 8); break; // character style index (2 bytes)
       case 0x6A03: props.picLocation = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24); break; // sprmCPicLocation
       case 0x0806: props.fData = data[pos] === 1; break; // sprmCFData — marks picture char
-      case 0x484B: { // sprmCHpsPos - vertical position (superscript/subscript)
-        const hpsPos = data[pos] | (data[pos + 1] << 8);
-        if (hpsPos > 0 && hpsPos < 0x8000) props.vertAlign = 'super';
-        else if (hpsPos >= 0x8000) props.vertAlign = 'sub';
+      case 0x484B: { // sprmCHpsPos - vertical position (superscript/subscript, half-points)
+        let hpsPos = data[pos] | (data[pos + 1] << 8);
+        if (hpsPos > 0x7FFF) hpsPos -= 0x10000; // signed
+        if (hpsPos > 0) props.vertAlign = 'super';
+        else if (hpsPos < 0) props.vertAlign = 'sub';
+        // Also store exact position for CSS rendering
+        if (hpsPos !== 0) props.position = hpsPos / 2; // half-points → pt
+        break;
+      }
+      case 0x2A42: { // sprmCIss - superscript/subscript via iss (0=normal, 1=super, 2=sub)
+        const iss = data[pos];
+        if (iss === 1) props.vertAlign = 'super';
+        else if (iss === 2) props.vertAlign = 'sub';
+        break;
+      }
+      case 0x8840: { // sprmCDxaSpace - character spacing (signed twips, expanded/condensed)
+        let dxa = data[pos] | (data[pos + 1] << 8);
+        if (dxa > 0x7FFF) dxa -= 0x10000;
+        if (dxa !== 0) props.charSpacing = dxa / 20; // twips → pt
+        break;
+      }
+      case 0x4A61: { // sprmCHpsKern - kerning threshold (half-points)
+        const kern = data[pos] | (data[pos + 1] << 8);
+        if (kern > 0) props.kern = kern / 2; // half-points → pt
+        break;
+      }
+      case 0x6878: { // sprmCBrc80 - character border (BRC80, 4 bytes)
+        if (opSize >= 4) {
+          const bw = data[pos]; // 1/8 pt
+          const bType = data[pos + 1];
+          if (bw > 0 || bType > 0) {
+            const brcStyles = ['none','solid','solid','double','dotted','dashed','dashed','dashed'];
+            const style = brcStyles[bType] || 'solid';
+            props.charBorder = `${Math.max(1, Math.round(bw / 8))}px ${style} #000`;
+          }
+        }
         break;
       }
 
@@ -2154,12 +2198,15 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts, dataStream, oleChar
       const css = [];
       if (p.bold) css.push('font-weight:bold');
       if (p.italic) css.push('font-style:italic');
+      // Text decoration: underline + strikethrough
       const decoParts = [];
       if (p.underline) decoParts.push('underline');
-      if (p.strike) decoParts.push('line-through');
+      if (p.dstrike) decoParts.push('line-through');
+      else if (p.strike) decoParts.push('line-through');
       if (decoParts.length) {
         let deco = `text-decoration:${decoParts.join(' ')}`;
         if (p.underlineStyle) deco += `;text-decoration-style:${p.underlineStyle}`;
+        else if (p.dstrike) deco += ';text-decoration-style:double';
         if (p.ulColor) deco += `;text-decoration-color:${p.ulColor}`;
         css.push(deco);
       }
@@ -2168,7 +2215,19 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts, dataStream, oleChar
       if (p.highlight) css.push(`background-color:${p.highlight}`);
       if (p.fontIdx !== undefined && fonts[p.fontIdx]) css.push(`font-family:"${fonts[p.fontIdx]}",sans-serif`);
       if (p.smallCaps && !p.allCaps) css.push('font-variant:small-caps');
+      if (p.allCaps) css.push('text-transform:uppercase');
       if (p.vertAlign) css.push(`vertical-align:${p.vertAlign};font-size:0.75em`);
+      // Text effects
+      if (p.outline) css.push('-webkit-text-stroke:1px currentColor;color:transparent');
+      if (p.shadow) css.push('text-shadow:1px 1px 2px rgba(0,0,0,0.3)');
+      if (p.emboss) css.push('text-shadow:-1px -1px 0 rgba(255,255,255,0.6),1px 1px 0 rgba(0,0,0,0.3)');
+      if (p.imprint) css.push('text-shadow:1px 1px 0 rgba(255,255,255,0.6),-1px -1px 0 rgba(0,0,0,0.3)');
+      // Character spacing
+      if (p.charSpacing) css.push(`letter-spacing:${p.charSpacing}pt`);
+      // Character border
+      if (p.charBorder) css.push(`border:${p.charBorder};padding:0 1pt`);
+      // Text position (raise/lower)
+      if (p.position && !p.vertAlign) css.push(`position:relative;top:${-p.position}pt`);
 
       if (css.length) {
         parts.push(`<span style="${css.join(';')}">${escaped}</span>`);
@@ -2397,43 +2456,165 @@ function parseParagraphProps(pPr) {
 }
 
 // ── Parse run properties ──
+// Helper: check if an OOXML toggle element is explicitly false
+function isToggleOff(el) {
+  if (!el) return false;
+  const v = getAttr(el, 'val');
+  return v === '0' || v === 'false';
+}
+
 function parseRunProps(rPr) {
   if (!rPr) return {};
   const props = {};
-  if (dn(rPr, NS_W, 'b')) props.bold = true;
-  if (dn(rPr, NS_W, 'i')) props.italic = true;
+
+  // §17.3.2.1 b — Bold (check val attribute for explicit off)
+  const bEl = dn(rPr, NS_W, 'b');
+  if (bEl) props.bold = !isToggleOff(bEl);
+  const bCsEl = dn(rPr, NS_W, 'bCs');
+  if (bCsEl && props.bold === undefined) props.bold = !isToggleOff(bCsEl);
+
+  // §17.3.2.16 i — Italic
+  const iEl = dn(rPr, NS_W, 'i');
+  if (iEl) props.italic = !isToggleOff(iEl);
+  const iCsEl = dn(rPr, NS_W, 'iCs');
+  if (iCsEl && props.italic === undefined) props.italic = !isToggleOff(iCsEl);
+
+  // §17.3.2.40 u — Underline (val + color)
   const u = dn(rPr, NS_W, 'u');
-  if (u && getAttr(u, 'val') !== 'none') props.underline = true;
-  if (dn(rPr, NS_W, 'strike')) props.strike = true;
+  if (u) {
+    const uVal = getAttr(u, 'val');
+    if (uVal && uVal !== 'none') {
+      props.underline = true;
+      // ECMA-376 underline style mapping
+      const uStyleMap = { single: null, double: 'double', dotted: 'dotted',
+        dash: 'dashed', dashDotHeavy: 'dashed', dashDot: 'dashed', dashDotDot: 'dashed',
+        dotDash: 'dashed', dotDotDash: 'dashed',
+        wave: 'wavy', wavyHeavy: 'wavy', wavyDouble: 'wavy',
+        thick: null, words: null };
+      if (uVal in uStyleMap && uStyleMap[uVal]) props.underlineStyle = uStyleMap[uVal];
+      const uColor = getAttr(u, 'color');
+      if (uColor && uColor !== 'auto') props.ulColor = '#' + uColor;
+    }
+  }
+
+  // §17.3.2.37 strike — Strikethrough
+  const strikeEl = dn(rPr, NS_W, 'strike');
+  if (strikeEl && !isToggleOff(strikeEl)) props.strike = true;
+
+  // §17.3.2.9 dstrike — Double Strikethrough
+  const dstrikeEl = dn(rPr, NS_W, 'dstrike');
+  if (dstrikeEl && !isToggleOff(dstrikeEl)) props.dstrike = true;
+
+  // §17.3.2.32 smallCaps — Small Caps
+  const smallCapsEl = dn(rPr, NS_W, 'smallCaps');
+  if (smallCapsEl && !isToggleOff(smallCapsEl)) props.smallCaps = true;
+
+  // §17.3.2.5 caps — All Caps
+  const capsEl = dn(rPr, NS_W, 'caps');
+  if (capsEl && !isToggleOff(capsEl)) props.allCaps = true;
+
+  // §17.3.2.41 vanish — Hidden Text
+  const vanishEl = dn(rPr, NS_W, 'vanish');
+  if (vanishEl && !isToggleOff(vanishEl)) props.vanish = true;
+
+  // §17.3.2.25 outline — Outline Effect
+  const outlineEl = dn(rPr, NS_W, 'outline');
+  if (outlineEl && !isToggleOff(outlineEl)) props.outline = true;
+
+  // §17.3.2.31 shadow — Shadow Effect
+  const shadowEl = dn(rPr, NS_W, 'shadow');
+  if (shadowEl && !isToggleOff(shadowEl)) props.shadow = true;
+
+  // §17.3.2.10 emboss — Emboss Effect
+  const embossEl = dn(rPr, NS_W, 'emboss');
+  if (embossEl && !isToggleOff(embossEl)) props.emboss = true;
+
+  // §17.3.2.18 imprint — Imprint/Engrave Effect
+  const imprintEl = dn(rPr, NS_W, 'imprint');
+  if (imprintEl && !isToggleOff(imprintEl)) props.imprint = true;
+
+  // §17.3.2.38 sz — Font Size (half-points → pt)
   const sz = dn(rPr, NS_W, 'sz');
-  if (sz) props.fontSize = Math.round(Number(getAttr(sz, 'val')) / 2); // half-points to pt
+  if (sz) props.fontSize = Math.round(Number(getAttr(sz, 'val')) / 2);
   const szCs = dn(rPr, NS_W, 'szCs');
   if (szCs && !props.fontSize) props.fontSize = Math.round(Number(getAttr(szCs, 'val')) / 2);
+
+  // §17.3.2.6 color — Text Color
   const color = dn(rPr, NS_W, 'color');
   if (color) {
     const val = getAttr(color, 'val');
     if (val && val !== 'auto') props.color = '#' + val;
   }
+
+  // §17.3.2.26 rFonts — Run Fonts
   const rFonts = dn(rPr, NS_W, 'rFonts');
   if (rFonts) {
-    props.font = getAttr(rFonts, 'ascii') || getAttr(rFonts, 'eastAsia') || getAttr(rFonts, 'hAnsi') || getAttr(rFonts, 'cs');
+    props.font = getAttr(rFonts, 'ascii') || getAttr(rFonts, 'hAnsi') || getAttr(rFonts, 'eastAsia') || getAttr(rFonts, 'cs');
   }
+
+  // §17.3.2.15 highlight — Highlight Color
   const highlight = dn(rPr, NS_W, 'highlight');
   if (highlight) {
     const hv = getAttr(highlight, 'val');
     if (hv && hv !== 'none') props.highlight = wordColorName(hv);
   }
+
+  // §17.3.2.30 shd — Run Shading (character background)
   const shd = dn(rPr, NS_W, 'shd');
   if (shd) {
     const fill = getAttr(shd, 'fill');
     if (fill && fill !== 'auto') props.highlight = '#' + fill;
   }
+
+  // §17.3.2.42 vertAlign — Superscript/Subscript
   const vertAlign = dn(rPr, NS_W, 'vertAlign');
   if (vertAlign) {
     const va = getAttr(vertAlign, 'val');
     if (va === 'superscript') props.vertAlign = 'super';
     else if (va === 'subscript') props.vertAlign = 'sub';
   }
+
+  // §17.3.2.35 spacing — Character Spacing (val in twips)
+  const spacing = dn(rPr, NS_W, 'spacing');
+  if (spacing) {
+    const sv = getAttr(spacing, 'val');
+    if (sv) {
+      const sPt = Number(sv) / 20;
+      if (sPt !== 0) props.charSpacing = sPt;
+    }
+  }
+
+  // §17.3.2.44 w — Character Width Scaling (percentage, default=100)
+  const wScale = dn(rPr, NS_W, 'w');
+  if (wScale) {
+    const wv = getAttr(wScale, 'val');
+    if (wv && Number(wv) !== 100) props.charScale = Number(wv);
+  }
+
+  // §17.3.2.27 position — Text Raise/Lower (val in half-points)
+  const posEl = dn(rPr, NS_W, 'position');
+  if (posEl) {
+    const pv = getAttr(posEl, 'val');
+    if (pv) {
+      const pPt = Number(pv) / 2;
+      if (pPt !== 0) props.position = pPt;
+    }
+  }
+
+  // §17.3.2.4 bdr — Character Border
+  const bdr = dn(rPr, NS_W, 'bdr');
+  if (bdr) {
+    const parsed = parseBorderEl(bdr);
+    if (parsed) props.charBorder = parsed;
+  }
+
+  // §17.3.2.11 em — Emphasis Mark (East Asian)
+  const em = dn(rPr, NS_W, 'em');
+  if (em) {
+    const emVal = getAttr(em, 'val');
+    if (emVal && emVal !== 'none') props.emphasisMark = emVal;
+  }
+
   return props;
 }
 
@@ -2458,14 +2639,57 @@ function runPropsToStyle(props) {
   const parts = [];
   if (props.bold) parts.push('font-weight:bold');
   if (props.italic) parts.push('font-style:italic');
-  if (props.underline && props.strike) parts.push('text-decoration:underline line-through');
-  else if (props.underline) parts.push('text-decoration:underline');
-  else if (props.strike) parts.push('text-decoration:line-through');
+
+  // Text decoration: underline + strikethrough (combining line types)
+  const decoParts = [];
+  if (props.underline) decoParts.push('underline');
+  if (props.dstrike) decoParts.push('line-through');
+  else if (props.strike) decoParts.push('line-through');
+  if (decoParts.length) {
+    let deco = `text-decoration:${decoParts.join(' ')}`;
+    // Underline style (double, dotted, dashed, wavy)
+    if (props.underlineStyle) deco += `;text-decoration-style:${props.underlineStyle}`;
+    else if (props.dstrike) deco += ';text-decoration-style:double';
+    // Underline color
+    if (props.ulColor) deco += `;text-decoration-color:${props.ulColor}`;
+    parts.push(deco);
+  }
+
   if (props.fontSize) parts.push(`font-size:${props.fontSize}pt`);
   if (props.color) parts.push(`color:${props.color}`);
   if (props.font) parts.push(`font-family:"${props.font}",sans-serif`);
   if (props.highlight) parts.push(`background-color:${props.highlight}`);
   if (props.vertAlign) parts.push(`vertical-align:${props.vertAlign};font-size:0.75em`);
+
+  // Small caps / All caps
+  if (props.smallCaps && !props.allCaps) parts.push('font-variant:small-caps');
+  if (props.allCaps) parts.push('text-transform:uppercase');
+
+  // Text effects
+  if (props.outline) parts.push('-webkit-text-stroke:1px currentColor;color:transparent');
+  if (props.shadow) parts.push('text-shadow:1px 1px 2px rgba(0,0,0,0.3)');
+  if (props.emboss) parts.push('text-shadow:-1px -1px 0 rgba(255,255,255,0.6),1px 1px 0 rgba(0,0,0,0.3)');
+  if (props.imprint) parts.push('text-shadow:1px 1px 0 rgba(255,255,255,0.6),-1px -1px 0 rgba(0,0,0,0.3)');
+
+  // Character spacing (letter-spacing)
+  if (props.charSpacing) parts.push(`letter-spacing:${props.charSpacing}pt`);
+
+  // Character width scaling
+  if (props.charScale) parts.push(`transform:scaleX(${props.charScale / 100});display:inline-block`);
+
+  // Text position (raise/lower)
+  if (props.position) parts.push(`position:relative;top:${-props.position}pt`);
+
+  // Character border
+  if (props.charBorder) parts.push(`border:${props.charBorder};padding:0 1pt`);
+
+  // Emphasis mark (East Asian: dot, comma, circle, sesame)
+  if (props.emphasisMark) {
+    const emMap = { dot: 'filled', comma: 'filled', circle: 'open', sesame: 'filled sesame' };
+    const emCss = emMap[props.emphasisMark] || 'filled';
+    parts.push(`text-emphasis:${emCss}`, 'text-emphasis-position:over right');
+  }
+
   return parts.join(';');
 }
 
