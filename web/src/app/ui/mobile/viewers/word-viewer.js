@@ -342,17 +342,36 @@ function parseSprms(data, offset, length) {
     }
     if (pos + opSize > end) break;
 
-    const toggleVal = (v) => v === 1 || v === 0x81; // on or negate-default (treat as on)
+    // Toggle semantics (MS-DOC §2.4.6.3):
+    // 0x00=inherit style, 0x01=on, 0x80=inherit style, 0x81=negate style default
+    // Only set prop for 0x01 (on) and 0x80/0x81; skip 0x00 to allow style inheritance
+    const setToggle = (prop, v) => {
+      if (v === 1 || v === 0x81) props[prop] = true;
+      else if (v === 0x80) props[prop] = false;
+      // 0x00 = inherit from style → don't set (let style fallback work)
+    };
 
     switch (sprm) {
       // ── Character properties (sgc=2, CHP) ──
-      case 0x0835: props.bold = toggleVal(data[pos]); break;
-      case 0x0836: props.italic = toggleVal(data[pos]); break;
-      case 0x0837: props.strike = toggleVal(data[pos]); break;
-      case 0x083A: props.smallCaps = toggleVal(data[pos]); break;
-      case 0x083B: props.allCaps = toggleVal(data[pos]); break;
-      case 0x0839: props.vanish = toggleVal(data[pos]); break; // hidden text
-      case 0x2A3E: props.underline = data[pos] !== 0; break; // sprmCKul
+      case 0x0835: setToggle('bold', data[pos]); break;
+      case 0x0836: setToggle('italic', data[pos]); break;
+      case 0x0837: setToggle('strike', data[pos]); break;
+      case 0x083A: setToggle('smallCaps', data[pos]); break;
+      case 0x083B: setToggle('allCaps', data[pos]); break;
+      case 0x0839: setToggle('vanish', data[pos]); break; // hidden text
+      case 0x2A3E: { // sprmCKul - underline type
+        const kul = data[pos];
+        // 0=none,1=single,2=wordsOnly,3=double,4=dotted,5=dash,6=dashDot,7=dashDotDot,20=wave
+        if (kul === 0) props.underline = false;
+        else {
+          props.underline = true;
+          if (kul === 3) props.underlineStyle = 'double';
+          else if (kul === 4) props.underlineStyle = 'dotted';
+          else if (kul === 5 || kul === 6 || kul === 7) props.underlineStyle = 'dashed';
+          else if (kul === 20) props.underlineStyle = 'wavy';
+        }
+        break;
+      }
       case 0x4A43: props.fontSize = (data[pos] | (data[pos + 1] << 8)) / 2; break; // sprmCHps (half-points)
       case 0x6870: { // sprmCCv - text color (COLORREF: 0x00BBGGRR)
         const r = data[pos], g = data[pos + 1], b = data[pos + 2];
@@ -384,7 +403,7 @@ function parseSprms(data, offset, length) {
         if (hl > 0 && hl < hlMap.length) props.highlight = hlMap[hl];
         break;
       }
-      case 0x2A48: props.istdChar = data[pos]; break; // character style index
+      case 0x2A48: props.istdChar = data[pos] | (data[pos + 1] << 8); break; // character style index (2 bytes)
       case 0x6A03: props.picLocation = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24); break; // sprmCPicLocation
       case 0x0806: props.fData = toggleVal(data[pos]); break; // sprmCFData — marks picture char
       case 0x484B: { // sprmCHpsPos - vertical position (superscript/subscript)
@@ -1817,6 +1836,7 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts, dataStream, oleChar
       if (p.strike) decoParts.push('line-through');
       if (decoParts.length) {
         let deco = `text-decoration:${decoParts.join(' ')}`;
+        if (p.underlineStyle) deco += `;text-decoration-style:${p.underlineStyle}`;
         if (p.ulColor) deco += `;text-decoration-color:${p.ulColor}`;
         css.push(deco);
       }
