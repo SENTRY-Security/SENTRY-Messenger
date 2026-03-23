@@ -59,10 +59,12 @@ new_sqlite_classes = ["BrowserSession"]
 
 # ── SAFE Browser Container ────────────────────────────────────────
 # Each BrowserSession DO manages one KasmVNC Chromium container instance.
-[[containers]]
-class_name = "BrowserSession"
-image = "./Dockerfile.safe"
-max_instances = 10
+# TEMPORARILY COMMENTED OUT — Docker not available for local deploy.
+# Re-enable once deploying via CI with Docker support.
+# [[containers]]
+# class_name = "BrowserSession"
+# image = "./Dockerfile.safe"
+# max_instances = 10
 
 # ── UAT Environment ─────────────────────────────────────────────
 [env.uat]
@@ -100,7 +102,7 @@ bindings = [
   { name = "BROWSER_SESSION", class_name = "BrowserSession" }
 ]
 
-[[env.uat.containers]]
-class_name = "BrowserSession"
-image = "./Dockerfile.safe"
-max_instances = 5
+# [[env.uat.containers]]
+# class_name = "BrowserSession"
+# image = "./Dockerfile.safe"
+# max_instances = 5
