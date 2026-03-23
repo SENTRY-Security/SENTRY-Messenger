@@ -791,6 +791,8 @@
     "folderNamePlaceholder": "예: 여행 일지 ✈️",
     "folderNameHint": "/ 같은 구분자를 제외한 모든 문자나 이모지를 사용할 수 있습니다.",
     "nFiles": "{count}개 파일",
+    "fileCount": "{count}개 파일",
+    "folderCount": "{count}개 폴더",
     "completedNofM": "완료 {current} / {total}",
     "cannotPreviewType": "이 유형({type})은 미리보기할 수 없습니다",
     "confirmDeleteFile": "\"{name}\"을(를) 삭제하시겠습니까?",

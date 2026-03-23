@@ -794,6 +794,8 @@
     "folderNamePlaceholder": "例如：旅行紀錄 ✈️",
     "folderNameHint": "可輸入中文或 emoji，僅禁止使用 / 等分隔符號。",
     "nFiles": "{count} 個檔案",
+    "fileCount": "{count} 個檔案",
+    "folderCount": "{count} 個資料夾",
     "completedNofM": "已完成 {current} / {total}",
     "cannotPreviewType": "無法預覽此類型（{type}）",
     "confirmDeleteFile": "確定刪除「{name}」？",

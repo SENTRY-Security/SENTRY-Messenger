@@ -791,6 +791,8 @@
     "folderNamePlaceholder": "ví dụ: Nhật ký du lịch ✈️",
     "folderNameHint": "Bạn có thể sử dụng bất kỳ ký tự hoặc emoji nào, ngoại trừ dấu phân cách như /.",
     "nFiles": "{count} tệp",
+    "fileCount": "{count} tệp",
+    "folderCount": "{count} thư mục",
     "completedNofM": "Đã hoàn thành {current} / {total}",
     "cannotPreviewType": "Không thể xem trước loại này ({type})",
     "confirmDeleteFile": "Bạn có chắc chắn muốn xóa \"{name}\" không?",

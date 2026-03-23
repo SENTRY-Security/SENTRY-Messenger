@@ -794,6 +794,8 @@
     "folderNamePlaceholder": "e.g. Travel log ✈️",
     "folderNameHint": "You can use any characters or emoji, except separators like /.",
     "nFiles": "{count} files",
+    "fileCount": "{count} files",
+    "folderCount": "{count} folders",
     "completedNofM": "Completed {current} / {total}",
     "cannotPreviewType": "Cannot preview this type ({type})",
     "confirmDeleteFile": "Are you sure you want to delete \"{name}\"?",

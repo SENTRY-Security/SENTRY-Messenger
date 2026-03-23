@@ -791,6 +791,8 @@
     "folderNamePlaceholder": "例: 旅の記録 ✈️",
     "folderNameHint": "/ 以外の任意の文字や絵文字を使用できます。",
     "nFiles": "{count}個のファイル",
+    "fileCount": "{count}個のファイル",
+    "folderCount": "{count}個のフォルダ",
     "completedNofM": "完了 {current} / {total}",
     "cannotPreviewType": "この形式はプレビューできません ({type})",
     "confirmDeleteFile": "「{name}」を削除してよろしいですか？",

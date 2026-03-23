@@ -793,6 +793,8 @@
     "folderNamePlaceholder": "例如：旅行记录 ✈️",
     "folderNameHint": "可输入中文或 emoji，仅禁止使用 / 等分隔符号。",
     "nFiles": "{count} 个文件",
+    "fileCount": "{count} 个文件",
+    "folderCount": "{count} 个文件夹",
     "completedNofM": "已完成 {current} / {total}",
     "cannotPreviewType": "无法预览此类型（{type}）",
     "confirmDeleteFile": "确定删除「{name}」？",

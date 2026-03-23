@@ -791,6 +791,8 @@
     "folderNamePlaceholder": "เช่น บันทึกการเดินทาง ✈️",
     "folderNameHint": "คุณสามารถใช้อักขระหรืออิโมจิใดก็ได้ ยกเว้นตัวคั่นเช่น /",
     "nFiles": "{count} ไฟล์",
+    "fileCount": "{count} ไฟล์",
+    "folderCount": "{count} โฟลเดอร์",
     "completedNofM": "เสร็จสิ้น {current} / {total}",
     "cannotPreviewType": "ไม่สามารถแสดงตัวอย่างประเภทนี้ ({type})",
     "confirmDeleteFile": "คุณแน่ใจหรือไม่ว่าต้องการลบ \"{name}\"?",
