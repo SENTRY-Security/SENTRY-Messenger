@@ -10,7 +10,7 @@ import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const inputFile = process.argv[2] || resolve(__dirname, 'assets/01 身分關係揭露表-a 事前揭露(公職人員或關係人填寫).doc');
+const inputFile = process.argv[2] || resolve(__dirname, 'assets/test-1-disclosure-form.doc');
 const outputFile = process.argv[3] || resolve(__dirname, 'assets/render-output.png');
 
 // Read the .doc file
