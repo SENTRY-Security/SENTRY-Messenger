@@ -1276,47 +1276,34 @@ function renderDocBinary(buffer) {
         const cellMarkCount = (paraText.match(/\x07/g) || []).length;
         if (cellMarkCount > 1) {
           // Single-paragraph with multiple cells (old format)
+          // Each row = cellCount data cells + 1 row-end marker cell (\x07)
           const segments = paraText.split('\x07');
           let cellCp = cpStart;
           // Find ALL rowEndRuns within this paragraph's CP range
           const rowEndRuns = paraRuns.filter(r => r.props.tableRowEnd && r.cpStart >= cpStart && r.cpStart <= cpEnd + 200);
-          let rowEndIdx = 0;
-          const rowCells = [];
-          for (let si = 0; si < segments.length; si++) {
-            const seg = segments[si];
-            if (seg) rowCells.push({ text: seg, cpStart: cellCp });
-            else if (rowCells.length > 0) {
-              // Row boundary — flush with matching rowEnd's cellWidths
-              const reProps = rowEndRuns[rowEndIdx]?.props || {};
-              const cw = paraProps.cellWidths || reProps.cellWidths;
-              const cs2 = paraProps.cellShds || reProps.cellShds;
-              rowEndIdx++;
-              html.push('<tr>');
-              for (let ci = 0; ci < rowCells.length; ci++) {
-                const cell = rowCells[ci];
-                const tdStyle = [];
-                if (cw && ci < cw.length) tdStyle.push(`width:${cw[ci]}pt`);
-                if (cs2 && ci < cs2.length && cs2[ci]) tdStyle.push(`background-color:${cs2[ci]}`);
-                const sa = tdStyle.length ? ` style="${tdStyle.join(';')}"` : '';
-                html.push(`<td class="word-tc"${sa}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream, oleChartHtml, artImages)}</td>`);
-              }
-              html.push('</tr>');
-              rowCells.length = 0;
-            }
-            cellCp += seg.length + 1;
-          }
-          if (rowCells.length > 0) {
-            const reProps = rowEndRuns[rowEndIdx]?.props || {};
+          let segIdx = 0;
+          for (let ri = 0; ri < rowEndRuns.length && segIdx < segments.length; ri++) {
+            const reProps = rowEndRuns[ri].props;
+            const cellCount = reProps.cellWidths?.length || reProps.cellCount || 4;
             const cw = paraProps.cellWidths || reProps.cellWidths;
+            const cs2 = paraProps.cellShds || reProps.cellShds;
             html.push('<tr>');
-            for (let ci = 0; ci < rowCells.length; ci++) {
-              const cell = rowCells[ci];
+            for (let ci = 0; ci < cellCount && segIdx < segments.length; ci++) {
+              const seg = segments[segIdx];
               const tdStyle = [];
               if (cw && ci < cw.length) tdStyle.push(`width:${cw[ci]}pt`);
+              if (cs2 && ci < cs2.length && cs2[ci]) tdStyle.push(`background-color:${cs2[ci]}`);
               const sa = tdStyle.length ? ` style="${tdStyle.join(';')}"` : '';
-              html.push(`<td class="word-tc"${sa}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream, oleChartHtml, artImages)}</td>`);
+              html.push(`<td class="word-tc"${sa}>${renderFormattedRun(seg, cellCp, charRuns, fonts, dataStream, oleChartHtml, artImages)}</td>`);
+              cellCp += seg.length + 1;
+              segIdx++;
             }
             html.push('</tr>');
+            // Skip row-end marker cell
+            if (segIdx < segments.length) {
+              cellCp += segments[segIdx].length + 1;
+              segIdx++;
+            }
           }
         } else if (cellMarkCount === 1) {
           // Single cell end (\x07) — this paragraph is one cell in a multi-paragraph table
@@ -1341,9 +1328,9 @@ function renderDocBinary(buffer) {
     } else if (hasCellMark && !paraProps.inTable) {
       // ── Fallback: detect table from \x07 cell marks ──
       // In Word binary, each cell ends with \x07, and each row ends with an
-      // extra \x07 (row-end mark). So consecutive \x07\x07 = row boundary.
-      // Split by \x07 and group into rows: content segments are cells,
-      // empty segments signal row boundaries.
+      // extra \x07 (row-end mark). Row-end mark follows the last cell's \x07,
+      // so \x07\x07 means "cell-end then row-end". We split rows by detecting
+      // two consecutive \x07 marks (empty segment between two \x07).
       const segments = paraText.split('\x07');
       const fallbackRows = [];
       let rowCells = [];
@@ -1351,11 +1338,13 @@ function renderDocBinary(buffer) {
 
       for (let si = 0; si < segments.length; si++) {
         const seg = segments[si];
-        if (seg) {
-          rowCells.push({ text: seg, cpStart: cellCp });
-        } else if (rowCells.length > 0) {
+        // Empty segment after cells = row-end marker, flush row
+        if (seg.length === 0 && rowCells.length > 0) {
           fallbackRows.push(rowCells);
           rowCells = [];
+        } else if (si < segments.length - 1) {
+          // Non-empty segment (or empty at start of row = empty cell)
+          rowCells.push({ text: seg, cpStart: cellCp });
         }
         cellCp += seg.length + 1;
       }
