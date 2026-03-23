@@ -657,15 +657,12 @@ function parseParaFormatting(wordDoc, tableStream, fc, lcb, pieces) {
       if (papxWordOff === 0) continue;
       const papxByteOff = papxWordOff * 2;
       if (papxByteOff >= 511) continue;
-      // cb is in words (2-byte units) per MS-DOC spec PapxInFkp
-      const cbRaw = page[papxByteOff];
+      // PapxInFkp: cb is byte count when non-zero; when zero, next byte * 2 is byte count
+      let cb = page[papxByteOff];
       let grpStart = papxByteOff + 1;
-      let cb;
-      if (cbRaw === 0 && grpStart < 511) {
+      if (cb === 0 && grpStart < 511) {
         cb = page[grpStart] * 2;
         grpStart += 1;
-      } else {
-        cb = cbRaw * 2;
       }
       if (cb < 2 || grpStart + cb > 512) continue;
       // First 2 bytes are istd (style index), then grpprl (sprms)
