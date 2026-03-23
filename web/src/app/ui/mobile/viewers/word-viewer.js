@@ -878,27 +878,64 @@ function renderDocBinary(buffer) {
         if (seg) {
           rowCells.push({ text: seg, cpStart: cellCp });
         } else if (rowCells.length > 0) {
-          // Empty segment after content = row boundary (\x07\x07)
           fallbackRows.push(rowCells);
           rowCells = [];
         }
-        cellCp += seg.length + 1; // +1 for the \x07
+        cellCp += seg.length + 1;
       }
       if (rowCells.length > 0) fallbackRows.push(rowCells);
 
       if (fallbackRows.length > 0) {
-        if (!inTable) { html.push('<div class="word-tbl-wrap"><table class="word-tbl word-tbl-bordered">'); inTable = true; }
+        // Split rows into table groups at "label" boundaries (e.g. "表2：")
+        const tblGroups = []; // { type: 'table'|'label', rows?, row? }
+        let curGroup = [];
         for (const row of fallbackRows) {
-          html.push('<tr>');
-          for (const cell of row) {
-            html.push(`<td class="word-tc">${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts)}</td>`);
+          const txt = row.length === 1 ? row[0].text.trim() : '';
+          if (txt && txt.length <= 15 && /^表\s*[\d０-９]/.test(txt)) {
+            if (curGroup.length) { tblGroups.push({ type: 'table', rows: curGroup }); curGroup = []; }
+            tblGroups.push({ type: 'label', row });
+          } else {
+            curGroup.push(row);
           }
-          html.push('</tr>');
+        }
+        if (curGroup.length) tblGroups.push({ type: 'table', rows: curGroup });
+
+        for (const grp of tblGroups) {
+          if (grp.type === 'label') {
+            if (inTable) { html.push('</table></div>'); inTable = false; }
+            html.push(`<p class="word-p" style="font-weight:600;margin-top:8pt">${renderFormattedRun(grp.row[0].text, grp.row[0].cpStart, charRuns, fonts)}</p>`);
+          } else {
+            if (!inTable) { html.push('<div class="word-tbl-wrap"><table class="word-tbl word-tbl-bordered">'); inTable = true; }
+            // Determine max columns for colspan
+            const maxCols = Math.max(...grp.rows.map(r => r.length));
+            for (const row of grp.rows) {
+              html.push('<tr>');
+              for (let ci = 0; ci < row.length; ci++) {
+                const cell = row[ci];
+                const isLast = ci === row.length - 1;
+                const cs = isLast && row.length < maxCols ? ` colspan="${maxCols - ci}"` : '';
+                html.push(`<td class="word-tc"${cs}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts)}</td>`);
+              }
+              html.push('</tr>');
+            }
+          }
         }
       }
     } else {
-      // ── Close open table ──
-      if (inTable) { html.push('</table></div>'); inTable = false; tableRow = []; }
+      // ── Non-table paragraph ──
+      if (inTable) {
+        // Table continuation: if next paragraph resumes table, keep table open
+        const nextPara = pi + 1 < paragraphs.length ? paragraphs[pi + 1] : '';
+        const nextHasCell = nextPara.indexOf('\x07') !== -1;
+        const visTxt = paraText.replace(/[\x01\x07\x08\x13\x14\x15]/g, '').trim();
+        if (nextHasCell && visTxt) {
+          // Add as full-width continuation row within the table
+          html.push(`<tr><td class="word-tc" colspan="99">${renderFormattedRun(paraText, cpStart, charRuns, fonts)}</td></tr>`);
+          cp = cpEnd + 1;
+          continue; // skip normal paragraph rendering
+        }
+        html.push('</table></div>'); inTable = false; tableRow = [];
+      }
 
       // Build paragraph style
       const styleParts = [];
