@@ -22,6 +22,7 @@ Open-source end-to-end encrypted messenger with Signal Protocol, ephemeral chat,
 - [視訊通話架構](#視訊通話架構)
 - [臨時對話 (Ephemeral Chat)](#臨時對話-ephemeral-chat)
 - [分片加密串流](#分片加密串流)
+- [Office 文件檢視器](#office-文件檢視器)
 - [專案結構](#專案結構)
 - [密碼學協定](#密碼學協定)
 - [訊息流程架構](#訊息流程架構)
@@ -108,6 +109,7 @@ Open-source end-to-end encrypted messenger with Signal Protocol, ephemeral chat,
 - **軟刪除** — 訊息/對話 Cursor-based 軟刪除（timestamp 驅動）
 - **頭像管理** — 聯絡人頭像上傳/下載（Presigned URL + R2）
 - **媒體預覽** — 圖片檢視器、PDF 檢視器、媒體權限管理
+- **Office 文件檢視器** — Word (.doc/.docx)、Excel (.xlsx/.xls)、PowerPoint (.pptx) 純前端解析與渲染，零伺服器依賴
 - **檔案儲存空間** — Drive Pane 檔案管理，資料夾建立/瀏覽/上傳，配額管理（預設 3GB）
 - **傳輸進度 UI** — 上傳/下載雙進度條，可展開處理步驟 checklist（格式偵測→轉碼→加密上傳），即時速度與已傳輸量顯示
 - **SDM 模擬** — 開發用 NFC 標籤模擬（Sim Chips）
@@ -676,6 +678,247 @@ MSE 串流播放                            │  MediaSource Extensions      │
 
 ---
 
+## Office 文件檢視器
+
+純前端 Office 文件解析與渲染引擎，**零伺服器依賴、零第三方渲染服務**。直接在瀏覽器內解析二進位/XML 格式並轉換為 HTML，支援 Word (.doc/.docx)、Excel (.xlsx/.xls)、PowerPoint (.pptx)。
+
+### 架構
+
+```
+加密檔案 (R2)
+    │
+    ▼
+客戶端解密 (AES-256-GCM)
+    │
+    ├── .docx/.xlsx/.pptx ──▶ JSZip 解壓 ──▶ OOXML XML 解析 ──▶ HTML 渲染
+    │
+    └── .doc ──▶ OLE2 Compound Binary 解析 ──▶ Piece Table + Sprm ──▶ HTML 渲染
+```
+
+所有解析在客戶端記憶體內完成，文件明文不離開瀏覽器，符合端對端加密原則。
+
+### Word 檢視器 (.doc / .docx)
+
+自行實作的完整 Word 文件解析器，不依賴任何 Word 渲染函式庫。支援兩種格式的完整規格：
+
+#### .docx — OOXML (ECMA-376) 規格支援
+
+**表格屬性 (§17.4)**
+
+| 規格章節 | 元素 | 功能 | 狀態 |
+|----------|------|------|------|
+| §17.4.63 | `tblW` | 表格寬度 (dxa/pct/auto) | ✅ |
+| §17.4.29 | `jc` | 表格水平對齊 (center/right/end) | ✅ |
+| §17.4.51 | `tblInd` | 表格左縮排 | ✅ |
+| §17.4.53 | `tblLayout` | 固定/自動佈局 | ✅ |
+| §17.4.46 | `tblCellSpacing` | 儲存格間距 | ✅ |
+| §17.4.40 | `tblBorders` | 表格邊框 (6 邊粒度解析 + insideH/V 回退) | ✅ |
+| §17.4.42 | `tblCellMar` | 表格預設儲存格邊距 | ✅ |
+| — | `tblGrid` | 欄寬定義 (colgroup) | ✅ |
+| §17.4.82 | `trHeight` | 行高 (exact/atLeast) | ✅ |
+| §17.4.17 | `gridSpan` | 水平合併 (colspan) | ✅ |
+| §17.4.85 | `vMerge` | 垂直合併 (rowspan，含 gridSpan 索引計算) | ✅ |
+| §17.4.22 | `hMerge` | 舊式水平合併 (legacy) | ✅ |
+| §17.4.66 | `tcBorders` | 儲存格邊框 (per-cell override) | ✅ |
+| §17.4.33 | `shd` | 儲存格著色 | ✅ |
+| §17.4.84 | `vAlign` | 垂直對齊 | ✅ |
+| §17.4.68 | `tcW` | 儲存格寬度 (dxa/pct) | ✅ |
+| §17.4.43 | `tcMar` | 儲存格個別邊距 | ✅ |
+| §17.4.87 | `textDirection` | 儲存格文字方向 (btLr/tbRl) | ✅ |
+| §17.4.30 | `noWrap` | 儲存格不換行 | ✅ |
+| — | 巢狀表格 | 遞迴 renderTable | ✅ |
+
+**字元格式 (§17.3.2 rPr)**
+
+| 規格章節 | 元素 | 功能 | 狀態 |
+|----------|------|------|------|
+| §17.3.2.1 | `b` / `bCs` | 粗體 (含 val=false 明確關閉) | ✅ |
+| §17.3.2.16 | `i` / `iCs` | 斜體 (含 val=false 明確關閉) | ✅ |
+| §17.3.2.40 | `u` | 底線 (樣式: double/dotted/dashed/wavy + 顏色) | ✅ |
+| §17.3.2.37 | `strike` | 刪除線 | ✅ |
+| §17.3.2.9 | `dstrike` | 雙刪除線 | ✅ |
+| §17.3.2.38 | `sz` / `szCs` | 字型大小 | ✅ |
+| §17.3.2.6 | `color` | 文字顏色 | ✅ |
+| §17.3.2.26 | `rFonts` | 字型 (ascii/hAnsi/eastAsia/cs) | ✅ |
+| §17.3.2.15 | `highlight` | 螢光筆標記 | ✅ |
+| §17.3.2.30 | `shd` | 字元背景 | ✅ |
+| §17.3.2.42 | `vertAlign` | 上標/下標 | ✅ |
+| §17.3.2.32 | `smallCaps` | 小型大寫 | ✅ |
+| §17.3.2.5 | `caps` | 全部大寫 | ✅ |
+| §17.3.2.41 | `vanish` | 隱藏文字 | ✅ |
+| §17.3.2.25 | `outline` | 文字外框 | ✅ |
+| §17.3.2.31 | `shadow` | 陰影效果 | ✅ |
+| §17.3.2.10 | `emboss` | 浮凸效果 | ✅ |
+| §17.3.2.18 | `imprint` | 陰刻效果 | ✅ |
+| §17.3.2.35 | `spacing` | 字元間距 (letter-spacing) | ✅ |
+| §17.3.2.44 | `w` | 字元寬度縮放 | ✅ |
+| §17.3.2.27 | `position` | 文字升降 | ✅ |
+| §17.3.2.4 | `bdr` | 字元邊框 | ✅ |
+| §17.3.2.11 | `em` | 東亞著重號 | ✅ |
+
+**段落格式 (§17.3.1 pPr)**
+
+| 元素 | 功能 | 狀態 |
+|------|------|------|
+| `jc` | 對齊 (left/center/right/justify) | ✅ |
+| `spacing` | 段前/段後/行距 | ✅ |
+| `ind` | 縮排 (left/right/firstLine/hanging) | ✅ |
+| `pBdr` | 段落邊框 | ✅ |
+| `shd` | 段落背景 | ✅ |
+| `pageBreakBefore` | 分頁 | ✅ |
+| `outlineLvl` | 標題層級 | ✅ |
+| `numPr` | 清單編號/項目符號 | ✅ |
+| `pStyle` + `basedOn` | 樣式繼承鏈 | ✅ |
+| `docDefaults` | 文件預設樣式 | ✅ |
+
+**其他功能**
+
+| 功能 | 狀態 |
+|------|------|
+| 內嵌圖片 (`<w:drawing>`) | ✅ |
+| 舊式圖片 (`<w:pict>`) | ✅ |
+| 超連結 (`<w:hyperlink>`) | ✅ |
+| OMML 數學公式 | ✅ |
+| 分頁符號 / 換行 / Tab | ✅ |
+| 書籤 / 校對標記 | ✅ (跳過) |
+
+#### .doc — MS-DOC Binary ([MS-DOC]) 規格支援
+
+**二進位解析管線**
+
+```
+OLE2 Compound File → FAT/Mini-FAT → WordDocument Stream + Table Stream
+    → FIB (File Information Block)
+    → Piece Table (FC ↔ CP 映射)
+    → PlcBteChpx (字元格式)
+    → PlcBtePapx (段落格式)
+    → SttbfFfn (字型表)
+    → LSTF/LFO (清單定義)
+    → OfficeArt (圖片)
+    → OLE Embedding (圖表)
+```
+
+**表格屬性 (TAP Sprms)**
+
+| Sprm 代碼 | 名稱 | 功能 | 狀態 |
+|-----------|------|------|------|
+| 0xD608 | sprmTDefTable | 儲存格邊界 + TC 結構 (merge flags + BRC80 borders + fVertical) | ✅ |
+| 0xD612 | sprmTDefTableShd | 儲存格著色 (SHD) | ✅ |
+| 0xD613 | sprmTDefTableShd2nd | 備用著色格式 | ✅ |
+| 0xD670 | sprmTCellShd | 新版儲存格著色 | ✅ |
+| 0x5400 | sprmTJc | 表格對齊 (Word 97) | ✅ |
+| 0x5407 | sprmTJc90 | 表格對齊 (Word 2000+) | ✅ |
+| 0x9407 | sprmTDyaRowHeight | 行高 (exact/at-least) | ✅ |
+| 0x9601 | sprmTDxaLeft | 表格左縮排 | ✅ |
+| 0x9602 | sprmTDxaGapHalf | 儲存格間距 | ✅ |
+| 0xD62F | sprmTCellPadding | 儲存格邊距 | ✅ |
+| 0xD634 | sprmTBrcTopCv | 上邊框 RGB 顏色向量 | ✅ |
+| 0xD635 | sprmTBrcLeftCv | 左邊框 RGB 顏色向量 | ✅ |
+| 0xD636 | sprmTBrcBottomCv | 下邊框 RGB 顏色向量 | ✅ |
+| 0xD637 | sprmTBrcRightCv | 右邊框 RGB 顏色向量 | ✅ |
+| 0xD605 | sprmTTableBorders | 表格邊框 (BRC 格式，6 邊粒度) | ✅ |
+| 0xD620 | sprmTTableBorders80 | 表格邊框 (BRC80 格式) | ✅ |
+
+**TC 結構 ([MS-DOC] §2.9.327)**
+
+| 欄位 | 功能 | 狀態 |
+|------|------|------|
+| fFirstMerged / fMerged | 水平合併 (colspan) | ✅ |
+| fVertMerge / fVertRestart | 垂直合併 (rowspan) | ✅ |
+| fVertical / fBackward | 文字方向 | ✅ |
+| fRotateFont | 字型旋轉 | ✅ |
+| wWidth | 偏好儲存格寬度 | ✅ |
+| BRC80 × 4 | 四邊邊框 (ico → RGB + brcType → CSS) | ✅ |
+
+**字元格式 (CHP Sprms)**
+
+| Sprm 代碼 | 名稱 | 功能 | 狀態 |
+|-----------|------|------|------|
+| 0x0835 | sprmCFBold | 粗體 | ✅ |
+| 0x0836 | sprmCFItalic | 斜體 | ✅ |
+| 0x0837 | sprmCFStrike | 刪除線 | ✅ |
+| 0x0875 | sprmCFDStrike | 雙刪除線 | ✅ |
+| 0x0838 | sprmCFOutline | 文字外框 | ✅ |
+| 0x083C | sprmCFShadow | 陰影 | ✅ |
+| 0x0858 | sprmCFEmboss | 浮凸 | ✅ |
+| 0x0854 | sprmCFImprint | 陰刻 | ✅ |
+| 0x083A | sprmCFSmallCaps | 小型大寫 | ✅ |
+| 0x083B | sprmCFCaps | 全部大寫 | ✅ |
+| 0x0839 | sprmCFVanish | 隱藏文字 | ✅ |
+| 0x2A3E | sprmCKul | 底線類型 (single/double/dotted/dashed/wavy) | ✅ |
+| 0x4A43 | sprmCHps | 字型大小 | ✅ |
+| 0x6870 | sprmCCv | 文字顏色 (COLORREF) | ✅ |
+| 0x6877 | sprmCCvUl | 底線顏色 | ✅ |
+| 0x4A4F/50/51 | sprmCRgFtc0/1/2 | 字型索引 (ASCII > Other > EastAsia 優先) | ✅ |
+| 0x4845 | sprmCIco | 舊式顏色索引 (Word 97) | ✅ |
+| 0x2A0C | sprmCHighlight | 螢光筆標記 | ✅ |
+| 0x484B | sprmCHpsPos | 上下標位移 (signed half-points) | ✅ |
+| 0x2A42 | sprmCIss | 上下標 (iss 格式) | ✅ |
+| 0x8840 | sprmCDxaSpace | 字元間距 | ✅ |
+| 0x4A61 | sprmCHpsKern | 字距微調 | ✅ |
+| 0x6878 | sprmCBrc80 | 字元邊框 | ✅ |
+
+**段落格式 (PAP Sprms)**
+
+| Sprm 代碼 | 功能 | 狀態 |
+|-----------|------|------|
+| sprmPJc80 / sprmPJc | 對齊 | ✅ |
+| sprmPDyaBefore / After | 段前/段後 | ✅ |
+| sprmPDxaLeft / Right / Left1 | 縮排 | ✅ |
+| sprmPDyaLine | 行距 (proportional/exact/at-least) | ✅ |
+| sprmPOutLvl | 標題層級 | ✅ |
+| sprmPIlvl / sprmPIlfo | 清單層級/格式 | ✅ |
+| sprmPShd80 | 段落背景 | ✅ |
+| sprmPBrcTop80 / Left / Bottom / Right | 段落邊框 | ✅ |
+| sprmPFPageBreakBefore | 分頁 | ✅ |
+| sprmPFInTable / sprmPFTtp | 表格隸屬標記 | ✅ |
+| 樣式繼承 (istd + STSH) | 段落/字元樣式鏈解析 | ✅ |
+| LSTF / LFO | 清單定義 + 覆蓋 | ✅ |
+
+**其他功能**
+
+| 功能 | 狀態 |
+|------|------|
+| OLE2 Compound File 解析 | ✅ |
+| FIB (File Information Block) | ✅ |
+| Piece Table (FC ↔ CP) | ✅ |
+| SttbfFfn 字型表解析 | ✅ |
+| OfficeArt 圖片抽取 | ✅ |
+| OLE 嵌入圖表 | ✅ |
+| HYPERLINK 欄位解析 | ✅ |
+| 數學公式 (OMML) | ✅ |
+| Fallback 文字擷取 | ✅ |
+
+### OOXML 邊框樣式映射
+
+Word 的 24 種邊框類型對應至 CSS：
+
+| Word 邊框 | CSS 樣式 |
+|-----------|----------|
+| single, thick, thinThick*, thickThin* | solid |
+| double, triple | double |
+| dotted | dotted |
+| dashed, dashSmallGap, dotDash, dotDotDash, dashDotStroked | dashed |
+| wave | solid |
+| doubleWave | double |
+| threeDEmboss | ridge |
+| threeDEngrave | groove |
+| outset | outset |
+| inset | inset |
+
+### 規格覆蓋率
+
+| 領域 | 覆蓋率 | 備註 |
+|------|--------|------|
+| DOCX 表格 (ECMA-376 §17.4) | ~95% | 僅缺 `tblStyle` 完整表格樣式定義解析 |
+| MS-DOC 表格 ([MS-DOC] TAP) | ~98% | 僅缺 sprmTSetBrc 等極罕見 sprm |
+| DOCX 字元格式 (§17.3.2) | ~95% | 僅缺 `kern`/`effect`(legacy)/`fitText` |
+| MS-DOC 字元格式 (CHP) | ~97% | 僅缺 sprmCFBiDi 等 complex script |
+| DOCX 段落格式 (§17.3.1) | ~95% | 核心屬性完整 |
+| MS-DOC 段落格式 (PAP) | ~95% | 核心屬性完整 |
+
+---
+
 ## 專案結構
 
 ```
@@ -920,7 +1163,10 @@ SENTRY-Messenger/
 │       │   │       ├── zoom-disabler.js     # 縮放禁用
 │       │   │       ├── viewers/             # 檔案檢視器
 │       │   │       │   ├── image-viewer.js  #   圖片檢視器
-│       │   │       │   └── pdf-viewer.js    #   PDF 檢視器
+│       │   │       │   ├── pdf-viewer.js    #   PDF 檢視器
+│       │   │       │   ├── word-viewer.js   #   Word (.doc/.docx) 檢視器
+│       │   │       │   ├── excel-viewer.js  #   Excel (.xlsx/.xls) 檢視器
+│       │   │       │   └── pptx-viewer.js   #   PowerPoint (.pptx) 檢視器
 │       │   │       └── modals/              # Modal 對話框
 │       │   │           ├── password-modal.js
 │       │   │           ├── settings-modal.js
