@@ -325,10 +325,13 @@ function parseSprms(data, offset, length) {
       case 6: {
         // Variable-length operand: first byte (or 2 bytes for specific sprms) is size
         // sprmTDefTable(0xD608), sprmTDefTableShd(0xD612), sprmTCellShd(0xD670),
-        // sprmTInsert(0xD613), sprmTBrcTopCv(0xD634), sprmTBrcLeftCv, sprmTBrcBottomCv, sprmTBrcRightCv
-        // and sprmTDefTableShd80(0xD609) all use 2-byte size prefix per [MS-DOC]
+        // sprmTInsert(0xD613), sprmTBrcTopCv(0xD634), sprmTBrcLeftCv(0xD635),
+        // sprmTBrcBottomCv(0xD636), sprmTBrcRightCv(0xD637),
+        // sprmTDefTableShd80(0xD609), sprmTTableBorders80(0xD620),
+        // sprmTCellPadding(0xD62F) all use 2-byte size prefix per [MS-DOC]
         if (sprm === 0xD608 || sprm === 0xD609 || sprm === 0xD612 || sprm === 0xD613 ||
-            sprm === 0xD634 || sprm === 0xD670) {
+            sprm === 0xD634 || sprm === 0xD635 || sprm === 0xD636 || sprm === 0xD637 ||
+            sprm === 0xD670 || sprm === 0xD620 || sprm === 0xD62F) {
           // 2-byte cb: value includes the first byte of cb itself, so actual data = cb - 1
           const cb2 = pos + 1 < end ? (data[pos] | (data[pos + 1] << 8)) : 0;
           opSize = cb2 > 0 ? cb2 - 1 : 0;
@@ -501,6 +504,9 @@ function parseSprms(data, offset, length) {
       }
 
       // ── Table (TAP) properties ──
+      // ICO color index → RGB map ([MS-DOC] §2.9.104)
+      // Used by BRC80, SHD80, and legacy character formatting
+
       case 0xD608: { // sprmTDefTable - defines cell boundaries + TC properties
         // Operand format: 1 byte itcMac (cell count),
         // then (itcMac+1) * 2 bytes = cell boundary positions (dxa, twips from left margin)
@@ -523,7 +529,13 @@ function parseSprms(data, offset, length) {
         }
         props.cellWidths = cellWidths;
         props.cellCount = itcMac;
-        // Parse TC structures (20 bytes each) for merge flags + borders
+        // Store cell boundaries for table indent calculation
+        props._cellBoundaries = cellBoundaries;
+        // Parse TC structures (20 bytes each) per [MS-DOC] §2.9.327
+        // Layout: 2b tcFlags + 2b wWidth + 4×4b BRC80 (top, left, bottom, right)
+        const icoToRgb = [null, '#000000', '#0000ff', '#00ffff', '#00ff00', '#ff00ff',
+          '#ff0000', '#ffff00', '#ffffff', '#00008b', '#008b8b', '#006400',
+          '#8b008b', '#8b0000', '#808000', '#808080', '#c0c0c0'];
         const tcBase = pos + 1 + boundaryBytes;
         if (1 + boundaryBytes + itcMac * 20 <= opSize) {
           const cellTCs = [];
@@ -532,23 +544,33 @@ function parseSprms(data, offset, length) {
             const tcFlags = data[tcOff] | (data[tcOff + 1] << 8);
             const fFirstMerged = !!(tcFlags & 0x0001); // horizontal merge start
             const fMerged = !!(tcFlags & 0x0002);       // horizontal merge continuation
+            const fVertical = !!(tcFlags & 0x0004);     // text flows bottom-to-top
+            const fBackward = !!(tcFlags & 0x0008);      // text flows right-to-left
+            const fRotateFont = !!(tcFlags & 0x0010);    // text rotated 90° CW
             const fVertMerge = !!(tcFlags & 0x0020);
             const fVertRestart = !!(tcFlags & 0x0040);
-            // Per-cell borders: TC offset 4-20 = 4 BRC structures (top, left, bottom, right) × 4 bytes each
-            const parseBrc = (off) => {
+            // wWidth: preferred cell width (twips), 2 bytes at offset +2
+            const wWidth = (data[tcOff + 2] | (data[tcOff + 3] << 8));
+            // Per-cell borders: BRC80 (4 bytes each) at offset +4
+            // BRC80: dptLineWidth(1) + brcType(1) + ico(1) + dptSpace(1)
+            const parseBrc80 = (off) => {
               const bw = data[off]; // border width in 1/8 pt
               const bType = data[off + 1]; // border type (0=none, 1=single, etc.)
               if (bw === 0 && bType === 0) return null;
-              const cr = data[off + 2], cg = data[off + 3]; // simplified: ico index or direct
-              return { width: Math.max(1, Math.round(bw / 8)), color: '#000' };
+              const ico = data[off + 2]; // ICO color index
+              const color = (ico > 0 && ico < icoToRgb.length && icoToRgb[ico]) ? icoToRgb[ico] : '#000';
+              // Map brcType to CSS border style
+              const brcStyles = ['none','solid','solid','double','dotted','dashed','dashed','dashed'];
+              const style = brcStyles[bType] || 'solid';
+              return { width: Math.max(1, Math.round(bw / 8)), color, style };
             };
             const borders = {
-              top: parseBrc(tcOff + 4),
-              left: parseBrc(tcOff + 8),
-              bottom: parseBrc(tcOff + 12),
-              right: parseBrc(tcOff + 16)
+              top: parseBrc80(tcOff + 4),
+              left: parseBrc80(tcOff + 8),
+              bottom: parseBrc80(tcOff + 12),
+              right: parseBrc80(tcOff + 16)
             };
-            cellTCs.push({ fFirstMerged, fMerged, fVertMerge, fVertRestart, borders });
+            cellTCs.push({ fFirstMerged, fMerged, fVertMerge, fVertRestart, fVertical, fBackward, fRotateFont, wWidth, borders });
           }
           props.cellTCs = cellTCs;
         }
@@ -571,7 +593,7 @@ function parseSprms(data, offset, length) {
         props.cellShds = cellShds;
         break;
       }
-      case 0xD613: { // sprmTDefTableShd2nd/sprmTCellShd - alternate cell shading format
+      case 0xD613: { // sprmTDefTableShd2nd/sprmTInsert - alternate cell shading format
         if (opSize < 10) break;
         const nCells2 = Math.floor(opSize / 10);
         const cellShds2 = [];
@@ -586,7 +608,25 @@ function parseSprms(data, offset, length) {
         if (!props.cellShds) props.cellShds = cellShds2;
         break;
       }
-      case 0x5400: { // sprmTJc - table row justification
+      case 0xD670: { // sprmTCellShd - per-cell shading (newer SHD format, variable length)
+        // Array of SHD structures (10 bytes each) — same as sprmTDefTableShd
+        if (opSize < 10) break;
+        const nCells3 = Math.floor(opSize / 10);
+        const cellShds3 = [];
+        for (let c = 0; c < nCells3; c++) {
+          const shdOff = pos + c * 10;
+          const ipat3 = data[shdOff + 8] | (data[shdOff + 9] << 8);
+          if (ipat3 === 0 || data[shdOff + 7] === 0xFF) { cellShds3.push(null); continue; }
+          const r = data[shdOff + 4], g = data[shdOff + 5], b = data[shdOff + 6];
+          if (r === 0xFF && g === 0xFF && b === 0xFF) cellShds3.push(null);
+          else cellShds3.push('#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join(''));
+        }
+        // sprmTCellShd overrides any previous shading
+        props.cellShds = cellShds3;
+        break;
+      }
+      case 0x5400: // sprmTJc - table row justification (Word 97 format)
+      case 0x5407: { // sprmTJc90 - table row justification (Word 2000+ format)
         const tJc = data[pos] | (data[pos + 1] << 8);
         props.tableAlign = ['left', 'center', 'right'][tJc] || 'left';
         break;
@@ -598,13 +638,90 @@ function parseSprms(data, offset, length) {
         props.rowHeightExact = rowH < 0;
         break;
       }
-      case 0xD605: { // sprmTTableBorders - table border definition (older format)
+      case 0x9601: { // sprmTDxaLeft - table indent from left margin (signed twips)
+        let dxaLeft = data[pos] | (data[pos + 1] << 8);
+        if (dxaLeft > 0x7FFF) dxaLeft -= 0x10000;
+        props.tableIndent = dxaLeft / 20;
+        break;
+      }
+      case 0x9602: { // sprmTDxaGapHalf - half of cell spacing (twips)
+        let gapHalf = data[pos] | (data[pos + 1] << 8);
+        if (gapHalf > 0x7FFF) gapHalf -= 0x10000;
+        props.tableCellSpacing = Math.abs(gapHalf) / 20; // half-gap in pt
+        break;
+      }
+      case 0xD62F: { // sprmTCellPadding - cell margins/padding
+        // Operand: itcFirst(1) + itcLim(1) + grfbrc(1) + ftsWidth(1) + wWidth(2)
+        // grfbrc: bits 0-3 = which sides (1=top, 2=left, 4=bottom, 8=right)
+        // ftsWidth: 3 = dxa (twips)
+        if (opSize >= 6) {
+          const grfbrc = data[pos + 2];
+          const ftsWidth = data[pos + 3];
+          let padW = data[pos + 4] | (data[pos + 5] << 8);
+          if (padW > 0x7FFF) padW -= 0x10000;
+          if (ftsWidth === 3 && padW > 0) { // ftsWidth=3 means dxa (twips)
+            const padPt = Math.round(padW / 20);
+            if (!props.cellPadding) props.cellPadding = {};
+            if (grfbrc & 0x01) props.cellPadding.top = padPt;
+            if (grfbrc & 0x02) props.cellPadding.left = padPt;
+            if (grfbrc & 0x04) props.cellPadding.bottom = padPt;
+            if (grfbrc & 0x08) props.cellPadding.right = padPt;
+          }
+        }
+        break;
+      }
+      case 0xD634: { // sprmTBrcTopCv - top border color vector (COLORREF per cell)
+        // Array of 4-byte COLORREF values (0x00BBGGRR), one per cell
+        const nCv = Math.floor(opSize / 4);
+        if (!props._brcTopCv) props._brcTopCv = [];
+        for (let c = 0; c < nCv; c++) {
+          const r = data[pos + c * 4], g = data[pos + c * 4 + 1], b = data[pos + c * 4 + 2];
+          props._brcTopCv.push('#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join(''));
+        }
+        break;
+      }
+      case 0xD635: { // sprmTBrcLeftCv - left border color vector
+        const nCv = Math.floor(opSize / 4);
+        if (!props._brcLeftCv) props._brcLeftCv = [];
+        for (let c = 0; c < nCv; c++) {
+          const r = data[pos + c * 4], g = data[pos + c * 4 + 1], b = data[pos + c * 4 + 2];
+          props._brcLeftCv.push('#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join(''));
+        }
+        break;
+      }
+      case 0xD636: { // sprmTBrcBottomCv - bottom border color vector
+        const nCv = Math.floor(opSize / 4);
+        if (!props._brcBottomCv) props._brcBottomCv = [];
+        for (let c = 0; c < nCv; c++) {
+          const r = data[pos + c * 4], g = data[pos + c * 4 + 1], b = data[pos + c * 4 + 2];
+          props._brcBottomCv.push('#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join(''));
+        }
+        break;
+      }
+      case 0xD637: { // sprmTBrcRightCv - right border color vector
+        const nCv = Math.floor(opSize / 4);
+        if (!props._brcRightCv) props._brcRightCv = [];
+        for (let c = 0; c < nCv; c++) {
+          const r = data[pos + c * 4], g = data[pos + c * 4 + 1], b = data[pos + c * 4 + 2];
+          props._brcRightCv.push('#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join(''));
+        }
+        break;
+      }
+      case 0xD605: { // sprmTTableBorders - table border definition (BRC format, 8 bytes each)
         // 6 borders × 8 bytes = 48 bytes (top, left, bottom, right, insideH, insideV)
+        // BRC: cv(4) + dptLineWidth(1) + brcType(1) + dptSpace(1) + fShadow+fFrame(1)
         if (opSize >= 48) {
           const parseTblBrc = (off) => {
-            const w = data[pos + off];
-            if (w === 0) return null;
-            return Math.max(1, Math.round(w / 8)) + 'px solid #000';
+            const base = pos + off;
+            const r = data[base], g = data[base + 1], b = data[base + 2];
+            const w = data[base + 4]; // dptLineWidth in 1/8 pt
+            const bType = data[base + 5];
+            if (w === 0 && bType === 0) return null;
+            const color = (r === 0 && g === 0 && b === 0 && data[base + 3] === 0xFF) ? '#000'
+              : '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+            const brcStyles = ['none','solid','solid','double','dotted','dashed','dashed','dashed'];
+            const style = brcStyles[bType] || 'solid';
+            return `${Math.max(1, Math.round(w / 8))}px ${style} ${color}`;
           };
           props.tblBorderTop = parseTblBrc(0);
           props.tblBorderLeft = parseTblBrc(8);
@@ -613,6 +730,36 @@ function parseSprms(data, offset, length) {
           props.tblBorderInsideH = parseTblBrc(32);
           props.tblBorderInsideV = parseTblBrc(40);
           props.tableBorders = true;
+        }
+        break;
+      }
+      case 0xD620: { // sprmTTableBorders80 - table border definition (BRC80 format, 4 bytes each)
+        // 6 borders × 4 bytes = 24 bytes (top, left, bottom, right, insideH, insideV)
+        if (opSize >= 24) {
+          const icoToRgb80 = [null, '#000000', '#0000ff', '#00ffff', '#00ff00', '#ff00ff',
+            '#ff0000', '#ffff00', '#ffffff', '#00008b', '#008b8b', '#006400',
+            '#8b008b', '#8b0000', '#808000', '#808080', '#c0c0c0'];
+          const parseBrc80Tbl = (off) => {
+            const base = pos + off;
+            const w = data[base]; // dptLineWidth in 1/8 pt
+            const bType = data[base + 1];
+            if (w === 0 && bType === 0) return null;
+            const ico = data[base + 2];
+            const color = (ico > 0 && ico < icoToRgb80.length && icoToRgb80[ico]) ? icoToRgb80[ico] : '#000';
+            const brcStyles = ['none','solid','solid','double','dotted','dashed','dashed','dashed'];
+            const style = brcStyles[bType] || 'solid';
+            return `${Math.max(1, Math.round(w / 8))}px ${style} ${color}`;
+          };
+          // Only set if not already set by sprmTTableBorders (newer format takes precedence)
+          if (!props.tableBorders) {
+            props.tblBorderTop = parseBrc80Tbl(0);
+            props.tblBorderLeft = parseBrc80Tbl(4);
+            props.tblBorderBottom = parseBrc80Tbl(8);
+            props.tblBorderRight = parseBrc80Tbl(12);
+            props.tblBorderInsideH = parseBrc80Tbl(16);
+            props.tblBorderInsideV = parseBrc80Tbl(20);
+            props.tableBorders = true;
+          }
         }
         break;
       }
@@ -1434,6 +1581,8 @@ function renderDocBinary(buffer) {
         let maxTblWidth = 0;
         let tblAlign = '';
         let tblHasBorders = false;
+        let tblIndent = 0;
+        let tblCellSpacing = 0;
         for (const re of tblAllRowEnds) {
           const cw = re.props.cellWidths;
           if (cw) {
@@ -1443,13 +1592,21 @@ function renderDocBinary(buffer) {
           }
           if (re.props.tableAlign) tblAlign = re.props.tableAlign;
           if (re.props.tableBorders) tblHasBorders = true;
+          if (re.props.tableIndent) tblIndent = re.props.tableIndent;
+          if (re.props.tableCellSpacing) tblCellSpacing = re.props.tableCellSpacing;
         }
         const fixedClass = maxTblWidth > 0 ? ' word-tbl-fixed' : '';
         const borderedClass = tblHasBorders ? ' word-tbl-bordered' : '';
         const tblStyles = [];
         if (maxTblWidth > 0) tblStyles.push(`width:${maxTblWidth}pt`);
-        if (tblAlign === 'center') tblStyles.push('margin-left:auto;margin-right:auto');
+        if (tblAlign === 'center') tblStyles.push('margin-left:auto', 'margin-right:auto');
         else if (tblAlign === 'right') tblStyles.push('margin-left:auto');
+        // sprmTDxaLeft — table indent from left margin
+        if (tblIndent && tblAlign !== 'center' && tblAlign !== 'right') tblStyles.push(`margin-left:${tblIndent}pt`);
+        // sprmTDxaGapHalf — cell spacing
+        if (tblCellSpacing > 0) {
+          tblStyles.push(`border-spacing:${tblCellSpacing}pt`, 'border-collapse:separate');
+        }
         const tblStyle = tblStyles.length ? ` style="${tblStyles.join(';')}"` : '';
         html.push(`<div class="word-tbl-wrap"><table class="word-tbl${borderedClass}${fixedClass}"${tblStyle}>`);
         inTable = true;
@@ -1486,6 +1643,9 @@ function renderDocBinary(buffer) {
             }
           }
 
+          // Determine table row/col count for tblBorders fallback
+          const totalDocRows = tblAllRowEnds.length;
+          const visibleCellCount = tableRow.length - hSkip.size;
           for (let ci = 0; ci < tableRow.length; ci++) {
             // Skip horizontal merge continuation cells
             if (hSkip.has(ci)) continue;
@@ -1499,13 +1659,48 @@ function renderDocBinary(buffer) {
             const tdStyle = [];
             if (cw && ci < cw.length) tdStyle.push(`width:${cw[ci]}pt`);
             if (cs2 && ci < cs2.length && cs2[ci]) tdStyle.push(`background-color:${cs2[ci]}`);
-            // Per-cell borders (from TC structure)
+            // Per-cell borders (from TC BRC80 structure + color vector override)
+            let hasCellBorder = false;
             if (tc?.borders) {
               const b = tc.borders;
-              if (b.top) tdStyle.push(`border-top:${b.top.width}px solid ${b.top.color}`);
-              if (b.bottom) tdStyle.push(`border-bottom:${b.bottom.width}px solid ${b.bottom.color}`);
-              if (b.left) tdStyle.push(`border-left:${b.left.width}px solid ${b.left.color}`);
-              if (b.right) tdStyle.push(`border-right:${b.right.width}px solid ${b.right.color}`);
+              // sprmTBrcTopCv/LeftCv/BottomCv/RightCv override ico-based color
+              const topColor = paraProps._brcTopCv?.[ci] || b.top?.color;
+              const leftColor = paraProps._brcLeftCv?.[ci] || b.left?.color;
+              const bottomColor = paraProps._brcBottomCv?.[ci] || b.bottom?.color;
+              const rightColor = paraProps._brcRightCv?.[ci] || b.right?.color;
+              if (b.top) { tdStyle.push(`border-top:${b.top.width}px ${b.top.style} ${topColor}`); hasCellBorder = true; }
+              if (b.bottom) { tdStyle.push(`border-bottom:${b.bottom.width}px ${b.bottom.style} ${bottomColor}`); hasCellBorder = true; }
+              if (b.left) { tdStyle.push(`border-left:${b.left.width}px ${b.left.style} ${leftColor}`); hasCellBorder = true; }
+              if (b.right) { tdStyle.push(`border-right:${b.right.width}px ${b.right.style} ${rightColor}`); hasCellBorder = true; }
+            }
+            // Fall back to tblBorders (granular insideH/insideV) when no TC borders
+            if (!hasCellBorder && paraProps.tableBorders) {
+              const isFirstRow = tblRowIdx === 0;
+              const isLastRow = tblRowIdx === totalDocRows - 1;
+              const isFirstCol = ci === 0;
+              const isLastCol = ci === tableRow.length - 1;
+              const topB = isFirstRow ? paraProps.tblBorderTop : paraProps.tblBorderInsideH;
+              const botB = isLastRow ? paraProps.tblBorderBottom : paraProps.tblBorderInsideH;
+              const leftB = isFirstCol ? paraProps.tblBorderLeft : paraProps.tblBorderInsideV;
+              const rightB = isLastCol ? paraProps.tblBorderRight : paraProps.tblBorderInsideV;
+              if (topB) tdStyle.push(`border-top:${topB}`);
+              if (botB) tdStyle.push(`border-bottom:${botB}`);
+              if (leftB) tdStyle.push(`border-left:${leftB}`);
+              if (rightB) tdStyle.push(`border-right:${rightB}`);
+            }
+            // Cell padding (from sprmTCellPadding)
+            if (paraProps.cellPadding) {
+              const cp = paraProps.cellPadding;
+              if (cp.top) tdStyle.push(`padding-top:${cp.top}pt`);
+              if (cp.bottom) tdStyle.push(`padding-bottom:${cp.bottom}pt`);
+              if (cp.left) tdStyle.push(`padding-left:${cp.left}pt`);
+              if (cp.right) tdStyle.push(`padding-right:${cp.right}pt`);
+            }
+            // Text direction (from TC flags: fVertical, fBackward)
+            if (tc?.fVertical) {
+              tdStyle.push('writing-mode:vertical-lr', 'transform:rotate(180deg)');
+            } else if (tc?.fBackward) {
+              tdStyle.push('writing-mode:vertical-rl');
             }
             // Horizontal merge colspan
             let csAttr = '';
@@ -1579,14 +1774,45 @@ function renderDocBinary(buffer) {
               const tdStyle = [];
               if (cw && ci < cw.length) tdStyle.push(`width:${cw[ci]}pt`);
               if (cs2 && ci < cs2.length && cs2[ci]) tdStyle.push(`background-color:${cs2[ci]}`);
-              // Per-cell borders
+              // Per-cell borders (with color vector override)
+              let hasCellBdr = false;
               if (tc?.borders) {
                 const b = tc.borders;
-                if (b.top) tdStyle.push(`border-top:${b.top.width}px solid ${b.top.color}`);
-                if (b.bottom) tdStyle.push(`border-bottom:${b.bottom.width}px solid ${b.bottom.color}`);
-                if (b.left) tdStyle.push(`border-left:${b.left.width}px solid ${b.left.color}`);
-                if (b.right) tdStyle.push(`border-right:${b.right.width}px solid ${b.right.color}`);
+                const topC = reProps._brcTopCv?.[ci] || b.top?.color;
+                const leftC = reProps._brcLeftCv?.[ci] || b.left?.color;
+                const bottomC = reProps._brcBottomCv?.[ci] || b.bottom?.color;
+                const rightC = reProps._brcRightCv?.[ci] || b.right?.color;
+                if (b.top) { tdStyle.push(`border-top:${b.top.width}px ${b.top.style} ${topC}`); hasCellBdr = true; }
+                if (b.bottom) { tdStyle.push(`border-bottom:${b.bottom.width}px ${b.bottom.style} ${bottomC}`); hasCellBdr = true; }
+                if (b.left) { tdStyle.push(`border-left:${b.left.width}px ${b.left.style} ${leftC}`); hasCellBdr = true; }
+                if (b.right) { tdStyle.push(`border-right:${b.right.width}px ${b.right.style} ${rightC}`); hasCellBdr = true; }
               }
+              // tblBorders fallback (granular insideH/insideV)
+              if (!hasCellBdr && reProps.tableBorders) {
+                const isFirstRow = ri === 0;
+                const isLastRow = ri === rowEndRuns.length - 1;
+                const isFirstCol = ci === 0;
+                const isLastCol = ci === cellCount - 1;
+                const topB = isFirstRow ? reProps.tblBorderTop : reProps.tblBorderInsideH;
+                const botB = isLastRow ? reProps.tblBorderBottom : reProps.tblBorderInsideH;
+                const leftB = isFirstCol ? reProps.tblBorderLeft : reProps.tblBorderInsideV;
+                const rightB = isLastCol ? reProps.tblBorderRight : reProps.tblBorderInsideV;
+                if (topB) tdStyle.push(`border-top:${topB}`);
+                if (botB) tdStyle.push(`border-bottom:${botB}`);
+                if (leftB) tdStyle.push(`border-left:${leftB}`);
+                if (rightB) tdStyle.push(`border-right:${rightB}`);
+              }
+              // Cell padding
+              if (reProps.cellPadding) {
+                const cp = reProps.cellPadding;
+                if (cp.top) tdStyle.push(`padding-top:${cp.top}pt`);
+                if (cp.bottom) tdStyle.push(`padding-bottom:${cp.bottom}pt`);
+                if (cp.left) tdStyle.push(`padding-left:${cp.left}pt`);
+                if (cp.right) tdStyle.push(`padding-right:${cp.right}pt`);
+              }
+              // Text direction
+              if (tc?.fVertical) tdStyle.push('writing-mode:vertical-lr', 'transform:rotate(180deg)');
+              else if (tc?.fBackward) tdStyle.push('writing-mode:vertical-rl');
               // Horizontal merge
               let csAttr = '';
               if (hSpans2[ci] > 1) csAttr = ` colspan="${hSpans2[ci]}"`;
