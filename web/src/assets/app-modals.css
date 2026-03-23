@@ -875,11 +875,15 @@
 .modal.word-modal .modal-backdrop { background: #000; opacity: 0.5; }
 
 .modal.word-modal .modal-panel {
+  position: fixed;
+  inset: 0;
   width: 100%;
   height: 100%;
+  max-width: none;
   max-height: none;
   border: none;
   border-radius: 0;
+  box-shadow: none;
   background: #f8fafc;
   color: #1e293b;
   overflow: hidden;

@@ -519,11 +519,15 @@ function parseParaFormatting(wordDoc, tableStream, fc, lcb, pieces) {
       if (papxWordOff === 0) continue;
       const papxByteOff = papxWordOff * 2;
       if (papxByteOff >= 511) continue;
-      let cb = page[papxByteOff];
+      // cb is in words (2-byte units) per MS-DOC spec PapxInFkp
+      const cbRaw = page[papxByteOff];
       let grpStart = papxByteOff + 1;
-      if (cb === 0 && grpStart < 511) {
+      let cb;
+      if (cbRaw === 0 && grpStart < 511) {
         cb = page[grpStart] * 2;
         grpStart += 1;
+      } else {
+        cb = cbRaw * 2;
       }
       if (cb < 2 || grpStart + cb > 512) continue;
       // Skip 2-byte istd (style index)
