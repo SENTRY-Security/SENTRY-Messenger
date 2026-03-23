@@ -786,16 +786,27 @@ function renderDocBinary(buffer) {
 
   // Parse character and paragraph formatting (non-fatal if these fail)
   let charRuns = [], paraRuns = [];
+  let _dbgChpxErr = null, _dbgPapxErr = null;
   try {
     // FibRgFcLcb97 index 12 = PlcfBteChpx
     const chpxPair = fib.fibPair(12);
     charRuns = parseCharFormatting(wordDoc, tableStream, chpxPair.fc, chpxPair.lcb, pieces);
-  } catch { /* proceed without character formatting */ }
+  } catch (e) { _dbgChpxErr = e; }
   try {
     // FibRgFcLcb97 index 13 = PlcfBtePapx
     const papxPair = fib.fibPair(13);
     paraRuns = parseParaFormatting(wordDoc, tableStream, papxPair.fc, papxPair.lcb, pieces);
-  } catch { /* proceed without paragraph formatting */ }
+  } catch (e) { _dbgPapxErr = e; }
+
+  // ── Temporary diagnostic — remove after debugging ──
+  const _dbgInTableCount = paraRuns.filter(r => r.props.inTable).length;
+  const _dbgRowEndCount = paraRuns.filter(r => r.props.tableRowEnd).length;
+  const _dbgCb2Count = paraRuns.filter(r => Object.keys(r.props).length <= 1).length;
+  const _dbgSampleIstds = paraRuns.slice(0, 10).map(r => r.props._istd).join(',');
+  const _dbgInfo = `[DBG] charRuns:${charRuns.length} paraRuns:${paraRuns.length} ` +
+    `inTable:${_dbgInTableCount} rowEnd:${_dbgRowEndCount} cb2Only:${_dbgCb2Count} ` +
+    `chpxErr:${_dbgChpxErr?.message || 'none'} papxErr:${_dbgPapxErr?.message || 'none'} ` +
+    `istds:[${_dbgSampleIstds}]`;
 
   // Style merging disabled until STSH FIB index is verified
 
@@ -886,39 +897,18 @@ function renderDocBinary(buffer) {
       if (rowCells.length > 0) fallbackRows.push(rowCells);
 
       if (fallbackRows.length > 0) {
-        // Split rows into table groups at "label" boundaries (e.g. "表2：")
-        const tblGroups = []; // { type: 'table'|'label', rows?, row? }
-        let curGroup = [];
+        if (!inTable) { html.push('<div class="word-tbl-wrap"><table class="word-tbl word-tbl-bordered">'); inTable = true; }
+        // Determine max columns for colspan
+        const maxCols = Math.max(...fallbackRows.map(r => r.length));
         for (const row of fallbackRows) {
-          const txt = row.length === 1 ? row[0].text.trim() : '';
-          if (txt && txt.length <= 15 && /^表\s*[\d０-９]/.test(txt)) {
-            if (curGroup.length) { tblGroups.push({ type: 'table', rows: curGroup }); curGroup = []; }
-            tblGroups.push({ type: 'label', row });
-          } else {
-            curGroup.push(row);
+          html.push('<tr>');
+          for (let ci = 0; ci < row.length; ci++) {
+            const cell = row[ci];
+            const isLast = ci === row.length - 1;
+            const cs = isLast && row.length < maxCols ? ` colspan="${maxCols - ci}"` : '';
+            html.push(`<td class="word-tc"${cs}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts)}</td>`);
           }
-        }
-        if (curGroup.length) tblGroups.push({ type: 'table', rows: curGroup });
-
-        for (const grp of tblGroups) {
-          if (grp.type === 'label') {
-            if (inTable) { html.push('</table></div>'); inTable = false; }
-            html.push(`<p class="word-p" style="font-weight:600;margin-top:8pt">${renderFormattedRun(grp.row[0].text, grp.row[0].cpStart, charRuns, fonts)}</p>`);
-          } else {
-            if (!inTable) { html.push('<div class="word-tbl-wrap"><table class="word-tbl word-tbl-bordered">'); inTable = true; }
-            // Determine max columns for colspan
-            const maxCols = Math.max(...grp.rows.map(r => r.length));
-            for (const row of grp.rows) {
-              html.push('<tr>');
-              for (let ci = 0; ci < row.length; ci++) {
-                const cell = row[ci];
-                const isLast = ci === row.length - 1;
-                const cs = isLast && row.length < maxCols ? ` colspan="${maxCols - ci}"` : '';
-                html.push(`<td class="word-tc"${cs}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts)}</td>`);
-              }
-              html.push('</tr>');
-            }
-          }
+          html.push('</tr>');
         }
       }
     } else {
@@ -994,7 +984,7 @@ function renderDocBinary(buffer) {
   }
   if (inTable) html.push('</table></div>');
 
-  return { html: html.join(''), pageMargins };
+  return { html: html.join(''), pageMargins, _dbgInfo };
 }
 
 // Special chars to strip from display (field codes, picture placeholders, cell marks)
@@ -1768,7 +1758,8 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
       // Show format notice for .doc
       const notice = document.createElement('div');
       notice.className = 'word-format-notice';
-      notice.textContent = t('viewer.wordDocNotice') || '.doc 格式預覽可能與原始排版略有差異，下載可查看完整格式。';
+      const dbg = typeof docResult === 'object' && docResult._dbgInfo ? docResult._dbgInfo : '';
+      notice.textContent = (t('viewer.wordDocNotice') || '.doc 格式預覽可能與原始排版略有差異，下載可查看完整格式。') + (dbg ? '\n' + dbg : '');
       docContainer.appendChild(notice);
     }
     const page = document.createElement('div');
