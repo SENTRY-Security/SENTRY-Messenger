@@ -143,9 +143,14 @@ export async function renderExcelViewer({ url, blob, name, modalApi }) {
       // Extract just the table from the generated HTML
       const match = html.match(/<table[\s\S]*<\/table>/i);
       stageEl.innerHTML = match ? match[0] : `<p>${t('viewer.excelEmpty')}</p>`;
-      // Add class to rendered table
+      // Style the rendered table
       const table = stageEl.querySelector('table');
-      if (table) table.className = 'excel-table';
+      if (table) {
+        table.className = 'excel-table';
+        table.setAttribute('draggable', 'false');
+        // Prevent drag on all cells
+        table.addEventListener('dragstart', e => e.preventDefault());
+      }
     };
 
     renderTabs();
