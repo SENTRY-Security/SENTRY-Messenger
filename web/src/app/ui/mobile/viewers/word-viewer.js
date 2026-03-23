@@ -1627,10 +1627,15 @@ function renderDocBinary(buffer) {
         let tblHasBorders = false;
         let tblIndent = 0;
         let tblCellSpacing = 0;
+        // Build unified column grid from the row with the most columns
+        let tblColWidths = null; // unified column widths for colgroup
         for (const re of tblAllRowEnds) {
           const cw = re.props.cellWidths;
           if (cw) {
-            if (cw.length > tblMaxCols) tblMaxCols = cw.length;
+            if (cw.length > tblMaxCols) {
+              tblMaxCols = cw.length;
+              tblColWidths = cw; // use widths from the row with most columns
+            }
             const w = cw.reduce((s, v) => s + v, 0);
             if (w > maxTblWidth) maxTblWidth = w;
           }
@@ -1645,14 +1650,20 @@ function renderDocBinary(buffer) {
         if (maxTblWidth > 0) tblStyles.push(`width:${maxTblWidth}pt`);
         if (tblAlign === 'center') tblStyles.push('margin-left:auto', 'margin-right:auto');
         else if (tblAlign === 'right') tblStyles.push('margin-left:auto');
-        // sprmTDxaLeft — table indent from left margin
         if (tblIndent && tblAlign !== 'center' && tblAlign !== 'right') tblStyles.push(`margin-left:${tblIndent}pt`);
-        // sprmTDxaGapHalf — cell spacing
         if (tblCellSpacing > 0) {
           tblStyles.push(`border-spacing:${tblCellSpacing}pt`, 'border-collapse:separate');
         }
         const tblStyle = tblStyles.length ? ` style="${tblStyles.join(';')}"` : '';
         html.push(`<div class="word-tbl-wrap"><table class="word-tbl${borderedClass}${fixedClass}"${tblStyle}>`);
+        // Generate <colgroup> for consistent column grid across all rows
+        if (tblColWidths && tblColWidths.length > 0) {
+          html.push('<colgroup>');
+          for (const w of tblColWidths) {
+            html.push(w > 0 ? `<col style="width:${w}pt">` : '<col>');
+          }
+          html.push('</colgroup>');
+        }
         inTable = true;
       }
 
@@ -1701,13 +1712,22 @@ function renderDocBinary(buffer) {
               continue;
             }
             const tdStyle = [];
-            if (cw && ci < cw.length) tdStyle.push(`width:${cw[ci]}pt`);
+            // Cell width: only set when no colgroup, or for colspan sum width
+            const spanCount = hSpans[ci];
+            if (cw && ci < cw.length) {
+              if (spanCount > 1) {
+                // colspan: sum widths of all spanned columns
+                let sumW = 0;
+                for (let si = ci; si < ci + spanCount && si < cw.length; si++) sumW += cw[si];
+                if (sumW > 0) tdStyle.push(`width:${sumW}pt`);
+              }
+              // Single cell: colgroup handles width, skip per-cell width
+            }
             if (cs2 && ci < cs2.length && cs2[ci]) tdStyle.push(`background-color:${cs2[ci]}`);
             // Per-cell borders (from TC BRC80 structure + color vector override)
             let hasCellBorder = false;
             if (tc?.borders) {
               const b = tc.borders;
-              // sprmTBrcTopCv/LeftCv/BottomCv/RightCv override ico-based color
               const topColor = paraProps._brcTopCv?.[ci] || b.top?.color;
               const leftColor = paraProps._brcLeftCv?.[ci] || b.left?.color;
               const bottomColor = paraProps._brcBottomCv?.[ci] || b.bottom?.color;
@@ -1748,12 +1768,12 @@ function renderDocBinary(buffer) {
             }
             // Horizontal merge colspan
             let csAttr = '';
-            if (hSpans[ci] > 1) {
-              csAttr = ` colspan="${hSpans[ci]}"`;
-            } else {
-              // Fallback: last cell spans remaining columns if row has fewer cells
+            if (spanCount > 1) {
+              csAttr = ` colspan="${spanCount}"`;
+            } else if (!tcs) {
+              // Fallback only when no TC info: last cell spans remaining columns
               const isLast = ci === tableRow.length - 1;
-              const remaining = tblMaxCols - tableRow.length + hSkip.size;
+              const remaining = tblMaxCols - tableRow.length;
               if (isLast && remaining > 0) csAttr = ` colspan="${remaining + 1}"`;
             }
             // Vertical merge start → rowspan
@@ -1816,7 +1836,13 @@ function renderDocBinary(buffer) {
                 cellCp += seg.length + 1; segIdx++; continue;
               }
               const tdStyle = [];
-              if (cw && ci < cw.length) tdStyle.push(`width:${cw[ci]}pt`);
+              // Cell width: only for colspan sum (colgroup handles single cells)
+              const spanCnt = hSpans2[ci];
+              if (spanCnt > 1 && cw) {
+                let sumW = 0;
+                for (let si = ci; si < ci + spanCnt && si < cw.length; si++) sumW += cw[si];
+                if (sumW > 0) tdStyle.push(`width:${sumW}pt`);
+              }
               if (cs2 && ci < cs2.length && cs2[ci]) tdStyle.push(`background-color:${cs2[ci]}`);
               // Per-cell borders (with color vector override)
               let hasCellBdr = false;
@@ -1859,8 +1885,8 @@ function renderDocBinary(buffer) {
               else if (tc?.fBackward) tdStyle.push('writing-mode:vertical-rl');
               // Horizontal merge
               let csAttr = '';
-              if (hSpans2[ci] > 1) csAttr = ` colspan="${hSpans2[ci]}"`;
-              else { const isLastCell = ci === cellCount - 1; const remCols = tblMaxCols - cellCount + hSkip2.size; if (isLastCell && remCols > 0) csAttr = ` colspan="${remCols + 1}"`; }
+              if (spanCnt > 1) csAttr = ` colspan="${spanCnt}"`;
+              else if (!tcs) { const isLastCell = ci === cellCount - 1; const remCols = tblMaxCols - cellCount; if (isLastCell && remCols > 0) csAttr = ` colspan="${remCols + 1}"`; }
               // Vertical merge
               let rsAttr = '';
               if (tc?.fVertRestart) {
