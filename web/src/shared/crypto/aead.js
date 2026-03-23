@@ -38,7 +38,9 @@ export const ALLOWED_ENVELOPE_INFO_TAGS = new Set([
   'snapshot/v1',
   'contact-secrets/backup/v1',
   'devkeys/v1',
-  'contact/v1'
+  'contact/v1',
+  'biz-conv-backup/v1',
+  'biz-conv-seed/v1'
 ]);
 
 function requireNonEmptyString(value, key) {
@@ -96,19 +98,23 @@ async function deriveAesKey(mkRawU8, saltU8, infoTag, usages) {
   );
 }
 
-export async function encryptAesGcm({ key, iv, data }) {
+export async function encryptAesGcm({ key, iv, data, aad = null }) {
   if (!(key instanceof CryptoKey)) throw new Error('encryptAesGcm: key required');
   const buf = data instanceof Uint8Array ? data : encoder.encode(data);
   const ivBytes = iv instanceof Uint8Array ? iv : toUint8Array(iv);
-  const ct = new Uint8Array(await subtle.encrypt({ name: 'AES-GCM', iv: ivBytes }, key, buf));
+  const params = { name: 'AES-GCM', iv: ivBytes };
+  if (aad) params.additionalData = aad instanceof Uint8Array ? aad : encoder.encode(aad);
+  const ct = new Uint8Array(await subtle.encrypt(params, key, buf));
   return { iv: ivBytes, ciphertext: ct };
 }
 
-export async function decryptAesGcm({ key, iv, ciphertext }) {
+export async function decryptAesGcm({ key, iv, ciphertext, aad = null }) {
   if (!(key instanceof CryptoKey)) throw new Error('decryptAesGcm: key required');
   const ivBytes = iv instanceof Uint8Array ? iv : toUint8Array(iv);
   const ctBytes = ciphertext instanceof Uint8Array ? ciphertext : toUint8Array(ciphertext);
-  const pt = await subtle.decrypt({ name: 'AES-GCM', iv: ivBytes }, key, ctBytes);
+  const params = { name: 'AES-GCM', iv: ivBytes };
+  if (aad) params.additionalData = aad instanceof Uint8Array ? aad : encoder.encode(aad);
+  const pt = await subtle.decrypt(params, key, ctBytes);
   return new Uint8Array(pt);
 }
 
@@ -141,9 +147,9 @@ export async function wrapWithMK_JSON(obj, mkRawU8, infoTag = 'blob/v1') {
   const normalizedInfoTag = normalizeInfoTag(infoTag, { allowInfoTags: null, required: true });
   const key = await deriveAesKey(mkRawU8, salt, normalizedInfoTag, ['encrypt']);
   const data = encoder.encode(JSON.stringify(obj));
-  const { ciphertext } = await encryptAesGcm({ key, iv, data });
+  const { ciphertext } = await encryptAesGcm({ key, iv, data, aad: normalizedInfoTag });
   return {
-    v: 1,
+    v: 2,
     aead: 'aes-256-gcm',
     info: normalizedInfoTag,
     salt_b64: bytesToB64(salt),
@@ -158,6 +164,19 @@ export async function unwrapWithMK_JSON(envelope, mkRawU8) {
   const iv = b64ToBytes(normalizedEnvelope.iv_b64);
   const ct = b64ToBytes(normalizedEnvelope.ct_b64);
   const key = await deriveAesKey(mkRawU8, salt, normalizedEnvelope.info, ['decrypt']);
-  const plain = await decryptAesGcm({ key, iv, ciphertext: ct });
+  // v2+ envelopes use info tag as AAD; v1 legacy envelopes do not
+  const aad = (normalizedEnvelope.v ?? 1) >= 2 ? normalizedEnvelope.info : null;
+  let plain;
+  try {
+    plain = await decryptAesGcm({ key, iv, ciphertext: ct, aad });
+  } catch (firstErr) {
+    // Fallback: retry with opposite AAD for transition-window data
+    try {
+      const fallbackAad = aad ? null : normalizedEnvelope.info;
+      plain = await decryptAesGcm({ key, iv, ciphertext: ct, aad: fallbackAad });
+    } catch {
+      throw firstErr;
+    }
+  }
   return JSON.parse(decoder.decode(plain));
 }

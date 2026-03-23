@@ -9,7 +9,7 @@
     <meta http-equiv="Expires" content="0" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
     <meta name="color-scheme" content="light" />
-    <title>SENTRY MESSENGER — Login</title>
+    <title data-brand-title>SENTRY MESSENGER — Login</title>
     <link rel="icon" href="/assets/favicon.ico" type="image/x-icon" />
     <script>
       // e2e: query ?e2e=1 以停用動畫
@@ -20,12 +20,61 @@
         }
       } catch {}
       window.APP_VERSION = '0.1.10';
+      window.APP_ENV = 'uat';
       window.APP_BUILD_AT = (function(){ try { return new Date(document.lastModified).toISOString(); } catch { return new Date().toISOString(); } })();
+    </script>
+    <script>
+      // Inline i18n bootstrap — loads locale JSON synchronously so splash text is translated on first paint.
+      // Uses browser language ONLY (no localStorage) to prevent nationality metadata leakage before login.
+      (function(){
+        var lang = 'en';
+        try { lang = navigator.language || 'en'; } catch {}
+        var tag = lang.toLowerCase();
+        if (tag==='zh-hant'||tag==='zh-tw'||tag==='zh-hk'||tag.indexOf('zh-hant')===0) tag='zh-Hant';
+        else if (tag==='zh-hans'||tag==='zh-cn'||tag==='zh-sg'||tag.indexOf('zh-hans')===0||tag==='zh') tag='zh-Hans';
+        else tag = tag.split('-')[0];
+        var supported = {en:1,'zh-Hant':1,'zh-Hans':1,ja:1,ko:1,th:1,vi:1,es:1,pt:1};
+        if (!supported[tag]) tag = 'en';
+        var msgs = {}, fb = {};
+        function loadSync(url) {
+          try { var x = new XMLHttpRequest(); x.open('GET', url, false); x.send(); return x.status===200 ? JSON.parse(x.responseText) : {}; } catch { return {}; }
+        }
+        fb = loadSync('/locales/en.json');
+        if (tag !== 'en') msgs = loadSync('/locales/' + tag + '.json');
+        function resolve(o, p) { return p.split('.').reduce(function(a,k){ return a&&a[k]; }, o); }
+        window.__t = function(key, params) {
+          var val = resolve(msgs, key) || resolve(fb, key) || key;
+          if (!params || typeof val !== 'string') return val;
+          return val.replace(/\{(\w+)\}/g, function(_, k) { return params[k] != null ? params[k] : '{'+k+'}'; });
+        };
+        window.__i18nApply = function() {
+          document.querySelectorAll('[data-i18n]').forEach(function(el) {
+            var k = el.getAttribute('data-i18n'); if (k) el.textContent = window.__t(k);
+          });
+          document.querySelectorAll('[data-i18n-placeholder]').forEach(function(el) {
+            var k = el.getAttribute('data-i18n-placeholder'); if (k) el.placeholder = window.__t(k);
+          });
+          document.querySelectorAll('[data-i18n-aria-label]').forEach(function(el) {
+            var k = el.getAttribute('data-i18n-aria-label'); if (k) el.setAttribute('aria-label', window.__t(k));
+          });
+          document.querySelectorAll('[data-i18n-html]').forEach(function(el) {
+            var k = el.getAttribute('data-i18n-html'); if (k) el.innerHTML = window.__t(k);
+          });
+          document.querySelectorAll('[data-i18n-title]').forEach(function(el) {
+            var k = el.getAttribute('data-i18n-title'); if (k) el.title = window.__t(k);
+          });
+          document.querySelectorAll('[data-i18n-alt]').forEach(function(el) {
+            var k = el.getAttribute('data-i18n-alt'); if (k) el.alt = window.__t(k);
+          });
+        };
+        document.documentElement.lang = tag;
+      })();
     </script>
     <style>
       #loginSplash{position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#050a14;transition:opacity .35s ease}
       #loginSplash.fade-out{opacity:0;pointer-events:none}
       #loginSplash .splash-logo{width:48px;height:48px;margin-bottom:14px;filter:brightness(0) invert(1)}
+      #loginSplash .splash-logo.mono-done,#loginSplash .splash-logo.color-logo{filter:none}
       #loginSplash .splash-brand{font-size:15px;font-weight:700;letter-spacing:2.2px;color:#f8fafc;margin-bottom:22px}
       #loginSplash .splash-spinner{width:36px;height:36px;border-radius:50%;border:3px solid rgba(148,163,184,0.25);border-top-color:#38bdf8;animation:login-spin .9s linear infinite;margin-bottom:12px}
       #loginSplash .splash-text{font-size:13px;color:#94a3b8;letter-spacing:.3px}
@@ -82,6 +131,7 @@
       }
       .brand { position:relative; display:flex; align-items:center; gap:12px; margin-bottom:18px; }
       .brand img { height:30px; width:auto; filter:brightness(0) invert(1); }
+      .brand img.mono-done,.brand img.color-logo { filter:none; }
       .brand h1 { margin:0; font-size:22px; font-weight:700; letter-spacing:0.4px; color:var(--fg); }
       .subtitle { margin:0 0 24px; color:var(--muted); font-size:13px; line-height:1.5; }
       form { display:flex; flex-direction:column; gap:16px; }
@@ -309,6 +359,8 @@
       #loginStage .tm-bar-scan{position:absolute;top:0;height:100%;width:40px;background:linear-gradient(90deg,transparent,rgba(56,189,248,0.6),transparent);animation:tm-scan 2s linear infinite}
       #loginStage .loading-label{font-size:12px;color:rgba(148,163,184,0.7);letter-spacing:1px}
       @keyframes tm-pulse{0%,100%{filter:brightness(0) invert(1) drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25))}50%{filter:brightness(0) invert(1) drop-shadow(0 0 28px rgba(56,189,248,0.7)) drop-shadow(0 0 60px rgba(99,102,241,0.4))}}
+      @keyframes tm-pulse-mono{0%,100%{filter:drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25))}50%{filter:drop-shadow(0 0 28px rgba(56,189,248,0.7)) drop-shadow(0 0 60px rgba(99,102,241,0.4))}}
+      #loginStage .tm-logo.mono-done,#loginStage .tm-logo.color-logo{filter:drop-shadow(0 0 18px rgba(56,189,248,0.45)) drop-shadow(0 0 40px rgba(99,102,241,0.25));animation-name:tm-pulse-mono}
       @keyframes tm-scan{0%{left:-40px}100%{left:calc(100% + 40px)}}
       .login-shell.panel-exit{animation:panelSlideOut 1s forwards;pointer-events:none}
       @keyframes panelSlideOut{0%{transform:translateY(0);opacity:1;animation-timing-function:ease-out}15%{transform:translateY(28px);opacity:1;animation-timing-function:cubic-bezier(0.4,0,1,1)}100%{transform:translateY(-120vh);opacity:0}}
@@ -318,16 +370,26 @@
       html.no-anim #loginStage .tm-bar-scan{animation:none}
       html.no-anim .login-shell.panel-exit{animation:none}
       html.no-anim .login-shell.panel-enter{animation:none}
+      /* ── UAT Environment Badge ── */
+      .uat-badge{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:100000;display:none;padding:4px 18px;border-radius:6px;font-size:13px;font-weight:800;letter-spacing:3px;color:#000;background:linear-gradient(90deg,#facc15,#fb923c);box-shadow:0 0 16px rgba(250,204,21,0.5),0 2px 8px rgba(0,0,0,0.4);animation:uat-pulse 2s ease-in-out infinite;pointer-events:none;user-select:none;font-family:system-ui,sans-serif}
+      .uat-badge.visible{display:block}
+      @keyframes uat-pulse{0%,100%{box-shadow:0 0 16px rgba(250,204,21,0.5),0 2px 8px rgba(0,0,0,0.4)}50%{box-shadow:0 0 28px rgba(250,204,21,0.8),0 2px 12px rgba(0,0,0,0.5)}}
     </style>
   </head>
   <body>
+    <div id="uatBadge" class="uat-badge">U A T</div>
+    <script>if(window.APP_ENV&&window.APP_ENV!=='production'){document.getElementById('uatBadge').classList.add('visible')}</script>
     <div id="loginSplash">
-      <img class="splash-logo" src="/assets/images/logo.svg" alt="" />
-      <div class="splash-brand">SENTRY MESSENGER</div>
+      <img class="splash-logo" id="loginSplashLogo" src="/assets/images/logo.svg" alt="" />
+      <div class="splash-brand" id="loginSplashBrand">SENTRY MESSENGER</div>
       <div class="splash-spinner" aria-hidden="true"></div>
-      <div class="splash-text">載入中…</div>
+      <div class="splash-text" data-i18n="common.loading"></div>
     </div>
     <script>
+      // Brand info is not available until SDM exchange completes.
+      // Login page always shows default brand on initial load; applyBrand() updates
+      // the DOM after exchange. No sessionStorage hydration here — it is always
+      // empty on login (cleared on logout, different device each time).
       window.__hideLoginSplash = function(){
         var el = document.getElementById('loginSplash');
         if (!el) return;
@@ -335,36 +397,38 @@
         setTimeout(function(){ if (el.parentNode) el.parentNode.removeChild(el); }, 400);
       };
       setTimeout(function(){ window.__hideLoginSplash(); }, 8000);
+      if (window.__i18nApply) window.__i18nApply();
     </script>
     <!-- Background Stage — matrix rain + transition visuals (always present, content hidden until active) -->
     <div id="loginStage">
       <canvas class="tm-canvas" id="tmCanvas"></canvas>
       <div class="tm-overlay"></div>
       <div class="tm-content">
-        <img class="tm-logo" src="/assets/images/logo.svg" alt="" />
+        <img class="tm-logo" id="loginTmLogo" src="/assets/images/logo.svg" alt="" />
         <div class="tm-brand" id="tmBrand" aria-label="SENTRY MESSENGER"></div>
-        <div class="tm-sublabel">END-TO-END ENCRYPTED</div>
+        <div class="tm-sublabel" data-i18n="auth.e2eeEncrypted"></div>
         <div class="tm-bar-track">
           <div id="loginTransitionBar" class="tm-bar-fill"></div>
           <div class="tm-bar-scan"></div>
         </div>
-        <div id="loginTransitionLabel" class="loading-label">INITIALIZING...</div>
+        <div id="loginTransitionLabel" class="loading-label" data-i18n="auth.initializing"></div>
       </div>
     </div>
+    <script>if (window.__i18nApply) window.__i18nApply();</script>
     <div id="orientationOverlay" class="orientation-overlay" aria-hidden="true">
       <span class="icon" aria-hidden="true">📱</span>
-      <strong>請以直立模式使用</strong>
-      <span>為維持最佳使用體驗，請將裝置旋轉回直立方向。</span>
+      <strong data-i18n="orientation.usePortrait"></strong>
+      <span data-i18n="orientation.rotateBackMessageLogin"></span>
     </div>
     <main class="login-shell">
       <div class="brand" id="loginBrand">
-        <img src="/assets/images/logo.svg" alt="SENTRY MESSENGER" />
-        <h1>SENTRY MESSENGER</h1>
+        <img id="loginBrandLogo" src="/assets/images/logo.svg" alt="SENTRY MESSENGER" />
+        <h1 id="loginBrandName">SENTRY MESSENGER</h1>
       </div>
-      <p class="subtitle">感應 SENTRY MESSENGER 晶片後輸入密碼即可登入。</p>
+      <p class="subtitle" id="loginSubtitle" data-i18n="auth.tapChipAndEnterPassword"></p>
 
       <div autocomplete="off" data-1p-ignore="true" data-lpignore="true">
-        <div class="uid-card" id="uidCard" aria-label="晶片識別圖">
+        <div class="uid-card" id="uidCard" data-i18n-aria-label="auth.chipIdImage">
           <div class="uid-identicon pending" id="uidIdenticon" aria-hidden="true">
             <div class="mosaic">
               <div style="--i:0"></div><div style="--i:1"></div><div style="--i:2"></div><div style="--i:3"></div><div style="--i:4"></div>
@@ -379,75 +443,75 @@
 
         <div class="grid-two">
           <div class="form-group hidden" id="macWrapper">
-            <label for="sdmMac">NTAG MAC（16 hex）</label>
+            <label for="sdmMac" data-i18n="auth.ntagMac"></label>
             <input id="sdmMac" class="input" type="text" placeholder="501EC4EF6E38555E" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
           </div>
           <div class="form-group hidden" id="ctrWrapper">
             <label for="sdmCtr">Counter</label>
-            <input id="sdmCtr" class="input" type="text" placeholder="50 或 000050" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
+            <input id="sdmCtr" class="input" type="text" data-i18n-placeholder="auth.counterPlaceholder" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
           </div>
         </div>
 
         <div class="form-group hidden" id="nonceWrapper">
-          <label for="nonce">Nonce（選填）</label>
+          <label for="nonce" data-i18n="auth.nonceOptional"></label>
           <input id="nonce" class="input" type="text" placeholder="optional" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
         </div>
 
-        <button id="btnSdmExchange" type="button" class="primary hidden" style="width:100%">驗證 NTAG（SDM Exchange）</button>
+        <button id="btnSdmExchange" type="button" class="primary hidden" style="width:100%" data-i18n="auth.verifyNtag"></button>
 
         <div class="form-group hidden" id="sessionWrapper">
-          <label for="sessionView">一次性 Session</label>
-          <input id="sessionView" class="input" type="text" readonly placeholder="驗證後自動帶入" />
+          <label for="sessionView" data-i18n="auth.oneTimeSession"></label>
+          <input id="sessionView" class="input" type="text" readonly data-i18n-placeholder="auth.autoFillAfterVerify" />
         </div>
 
         <div class="password-area" id="passwordArea">
           <div class="form-group" id="passwordWrapper">
-            <label for="pwd">登入密碼</label>
+            <label for="pwd" data-i18n="auth.loginPassword"></label>
             <div class="password-field">
-              <input id="pwd" class="input pw-masked" type="text" placeholder="至少六位數" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore="true" data-lpignore="true" name="__no_store_pwd__" />
-              <button type="button" class="password-toggle" data-target="pwd" aria-label="顯示密碼" tabindex="-1"><svg class="pw-icon" data-state="show" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 9a3.02 3.02 0 0 0-3 3c0 1.642 1.358 3 3 3 1.641 0 3-1.358 3-3 0-1.641-1.359-3-3-3z"/><path d="M12 5c-7.633 0-9.927 6.617-9.948 6.684L1.946 12l.105.316C2.073 12.383 4.367 19 12 19s9.927-6.617 9.948-6.684l.106-.316-.105-.316C21.927 11.617 19.633 5 12 5zm0 12c-5.351 0-7.424-3.846-7.926-5C4.578 10.842 6.652 7 12 7c5.351 0 7.424 3.846 7.926 5-.504 1.158-2.578 5-7.926 5z"/></svg></button>
+              <input id="pwd" class="input pw-masked" type="text" data-i18n-placeholder="auth.passwordMinLength" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore="true" data-lpignore="true" name="__no_store_pwd__" />
+              <button type="button" class="password-toggle" data-target="pwd" data-i18n-aria-label="auth.showPassword" tabindex="-1"><svg class="pw-icon" data-state="show" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 9a3.02 3.02 0 0 0-3 3c0 1.642 1.358 3 3 3 1.641 0 3-1.358 3-3 0-1.641-1.359-3-3-3z"/><path d="M12 5c-7.633 0-9.927 6.617-9.948 6.684L1.946 12l.105.316C2.073 12.383 4.367 19 12 19s9.927-6.617 9.948-6.684l.106-.316-.105-.316C21.927 11.617 19.633 5 12 5zm0 12c-5.351 0-7.424-3.846-7.926-5C4.578 10.842 6.652 7 12 7c5.351 0 7.424 3.846 7.926 5-.504 1.158-2.578 5-7.926 5z"/></svg></button>
             </div>
           </div>
 
           <div class="form-group hidden" id="confirmWrapper">
-            <label for="pwdConfirm">確認密碼</label>
+            <label for="pwdConfirm" data-i18n="auth.confirmPassword"></label>
             <div class="password-field">
-              <input id="pwdConfirm" class="input pw-masked" type="text" placeholder="再次輸入密碼" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore="true" data-lpignore="true" />
-              <button type="button" class="password-toggle" data-target="pwdConfirm" aria-label="顯示密碼" tabindex="-1"><svg class="pw-icon" data-state="show" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 9a3.02 3.02 0 0 0-3 3c0 1.642 1.358 3 3 3 1.641 0 3-1.358 3-3 0-1.641-1.359-3-3-3z"/><path d="M12 5c-7.633 0-9.927 6.617-9.948 6.684L1.946 12l.105.316C2.073 12.383 4.367 19 12 19s9.927-6.617 9.948-6.684l.106-.316-.105-.316C21.927 11.617 19.633 5 12 5zm0 12c-5.351 0-7.424-3.846-7.926-5C4.578 10.842 6.652 7 12 7c5.351 0 7.424 3.846 7.926 5-.504 1.158-2.578 5-7.926 5z"/></svg></button>
+              <input id="pwdConfirm" class="input pw-masked" type="text" data-i18n-placeholder="auth.reEnterPassword" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" data-1p-ignore="true" data-lpignore="true" />
+              <button type="button" class="password-toggle" data-target="pwdConfirm" data-i18n-aria-label="auth.showPassword" tabindex="-1"><svg class="pw-icon" data-state="show" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 9a3.02 3.02 0 0 0-3 3c0 1.642 1.358 3 3 3 1.641 0 3-1.358 3-3 0-1.641-1.359-3-3-3z"/><path d="M12 5c-7.633 0-9.927 6.617-9.948 6.684L1.946 12l.105.316C2.073 12.383 4.367 19 12 19s9.927-6.617 9.948-6.684l.106-.316-.105-.316C21.927 11.617 19.633 5 12 5zm0 12c-5.351 0-7.424-3.846-7.926-5C4.578 10.842 6.652 7 12 7c5.351 0 7.424 3.846 7.926 5-.504 1.158-2.578 5-7.926 5z"/></svg></button>
             </div>
           </div>
         </div>
 
       <div id="loginError" class="login-error hidden" role="alert" aria-live="polite">
         <span class="login-error-text" id="loginErrorText"></span>
-        <button type="button" class="login-error-close" id="loginErrorClose" aria-label="關閉">×</button>
+        <button type="button" class="login-error-close" id="loginErrorClose" data-i18n-aria-label="auth.closeError">×</button>
       </div>
 
       <div class="actions">
-        <button id="btnUnlock" type="button" class="primary" disabled>登入</button>
+        <button id="btnUnlock" type="button" class="primary" disabled data-i18n="auth.login"></button>
       </div>
 
-      <p class="notice"><span class="notice-icon" aria-hidden="true">🔒</span><span class="notice-text">SENTRY MESSENGER 採用 E2EE 端對端加密技術，所有加解密均於前端計算，伺服器端僅儲存加密過的資訊，所有敏感資訊僅保留於記憶體，並於畫面切換時即刻清除。</span></p>
+      <p class="notice"><span class="notice-icon" aria-hidden="true">🔒</span><span class="notice-text" data-i18n="welcome.e2eeDescription"></span></p>
     </div>
   </main>
     <div id="welcomeModal" class="modal welcome-modal hidden" aria-hidden="true">
       <div class="modal-backdrop"></div>
       <div class="modal-panel" role="dialog" aria-modal="true">
         <div class="modal-head">
-          <h2>迎接嶄新的隱私通訊！</h2>
+          <h2 data-i18n="welcome.title"></h2>
           <button type="button" class="modal-close" id="welcomeClose">×</button>
         </div>
         <div id="welcomeContent" class="modal-body">
           <ul>
-            <li>零死角採用最先進的 E2EE 端對端加密技術。</li>
-            <li>我們無法得知你跟誰聊天、聊了什麼。</li>
-            <li>我們無法獲取你的暱稱、頭像、甚至好友資訊。</li>
-            <li>業界首創提供先進加密技術雲端空間，不只保護對話，資料也一併保障。</li>
-            <li>引入晶片即身分概念，任何人無法透過手機號碼或 E-mail 追蹤你的身分。</li>
+            <li data-i18n="welcome.feature1"></li>
+            <li data-i18n="welcome.feature2"></li>
+            <li data-i18n="welcome.feature3"></li>
+            <li data-i18n="welcome.feature4"></li>
+            <li data-i18n="welcome.feature5"></li>
           </ul>
         </div>
         <div class="welcome-actions">
-          <button type="button" id="welcomeNext">開始設定密碼</button>
+          <button type="button" id="welcomeNext" data-i18n="welcome.startSetPassword"></button>
         </div>
       </div>
     </div>
@@ -455,9 +519,9 @@
     <div id="loginLoading" class="loading-backdrop hidden" role="presentation">
       <div class="loading-card" role="status" aria-live="polite">
         <div class="loading-spinner" aria-hidden="true"></div>
-        <div id="loginLoadingText" class="loading-text">登入中，請稍候…</div>
+        <div id="loginLoadingText" class="loading-text" data-i18n="auth.loggingIn"></div>
         <div id="loginBootstrapProgress" class="bootstrap-progress hidden">
-          <div class="progress-note">首次登入需要初始化下列項目：</div>
+          <div class="progress-note" data-i18n="auth.firstLoginInit"></div>
           <ul id="loginBootstrapSteps"></ul>
         </div>
       </div>
@@ -470,7 +534,7 @@
       <button id="btnDevClearLocal" type="button" aria-hidden="true"></button>
     </section>
 
-    <button class="version-info-btn" id="versionInfoBtnLogin" aria-label="顯示版本資訊">i</button>
+    <button class="version-info-btn" id="versionInfoBtnLogin" data-i18n-aria-label="auth.showVersionInfo">i</button>
     <div class="version-info-popup" id="versionInfoPopupLogin" role="dialog" aria-hidden="true"></div>
 
     <script>
@@ -546,11 +610,13 @@
 
     /* ── Brand Text Scramble/Decrypt Animation ── */
     (function(){
-      var BRAND = 'SENTRY MESSENGER';
+      var BRAND;  // resolved dynamically in init() so applyBrand() changes are picked up
       var GLYPHS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%&!?<>{}[]';
       var el, chars, resolved, frame, raf, running;
 
       function init(){
+        // Re-read brand name each time (applyBrand sets __BRAND_NAME after SDM exchange)
+        BRAND = window.__BRAND_NAME || 'SENTRY MESSENGER';
         el = document.getElementById('tmBrand');
         if(!el) return;
         el.innerHTML = '';
@@ -599,15 +665,20 @@
       window.__tmScrambleStop = function(){
         running = false;
         if(raf) cancelAnimationFrame(raf);
-        // Show final text
-        if(el) el.textContent = BRAND;
+        // Show final text (use dynamic brand name if available)
+        if(el) el.textContent = window.__BRAND_NAME || BRAND;
       };
     })();
     </script>
 
     <script>
       const params = new URLSearchParams(location.search);
-      window.API_ORIGIN = params.get('api') || 'https://api.message.sentry.red';
+      // Route all API requests through the Cloudflare Pages proxy (relative paths).
+      // For local dev, override via ?api=https://... query parameter.
+      // Use same-origin so requests go through Pages proxy,
+      // which routes migrated endpoints to Worker and legacy to Node.js.
+      // For local dev, override via ?api=https://... query parameter.
+      window.API_ORIGIN = params.get('api') || '';
       (function(){
         const overlay = document.getElementById('orientationOverlay');
         const docEl = document.documentElement;
@@ -649,6 +720,7 @@
         document.addEventListener('gestureend', prevent, { passive:false });
       })();
     </script>
+    <script>if (window.__i18nApply) window.__i18nApply();</script>
     <script>
       (function loadLoginModule(){
         const stamp = window.APP_BUILD_AT || window.APP_VERSION || String(Date.now());

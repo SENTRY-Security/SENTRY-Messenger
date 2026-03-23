@@ -53,8 +53,9 @@ export async function encryptConversationEnvelope(tokenB64, payload) {
   );
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const data = encoder.encode(JSON.stringify(payload));
-  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, data));
-  return { v: 1, iv_b64: bytesToB64Url(iv), payload_b64: bytesToB64Url(ct) };
+  const aad = encoder.encode('sentry/conv-envelope');
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad }, key, data));
+  return { v: 2, iv_b64: bytesToB64Url(iv), payload_b64: bytesToB64Url(ct) };
 }
 
 export async function decryptConversationEnvelope(tokenB64, envelope) {
@@ -68,7 +69,22 @@ export async function decryptConversationEnvelope(tokenB64, envelope) {
   );
   const iv = b64UrlToBytes(envelope.iv_b64 || envelope.ivB64 || envelope.iv);
   const payloadBytes = b64UrlToBytes(envelope.payload_b64 || envelope.payloadB64 || envelope.payload);
-  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, payloadBytes);
+  // v2+ envelopes use AAD; v1 legacy envelopes do not
+  const useAad = (envelope.v ?? 1) >= 2;
+  const params = { name: 'AES-GCM', iv };
+  if (useAad) params.additionalData = encoder.encode('sentry/conv-envelope');
+  let plain;
+  try {
+    plain = await crypto.subtle.decrypt(params, key, payloadBytes);
+  } catch (firstErr) {
+    const fallbackParams = { name: 'AES-GCM', iv };
+    if (!useAad) fallbackParams.additionalData = encoder.encode('sentry/conv-envelope');
+    try {
+      plain = await crypto.subtle.decrypt(fallbackParams, key, payloadBytes);
+    } catch {
+      throw firstErr;
+    }
+  }
   return JSON.parse(decoder.decode(plain));
 }
 

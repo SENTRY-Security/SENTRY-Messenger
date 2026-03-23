@@ -8,6 +8,9 @@ import { escapeHtml } from '../../../ui/mobile/ui-utils.js';
 import { resolveContactAvatarUrl } from '../../../ui/mobile/contact-core-store.js';
 import { downloadAndDecrypt } from '../../media.js';
 import { renderPdfViewer, cleanupPdfViewer, getPdfJsLibrary } from '../../../ui/mobile/viewers/pdf-viewer.js';
+import { isPptxMime, isPptxFilename, renderPptxThumbnail } from '../../../ui/mobile/viewers/pptx-viewer.js';
+import { isWordMime, isWordFilename, renderWordThumbnail } from '../../../ui/mobile/viewers/word-viewer.js';
+import { isExcelMime, isExcelFilename, renderExcelThumbnail } from '../../../ui/mobile/viewers/excel-viewer.js';
 import { logMsgEvent } from '../../../lib/logging.js';
 import {
     consumeReplayPlaceholderReveal,
@@ -18,11 +21,13 @@ import {
     PLACEHOLDER_TEXT,
     PLACEHOLDER_SHIMMER_MAX_ACTIVE
 } from '../../../ui/mobile/messages-ui-policy.js';
+import { t } from '/locales/index.js';
 
 const CALL_LOG_PHONE_ICON = '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.003 5.884l3.75-1.5a1 1 0 011.316.593l1.2 3.199a1 1 0 01-.232 1.036l-1.516 1.52a11.037 11.037 0 005.516 5.516l1.52-1.516a1 1 0 011.036-.232l3.2 1.2a1 1 0 01.593 1.316l-1.5 3.75a1 1 0 01-1.17.6c-2.944-.73-5.59-2.214-7.794-4.418-2.204-2.204-3.688-4.85-4.418-7.794a1 1 0 01.6-1.17z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
+const CALL_LOG_VIDEO_ICON = '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="1.5" y="4.5" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.6"></rect><path d="M13.5 8.5l4.5-2.5v8l-4.5-2.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
 
-const PLACEHOLDER_FAILED_TEXT = '無法解密';
-const PLACEHOLDER_BLOCKED_TEXT = '暫時無法解密';
+const PLACEHOLDER_FAILED_TEXT = t('encryption.decryptFailed');
+const PLACEHOLDER_BLOCKED_TEXT = t('encryption.decryptBlocked');
 
 export function formatTimestamp(ts) {
     if (!Number.isFinite(ts)) return '';
@@ -47,23 +52,23 @@ export function formatTimestamp(ts) {
 
         // Within 1 day (today)
         if (diffDays === 0) {
-            return `今天 ${hours}:${minutes}`;
+            return t('renderer.today', { time: `${hours}:${minutes}` });
         }
 
         // Within 2 days (yesterday)
         if (diffDays === 1) {
-            return `昨天 ${hours}:${minutes}`;
+            return t('renderer.yesterday', { time: `${hours}:${minutes}` });
         }
 
         // Within 7 days
         if (diffDays < 7 && diffDays > 0) {
-            const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
-            return `週${weekdays[date.getDay()]} ${hours}:${minutes}`;
+            const weekdays = [t('weekdays.sun'), t('weekdays.mon'), t('weekdays.tue'), t('weekdays.wed'), t('weekdays.thu'), t('weekdays.fri'), t('weekdays.sat')];
+            return t('renderer.weekdayTime', { weekday: weekdays[date.getDay()], time: `${hours}:${minutes}` });
         }
 
         const month = date.getMonth() + 1;
         const dayOfMonth = date.getDate();
-        return `${month}月${dayOfMonth}日 ${hours}:${minutes}`;
+        return t('renderer.dateTime', { month, day: dayOfMonth, time: `${hours}:${minutes}` });
     } catch {
         return '';
     }
@@ -349,12 +354,213 @@ export class MessageRenderer {
         this.scrollEl = scrollEl || null;
         this.callbacks = callbacks;
         this.shimmerIds = new Set();
+        this._previewLoadedSet = new WeakSet();
+        this._previewObserver = null;
+        this._pendingObserve = []; // elements queued before observer is ready
+    }
+
+    /** Lazily create the IntersectionObserver (needs scrollEl to be in DOM) */
+    _ensurePreviewObserver() {
+        if (this._previewObserver) return this._previewObserver;
+        this._previewObserver = new IntersectionObserver((entries) => {
+            for (const entry of entries) {
+                const el = entry.target;
+                if (entry.isIntersecting) {
+                    if (!this._previewLoadedSet.has(el) && el._lazyMedia) {
+                        this._previewLoadedSet.add(el);
+                        this._loadFilePreview(el, el._lazyMedia);
+                    }
+                } else {
+                    if (this._previewLoadedSet.has(el) && el._lazyMedia && el._lazyType === 'heavy') {
+                        this._previewLoadedSet.delete(el);
+                        this._releaseFilePreview(el);
+                    }
+                }
+            }
+        }, { root: this.scrollEl || null, rootMargin: '200px 0px' });
+        // Flush any elements queued before observer was created
+        for (const el of this._pendingObserve) this._previewObserver.observe(el);
+        this._pendingObserve = [];
+        return this._previewObserver;
     }
 
     /**
      * After media elements load, maintain scroll position if user was near bottom.
      * Prevents content from shifting away when images/videos finish loading.
      */
+    async _renderPptxThumbnail(media, canvas, container) {
+        try {
+            let buffer = null;
+            const directUrl = media?.previewUrl || media?.preview?.localUrl || media?.localUrl || null;
+            if (directUrl) {
+                const res = await fetch(directUrl);
+                if (!res.ok) throw new Error('pptx fetch failed');
+                buffer = await res.arrayBuffer();
+            } else if (media?.objectKey && media?.envelope) {
+                const { blob } = await downloadAndDecrypt({
+                    key: media.objectKey,
+                    envelope: media.envelope,
+                    messageKeyB64: media.messageKey_b64 || media.message_key_b64 || null
+                });
+                buffer = await blob.arrayBuffer();
+            } else if (media?.chunked && media?.baseKey && media?.manifestEnvelope) {
+                // Chunked files — download via downloadAndDecrypt with chunked params
+                const { blob } = await downloadAndDecrypt({
+                    key: media.baseKey,
+                    envelope: media.manifestEnvelope,
+                    messageKeyB64: media.messageKey_b64 || media.message_key_b64 || null,
+                    chunked: true
+                });
+                buffer = await blob.arrayBuffer();
+            } else {
+                throw new Error('no source');
+            }
+            const ok = await renderPptxThumbnail(buffer, canvas);
+            if (ok) {
+                canvas.dataset.previewState = 'ready';
+            } else {
+                throw new Error('render failed');
+            }
+        } catch {
+            // Fallback to generic PowerPoint icon
+            canvas.remove();
+            const generic = document.createElement('div');
+            generic.className = 'message-file-preview-generic';
+            generic.innerHTML = '<svg class="icon file-type-icon" style="color:#ea580c"><use href="#i-presentation"/></svg>';
+            container.appendChild(generic);
+        }
+    }
+
+    async _renderWordThumbnail(media, placeholder, container) {
+        try {
+            let buffer = null;
+            const directUrl = media?.previewUrl || media?.preview?.localUrl || media?.localUrl || null;
+            if (directUrl) {
+                const res = await fetch(directUrl);
+                if (!res.ok) throw new Error('word fetch failed');
+                buffer = await res.arrayBuffer();
+            } else if (media?.objectKey && media?.envelope) {
+                const { blob } = await downloadAndDecrypt({
+                    key: media.objectKey,
+                    envelope: media.envelope,
+                    messageKeyB64: media.messageKey_b64 || media.message_key_b64 || null
+                });
+                buffer = await blob.arrayBuffer();
+            } else if (media?.chunked && media?.baseKey && media?.manifestEnvelope) {
+                const { blob } = await downloadAndDecrypt({
+                    key: media.baseKey,
+                    envelope: media.manifestEnvelope,
+                    messageKeyB64: media.messageKey_b64 || media.message_key_b64 || null,
+                    chunked: true
+                });
+                buffer = await blob.arrayBuffer();
+            } else {
+                return; // keep icon fallback
+            }
+            const thumb = renderWordThumbnail(buffer);
+            if (thumb && placeholder.parentNode) {
+                placeholder.replaceWith(thumb);
+            }
+        } catch {
+            // Keep existing icon fallback
+        }
+    }
+
+    async _renderExcelThumbnail(media, placeholder, container) {
+        try {
+            let buffer = null;
+            const directUrl = media?.previewUrl || media?.preview?.localUrl || media?.localUrl || null;
+            if (directUrl) {
+                const res = await fetch(directUrl);
+                if (!res.ok) throw new Error('excel fetch failed');
+                buffer = await res.arrayBuffer();
+            } else if (media?.objectKey && media?.envelope) {
+                const { blob } = await downloadAndDecrypt({
+                    key: media.objectKey,
+                    envelope: media.envelope,
+                    messageKeyB64: media.messageKey_b64 || media.message_key_b64 || null
+                });
+                buffer = await blob.arrayBuffer();
+            } else if (media?.chunked && media?.baseKey && media?.manifestEnvelope) {
+                const { blob } = await downloadAndDecrypt({
+                    key: media.baseKey,
+                    envelope: media.manifestEnvelope,
+                    messageKeyB64: media.messageKey_b64 || media.message_key_b64 || null,
+                    chunked: true
+                });
+                buffer = await blob.arrayBuffer();
+            } else {
+                return;
+            }
+            const thumb = await renderExcelThumbnail(buffer);
+            if (thumb && placeholder.parentNode) {
+                placeholder.replaceWith(thumb);
+            }
+        } catch {
+            // Keep existing icon fallback
+        }
+    }
+
+    /** Show a spinner placeholder in the preview container */
+    _showPreviewSpinner(container) {
+        const holder = document.createElement('div');
+        holder.className = 'message-file-preview-generic';
+        holder.innerHTML = '<div class="loading-spinner" style="width:28px;height:28px;border-width:3px"></div>';
+        container.appendChild(holder);
+    }
+
+    /** Actually load and render the file preview (called when entering viewport) */
+    _loadFilePreview(container, media) {
+        const type = (media?.contentType || '').toLowerCase();
+        const nameLower = (media?.name || '').toLowerCase();
+
+        // Clear spinner
+        container.innerHTML = '';
+
+        if (type === 'application/pdf' || nameLower.endsWith('.pdf')) {
+            const pdf = document.createElement('canvas');
+            pdf.className = 'message-file-preview-pdf';
+            pdf.setAttribute('aria-label', media?.name || t('viewer.pdfPreview'));
+            pdf.dataset.previewState = 'loading';
+            container.appendChild(pdf);
+            container.appendChild(this._fileTypeBadge('PDF', '#dc2626'));
+            renderPdfThumbnail(media, pdf);
+        } else if (isPptxMime(type) || isPptxFilename(media?.name)) {
+            const pptxCanvas = document.createElement('canvas');
+            pptxCanvas.className = 'message-file-preview-pdf';
+            pptxCanvas.setAttribute('aria-label', media?.name || 'PPTX preview');
+            pptxCanvas.dataset.previewState = 'loading';
+            container.appendChild(pptxCanvas);
+            container.appendChild(this._fileTypeBadge('PPTX', '#ea580c'));
+            this._renderPptxThumbnail(media, pptxCanvas, container);
+        } else if (isWordMime(type) || isWordFilename(media?.name)) {
+            const wordDiv = document.createElement('div');
+            wordDiv.className = 'message-file-preview-generic';
+            wordDiv.innerHTML = '<svg class="icon file-type-icon" style="color:#2563eb"><use href="#i-file-text"/></svg>';
+            container.appendChild(wordDiv);
+            this._renderWordThumbnail(media, wordDiv, container);
+        } else if (isExcelMime(type) || isExcelFilename(media?.name)) {
+            const xlsDiv = document.createElement('div');
+            xlsDiv.className = 'message-file-preview-generic';
+            xlsDiv.innerHTML = '<svg class="icon file-type-icon" style="color:#16a34a"><use href="#i-file-spreadsheet"/></svg>';
+            container.appendChild(xlsDiv);
+            this._renderExcelThumbnail(media, xlsDiv, container);
+        }
+    }
+
+    /** Release heavy preview content to free memory (called when leaving viewport) */
+    _releaseFilePreview(container) {
+        container.innerHTML = '';
+        this._showPreviewSpinner(container);
+    }
+
+    _fileTypeBadge(label, color) {
+        const badge = document.createElement('div');
+        badge.style.cssText = `position:absolute;bottom:4px;right:4px;background:${color};color:#fff;font-size:9px;font-weight:600;padding:2px 5px;border-radius:4px;line-height:1.2;pointer-events:none;letter-spacing:0.5px;opacity:0.9;z-index:1;`;
+        badge.textContent = label;
+        return badge;
+    }
+
     _attachMediaLoadScrollGuard(el) {
         if (!el) return;
         const eventName = el.tagName === 'VIDEO' ? 'loadedmetadata' : 'load';
@@ -383,8 +589,6 @@ export class MessageRenderer {
             this._attachMediaLoadScrollGuard(img);
             setPreviewSource(img, media);
         } else if (type.startsWith('video/')) {
-            // For videos, prefer showing a still thumbnail image (JPEG preview)
-            // instead of a <video> element to avoid keeping video blobs in memory.
             const hasPreview = media?.previewUrl || media?.preview?.localUrl ||
                 (media?.preview?.objectKey && media?.preview?.envelope);
             if (hasPreview) {
@@ -396,23 +600,47 @@ export class MessageRenderer {
                 this._attachMediaLoadScrollGuard(img);
                 setPreviewSource(img, media);
             } else {
-                // No preview thumbnail available — show generic video icon
                 const generic = document.createElement('div');
                 generic.className = 'message-file-preview-generic';
                 generic.innerHTML = '<svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
                 container.appendChild(generic);
             }
-        } else if (type === 'application/pdf' || nameLower.endsWith('.pdf')) {
-            const pdf = document.createElement('canvas');
-            pdf.className = 'message-file-preview-pdf';
-            pdf.setAttribute('aria-label', media?.name || 'PDF 預覽');
-            pdf.dataset.previewState = 'loading';
-            container.appendChild(pdf);
-            renderPdfThumbnail(media, pdf);
+        } else if (type === 'application/pdf' || nameLower.endsWith('.pdf') ||
+                   isPptxMime(type) || isPptxFilename(media?.name) ||
+                   isWordMime(type) || isWordFilename(media?.name) ||
+                   isExcelMime(type) || isExcelFilename(media?.name)) {
+            // Heavy file previews — lazy load via IntersectionObserver
+            this._showPreviewSpinner(container);
+            container._lazyMedia = media;
+            container._lazyType = 'heavy';
+            // Defer observe until element is in DOM (next microtask)
+            queueMicrotask(() => this._ensurePreviewObserver().observe(container));
         } else {
             const generic = document.createElement('div');
             generic.className = 'message-file-preview-generic';
-            generic.textContent = '檔案';
+            const ext = (media?.name || '').split('.').pop()?.toLowerCase() || '';
+            const xlsExts = ['xlsx', 'xls', 'xlsm', 'csv'];
+            const docExts = ['docx', 'doc', 'docm', 'rtf'];
+            const pptExts = ['pptx', 'ppt', 'pptm', 'odp', 'key'];
+            const archiveExts = ['zip', 'rar', '7z', 'gz', 'tar', 'tgz', 'bz2'];
+            const txtExts = ['txt', 'md', 'log'];
+            const codeExts = ['json', 'xml', 'yml', 'yaml', 'js', 'ts', 'css', 'html', 'py', 'sh', 'sql', 'ini', 'toml', 'conf', 'env'];
+            const mediaType = (media?.contentType || '').toLowerCase();
+            if (archiveExts.includes(ext)) {
+                generic.innerHTML = '<svg class="icon file-type-icon" style="color:#d97706"><use href="#i-archive"/></svg>';
+            } else if (xlsExts.includes(ext)) {
+                generic.innerHTML = '<svg class="icon file-type-icon" style="color:#16a34a"><use href="#i-file-spreadsheet"/></svg>';
+            } else if (docExts.includes(ext)) {
+                generic.innerHTML = '<svg class="icon file-type-icon" style="color:#2563eb"><use href="#i-file-text"/></svg>';
+            } else if (pptExts.includes(ext)) {
+                generic.innerHTML = '<svg class="icon file-type-icon" style="color:#ea580c"><use href="#i-presentation"/></svg>';
+            } else if (txtExts.includes(ext) || mediaType.startsWith('text/plain')) {
+                generic.innerHTML = '<svg class="icon file-type-icon" style="color:#94a3b8"><use href="#i-file-text"/></svg>';
+            } else if (codeExts.includes(ext) || mediaType === 'application/json' || mediaType.startsWith('text/')) {
+                generic.innerHTML = '<svg class="icon file-type-icon" style="color:#8b5cf6"><use href="#i-file"/></svg>';
+            } else {
+                generic.innerHTML = '<svg class="icon file-type-icon" style="color:#64748b"><use href="#i-file"/></svg>';
+            }
             container.appendChild(generic);
         }
     }
@@ -454,7 +682,7 @@ export class MessageRenderer {
         if (existing && !media.error && existing.dataset.mode === 'uploading') {
             const label = existing.querySelector('[data-role="label"]');
             const bar = existing.querySelector('[data-role="bar"]');
-            if (label) label.textContent = pct != null ? `上傳中… ${pct}%` : '準備上傳…';
+            if (label) label.textContent = pct != null ? t('renderer.uploadingPercent', { pct }) : t('renderer.preparingUpload');
             if (bar) bar.style.width = `${pct != null ? pct : 10}%`;
             return;
         }
@@ -481,11 +709,11 @@ export class MessageRenderer {
         if (media.error) {
             overlay.dataset.mode = 'error';
             const label = document.createElement('div');
-            label.textContent = '上傳失敗';
+            label.textContent = t('renderer.uploadFailed');
             label.style.fontWeight = '600';
             overlay.appendChild(label);
             const detail = document.createElement('div');
-            detail.textContent = String(media.error || '').slice(0, 80) || '請稍後再試';
+            detail.textContent = String(media.error || '').slice(0, 80) || t('renderer.pleaseRetryLater');
             detail.style.fontSize = '12px';
             detail.style.opacity = '0.9';
             overlay.appendChild(detail);
@@ -493,7 +721,7 @@ export class MessageRenderer {
             overlay.dataset.mode = 'uploading';
             const label = document.createElement('div');
             label.dataset.role = 'label';
-            label.textContent = pct != null ? `上傳中… ${pct}%` : '準備上傳…';
+            label.textContent = pct != null ? t('renderer.uploadingPercent', { pct }) : t('renderer.preparingUpload');
             label.style.fontWeight = '600';
             overlay.appendChild(label);
             const barWrap = document.createElement('div');
@@ -512,7 +740,7 @@ export class MessageRenderer {
             overlay.appendChild(barWrap);
             const cancelBtn = document.createElement('button');
             cancelBtn.type = 'button';
-            cancelBtn.textContent = '取消上傳';
+            cancelBtn.textContent = t('renderer.cancelUpload');
             cancelBtn.className = 'upload-cancel-btn';
             Object.assign(cancelBtn.style, {
                 background: 'rgba(0,0,0,0.55)',
@@ -576,7 +804,7 @@ export class MessageRenderer {
             overlay.style.color = '#fff';
             const pct = Math.round(media._videoProgress || 0);
             const label = document.createElement('div');
-            label.textContent = `下載中… ${pct}%`;
+            label.textContent = t('renderer.downloading', { pct });
             label.style.fontWeight = '600';
             label.style.fontSize = '13px';
             overlay.appendChild(label);
@@ -639,7 +867,7 @@ export class MessageRenderer {
         info.className = 'message-file-info';
         const nameEl = document.createElement('div');
         nameEl.className = 'message-file-name';
-        nameEl.textContent = media.name || '附件';
+        nameEl.textContent = media.name || t('common.attachment');
         const metaEl = document.createElement('div');
         metaEl.className = 'message-file-meta';
         metaEl.textContent = formatFileMeta(media);
@@ -664,19 +892,19 @@ export class MessageRenderer {
         if (media._expired) {
             const expiredTag = document.createElement('div');
             expiredTag.className = 'message-file-expired';
-            expiredTag.innerHTML = '<svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="10" r="8"/><line x1="6" y1="6" x2="14" y2="14"/></svg> 檔案已失效';
+            expiredTag.innerHTML = `<svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="10" cy="10" r="8"/><line x1="6" y1="6" x2="14" y2="14"/></svg> ${t('renderer.fileExpired')}`;
             wrapper.appendChild(expiredTag);
         }
 
-        // Save-to-drive button (only for non-uploading, non-expired media with valid source)
+        // Save-to-drive button (only for non-uploading, non-expired media with valid source; skip videos)
         const hasSource = !!(media.objectKey && media.envelope) || !!(media.chunked && media.baseKey && media.manifestEnvelope);
-        if (hasSource && !media.uploading && !media._expired) {
+        if (hasSource && !media.uploading && !media._expired && !isVideo) {
             const actions = document.createElement('div');
             actions.className = 'message-file-actions';
             const saveBtn = document.createElement('button');
             saveBtn.type = 'button';
             saveBtn.className = 'message-file-save-drive';
-            saveBtn.innerHTML = '<svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 13v3a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 013 16v-3"/><polyline points="7 7 10 3 13 7"/><line x1="10" y1="3" x2="10" y2="13"/></svg> 存到雲端';
+            saveBtn.innerHTML = `<svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 13v3a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 013 16v-3"/><polyline points="7 7 10 3 13 7"/><line x1="10" y1="3" x2="10" y2="13"/></svg> ${t('renderer.saveToCloud')}`;
             saveBtn.addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -705,7 +933,10 @@ export class MessageRenderer {
         const { activePeerDigest, activePeerDeviceId, conversationId } = state;
         this.shimmerIds = shimmerIds || new Set();
 
-        // Clear list
+        // Clear list — disconnect observer to release references to old elements
+        if (this._previewObserver) { this._previewObserver.disconnect(); this._previewObserver = null; }
+        this._previewLoadedSet = new WeakSet();
+        this._pendingObserve = [];
         const prevCount = this.listEl.childElementCount;
         this.listEl.innerHTML = '';
 
@@ -753,20 +984,20 @@ export class MessageRenderer {
                 // Need to resolve sender name. 
                 // We have 'msg.senderDigest' or 'msg.header.sender_digest'.
                 const senderDigest = normalizeAccountDigest(msg.senderDigest || msg.header?.sender_digest);
-                let senderName = '對方';
-                if (isOutgoingFromSelf(msg, state.activePeerDigest)) { // Actually selfDigest not available in state directly? 
+                let senderName = t('common.other');
+                if (isOutgoingFromSelf(msg, state.activePeerDigest)) { // Actually selfDigest not available in state directly?
                     // Renderer doesn't know selfDigest easily without args.
-                    // But `isOutgoingFromSelf` is exported. We need `selfDigest`. 
+                    // But `isOutgoingFromSelf` is exported. We need `selfDigest`.
                     // It's not passed in render() options except maybe implicitly?
                     // Wait, render() has `contacts`.
                     // Let's use `msg.direction`.
-                    if (msg.direction === 'outgoing') senderName = '你';
+                    if (msg.direction === 'outgoing') senderName = t('common.you');
                     else {
                         const contact = contacts?.get(senderDigest);
                         if (contact?.nickname) senderName = contact.nickname;
                     }
                 } else if (msg.direction === 'outgoing') {
-                    senderName = '你';
+                    senderName = t('common.you');
                 }
 
                 // Timestamp – normalise: msg.ts may be seconds or milliseconds
@@ -775,7 +1006,7 @@ export class MessageRenderer {
                 const tsMs = msg.tsMs || (Number.isFinite(rawTs) && rawTs > 0 ? rawTs * 1000 : Date.now());
                 const timeStr = new Date(tsMs).toLocaleString('zh-TW', { hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 
-                sep.textContent = `${senderName} 已於 ${timeStr} 清除上方對話紀錄`;
+                sep.textContent = t('renderer.clearedHistory', { sender: senderName, time: timeStr });
                 this.listEl.appendChild(sep);
                 continue;
             }
@@ -785,7 +1016,7 @@ export class MessageRenderer {
                 sep.className = 'message-separator';
                 sep.style.marginTop = '12px';
                 sep.style.marginBottom = '12px';
-                sep.textContent = msg.text || msg.content?.text || '更新了個人檔案';
+                sep.textContent = msg.text || msg.content?.text || t('renderer.updatedProfile');
                 this.listEl.appendChild(sep);
                 continue;
             }
@@ -807,17 +1038,17 @@ export class MessageRenderer {
 
                 const csReason = csPayload?.reason || msg?.reason || 'invite-consume';
                 const contact = typeof contacts?.get === 'function' ? contacts.get(activePeerDigest || '') : null;
-                const name = escapeHtml(contact?.nickname || csPayload?.nickname || '對方');
+                const name = escapeHtml(contact?.nickname || csPayload?.nickname || t('common.other'));
                 const isOutgoing = msg?.direction === 'outgoing';
 
                 if (csReason === 'invite-consume' || csReason === 'invite-create') {
-                  sep.textContent = `你已經與 ${name} 建立安全連線 🔐`;
+                  sep.textContent = t('renderer.secureConnectionEstablished', { name });
                 } else if (csReason === 'nickname') {
-                  sep.textContent = isOutgoing ? '你已更新暱稱' : `${name} 已更新暱稱`;
+                  sep.textContent = isOutgoing ? t('profile.youUpdatedNickname') : t('profile.peerUpdatedNickname', { name });
                 } else if (csReason === 'avatar') {
-                  sep.textContent = isOutgoing ? '你已更新頭像' : `${name} 已更新頭像`;
+                  sep.textContent = isOutgoing ? t('profile.youUpdatedAvatar') : t('profile.peerUpdatedAvatar', { name });
                 } else {
-                  sep.textContent = isOutgoing ? '你已更新個人資料' : `${name} 已更新個人資料`;
+                  sep.textContent = isOutgoing ? t('profile.youUpdatedProfile') : t('profile.peerUpdatedProfile', { name });
                 }
                 this.listEl.appendChild(sep);
                 continue;
@@ -889,11 +1120,13 @@ export class MessageRenderer {
                 li.className = 'call-log-entry';
                 const chip = document.createElement('div');
                 const outcome = callLogObj.outcome || 'missed';
+                const callKind = callLogObj.kind || 'voice';
                 chip.className = `call-log-chip ${outcome}`;
+                chip.style.cursor = 'pointer';
 
                 const icon = document.createElement('span');
                 icon.className = 'call-log-icon';
-                icon.innerHTML = CALL_LOG_PHONE_ICON;
+                icon.innerHTML = callKind === 'video' ? CALL_LOG_VIDEO_ICON : CALL_LOG_PHONE_ICON;
                 chip.appendChild(icon);
 
                 const textGroup = document.createElement('div');
@@ -905,7 +1138,7 @@ export class MessageRenderer {
                 const viewerRole = callLogObj.viewerRole || resolveViewerRole(callLogObj.authorRole, msg.direction);
                 const { label, subLabel } = describeCallLogForViewer(callLogObj, viewerRole);
 
-                main.textContent = label || '語音通話';
+                main.textContent = label || t('calls.voiceCall');
                 textGroup.appendChild(main);
 
                 if (subLabel) {
@@ -916,6 +1149,14 @@ export class MessageRenderer {
                 }
 
                 chip.appendChild(textGroup);
+
+                // Click-to-redial: clicking a call-log chip initiates a call of the same type
+                chip.addEventListener('click', () => {
+                    if (this.callbacks.onCallLogRedial) {
+                        this.callbacks.onCallLogRedial({ kind: callKind, msg });
+                    }
+                });
+
                 li.appendChild(chip);
                 this.listEl.appendChild(li);
                 continue;
@@ -925,6 +1166,13 @@ export class MessageRenderer {
 
             if (messageType === 'system') {
                 li.className = 'message-separator';
+                li.textContent = msg.text || msg.content?.text || '';
+                this.listEl.appendChild(li);
+                continue;
+            }
+
+            if (messageType === 'biz-conv-tombstone') {
+                li.className = 'message-separator biz-conv-tombstone-msg';
                 li.textContent = msg.text || msg.content?.text || '';
                 this.listEl.appendChild(li);
                 continue;
@@ -946,7 +1194,7 @@ export class MessageRenderer {
                     : null;
 
                 const name = contact?.nickname || '';
-                const initials = name ? name.slice(0, 1) : '好友';
+                const initials = name ? name.slice(0, 1) : t('common.friend');
 
                 avatar.textContent = initials;
                 const avatarUrl = resolveContactAvatarUrl(contact);
@@ -987,8 +1235,22 @@ export class MessageRenderer {
 
             if (messageType === 'media' && msg.media) {
                 this.renderMediaBubble(bubble, msg);
+            } else if (msg._ephImage) {
+                // Inline ephemeral image (DR-encrypted, no R2)
+                const imgWrap = document.createElement('div');
+                imgWrap.className = 'eph-inline-image';
+                const imgEl = document.createElement('img');
+                imgEl.src = msg._ephImage;
+                imgEl.alt = msg.text || 'Image';
+                imgEl.loading = 'lazy';
+                imgEl.addEventListener('click', () => {
+                    this.callbacks.onEphImageClick?.({ url: msg._ephImage, name: msg.text || 'Image' });
+                });
+                imgWrap.appendChild(imgEl);
+                bubble.appendChild(imgWrap);
+                bubble.classList.add('message-has-media');
             } else {
-                bubble.textContent = msg.text || msg.error || '(無法解密)';
+                bubble.textContent = msg.text || msg.error || t('renderer.cannotDecrypt');
             }
 
             row.appendChild(bubble);
@@ -1004,6 +1266,10 @@ export class MessageRenderer {
 
 
             const RETRY_ICON = '<svg viewBox="0 0 24 24" fill="none" class="w-4 h-4" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>';
+            // Lucide-style SVG status icons (14×14, inline)
+            const ICON_CHECK = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+            const ICON_CHECK_CHECK = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 7 17l-5-5"/><path d="m22 10-9.17 9.17L11 17.34"/></svg>';
+            const ICON_CIRCLE_ALERT = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>';
 
             if (messageType !== 'call-log') {
                 const statusSpan = document.createElement('span');
@@ -1047,10 +1313,10 @@ export class MessageRenderer {
                         statusSpan.className = 'message-status failed retryable';
                         statusSpan.dataset.retry = 'true';
                         statusSpan.innerHTML = RETRY_ICON; // Use SVG
-                        statusSpan.title = '網路傳送失敗，點擊重試';
+                        statusSpan.title = t('messages.networkSendFailed');
                     } else {
                         statusSpan.className = 'message-status failed';
-                        statusSpan.textContent = '!';
+                        statusSpan.innerHTML = ICON_CIRCLE_ALERT;
                         const failureTip = msg?.failureReason || msg?.failureCode || '';
                         if (failureTip) statusSpan.title = failureTip;
                     }
@@ -1071,10 +1337,10 @@ export class MessageRenderer {
 
                 } else if (delivered) {
                     statusSpan.className = 'message-status delivered';
-                    statusSpan.textContent = '✓✓';
+                    statusSpan.innerHTML = ICON_CHECK_CHECK;
                 } else {
                     statusSpan.className = 'message-status sent';
-                    statusSpan.textContent = '✓';
+                    statusSpan.innerHTML = ICON_CHECK;
                 }
                 metaRow.appendChild(statusSpan);
             }

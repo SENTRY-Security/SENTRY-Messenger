@@ -20,6 +20,8 @@ import { listSecureMessages } from '../../api/messages.js';
 import { buildDrAadFromHeader } from '../../crypto/dr.js';
 import { b64u8 } from '../../crypto/nacl.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
+import { MessageKeyVault } from '../../features/message-key-vault.js';
+import { t } from '/locales/index.js';
 
 /**
  * Create conversation threads manager.
@@ -213,7 +215,8 @@ export function createConversationThreadsManager(deps) {
             });
         }
         for (const convId of Array.from(threads.keys())) {
-            if (!seen.has(convId)) threads.delete(convId);
+            const thread = threads.get(convId);
+            if (!seen.has(convId) && thread?.type !== 'biz-conv') threads.delete(convId);
         }
         return threads;
     }
@@ -234,8 +237,21 @@ export function createConversationThreadsManager(deps) {
         const params = aad
             ? { name: 'AES-GCM', iv: ivU8, additionalData: aad }
             : { name: 'AES-GCM', iv: ivU8 };
-        const ptBuf = await crypto.subtle.decrypt(params, key, ctU8);
-        return new TextDecoder().decode(ptBuf);
+        try {
+            const ptBuf = await crypto.subtle.decrypt(params, key, ctU8);
+            return new TextDecoder().decode(ptBuf);
+        } catch (firstErr) {
+            // Fallback: retry with opposite AAD for pre-M-4 messages
+            const fallbackParams = aad
+                ? { name: 'AES-GCM', iv: ivU8 }
+                : { name: 'AES-GCM', iv: ivU8, additionalData: buildDrAadFromHeader(header) };
+            try {
+                const ptBuf = await crypto.subtle.decrypt(fallbackParams, key, ctU8);
+                return new TextDecoder().decode(ptBuf);
+            } catch {
+                throw firstErr;
+            }
+        }
     }
 
     /**
@@ -260,6 +276,76 @@ export function createConversationThreadsManager(deps) {
         const selfDigest = storeGetAccountDigest();
         const tasks = [];
         for (const thread of threads) {
+            // Biz-conv threads: fetch latest message and decrypt via BizConvStore
+            if (thread?.type === 'biz-conv' && thread?.conversationId) {
+                if (!force && thread.previewLoaded && !thread.needsRefresh) continue;
+                tasks.push((async () => {
+                    try {
+                        const { r, data } = await listSecureMessages({
+                            conversationId: thread.conversationId,
+                            limit: 1,
+                            includeKeys: false
+                        });
+                        if (!r?.ok) return;
+                        const items = Array.isArray(data?.items) ? data.items : [];
+                        if (!items.length) {
+                            thread.previewLoaded = true;
+                            return;
+                        }
+                        const latest = items[0];
+                        let header = latest.header || null;
+                        if (!header && typeof latest.header_json === 'string') {
+                            try { header = JSON.parse(latest.header_json); } catch { }
+                        }
+                        const tsRaw = latest.created_at ?? latest.createdAt ?? latest.ts ?? null;
+                        const ts = Number.isFinite(Number(tsRaw)) ? Number(tsRaw) : null;
+                        const messageId = latest.id || latest.messageId || latest.message_id || null;
+                        const senderDigest = latest.sender_account_digest || latest.senderAccountDigest || '';
+                        const isSelf = selfDigest && senderDigest && senderDigest.toUpperCase() === selfDigest.toUpperCase();
+                        const direction = isSelf ? 'outgoing' : 'incoming';
+
+                        // Try to decrypt using BizConvStore
+                        let rawText = null;
+                        if (header?.type === 'biz-conv-message') {
+                            try {
+                                const { BizConvStore } = await import('../../features/biz-conv.js');
+                                const state = BizConvStore.get(thread.conversationId);
+                                if (state) {
+                                    const envelope = {
+                                        epoch: header.epoch,
+                                        sender_device_id: header.sender_device_id,
+                                        counter: header.counter,
+                                        iv_b64: header.iv_b64,
+                                        ciphertext_b64: header.ciphertext_b64
+                                    };
+                                    const plaintext = await BizConvStore.decryptMessage(thread.conversationId, envelope);
+                                    rawText = typeof plaintext === 'string' ? plaintext : (plaintext?.text || null);
+                                    // [FIX] Decrypting the preview ratchets the sender chain forward.
+                                    // Mark backup dirty so the advanced chain state is persisted;
+                                    // otherwise the same message is re-decrypted on every login,
+                                    // and chain state diverges from backup.
+                                    try {
+                                        const { markBizConvBackupDirty } = await import('../../features/biz-conv-backup.js');
+                                        markBizConvBackupDirty();
+                                    } catch { /* best effort */ }
+                                }
+                            } catch { /* decrypt failed */ }
+                        }
+
+                        const text = rawText && typeof rawText === 'string' && rawText.trim()
+                            ? resolveMessagePreview({ text: rawText, msgType: 'biz-conv-text' })
+                            : '';
+                        updateThreadPreview(thread, { text, ts, messageId, direction, msgType: 'biz-conv-text' });
+                    } catch (err) {
+                        log({ bizConvPreviewError: err?.message, conversationId: thread?.conversationId });
+                    } finally {
+                        thread.previewLoaded = true;
+                        thread.needsRefresh = false;
+                    }
+                })());
+                continue;
+            }
+
             const peerDigest = threadPeer(thread);
             if (!thread?.conversationId || !thread?.conversationToken || !peerDigest || !thread?.peerDeviceId) {
                 if (!thread?.peerDeviceId) {
@@ -277,7 +363,7 @@ export function createConversationThreadsManager(deps) {
                         includeKeys: true
                     });
                     if (!r?.ok) {
-                        updateThreadPreview(thread, { text: '(載入失敗)' });
+                        updateThreadPreview(thread, { text: t('messages.loadFailed') });
                         return;
                     }
                     const items = Array.isArray(data?.items) ? data.items : [];
@@ -309,9 +395,29 @@ export function createConversationThreadsManager(deps) {
 
                     // Try to find vault key for this message
                     const vaultEntry = messageId && serverKeys ? serverKeys[messageId] : null;
-                    const messageKeyB64 = vaultEntry?.message_key_b64 || vaultEntry?.messageKeyB64 || null;
                     const ciphertextB64 = latest.ciphertext_b64 || latest.ciphertextB64 || null;
                     const ivB64 = header?.iv_b64 || null;
+                    const senderDeviceId = latest.sender_device_id || latest.senderDeviceId || header?.meta?.sender_device_id || null;
+
+                    // Unwrap the server-provided wrapped key via MessageKeyVault
+                    let messageKeyB64 = null;
+                    if (vaultEntry?.wrapped_mk_json && messageId && senderDeviceId) {
+                        try {
+                            const vaultResult = await MessageKeyVault.getMessageKey({
+                                conversationId: thread.conversationId,
+                                messageId,
+                                senderDeviceId,
+                                serverWrappedMk: vaultEntry.wrapped_mk_json,
+                                serverWrapContext: vaultEntry.wrap_context_json,
+                                serverDrStateSnapshot: vaultEntry.dr_state_snapshot
+                            });
+                            if (vaultResult?.ok && vaultResult.messageKeyB64) {
+                                messageKeyB64 = vaultResult.messageKeyB64;
+                            }
+                        } catch (err) {
+                            log({ previewVaultUnwrapFailed: err?.message, conversationId: thread.conversationId });
+                        }
+                    }
 
                     let rawText = null;
                     if (messageKeyB64 && ciphertextB64 && ivB64) {
@@ -325,7 +431,7 @@ export function createConversationThreadsManager(deps) {
 
                     let text;
                     if (msgType === 'conversation-deleted') {
-                        text = '尚無訊息';
+                        text = t('messages.noMessages');
                         updateThreadPreview(thread, { text, ts, messageId, direction, msgType: 'conversation-deleted' }, { force: true });
                         thread.unreadCount = 0;
                         thread.offlineUnreadCount = 0;
@@ -335,7 +441,7 @@ export function createConversationThreadsManager(deps) {
                     if (rawText && typeof rawText === 'string' && rawText.trim()) {
                         text = resolveMessagePreview({ text: rawText, msgType });
                     } else {
-                        text = '訊息尚未解密🔐';
+                        text = t('messages.notDecrypted');
                     }
 
                     const updated = updateThreadPreview(thread, { text, ts, messageId, direction, msgType });
@@ -346,7 +452,7 @@ export function createConversationThreadsManager(deps) {
                         thread.unreadCount = 0;
                     }
                 } catch (err) {
-                    updateThreadPreview(thread, { text: '(載入失敗)' });
+                    updateThreadPreview(thread, { text: t('messages.loadFailed') });
                     log({ conversationPreviewError: err?.message || err, conversationId: thread?.conversationId });
                 } finally {
                     thread.needsRefresh = false;
@@ -365,7 +471,8 @@ export function createConversationThreadsManager(deps) {
 
     function getThreadsForRender() {
         return Array.from(getConversationThreads().values())
-            .filter((thread) => thread?.conversationId && threadPeer(thread)
+            .filter((thread) => thread?.conversationId
+                && (thread.type === 'biz-conv' || threadPeer(thread))
                 && thread.lastMsgType !== 'conversation-deleted')
             .sort((a, b) => (b.lastMessageTs || 0) - (a.lastMessageTs || 0));
     }

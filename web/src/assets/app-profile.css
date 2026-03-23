@@ -6,8 +6,8 @@
 
 .profile-header {
   display: flex;
-  align-items: flex-start;
-  gap: 18px;
+  align-items: center;
+  gap: 28px;
   position: relative;
 }
 
@@ -52,7 +52,8 @@
   z-index: 3;
 }
 
-.profile-avatar .avatar-edit-btn i {
+.profile-avatar .avatar-edit-btn i,
+.profile-avatar .avatar-edit-btn .icon {
   font-size: 17px;
 }
 
@@ -65,47 +66,163 @@
   flex-direction: column;
   gap: 16px;
   flex: 1 1 auto;
+  align-items: flex-end;
 }
 
 .profile-nickname {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  flex-direction: row;
+  align-items: center;
+  gap: 0;
   font-size: 18px;
   font-weight: 700;
   color: var(--fg);
   letter-spacing: 0.3px;
+  background: var(--bg-elevated);
+  border-radius: 14px;
+  padding: 8px 6px 8px 14px;
 }
 
-.profile-nickname button {
+.profile-nickname strong {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-nick-edit-icon {
+  flex: 0 0 auto;
   border: none;
-  background: var(--bg-elevated);
-  color: var(--fg);
-  font-size: 13px;
-  font-weight: 500;
-  border-radius: 999px;
-  padding: 6px 12px;
+  background: none;
+  color: #94a3b8;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
   cursor: pointer;
-  align-self: flex-start;
-  box-shadow: none;
+  transition: color 0.15s, background 0.15s;
 }
 
-.profile-nickname button i {
-  font-size: 16px;
+.profile-nick-edit-icon:hover {
+  color: var(--fg);
+  background: rgba(148, 163, 184, 0.15);
 }
 
-.profile-nickname button:active {
+.profile-nick-edit-icon .icon {
+  font-size: 15px;
+}
+
+.profile-nick-edit-icon:active {
   transform: translateY(1px);
+}
+
+/* ── Subscription Badge (3rd column) ── */
+.sub-badge {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  min-width: 64px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.sub-badge:active {
+  transform: scale(0.95);
+}
+
+.sub-badge-icon {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sub-badge-icon .sub-icon {
+  width: 28px;
+  height: 28px;
+  display: none;
+}
+
+.sub-badge-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+
+/* Tier: none — muted gray chip */
+.sub-badge[data-tier="none"] {
+  background: rgba(107, 114, 128, 0.08);
+  border: 1.5px solid rgba(107, 114, 128, 0.18);
+}
+.sub-badge[data-tier="none"] .sub-icon--none { display: block; }
+.sub-badge[data-tier="none"] .sub-badge-icon { color: #6b7280; }
+.sub-badge[data-tier="none"] .sub-badge-label { color: #6b7280; }
+
+/* Tier: basic — green tint chip */
+.sub-badge[data-tier="basic"] {
+  background: rgba(34, 197, 94, 0.08);
+  border: 1.5px solid rgba(34, 197, 94, 0.22);
+}
+.sub-badge[data-tier="basic"] .sub-icon--basic { display: block; }
+.sub-badge[data-tier="basic"] .sub-badge-icon { color: #22c55e; }
+.sub-badge[data-tier="basic"] .sub-badge-label { color: #22c55e; }
+
+/* Tier: pro — warm gold chip with breathing glow */
+.sub-badge[data-tier="pro"] {
+  background: rgba(245, 158, 11, 0.08);
+  border: 1.5px solid rgba(245, 158, 11, 0.25);
+  animation: sub-border-breathe 2.4s ease-in-out infinite;
+}
+.sub-badge[data-tier="pro"] .sub-icon--pro { display: block; }
+.sub-badge[data-tier="pro"] .sub-badge-icon {
+  color: #f59e0b;
+  animation: sub-breathe 2.4s ease-in-out infinite;
+}
+.sub-badge[data-tier="pro"] .sub-badge-label {
+  color: #f59e0b;
+  animation: sub-breathe-text 2.4s ease-in-out infinite;
+}
+
+@keyframes sub-breathe {
+  0%, 100% {
+    filter: drop-shadow(0 0 4px rgba(245, 158, 11, 0.25));
+    opacity: 0.85;
+  }
+  50% {
+    filter: drop-shadow(0 0 10px rgba(245, 158, 11, 0.6));
+    opacity: 1;
+  }
+}
+
+@keyframes sub-breathe-text {
+  0%, 100% { opacity: 0.75; }
+  50% { opacity: 1; }
+}
+
+@keyframes sub-border-breathe {
+  0%, 100% {
+    border-color: rgba(245, 158, 11, 0.18);
+    box-shadow: 0 0 0 transparent;
+  }
+  50% {
+    border-color: rgba(245, 158, 11, 0.38);
+    box-shadow: 0 0 12px rgba(245, 158, 11, 0.1);
+  }
 }
 
 .profile-stats {
   display: flex;
   gap: 12px;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: flex-end;
   flex-wrap: wrap;
 }
 
@@ -143,7 +260,8 @@
   cursor: pointer;
 }
 
-.profile-share-btn i {
+.profile-share-btn i,
+.profile-share-btn .icon {
   font-size: 14px;
 }
 
@@ -252,7 +370,8 @@
   transition: background 0.15s ease, color 0.15s ease;
 }
 
-.contacts-add-btn i {
+.contacts-add-btn i,
+.contacts-add-btn .icon {
   font-size: 18px;
 }
 
@@ -277,41 +396,59 @@ body.modal-open .profile-share-btn {
   }
 
   .profile-header {
-    flex-direction: column;
+    flex-direction: row;
     align-items: center;
-    gap: 16px;
+    gap: 14px;
   }
 
   .profile-avatar {
-    width: 88px;
-    height: 88px;
-    flex: 0 0 88px;
+    width: 72px;
+    height: 72px;
+    flex: 0 0 72px;
   }
 
   .profile-avatar .avatar-edit-btn {
     right: -4px;
     bottom: -4px;
-    width: 32px;
-    height: 32px;
+    width: 30px;
+    height: 30px;
   }
 
   .profile-main {
-    align-items: center;
-    gap: 14px;
-    text-align: center;
+    align-items: flex-end;
+    gap: 10px;
+    text-align: right;
   }
 
   .profile-nickname {
     align-items: center;
-  }
-
-  .profile-nickname button {
-    align-self: center;
+    padding: 6px 4px 6px 12px;
+    font-size: 16px;
   }
 
   .profile-stats {
-    justify-content: center;
+    justify-content: flex-end;
     gap: 10px;
+  }
+
+  .sub-badge {
+    min-width: 52px;
+    padding: 8px 10px;
+    border-radius: 12px;
+  }
+
+  .sub-badge-icon {
+    width: 30px;
+    height: 30px;
+  }
+
+  .sub-badge-icon .sub-icon {
+    width: 22px;
+    height: 22px;
+  }
+
+  .sub-badge-label {
+    font-size: 10px;
   }
 }
 .modal.avatar-modal .modal-panel {

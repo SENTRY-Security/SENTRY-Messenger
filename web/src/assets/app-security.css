@@ -1,0 +1,267 @@
+/* Security Panel — Profile tab */
+
+.security-panel {
+  margin: 12px 0 0;
+  padding: 20px;
+  border-radius: 18px;
+  background: var(--bg-surface);
+  border: 1px solid var(--line);
+}
+
+/* Header: title + grade badge */
+.sec-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.sec-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--fg);
+}
+
+.sec-panel-title .icon {
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+}
+
+.sec-grade {
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+  padding: 2px 12px;
+  border-radius: 999px;
+  letter-spacing: 1px;
+}
+
+/* Side-by-side: circle left, details right */
+.sec-body {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+/* Circular progress */
+.sec-circle-wrap {
+  position: relative;
+  width: 110px;
+  height: 110px;
+  flex: 0 0 110px;
+}
+
+.sec-circle {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.sec-circle-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+}
+
+.sec-score-num {
+  font-size: 30px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.sec-score-unit {
+  font-size: 12px;
+  color: #94a3b8;
+  font-weight: 500;
+  margin-top: 2px;
+}
+
+/* Detail rows */
+.sec-details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.sec-detail-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  border-left: 3px solid transparent;
+}
+
+.sec-detail-row.sec-good {
+  border-left-color: #22c55e;
+}
+
+.sec-detail-row.sec-warn {
+  border-left-color: #eab308;
+}
+
+.sec-detail-row.sec-bad {
+  border-left-color: #ef4444;
+}
+
+.sec-detail-icon {
+  flex: 0 0 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+}
+
+.sec-detail-icon .icon {
+  width: 18px;
+  height: 18px;
+  color: #94a3b8;
+}
+
+.sec-good .sec-detail-icon .icon { color: #22c55e; }
+.sec-warn .sec-detail-icon .icon { color: #eab308; }
+.sec-bad .sec-detail-icon .icon { color: #ef4444; }
+
+.sec-detail-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.sec-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sec-detail-label {
+  font-size: 13px;
+  color: #94a3b8;
+  white-space: nowrap;
+}
+
+.sec-detail-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  text-align: right;
+  word-break: break-all;
+}
+
+/* VPN badge — rounded pill */
+.sec-vpn-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(99, 102, 241, 0.15);
+  color: #818cf8;
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  letter-spacing: 0.3px;
+}
+
+.sec-bad .sec-vpn-badge {
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.25);
+}
+
+.sec-good .sec-vpn-badge {
+  background: rgba(34, 197, 94, 0.12);
+  color: #4ade80;
+  border-color: rgba(34, 197, 94, 0.25);
+}
+
+.sec-suggestion {
+  font-size: 11px;
+  color: #f59e0b;
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+/* Suggestions section */
+.sec-suggestions-section {
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.sec-suggestions-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 8px;
+}
+
+.sec-suggestions-list {
+  margin: 0;
+  padding: 0 0 0 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sec-suggestions-list li {
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.5;
+}
+
+.sec-suggestions-list li::marker {
+  color: #f59e0b;
+}
+
+/* All good message */
+.sec-all-good {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid var(--line);
+  color: #22c55e;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sec-all-good .icon {
+  width: 18px;
+  height: 18px;
+}
+
+/* Compact on narrower phones */
+@media (max-width: 400px) {
+  .security-panel {
+    padding: 14px;
+    border-radius: 14px;
+  }
+
+  .sec-circle-wrap {
+    width: 90px;
+    height: 90px;
+    flex: 0 0 90px;
+  }
+
+  .sec-score-num {
+    font-size: 24px;
+  }
+
+  .sec-body {
+    gap: 10px;
+  }
+}

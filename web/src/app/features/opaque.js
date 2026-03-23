@@ -3,24 +3,19 @@
 // Provides helpers to register/login against server OPAQUE endpoints.
 
 import { fetchJSON } from '../core/http.js';
-import { importWithSRI } from '/shared/utils/sri.js';
-import { CDN_SRI } from '/shared/utils/cdn-integrity.js';
 
-// Lazy-load OPAQUE client from esm.sh (works on Cloudflare Pages without bundling)
+// Lazy-load OPAQUE client (self-hosted ESM bundle)
 let _opaque = null;
-const OPAQUE_URL = 'https://esm.sh/@cloudflare/opaque-ts@0.7.5';
-const OPAQUE_MSG_URL = 'https://esm.sh/@cloudflare/opaque-ts@0.7.5/lib/src/messages.js';
 
 async function loadOpaque() {
   if (_opaque) return _opaque;
-  // Pin version that matches server library — verified via SRI
-  const mod = await importWithSRI(OPAQUE_URL, CDN_SRI[OPAQUE_URL], { useNativeImport: true });
+  const mod = await import(/* webpackIgnore: true */ '/assets/libs/opaque-ts.mjs');
   _opaque = mod;
   return _opaque;
 }
 
 async function loadOpaqueMessages() {
-  return importWithSRI(OPAQUE_MSG_URL, CDN_SRI[OPAQUE_MSG_URL], { useNativeImport: true });
+  return import(/* webpackIgnore: true */ '/assets/libs/opaque-ts-messages.mjs');
 }
 
 function u8ToB64(u8) {
@@ -116,6 +111,7 @@ export async function ensureOpaque({ password, accountDigest, serverId, clientId
       /EnvelopeRecoveryError/i.test(msg) ||
       /OpaqueLoginFinishFailed/i.test(msg)
     ) {
+      console.info('[opaque] No existing credential found — registering new OPAQUE record (this is expected for new accounts)');
       await opaqueRegister({ password, accountDigest, serverId, clientIdentity });
       return await opaqueLogin({ password, accountDigest, serverId, clientIdentity });
     }

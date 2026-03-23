@@ -80,22 +80,25 @@ async function hkdfDeriveAesKey(mkRawU8, saltU8, infoStr, usages) {
   );
 }
 
-/** 使用 MK 衍生的 AES-GCM 金鑰加密一段資料 */
+/** 使用 MK 衍生的 AES-GCM 金鑰加密一段資料（M-4 fix: info tag 作為 AAD） */
 export async function encryptWithMK(plainU8, mkRawU8, infoTag = 'media/v1') {
   const normalizedInfoTag = normalizeInfoTag(infoTag, { allowInfoTags: null, required: true });
   const salt = crypto.getRandomValues(new Uint8Array(16));   // per-object salt
   const iv = crypto.getRandomValues(new Uint8Array(12));   // 96-bit IV
   const key = await hkdfDeriveAesKey(mkRawU8, salt, normalizedInfoTag, ['encrypt']);
-  const ctBuf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plainU8);
+  const aad = new TextEncoder().encode(normalizedInfoTag);
+  const ctBuf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad }, key, plainU8);
   return { cipherBuf: new Uint8Array(ctBuf), iv, hkdfSalt: salt };
 }
 
 /** 使用 MK 衍生的 AES-GCM 金鑰解密一段資料 */
-export async function decryptWithMK(cipherU8, mkRawU8, saltU8, ivU8, infoTag = 'media/v1') {
+export async function decryptWithMK(cipherU8, mkRawU8, saltU8, ivU8, infoTag = 'media/v1', { useAad = true } = {}) {
   const normalizedInfoTag = normalizeInfoTag(infoTag, { allowInfoTags: null, required: true });
   const key = await hkdfDeriveAesKey(mkRawU8, saltU8, normalizedInfoTag, ['decrypt']);
+  const params = { name: 'AES-GCM', iv: ivU8 };
+  if (useAad) params.additionalData = new TextEncoder().encode(normalizedInfoTag);
   try {
-    const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ivU8 }, key, cipherU8);
+    const pt = await crypto.subtle.decrypt(params, key, cipherU8);
     return new Uint8Array(pt);
   } catch (err) {
     throw new Error(`decryptWithMK failed: ${err?.message || err} (len=${cipherU8?.length})`);
@@ -107,7 +110,7 @@ export async function wrapWithMK_JSON(obj, mkRawU8, infoTag = 'blob/v1') {
   const plain = new TextEncoder().encode(JSON.stringify(obj));
   const { cipherBuf, iv, hkdfSalt } = await encryptWithMK(plain, mkRawU8, normalizedInfoTag);
   return {
-    v: 1,
+    v: 2,
     aead: 'aes-256-gcm',
     info: normalizedInfoTag,
     salt_b64: b64(hkdfSalt),
@@ -121,11 +124,19 @@ export async function unwrapWithMK_JSON(envelope, mkRawU8) {
   const salt = b64u8(normalizedEnvelope.salt_b64);
   const iv = b64u8(normalizedEnvelope.iv_b64);
   const ct = b64u8(normalizedEnvelope.ct_b64);
+  // v2+ envelopes use info tag as AAD; v1 legacy envelopes do not
+  const useAad = (normalizedEnvelope.v ?? 1) >= 2;
   let plain;
   try {
-    plain = await decryptWithMK(ct, mkRawU8, salt, iv, normalizedEnvelope.info);
-  } catch (err) {
-    throw new Error(`unwrapWithMK_JSON: decrypt failed - ${err.message}`);
+    plain = await decryptWithMK(ct, mkRawU8, salt, iv, normalizedEnvelope.info, { useAad });
+  } catch (firstErr) {
+    // Fallback: retry with opposite AAD for transition-window data
+    // (encrypted post-M-4 with AAD but envelope labeled v1, or vice versa)
+    try {
+      plain = await decryptWithMK(ct, mkRawU8, salt, iv, normalizedEnvelope.info, { useAad: !useAad });
+    } catch {
+      throw new Error(`unwrapWithMK_JSON: decrypt failed - ${firstErr.message}`);
+    }
   }
   try {
     return JSON.parse(new TextDecoder().decode(plain));
@@ -165,7 +176,8 @@ export function createBulkEncryptor(mkRawU8, infoTag = 'media/v1') {
       false,
       ['encrypt']
     );
-    const ctBuf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, plainU8);
+    const aad = infoBytes; // use info tag as AAD
+    const ctBuf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad }, key, plainU8);
     return { cipherBuf: new Uint8Array(ctBuf), iv, hkdfSalt: salt };
   };
 }

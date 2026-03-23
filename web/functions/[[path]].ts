@@ -1,40 +1,469 @@
-export const onRequest: PagesFunction<{ ORIGIN_API: string }> = async ({ request, env, next }) => {
+// IP whitelist for restricted pages (debug / NTAG424 simulator)
+const DEBUG_ALLOWED_IPS = ['60.248.6.250'];
+const RESTRICTED_PATHS = ['/pages/debug.html', '/debug.html', '/debug'];
+
+// ── Ephemeral link OG meta — i18n strings ──
+// ── In-app browser interstitial — i18n strings ──
+const INAPP_I18N: Record<string, { warn: string; btnContinue: string; btnExternal: string }> = {
+  en: {
+    warn: 'You are using an in-app browser. Voice and video calls may not work properly.',
+    btnContinue: 'Continue',
+    btnExternal: 'Open in Browser',
+  },
+  'zh-Hant': {
+    warn: '您正在使用應用程式內建瀏覽器，視訊及通話功能可能無法正常使用。',
+    btnContinue: '繼續使用',
+    btnExternal: '使用瀏覽器開啟',
+  },
+  'zh-Hans': {
+    warn: '您正在使用应用内置浏览器，视频及通话功能可能无法正常使用。',
+    btnContinue: '继续使用',
+    btnExternal: '使用浏览器打开',
+  },
+  ja: {
+    warn: 'アプリ内ブラウザを使用中です。音声・ビデオ通話が正常に動作しない場合があります。',
+    btnContinue: '続ける',
+    btnExternal: 'ブラウザで開く',
+  },
+  ko: {
+    warn: '인앱 브라우저를 사용 중입니다. 음성 및 영상 통화가 제대로 작동하지 않을 수 있습니다.',
+    btnContinue: '계속 사용',
+    btnExternal: '브라우저로 열기',
+  },
+  th: {
+    warn: 'คุณกำลังใช้เบราว์เซอร์ในแอป การโทรด้วยเสียงและวิดีโอคอลอาจไม่ทำงานตามปกติ',
+    btnContinue: 'ดำเนินการต่อ',
+    btnExternal: 'เปิดในเบราว์เซอร์',
+  },
+  vi: {
+    warn: 'Bạn đang sử dụng trình duyệt trong ứng dụng. Cuộc gọi thoại và video có thể không hoạt động bình thường.',
+    btnContinue: 'Tiếp tục',
+    btnExternal: 'Mở trong trình duyệt',
+  },
+};
+
+const OG_I18N: Record<string, { title: string; desc: string; siteName: string }> = {
+  en: {
+    title: '🔒 You are invited to a secure conversation',
+    desc: 'Tap to join an end-to-end encrypted ephemeral chat on SENTRY Messenger. No account required. Messages auto-destruct after timeout.',
+    siteName: 'SENTRY Messenger',
+  },
+  'zh-Hant': {
+    title: '🔒 您收到一則安全對話邀請',
+    desc: '點擊加入 SENTRY Messenger 端對端加密臨時對話。無需帳號，訊息將於倒計時結束後自動銷毀。',
+    siteName: 'SENTRY Messenger',
+  },
+  'zh-Hans': {
+    title: '🔒 您收到一条安全对话邀请',
+    desc: '点击加入 SENTRY Messenger 端到端加密临时对话。无需账号，消息将在倒计时结束后自动销毁。',
+    siteName: 'SENTRY Messenger',
+  },
+  ja: {
+    title: '🔒 セキュアな会話に招待されています',
+    desc: 'SENTRY Messenger のエンドツーエンド暗号化一時チャットに参加しましょう。アカウント不要、タイムアウト後にメッセージは自動消去されます。',
+    siteName: 'SENTRY Messenger',
+  },
+  ko: {
+    title: '🔒 보안 대화에 초대되었습니다',
+    desc: 'SENTRY Messenger의 종단간 암호화 임시 채팅에 참여하세요. 계정 필요 없음, 타임아웃 후 메시지 자동 삭제.',
+    siteName: 'SENTRY Messenger',
+  },
+  th: {
+    title: '🔒 คุณได้รับเชิญเข้าร่วมสนทนาปลอดภัย',
+    desc: 'แตะเพื่อเข้าร่วมแชทชั่วคราวแบบเข้ารหัสต้นทางถึงปลายทางบน SENTRY Messenger ไม่ต้องสมัครสมาชิก ข้อความจะถูกลบอัตโนมัติเมื่อหมดเวลา',
+    siteName: 'SENTRY Messenger',
+  },
+  vi: {
+    title: '🔒 Bạn được mời tham gia cuộc trò chuyện bảo mật',
+    desc: 'Nhấn để tham gia trò chuyện tạm thời được mã hóa đầu cuối trên SENTRY Messenger. Không cần tài khoản, tin nhắn tự hủy sau khi hết thời gian.',
+    siteName: 'SENTRY Messenger',
+  },
+};
+
+/** Resolve OG locale: ?lang= param takes priority, then Accept-Language header */
+function resolveOgLocale(url: URL, request: Request): string {
+  // 1. Explicit ?lang= param (crawler-friendly, set when generating share links)
+  const paramLang = url.searchParams.get('lang');
+  if (paramLang && OG_I18N[paramLang]) return paramLang;
+
+  // 2. Accept-Language header
+  const accept = (request.headers.get('Accept-Language') || '').split(',')[0]?.trim()?.toLowerCase() || '';
+  if (/^zh-(hant|tw|hk)/.test(accept)) return 'zh-Hant';
+  if (/^zh/.test(accept)) return 'zh-Hans';
+  const base = accept.split('-')[0];
+  if (['ja', 'ko', 'th', 'vi'].includes(base)) return base;
+  return 'en';
+}
+
+/** Detect social-media / bot crawlers that need OG tags */
+function isCrawler(request: Request): boolean {
+  const ua = (request.headers.get('User-Agent') || '');
+  return /facebookexternalhit|twitterbot|linkedinbot|slackbot|telegrambot|whatsapp|line\/|discordbot|kakaotalk|googlebot|bingbot|applebot/i.test(ua);
+}
+
+/** Detect in-app browsers (LINE, WeChat, FB, IG, KakaoTalk, Telegram, etc.) */
+function isInAppBrowser(request: Request): boolean {
+  const ua = (request.headers.get('User-Agent') || '');
+  // LINE on iOS may use SFSafariViewController with standard Safari UA,
+  // so also check for standalone display mode hint and common in-app markers
+  return /FBAV|FBAN|Instagram|Line\/|LIFF|MicroMessenger|WeChat|KakaoTalk|NAVER|Snapchat|Twitter\/|BytedanceWebview|TikTok|GSA\/|DaumApps|ZaloTheme|Viber/i.test(ua);
+}
+
+/** Build a minimal HTML page with OG meta tags for /e/ short links */
+function ephemeralOgHtml(
+  origin: string,
+  chatUrl: string,
+  strings: { title: string; desc: string; siteName: string },
+  locale: string,
+  withRedirect = false,
+): string {
+  const ogImage = `${origin}/assets/images/og-ephemeral.png`;
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  return `<!DOCTYPE html>
+<html lang="${esc(locale)}">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>${esc(strings.title)}</title>
+<meta property="og:type" content="website"/>
+<meta property="og:title" content="${esc(strings.title)}"/>
+<meta property="og:description" content="${esc(strings.desc)}"/>
+<meta property="og:image" content="${esc(ogImage)}"/>
+<meta property="og:image:width" content="1200"/>
+<meta property="og:image:height" content="630"/>
+<meta property="og:url" content="${esc(chatUrl)}"/>
+<meta property="og:site_name" content="${esc(strings.siteName)}"/>
+<meta name="twitter:card" content="summary_large_image"/>
+<meta name="twitter:title" content="${esc(strings.title)}"/>
+<meta name="twitter:description" content="${esc(strings.desc)}"/>
+<meta name="twitter:image" content="${esc(ogImage)}"/>
+${withRedirect ? `<meta http-equiv="refresh" content="0;url=${esc(chatUrl)}"/>` : ''}
+<style>body{margin:0;background:#050a14;color:#e2e8f0;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;text-align:center}a{color:#f59e0b}</style>
+</head>
+<body>
+${withRedirect ? `<script>location.replace(${JSON.stringify(chatUrl)})</script>` : ''}
+<div><p style="font-size:18px">${esc(strings.title)}</p><p style="color:#94a3b8;font-size:14px;margin:12px 0">${esc(strings.desc)}</p><a href="${esc(chatUrl)}" style="font-size:16px">Open Chat →</a></div>
+</body>
+</html>`;
+}
+
+/** Build an in-app browser interstitial page with warning + two action buttons */
+function ephemeralInAppHtml(
+  origin: string,
+  chatUrl: string,
+  shareUrl: string,
+  ogStrings: { title: string; desc: string; siteName: string },
+  inappStrings: { warn: string; btnContinue: string; btnExternal: string },
+  locale: string,
+): string {
+  const ogImage = `${origin}/assets/images/og-ephemeral.png`;
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  return `<!DOCTYPE html>
+<html lang="${esc(locale)}">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"/>
+<title>${esc(ogStrings.title)}</title>
+<meta property="og:type" content="website"/>
+<meta property="og:title" content="${esc(ogStrings.title)}"/>
+<meta property="og:description" content="${esc(ogStrings.desc)}"/>
+<meta property="og:image" content="${esc(ogImage)}"/>
+<meta property="og:image:width" content="1200"/>
+<meta property="og:image:height" content="630"/>
+<meta property="og:url" content="${esc(shareUrl)}"/>
+<meta property="og:site_name" content="${esc(ogStrings.siteName)}"/>
+<meta name="twitter:card" content="summary_large_image"/>
+<meta name="twitter:title" content="${esc(ogStrings.title)}"/>
+<meta name="twitter:description" content="${esc(ogStrings.desc)}"/>
+<meta name="twitter:image" content="${esc(ogImage)}"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#050a14;color:#e2e8f0;font-family:system-ui,-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px}
+.card{max-width:380px;width:100%;text-align:center;display:flex;flex-direction:column;align-items:center}
+.logo-wrap{position:relative;width:72px;height:72px;margin-bottom:20px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:radial-gradient(circle at 50% 60%,rgba(239,68,68,.25) 0%,rgba(220,38,38,.10) 60%,transparent 80%)}
+.flame-ring{position:absolute;inset:-4px;border-radius:50%;background:conic-gradient(from 0deg,rgba(239,68,68,0) 0%,rgba(239,68,68,.5) 15%,rgba(249,115,22,.6) 30%,rgba(234,179,8,.4) 45%,rgba(239,68,68,0) 55%,rgba(220,38,38,.5) 70%,rgba(249,115,22,.4) 85%,rgba(239,68,68,0) 100%);animation:flame-spin 3s linear infinite;mask:radial-gradient(circle,transparent 58%,black 60%);-webkit-mask:radial-gradient(circle,transparent 58%,black 60%)}
+.logo-wrap::after{content:'';position:absolute;inset:0;border-radius:50%;box-shadow:0 0 0 2px rgba(239,68,68,.35),0 0 8px rgba(239,68,68,.15);animation:flame-border 2s ease-in-out infinite}
+.logo-icon{width:38px;height:38px;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Cpath fill='%23ef4444' d='M7.24,24.01v11.3l12,8.08-1.23-11.99s-3.03-1.09-4.77-2.18-1.78-2.87-1.78-2.87l-4.22-2.33Z'/%3E%3Cpath fill='%23ef4444' d='M40.7,21.2L15.97,14.48v-.76l8.03-2.18,16.71,4.54,.06-6.92L24.01,4.61v.02s-.02-.02-.02-.02L7.24,9.16h0s0,.01,0,.01v9.88h.09s14.75,4.02,14.75,4.02h0v11.76l1.98,1.44,1.93-1.44v-6.09l10.79-3.69-.34,1.92c-.17,.62-.59,1.56-1.67,2.24-1.75,1.1-4.77,2.18-4.77,2.18l-1.23,11.99,12-8.08v-11.3l-.04,.02-.03-2.84Z'/%3E%3C/svg%3E") no-repeat center/contain;position:relative;z-index:1;filter:drop-shadow(0 0 4px rgba(239,68,68,.6))}
+@keyframes flame-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@keyframes flame-border{0%,100%{box-shadow:0 0 0 2px rgba(239,68,68,.35),0 0 8px rgba(239,68,68,.15)}50%{box-shadow:0 0 0 2px rgba(249,115,22,.5),0 0 14px rgba(239,68,68,.3)}}
+.title{font-size:18px;font-weight:600;margin-bottom:8px}
+.desc{color:#94a3b8;font-size:14px;line-height:1.5;margin-bottom:24px}
+.warn-box{background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);border-radius:12px;padding:14px 16px;margin-bottom:28px;display:flex;align-items:flex-start;gap:10px;text-align:left}
+.warn-icon{font-size:20px;flex-shrink:0;line-height:1.4}
+.warn-text{color:#fbbf24;font-size:13px;line-height:1.5}
+.actions{display:flex;gap:10px;justify-content:center}
+.btn{padding:14px 20px;border-radius:12px;border:none;font-size:14px;font-weight:600;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:6px;transition:opacity .15s;white-space:nowrap}
+.btn:active{opacity:.8}
+.btn-continue{background:#22c55e;color:#fff}
+.btn-external{background:rgba(255,255,255,.1);color:#e2e8f0;border:1px solid rgba(255,255,255,.15)}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo-wrap"><div class="flame-ring"></div><div class="logo-icon"></div></div>
+  <div class="title">${esc(ogStrings.title.replace(/^🔒\s*/, ''))}</div>
+  <div class="desc">${esc(ogStrings.desc)}</div>
+  <div class="warn-box">
+    <span class="warn-icon">⚠️</span>
+    <span class="warn-text">${esc(inappStrings.warn)}</span>
+  </div>
+  <div class="actions">
+    <a href="${esc(chatUrl)}" class="btn btn-continue">${esc(inappStrings.btnContinue)}</a>
+    <button id="shareBtn" class="btn btn-external" type="button">${esc(inappStrings.btnExternal)}</button>
+  </div>
+</div>
+<script>
+document.getElementById('shareBtn').addEventListener('click',function(){
+  var u=${JSON.stringify(shareUrl)};
+  if(navigator.share){
+    navigator.share({url:u}).catch(function(){});
+  }else{
+    // Fallback: try to open in system browser
+    window.open(u,'_system')||window.open(u,'_blank');
+  }
+});
+</script>
+</body>
+</html>`;
+}
+
+/**
+ * Build an OG HTML page that auto-redirects for normal browsers but falls back
+ * to the in-app interstitial via client-side JS detection.
+ * This catches cases where server-side UA sniffing misses the in-app browser
+ * (e.g. LINE's SFSafariViewController sends a standard Safari UA).
+ */
+function ephemeralOgHtmlWithClientDetect(
+  origin: string,
+  chatUrl: string,
+  shareUrl: string,
+  ogStrings: { title: string; desc: string; siteName: string },
+  inappStrings: { warn: string; btnContinue: string; btnExternal: string },
+  locale: string,
+): string {
+  const ogImage = `${origin}/assets/images/og-ephemeral.png`;
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  // JSON-safe strings for the JS block
+  const jsEsc = (s: string) => JSON.stringify(s);
+  return `<!DOCTYPE html>
+<html lang="${esc(locale)}">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"/>
+<title>${esc(ogStrings.title)}</title>
+<meta property="og:type" content="website"/>
+<meta property="og:title" content="${esc(ogStrings.title)}"/>
+<meta property="og:description" content="${esc(ogStrings.desc)}"/>
+<meta property="og:image" content="${esc(ogImage)}"/>
+<meta property="og:image:width" content="1200"/>
+<meta property="og:image:height" content="630"/>
+<meta property="og:url" content="${esc(chatUrl)}"/>
+<meta property="og:site_name" content="${esc(ogStrings.siteName)}"/>
+<meta name="twitter:card" content="summary_large_image"/>
+<meta name="twitter:title" content="${esc(ogStrings.title)}"/>
+<meta name="twitter:description" content="${esc(ogStrings.desc)}"/>
+<meta name="twitter:image" content="${esc(ogImage)}"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#050a14;color:#e2e8f0;font-family:system-ui,-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px;text-align:center}
+.card{max-width:380px;width:100%;display:flex;flex-direction:column;align-items:center}
+.logo-wrap{position:relative;width:72px;height:72px;margin-bottom:20px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:radial-gradient(circle at 50% 60%,rgba(239,68,68,.25) 0%,rgba(220,38,38,.10) 60%,transparent 80%)}
+.flame-ring{position:absolute;inset:-4px;border-radius:50%;background:conic-gradient(from 0deg,rgba(239,68,68,0) 0%,rgba(239,68,68,.5) 15%,rgba(249,115,22,.6) 30%,rgba(234,179,8,.4) 45%,rgba(239,68,68,0) 55%,rgba(220,38,38,.5) 70%,rgba(249,115,22,.4) 85%,rgba(239,68,68,0) 100%);animation:flame-spin 3s linear infinite;mask:radial-gradient(circle,transparent 58%,black 60%);-webkit-mask:radial-gradient(circle,transparent 58%,black 60%)}
+.logo-wrap::after{content:'';position:absolute;inset:0;border-radius:50%;box-shadow:0 0 0 2px rgba(239,68,68,.35),0 0 8px rgba(239,68,68,.15);animation:flame-border 2s ease-in-out infinite}
+.logo-icon{width:38px;height:38px;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Cpath fill='%23ef4444' d='M7.24,24.01v11.3l12,8.08-1.23-11.99s-3.03-1.09-4.77-2.18-1.78-2.87-1.78-2.87l-4.22-2.33Z'/%3E%3Cpath fill='%23ef4444' d='M40.7,21.2L15.97,14.48v-.76l8.03-2.18,16.71,4.54,.06-6.92L24.01,4.61v.02s-.02-.02-.02-.02L7.24,9.16h0s0,.01,0,.01v9.88h.09s14.75,4.02,14.75,4.02h0v11.76l1.98,1.44,1.93-1.44v-6.09l10.79-3.69-.34,1.92c-.17,.62-.59,1.56-1.67,2.24-1.75,1.1-4.77,2.18-4.77,2.18l-1.23,11.99,12-8.08v-11.3l-.04,.02-.03-2.84Z'/%3E%3C/svg%3E") no-repeat center/contain;position:relative;z-index:1;filter:drop-shadow(0 0 4px rgba(239,68,68,.6))}
+@keyframes flame-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@keyframes flame-border{0%,100%{box-shadow:0 0 0 2px rgba(239,68,68,.35),0 0 8px rgba(239,68,68,.15)}50%{box-shadow:0 0 0 2px rgba(249,115,22,.5),0 0 14px rgba(239,68,68,.3)}}
+.title{font-size:18px;font-weight:600;margin-bottom:8px}
+.desc{color:#94a3b8;font-size:14px;line-height:1.5;margin-bottom:24px}
+a{color:#f59e0b}
+.warn-box{background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.3);border-radius:12px;padding:14px 16px;margin-bottom:28px;display:flex;align-items:flex-start;gap:10px;text-align:left}
+.warn-icon{font-size:20px;flex-shrink:0;line-height:1.4}
+.warn-text{color:#fbbf24;font-size:13px;line-height:1.5}
+.actions{display:flex;gap:10px;justify-content:center}
+.btn{padding:14px 20px;border-radius:12px;border:none;font-size:14px;font-weight:600;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:6px;transition:opacity .15s;white-space:nowrap}
+.btn:active{opacity:.8}
+.btn-continue{background:#22c55e;color:#fff}
+.btn-external{background:rgba(255,255,255,.1);color:#e2e8f0;border:1px solid rgba(255,255,255,.15)}
+#inapp-section{display:none}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo-wrap"><div class="flame-ring"></div><div class="logo-icon"></div></div>
+  <div class="title">${esc(ogStrings.title.replace(/^🔒\s*/, ''))}</div>
+  <div class="desc">${esc(ogStrings.desc)}</div>
+  <div id="inapp-section">
+    <div class="warn-box">
+      <span class="warn-icon">⚠️</span>
+      <span class="warn-text">${esc(inappStrings.warn)}</span>
+    </div>
+    <div class="actions">
+      <a href="${esc(chatUrl)}" class="btn btn-continue">${esc(inappStrings.btnContinue)}</a>
+      <button id="shareBtn" class="btn btn-external" type="button">${esc(inappStrings.btnExternal)}</button>
+    </div>
+  </div>
+  <div id="normal-link"><a href="${esc(chatUrl)}" style="font-size:16px">Open Chat →</a></div>
+</div>
+<script>
+(function(){
+  var ua=navigator.userAgent||'';
+  // Client-side in-app browser detection — broader than server-side
+  var inApp=/FBAV|FBAN|Instagram|Line\\/|LIFF|MicroMessenger|WeChat|KakaoTalk|NAVER|Snapchat|Twitter\\/|BytedanceWebview|TikTok|GSA\\/|DaumApps|ZaloTheme|Viber/i.test(ua);
+  // Also detect iOS standalone webview (no Safari in UA but has AppleWebKit)
+  if(!inApp && /iPhone|iPad|iPod/.test(ua) && /AppleWebKit/.test(ua) && !/Safari\\//.test(ua)){
+    inApp=true;
+  }
+  // Also detect Android WebView
+  if(!inApp && /Android/.test(ua) && /wv\\)/.test(ua)){
+    inApp=true;
+  }
+  if(inApp){
+    document.getElementById('inapp-section').style.display='block';
+    document.getElementById('normal-link').style.display='none';
+    var sb=document.getElementById('shareBtn');
+    if(sb){
+      sb.addEventListener('click',function(){
+        var u=${jsEsc(shareUrl)};
+        if(navigator.share){navigator.share({url:u}).catch(function(){});}
+        else{window.open(u,'_system')||window.open(u,'_blank');}
+      });
+    }
+  }else{
+    location.replace(${jsEsc(chatUrl)});
+  }
+})();
+</script>
+</body>
+</html>`;
+}
+
+export const onRequest: PagesFunction<{
+  ORIGIN_API: string;
+}> = async ({ request, env, next }) => {
   const url = new URL(request.url);
 
-  if (!url.pathname.startsWith('/api/')) {
+  // --- Debug page access control (H-3 fix: env gate + IP restriction) ---
+  // Production: ENABLE_DEBUG_PAGES is unset/false → always 404
+  // UAT: ENABLE_DEBUG_PAGES=true → still requires IP whitelist
+  const normalised = url.pathname.replace(/\/$/, '') || '/';
+  if (RESTRICTED_PATHS.some(p => normalised === p || normalised.startsWith(p + '?'))) {
+    if ((env as any).ENABLE_DEBUG_PAGES !== 'true') {
+      return new Response('404 Not Found', { status: 404, headers: { 'Content-Type': 'text/plain' } });
+    }
+    const clientIp = request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For')?.split(',')[0]?.trim() || '';
+    if (!DEBUG_ALLOWED_IPS.includes(clientIp)) {
+      return new Response('403 Forbidden', { status: 403, headers: { 'Content-Type': 'text/plain' } });
+    }
+  }
+
+  // --- Ephemeral chat link: /e/{token} → landing page with OG meta tags ---
+  const ephMatch = normalised.match(/^\/e\/([a-f0-9]{32})$/i);
+  if (ephMatch) {
+    const token = ephMatch[1];
+    const shareUrl = `${url.origin}/e/${token}`;
+    const chatUrl = `${url.origin}/pages/ephemeral.html#${token}`;
+    const locale = resolveOgLocale(url, request);
+    const ogStrings = OG_I18N[locale] || OG_I18N['en'];
+
+    if (isCrawler(request)) {
+      // Crawlers get a minimal HTML with OG tags (no redirect)
+      return new Response(ephemeralOgHtml(url.origin, chatUrl, ogStrings, locale), {
+        status: 200,
+        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+      });
+    }
+
+    if (isInAppBrowser(request)) {
+      // In-app browser: show warning interstitial with two choices
+      const inappStrings = INAPP_I18N[locale] || INAPP_I18N['en'];
+      return new Response(ephemeralInAppHtml(url.origin, chatUrl, shareUrl, ogStrings, inappStrings, locale), {
+        status: 200,
+        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+      });
+    }
+
+    // Real browsers: OG HTML with JS redirect, but also include client-side
+    // in-app browser detection for cases the server-side UA check misses
+    // (e.g. LINE SFSafariViewController on iOS uses standard Safari UA)
+    const inappStrings = INAPP_I18N[locale] || INAPP_I18N['en'];
+    return new Response(ephemeralOgHtmlWithClientDetect(url.origin, chatUrl, shareUrl, ogStrings, inappStrings, locale), {
+      status: 200,
+      headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+    });
+  }
+
+  // --- Direct ephemeral.html access: rewrite OG meta via HTMLRewriter ---
+  if (normalised === '/pages/ephemeral.html') {
+    const response = await next();
+    const locale = resolveOgLocale(url, request);
+    const ogStrings = OG_I18N[locale] || OG_I18N['en'];
+
+    return new HTMLRewriter()
+      .on('meta[property="og:title"]',        { element(e) { e.setAttribute('content', ogStrings.title); } })
+      .on('meta[property="og:description"]',   { element(e) { e.setAttribute('content', ogStrings.desc); } })
+      .on('meta[property="og:site_name"]',     { element(e) { e.setAttribute('content', ogStrings.siteName); } })
+      .on('meta[name="twitter:title"]',        { element(e) { e.setAttribute('content', ogStrings.title); } })
+      .on('meta[name="twitter:description"]',  { element(e) { e.setAttribute('content', ogStrings.desc); } })
+      .on('title',                             { element(e) { e.setInnerContent(ogStrings.title); } })
+      .transform(response);
+  }
+
+  if (!url.pathname.startsWith('/api/') && !url.pathname.startsWith('/d1/')) {
     return next();
   }
 
+  // Handle CORS preflight
+  if (request.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      headers: corsHeaders(request),
+    });
+  }
+
+  // ORIGIN_API points to the Worker, which handles all routing:
+  // - Migrated routes are handled directly by the Worker
+  // - Unmigrated routes are proxied to Node.js by the Worker (proxyToNodejs)
+  // No path rewriting needed — send /api/v1/* paths as-is.
   const originApi = env.ORIGIN_API || 'https://api.message.sentry.red';
-  if (!originApi) {
-    return json({ error: 'ConfigError', message: 'ORIGIN_API is not configured' }, 500, request);
+  const targetUrl = new URL(url.pathname + url.search, originApi);
+  console.log('[Proxy] Forwarding', { original: request.url, target: targetUrl.toString() });
+
+  // WebSocket upgrade: forward directly without cache options and return as-is.
+  // The upstream Worker (Durable Object) returns a Response with the `webSocket`
+  // property; wrapping it in a new Response() would lose that property.
+  const isUpgrade = request.headers.get('Upgrade')?.toLowerCase() === 'websocket';
+  if (isUpgrade) {
+    try {
+      const upstreamRequest = new Request(targetUrl.toString(), request);
+      return await fetch(upstreamRequest);
+    } catch (err) {
+      console.error('[Proxy] WebSocket upstream failed:', err);
+      return json({ error: 'BadGateway', message: 'WebSocket upstream unavailable' }, 502, request);
+    }
   }
 
-  const upstreamBase = new URL(originApi);
-
-  // Rewrite /api/v1/* to /d1/* for upstream Worker
-  let targetPath = url.pathname;
-  if (targetPath.startsWith('/api/v1/')) {
-    targetPath = '/d1/' + targetPath.slice('/api/v1/'.length);
-  } else if (targetPath.startsWith('/api/')) {
-    targetPath = '/d1/' + targetPath.slice('/api/'.length);
+  let response: Response;
+  try {
+    const upstreamRequest = new Request(targetUrl.toString(), request);
+    response = await fetch(upstreamRequest, { cf: { cacheTtl: 0 } });
+  } catch (err) {
+    console.error('[Proxy] upstream fetch failed:', err);
+    return json(
+      { error: 'BadGateway', message: 'Upstream service unavailable' },
+      502,
+      request,
+    );
   }
 
-  const targetUrl = new URL(targetPath + url.search, upstreamBase);
-  console.log('[Proxy] Forwarding', { original: request.url, search: url.search, target: targetUrl.toString() });
-
-  const upstreamRequest = new Request(targetUrl.toString(), request);
-  const response = await fetch(upstreamRequest, { cf: { cacheTtl: 0 } });
-
-  const upgrade = response.headers.get('Upgrade');
-  if (upgrade && upgrade.toLowerCase() === 'websocket') {
+  // Fallback: if somehow a non-upgrade request returns a WebSocket response
+  if ((response as any).webSocket || response.status === 101) {
     return response;
   }
 
   const headers = new Headers(response.headers);
   headers.set('Cache-Control', 'no-store');
-  headers.set('Access-Control-Allow-Origin', request.headers.get('Origin') || '*');
-  headers.set('Access-Control-Allow-Credentials', 'true');
+  const cors = corsHeaders(request);
+  for (const [k, v] of Object.entries(cors)) headers.set(k, v);
 
   return new Response(response.body, {
     status: response.status,
@@ -43,15 +472,29 @@ export const onRequest: PagesFunction<{ ORIGIN_API: string }> = async ({ request
 };
 
 
+// Allowed origins for CORS (M-11 fix: whitelist instead of origin reflection)
+const CORS_ALLOWED_ORIGINS = [
+  'https://message.sentry.red',
+  'https://uat-message.sentry.red',
+];
 
-
+function corsHeaders(req?: Request): Record<string, string> {
+  const origin = req?.headers.get('Origin') || '';
+  const allowed = CORS_ALLOWED_ORIGINS.includes(origin);
+  return {
+    'access-control-allow-origin': allowed ? origin : CORS_ALLOWED_ORIGINS[0],
+    'access-control-allow-credentials': 'true',
+    'access-control-allow-methods': 'GET, POST, OPTIONS',
+    'access-control-allow-headers': 'Content-Type, X-Account-Token, X-Account-Digest, X-Device-Id, Authorization',
+    'access-control-max-age': '86400',
+  };
+}
 
 function json(obj: unknown, status = 200, req?: Request) {
   const headers: Record<string, string> = {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
-    'access-control-allow-origin': req?.headers.get('Origin') || '*',
-    'access-control-allow-credentials': 'true'
+    ...corsHeaders(req),
   };
   return new Response(JSON.stringify(obj), { status, headers });
 }

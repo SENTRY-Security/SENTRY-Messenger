@@ -14,6 +14,7 @@ import {
 import { CALL_LOG_OUTCOME, describeCallLogForViewer, resolveViewerRole } from '../../../features/calls/call-log.js';
 import { sendDrCallLog } from '../../../features/dr-session.js';
 import { appendUserMessage } from '../../../features/timeline-store.js';
+import { t } from '/locales/index.js';
 
 export class CallLogController extends BaseController {
     constructor(deps) {
@@ -305,7 +306,7 @@ export class CallLogController extends BaseController {
         const viewerMessage = this.createCallLogMessage(entry, { messageDirection: isOutgoing ? 'outgoing' : 'incoming' });
 
         let localMessage = null;
-        if (isActive && !exists) {
+        if (!exists) {
             localMessage = { ...viewerMessage };
             localMessage.id = localMessage.id || entry.id;
             localMessage.messageId = localMessage.id;
@@ -321,13 +322,15 @@ export class CallLogController extends BaseController {
             localMessage.conversationId = conversationId;
 
             const appended = appendUserMessage(conversationId, localMessage);
-            console.warn('[CallLog] LOCAL message appended', { appended, messageId: localMessage.id, ts: localMessage.ts });
+            console.warn('[CallLog] LOCAL message appended', { appended, messageId: localMessage.id, ts: localMessage.ts, isActive });
 
-            this.deps.refreshTimelineState?.(conversationId);
-            this.deps.updateMessagesUI?.({ scrollToEnd: outcome === CALL_LOG_OUTCOME.SUCCESS });
+            if (isActive) {
+                this.deps.refreshTimelineState?.(conversationId);
+                this.deps.updateMessagesUI?.({ scrollToEnd: outcome === CALL_LOG_OUTCOME.SUCCESS });
+            }
             this.trackCallLogPlaceholder(peerDigest, entry.callId, localMessage);
         } else {
-            console.warn('[CallLog] LOCAL message SKIPPED', { isActive, exists });
+            console.warn('[CallLog] LOCAL message SKIPPED (exists)', { exists });
         }
 
         this.updateThreadsWithCallLogDisplay({
@@ -337,12 +340,16 @@ export class CallLogController extends BaseController {
             direction: isOutgoing ? 'outgoing' : 'incoming'
         });
 
-        if (entry.id && !this.sentCallLogIds.has(entry.id) && !exists) {
+        // Only the call initiator (outgoing) sends the DR call-log.
+        // The DR is stored in the shared conversation on the server, so on
+        // replay both sides can see it — the caller as outgoing, the callee
+        // as incoming. Sending from both sides would create duplicate entries.
+        if (isOutgoing && entry.id && !this.sentCallLogIds.has(entry.id) && !exists) {
             this.sentCallLogIds.add(entry.id);
             console.warn('[CallLog] DR SEND starting', { callId: entry.callId, peerDigest: peerDigest?.slice(-8) });
             this._sendCallLog(entry, conversationId, peerDigest, peerDeviceId, outcome, durationSeconds, normalizedReason, startedAt, endedAt, localMessage);
         } else {
-            console.warn('[CallLog] DR SEND skipped', { hasId: !!entry.id, inSet: this.sentCallLogIds.has(entry.id), exists });
+            console.warn('[CallLog] DR SEND skipped', { hasId: !!entry.id, inSet: this.sentCallLogIds.has(entry.id), exists, isOutgoing });
         }
 
         this.releaseCallLogPlaceholder(peerDigest, entry.callId);
@@ -385,7 +392,7 @@ export class CallLogController extends BaseController {
                 try {
                     this.deps.applyOutgoingSent?.(localMessage, res, localMessage.ts || entry.ts);
                 } catch (err) {
-                    this.deps.applyOutgoingFailure?.(localMessage, err, '通話記錄傳送失敗');
+                    this.deps.applyOutgoingFailure?.(localMessage, err, t('messages.callLogSendFailed'));
                 }
                 this.deps.updateMessagesStatusUI?.();
             }
@@ -397,7 +404,7 @@ export class CallLogController extends BaseController {
                 if (replacementInfo || this.deps.isCounterTooLowError?.(err)) {
                     this.deps.applyCounterTooLowReplaced?.(localMessage);
                 } else {
-                    this.deps.applyOutgoingFailure?.(localMessage, err, '通話記錄傳送失敗');
+                    this.deps.applyOutgoingFailure?.(localMessage, err, t('messages.callLogSendFailed'));
                 }
                 this.deps.updateMessagesStatusUI?.();
             }

@@ -1,0 +1,465 @@
+// Service Worker — push notification only (no offline cache)
+// Scope: / (root)
+// SW_VERSION: 2026-03-20d (media preview i18n)
+
+// ─── Push notification type taxonomy ───────────────────────────────────────
+//
+//  message-new / secure-message
+//    私人訊息 — 與聯絡人之間的 1:1 對話，可傳送文字、圖片、影片及檔案。
+//
+//  biz-conv-message
+//    群組訊息 — 多人群組中的對話訊息，可傳送文字、圖片、影片及檔案。
+//
+//  ephemeral-message
+//    臨時訊息 — 限時自動銷毀的臨時對話，可傳送文字及圖片（圖片限 5 MB）。
+//
+//  call-invite
+//    來電通知 — 來自私人對話或臨時對話的語音／視訊通話邀請（群組目前不支援通話）。
+//
+//  notify
+//    系統通知 — 好友邀請、群組成員異動（加入／移除／解散）、已讀回條、
+//    送達回條、加密會話建立、對話刪除等系統自動產生的通知。
+//
+// ───────────────────────────────────────────────────────────────────────────
+
+// i18n: push notification translations keyed by locale, then by message type
+const PUSH_I18N = {
+  en: {
+    title: 'SENTRY MESSENGER',
+    body: {
+      'message-new':       'You have a new message',
+      'secure-message':    'You have a new message',
+      'biz-conv-message':  'You have a new group message',
+      'ephemeral-message': 'You have a new ephemeral message',
+      'call-invite':       'You have an incoming call',
+      'notify':            'You have a system notification',
+      _default:            'You have a new message'
+    },
+    // E2E preview: media subtype descriptions (msgType from encrypted payload)
+    media: {
+      image: 'Sent a photo',
+      video: 'Sent a video',
+      audio: 'Sent a voice message',
+      file:  'Sent a file'
+    }
+  },
+  'zh-Hant': {
+    title: 'SENTRY MESSENGER',
+    body: {
+      'message-new':       '你有一則新訊息',
+      'secure-message':    '你有一則新訊息',
+      'biz-conv-message':  '你有一則新群組訊息',
+      'ephemeral-message': '你有一則新臨時訊息',
+      'call-invite':       '你有一通來電',
+      'notify':            '你有一則系統通知',
+      _default:            '你有一則新訊息'
+    },
+    media: {
+      image: '傳送了一張圖片',
+      video: '傳送了一段影片',
+      audio: '傳送了一則語音訊息',
+      file:  '傳送了一個檔案'
+    }
+  },
+  'zh-Hans': {
+    title: 'SENTRY MESSENGER',
+    body: {
+      'message-new':       '你有一条新消息',
+      'secure-message':    '你有一条新消息',
+      'biz-conv-message':  '你有一条新群组消息',
+      'ephemeral-message': '你有一条新临时消息',
+      'call-invite':       '你有一通来电',
+      'notify':            '你有一条系统通知',
+      _default:            '你有一条新消息'
+    },
+    media: {
+      image: '发送了一张图片',
+      video: '发送了一段视频',
+      audio: '发送了一条语音消息',
+      file:  '发送了一个文件'
+    }
+  },
+  ja: {
+    title: 'SENTRY MESSENGER',
+    body: {
+      'message-new':       '新しいメッセージがあります',
+      'secure-message':    '新しいメッセージがあります',
+      'biz-conv-message':  '新しいグループメッセージがあります',
+      'ephemeral-message': '新しい一時メッセージがあります',
+      'call-invite':       '着信があります',
+      'notify':            'システム通知があります',
+      _default:            '新しいメッセージがあります'
+    },
+    media: {
+      image: '写真を送信しました',
+      video: '動画を送信しました',
+      audio: 'ボイスメッセージを送信しました',
+      file:  'ファイルを送信しました'
+    }
+  },
+  ko: {
+    title: 'SENTRY MESSENGER',
+    body: {
+      'message-new':       '새 메시지가 있습니다',
+      'secure-message':    '새 메시지가 있습니다',
+      'biz-conv-message':  '새 그룹 메시지가 있습니다',
+      'ephemeral-message': '새 임시 메시지가 있습니다',
+      'call-invite':       '수신 전화가 있습니다',
+      'notify':            '시스템 알림이 있습니다',
+      _default:            '새 메시지가 있습니다'
+    },
+    media: {
+      image: '사진을 보냈습니다',
+      video: '동영상을 보냈습니다',
+      audio: '음성 메시지를 보냈습니다',
+      file:  '파일을 보냈습니다'
+    }
+  },
+  th: {
+    title: 'SENTRY MESSENGER',
+    body: {
+      'message-new':       'คุณมีข้อความใหม่',
+      'secure-message':    'คุณมีข้อความใหม่',
+      'biz-conv-message':  'คุณมีข้อความกลุ่มใหม่',
+      'ephemeral-message': 'คุณมีข้อความชั่วคราวใหม่',
+      'call-invite':       'คุณมีสายเรียกเข้า',
+      'notify':            'คุณมีการแจ้งเตือนระบบ',
+      _default:            'คุณมีข้อความใหม่'
+    },
+    media: {
+      image: 'ส่งรูปภาพ',
+      video: 'ส่งวิดีโอ',
+      audio: 'ส่งข้อความเสียง',
+      file:  'ส่งไฟล์'
+    }
+  },
+  vi: {
+    title: 'SENTRY MESSENGER',
+    body: {
+      'message-new':       'Bạn có tin nhắn mới',
+      'secure-message':    'Bạn có tin nhắn mới',
+      'biz-conv-message':  'Bạn có tin nhắn nhóm mới',
+      'ephemeral-message': 'Bạn có tin nhắn tạm thời mới',
+      'call-invite':       'Bạn có cuộc gọi đến',
+      'notify':            'Bạn có thông báo hệ thống',
+      _default:            'Bạn có tin nhắn mới'
+    },
+    media: {
+      image: 'Đã gửi ảnh',
+      video: 'Đã gửi video',
+      audio: 'Đã gửi tin nhắn thoại',
+      file:  'Đã gửi tệp'
+    }
+  }
+};
+
+function resolvePushLocale() {
+  const lang = (self.navigator?.language || 'en').toLowerCase();
+  // Traditional Chinese
+  if (lang === 'zh-tw' || lang === 'zh-hk' || lang === 'zh-mo' || lang.startsWith('zh-hant')) return 'zh-Hant';
+  // Simplified Chinese
+  if (lang === 'zh-cn' || lang === 'zh-sg' || lang.startsWith('zh-hans') || lang === 'zh') return 'zh-Hans';
+  const base = lang.split('-')[0];
+  return PUSH_I18N[base] ? base : 'en';
+}
+
+self.addEventListener('install', (e) => {
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', (e) => {
+  e.waitUntil(self.clients.claim());
+});
+
+// Map server payload.type to notification icon
+const PUSH_TYPE_ICONS = {
+  'message-new':        '/assets/images/push/message.png',      // 私人訊息
+  'secure-message':     '/assets/images/push/message.png',      // 私人訊息（加密）
+  'biz-conv-message':   '/assets/images/push/group-chat.png',   // 群組訊息
+  'ephemeral-message':  '/assets/images/push/ephemeral.png',    // 臨時訊息（文字＋圖片）
+  'call-invite':        '/assets/images/push/incoming-call.png', // 來電（語音／視訊）
+  'notify':             '/assets/images/push/system.png'        // 系統通知
+};
+
+// ─── E2E push preview decryption (ECDH P-256 + HKDF + AES-256-GCM) ──
+
+const HKDF_INFO = new TextEncoder().encode('sentry-push-preview-v1');
+
+function b64uDecode(str) {
+  const base64 = str.replace(/-/g, '+').replace(/_/g, '/');
+  const padding = '='.repeat((4 - base64.length % 4) % 4);
+  const raw = atob(base64 + padding);
+  const buf = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
+  return buf;
+}
+
+function getPreviewPrivateKey() {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), 3000); // 3s safety timeout
+    try {
+      const req = indexedDB.open('sentry-push-prefs', 1);
+      req.onupgradeneeded = (ev) => {
+        const db = ev.target.result;
+        if (!db.objectStoreNames.contains('prefs')) db.createObjectStore('prefs');
+      };
+      req.onsuccess = (ev) => {
+        try {
+          const db = ev.target.result;
+          const tx = db.transaction('prefs', 'readonly');
+          const get = tx.objectStore('prefs').get('preview-private-key');
+          get.onsuccess = () => { clearTimeout(timer); resolve(get.result || null); };
+          get.onerror = () => { clearTimeout(timer); resolve(null); };
+        } catch { clearTimeout(timer); resolve(null); }
+      };
+      req.onerror = () => { clearTimeout(timer); resolve(null); };
+      req.onblocked = () => { clearTimeout(timer); resolve(null); };
+    } catch { clearTimeout(timer); resolve(null); }
+  });
+}
+
+async function decryptPreview(privateKeyB64, blobB64) {
+  const privBytes = b64uDecode(privateKeyB64);
+  const blob = b64uDecode(blobB64);
+
+  const ephPubRaw = blob.slice(0, 65);
+  const iv = blob.slice(65, 77);
+  const ciphertext = blob.slice(77);
+
+  const privateKey = await crypto.subtle.importKey(
+    'pkcs8', privBytes,
+    { name: 'ECDH', namedCurve: 'P-256' },
+    false, ['deriveBits']
+  );
+  const ephPub = await crypto.subtle.importKey(
+    'raw', ephPubRaw,
+    { name: 'ECDH', namedCurve: 'P-256' },
+    false, []
+  );
+
+  const sharedBits = await crypto.subtle.deriveBits(
+    { name: 'ECDH', public: ephPub },
+    privateKey, 256
+  );
+
+  const hkdfKey = await crypto.subtle.importKey('raw', sharedBits, 'HKDF', false, ['deriveKey']);
+  const aesKey = await crypto.subtle.deriveKey(
+    { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: HKDF_INFO },
+    hkdfKey,
+    { name: 'AES-GCM', length: 256 },
+    false, ['decrypt']
+  );
+
+  const plainBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aesKey, ciphertext);
+  return new TextDecoder().decode(plainBuf);
+}
+
+// ─── Notify-type filter (in-memory + IndexedDB) ─────────────────
+// Map server payload.type → user-facing ntype category
+const PUSH_TYPE_TO_NTYPE = {
+  'message-new':        'message',
+  'secure-message':     'message',
+  'biz-conv-message':   'group-chat',
+  'ephemeral-message':  'ephemeral',
+  'call-invite':        'call',
+  'notify':             'system'
+};
+
+let _notifyTypes = null; // null = not yet loaded; object = {message:bool, ...}
+
+function getNotifyTypes() {
+  if (_notifyTypes !== null) return Promise.resolve(_notifyTypes);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { _notifyTypes = {}; resolve({}); }, 3000);
+    try {
+      const req = indexedDB.open('sentry-push-prefs', 1);
+      req.onupgradeneeded = (ev) => {
+        const db = ev.target.result;
+        if (!db.objectStoreNames.contains('prefs')) db.createObjectStore('prefs');
+      };
+      req.onsuccess = (ev) => {
+        try {
+          const db = ev.target.result;
+          const tx = db.transaction('prefs', 'readonly');
+          const get = tx.objectStore('prefs').get('notify-types');
+          get.onsuccess = () => {
+            clearTimeout(timer);
+            _notifyTypes = (get.result && typeof get.result === 'object') ? get.result : {};
+            resolve(_notifyTypes);
+          };
+          get.onerror = () => { clearTimeout(timer); resolve({}); };
+        } catch { clearTimeout(timer); resolve({}); }
+      };
+      req.onerror = () => { clearTimeout(timer); resolve({}); };
+      req.onblocked = () => { clearTimeout(timer); resolve({}); };
+    } catch { clearTimeout(timer); resolve({}); }
+  });
+}
+
+// ─── Preview preference (in-memory + IndexedDB) ─────────────────
+// In-memory cache — updated instantly via postMessage from PWA page
+let _previewPref = null; // null = not yet loaded
+
+// Listen for preference updates from PWA page (instant, no IDB delay)
+self.addEventListener('message', (ev) => {
+  if (ev.data && ev.data.type === 'set-preview-pref') {
+    _previewPref = !!ev.data.value;
+  }
+  if (ev.data && ev.data.type === 'set-notify-types' && ev.data.value && typeof ev.data.value === 'object') {
+    _notifyTypes = ev.data.value;
+  }
+});
+
+// Read preview preference: use in-memory cache if available, else fall back to IndexedDB
+function getPreviewPref() {
+  if (_previewPref !== null) return Promise.resolve(_previewPref);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { _previewPref = false; resolve(false); }, 3000); // 3s safety timeout
+    try {
+      const req = indexedDB.open('sentry-push-prefs', 1);
+      req.onupgradeneeded = (ev) => {
+        const db = ev.target.result;
+        if (!db.objectStoreNames.contains('prefs')) db.createObjectStore('prefs');
+      };
+      req.onsuccess = (ev) => {
+        try {
+          const db = ev.target.result;
+          const tx = db.transaction('prefs', 'readonly');
+          const get = tx.objectStore('prefs').get('preview');
+          get.onsuccess = () => {
+            clearTimeout(timer);
+            _previewPref = !!get.result;
+            resolve(_previewPref);
+          };
+          get.onerror = () => { clearTimeout(timer); resolve(false); };
+        } catch { clearTimeout(timer); resolve(false); }
+      };
+      req.onerror = () => { clearTimeout(timer); resolve(false); };
+      req.onblocked = () => { clearTimeout(timer); resolve(false); };
+    } catch { clearTimeout(timer); resolve(false); }
+  });
+}
+
+self.addEventListener('push', (e) => {
+  // Wrap entire handler in try/catch — if anything outside the promise throws,
+  // the browser silently swallows the push and shows nothing.
+  try {
+    let payload = {};
+    if (e.data) {
+      try { payload = e.data.json(); } catch {
+        try { payload = { body: e.data.text() }; } catch { /* empty */ }
+      }
+    }
+
+    const locale = resolvePushLocale();
+    const i18n = PUSH_I18N[locale] || PUSH_I18N.en;
+    const bodyMap = i18n.body || PUSH_I18N.en.body;
+
+    const icon = (payload.type && PUSH_TYPE_ICONS[payload.type]) || '/assets/images/push/message.png';
+    const title = payload.title || i18n.title;
+    const localizedBody = (payload.type && bodyMap[payload.type]) || bodyMap._default;
+
+    // ── Per-type filter + preview logic ──
+    //   1. Check notify-type prefs — if user disabled this category, suppress
+    //   2. Preview OFF → generic localized body (no content leak)
+    //   3. Preview ON  → decrypt encrypted_preview {title, body} if available
+    const ntype = payload.type ? PUSH_TYPE_TO_NTYPE[payload.type] : null;
+
+    const notifyPromise = getNotifyTypes().then(async (typePrefs) => {
+      // Check per-type filter: false = explicitly disabled
+      if (ntype && typePrefs[ntype] === false) {
+        console.log('[sw] push suppressed:', payload.type, '→', ntype);
+        return; // Don't show notification
+      }
+
+      const previewOn = await getPreviewPref();
+      let notifTitle = title;
+      let notifBody = localizedBody;
+
+      if (previewOn && payload.encrypted_preview) {
+        // E2E decrypt: server never sees the plaintext
+        try {
+          const privKey = await getPreviewPrivateKey();
+          if (privKey) {
+            const decrypted = await decryptPreview(privKey, payload.encrypted_preview);
+            // Parse JSON {title, body, msgType} — fallback to plain string for backward compat
+            try {
+              const parsed = JSON.parse(decrypted);
+              if (parsed.title) notifTitle = parsed.title;
+              if (parsed.body) {
+                // Text message → show actual message text
+                notifBody = parsed.body;
+              } else if (parsed.msgType) {
+                // Media/non-text → show localized media description
+                const mediaMap = i18n.media || PUSH_I18N.en.media || {};
+                const mediaDesc = mediaMap[parsed.msgType];
+                if (mediaDesc) notifBody = mediaDesc;
+              }
+            } catch {
+              // Legacy plain-string format
+              notifBody = decrypted;
+            }
+          }
+        } catch (err) {
+          console.warn('[sw] preview decrypt failed', err);
+          // Fall back to generic text on decrypt failure
+        }
+      }
+      // Preview disabled or no encrypted_preview → generic localized text
+
+      return self.registration.showNotification(notifTitle, {
+        body: notifBody,
+        icon: icon,
+        badge: '/assets/images/logo.svg',
+        tag: 'sentry-push',
+        renotify: true,
+        data: { url: '/pages/app.html' }
+      });
+    }).catch((err) => {
+      // Last-resort fallback: ensure notification always shows even if preview logic fails
+      console.error('[sw] push handler error, showing fallback notification', err);
+      return self.registration.showNotification('SENTRY MESSENGER', {
+        body: '[SW-ERR] ' + (err?.message || 'unknown error'),
+        icon: '/assets/images/push/message.png',
+        badge: '/assets/images/logo.svg',
+        tag: 'sentry-push',
+        renotify: true,
+        data: { url: '/pages/app.html' }
+      });
+    });
+
+    e.waitUntil(notifyPromise);
+  } catch (outerErr) {
+    // Catastrophic fallback — something threw before the promise chain even started
+    console.error('[sw] push outer error', outerErr);
+    e.waitUntil(
+      self.registration.showNotification('SENTRY MESSENGER', {
+        body: '[SW-OUTER-ERR] ' + (outerErr?.message || 'unknown'),
+        icon: '/assets/images/push/message.png',
+        badge: '/assets/images/logo.svg',
+        tag: 'sentry-push',
+        renotify: true,
+        data: { url: '/pages/app.html' }
+      })
+    );
+  }
+});
+
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+
+  const url = e.notification.data?.url || '/pages/app.html';
+
+  e.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
+      // Focus existing window if available
+      for (const client of clients) {
+        if (client.url.includes('/pages/app.html') && 'focus' in client) {
+          return client.focus();
+        }
+      }
+      // Otherwise open new window
+      return self.clients.openWindow(url);
+    })
+  );
+});

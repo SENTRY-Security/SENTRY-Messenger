@@ -1,6 +1,7 @@
 // Share controller (Signal-style): QR carries inviteId + owner metadata + prekey bundle.
 // Flow: generate invite -> scan -> sealed dropbox deliver -> owner consume (X3DH).
 
+import { t } from '/locales/index.js';
 import { invitesCreate, invitesDeliver, invitesConsume, invitesConfirm, invitesStatus, invitesLookupCode } from '../../../api/invites.js';
 import { prekeysPublish } from '../../../api/prekeys.js';
 import { devkeysStore } from '../../../api/devkeys.js';
@@ -9,7 +10,7 @@ import { generateQR } from '../../../lib/qr.js';
 import QrScanner from '../../../lib/vendor/qr-scanner.min.js';
 import { log, logCapped } from '../../../core/log.js';
 import { genX25519Keypair } from '../../../crypto/nacl.js';
-import { b64 } from '../../../crypto/nacl.js';
+import { b64, b64u8 } from '../../../crypto/nacl.js';
 import { x3dhInitiate, x3dhRespond } from '../../../crypto/dr.js';
 import { sealInviteEnvelope, openInviteEnvelope } from '../../../crypto/invite-dropbox.js';
 import {
@@ -110,7 +111,7 @@ export function setupShareController(options) {
     wsSend
   } = options;
 
-  if (!dom) throw new Error('分享控制器缺少必要的 DOM 參照');
+  if (!dom) throw new Error(t('share.missingDomRef'));
 
   const notifyToast = typeof showToastOption === 'function' ? showToastOption : null;
   let wsTransport = typeof wsSend === 'function' ? wsSend : null;
@@ -580,7 +581,7 @@ export function setupShareController(options) {
     if (remaining <= 0) {
       // Auto-refresh on expiry
       clearPairingCountdown();
-      setPairingStatus('配對碼已過期，正在刷新…');
+      setPairingStatus(t('share.pairingCodeExpired'));
       refreshPairingCode();
       return;
     }
@@ -594,10 +595,10 @@ export function setupShareController(options) {
     const ownerAccountDigest = currentOwnerDigest();
     const ownerDeviceId = ensureDeviceId();
     if (!ownerAccountDigest || !ownerDeviceId) {
-      setPairingStatus('尚未登入，無法產生配對碼。', { isError: true });
+      setPairingStatus(t('share.notLoggedInPairing'), { isError: true });
       return;
     }
-    setPairingStatus('正在產生配對碼…');
+    setPairingStatus(t('share.generatingPairingCode'));
     if (pairingCountdownEl) {
       pairingCountdownEl.textContent = '';
       pairingCountdownEl.classList.add('is-loading');
@@ -606,7 +607,7 @@ export function setupShareController(options) {
       await ensureOwnerPrekeys({ force: false, reason: 'pairing-code' });
       const invite = await invitesCreate({ wantPairingCode: true });
       if (!invite?.invite_id || !invite?.pairing_code || !invite?.expires_at) {
-        throw new Error('伺服器回傳內容不完整');
+        throw new Error(t('share.serverResponseIncomplete'));
       }
       pairingState.currentInvite = {
         inviteId: String(invite.invite_id),
@@ -624,7 +625,7 @@ export function setupShareController(options) {
       setPairingStatus('');
       console.log('[share-controller] pairing code generated', { pairingCode: invite.pairing_code, inviteId: invite.invite_id });
     } catch (err) {
-      setPairingStatus(err?.message || '配對碼產生失敗', { isError: true });
+      setPairingStatus(err?.message || t('share.pairingCodeFailed'), { isError: true });
       console.error('[share-controller] pairing code generation failed', err);
     }
   }
@@ -644,13 +645,13 @@ export function setupShareController(options) {
     if (pairingState.inputMode) {
       // Switch to input mode
       clearPairingDigits();
-      if (btnPairingToggle) btnPairingToggle.textContent = '顯示我的配對碼';
+      if (btnPairingToggle) btnPairingToggle.textContent = t('share.showMyPairingCode');
       if (btnPairingConfirm) btnPairingConfirm.style.display = '';
       setPairingStatus('');
     } else {
       // Switch back to show mode
       renderPairingDigits(pairingState.pairingCode || '');
-      if (btnPairingToggle) btnPairingToggle.textContent = '輸入對方配對碼';
+      if (btnPairingToggle) btnPairingToggle.textContent = t('share.enterPeerPairingCode');
       if (btnPairingConfirm) btnPairingConfirm.style.display = 'none';
       setPairingStatus('');
     }
@@ -660,18 +661,18 @@ export function setupShareController(options) {
     if (pairingState.confirming) return;
     const code = getPairingInput();
     if (!/^\d{6}$/.test(code)) {
-      setPairingStatus('請輸入完整的 6 位配對碼', { isError: true });
+      setPairingStatus(t('share.enterComplete6DigitCode'), { isError: true });
       return;
     }
     pairingState.confirming = true;
     if (btnPairingConfirm) btnPairingConfirm.disabled = true;
-    setPairingStatus('正在查詢配對碼…');
+    setPairingStatus(t('share.queryingPairingCode'));
     try {
       const data = await invitesLookupCode({ pairingCode: code });
       if (!data?.invite_id || !data?.owner_public_key_b64 || !data?.prekey_bundle) {
-        throw new Error('配對碼資料不完整');
+        throw new Error(t('share.pairingDataIncomplete'));
       }
-      setPairingStatus('配對成功，正在建立連線…', { isSuccess: true });
+      setPairingStatus(t('share.pairingSuccessConnecting'), { isSuccess: true });
       // Construct the same invite object that handleInviteScan expects
       const inviteData = {
         v: INVITE_PROTOCOL_VERSION,
@@ -688,9 +689,9 @@ export function setupShareController(options) {
       closePairingCodeModal();
       await handleInviteScan(encoded);
     } catch (err) {
-      const msg = err?.data?.message || err?.message || '配對碼查詢失敗';
+      const msg = err?.data?.message || err?.message || t('share.pairingQueryFailed');
       const isRateLimited = err?.status === 429;
-      setPairingStatus(isRateLimited ? '嘗試次數過多，請稍後再試' : msg, { isError: true });
+      setPairingStatus(isRateLimited ? t('share.tooManyAttempts') : msg, { isError: true });
       console.error('[share-controller] pairing code lookup failed', err);
     } finally {
       pairingState.confirming = false;
@@ -705,7 +706,7 @@ export function setupShareController(options) {
     pairingCodeModal.style.display = 'flex';
     pairingCodeModal.setAttribute('aria-hidden', 'false');
     lockBodyScroll();
-    if (btnPairingToggle) btnPairingToggle.textContent = '輸入對方配對碼';
+    if (btnPairingToggle) btnPairingToggle.textContent = t('share.enterPeerPairingCode');
     if (btnPairingConfirm) btnPairingConfirm.style.display = 'none';
     setPairingStatus('');
     generatePairingCode();
@@ -894,9 +895,9 @@ export function setupShareController(options) {
 
   async function ensureOwnerPrekeys({ force = false, reason = 'invite' } = {}) {
     const devicePriv = await ensureDevicePrivLoaded();
-    if (!devicePriv) throw new Error('找不到裝置金鑰，請重新登入完成初始化');
+    if (!devicePriv) throw new Error(t('share.missingDeviceKey'));
     const mk = getMkRaw();
-    if (!mk) throw new Error('尚未解鎖主金鑰，請重新登入完成初始化');
+    if (!mk) throw new Error(t('share.masterKeyLocked'));
     const opkCount = devicePriv.opk_priv_map && typeof devicePriv.opk_priv_map === 'object'
       ? Object.keys(devicePriv.opk_priv_map).length
       : 0;
@@ -906,10 +907,10 @@ export function setupShareController(options) {
     const startId = Number(devicePriv.next_opk_id || 1);
     const { opks, opkPrivMap, next } = await generateOpksFrom(startId, 24);
     if (!opks.length) {
-      throw new Error('交友金鑰生成失敗');
+      throw new Error(t('share.friendKeyGenFailed'));
     }
     const deviceId = ensureDeviceId();
-    if (!deviceId) throw new Error('找不到裝置 ID，請重新登入完成初始化');
+    if (!deviceId) throw new Error(t('share.missingDeviceId'));
     const signedPrekey = {
       id: devicePriv.spk_id || devicePriv.spkId || 1,
       pub: devicePriv.spk_pub_b64,
@@ -945,7 +946,7 @@ export function setupShareController(options) {
     if (!inviteQrBox.querySelector('.qr-placeholder')) {
       const div = document.createElement('div');
       div.className = 'qr-placeholder';
-      div.textContent = '伺服端無法解密，掃描 QR 即可安全交換';
+      div.textContent = t('share.serverCannotDecrypt');
       inviteQrBox.appendChild(div);
     }
   }
@@ -962,7 +963,7 @@ export function setupShareController(options) {
       loading = false
     } = opts || {};
     if (!inviteCountdownEl) return;
-    inviteCountdownEl.textContent = message || '伺服端無法解密，僅雙方裝置可還原內容。';
+    inviteCountdownEl.textContent = message || t('share.onlyDevicesCanDecrypt');
     inviteCountdownEl.classList.toggle('is-error', !!isError && !!message);
     inviteCountdownEl.classList.toggle('is-loading', !!loading && !!message);
   }
@@ -970,15 +971,15 @@ export function setupShareController(options) {
   function formatInviteConsumeError(err) {
     const status = Number(err?.status || err?.response?.status || 0);
     const code = err?.code || err?.data?.error || err?.data?.code || null;
-    if (status === 404 || code === 'NotFound') return '沒有可取回的邀請。';
-    if (status === 409 || code === 'AlreadyConsumed') return '邀請已取回。';
-    if (status === 410 || code === 'Expired') return '邀請已過期，無法取回。';
-    if (status === 401 || status === 403) return '需要登入才能取回邀請。';
-    if (code === 'InviteEnvelopeInvalid') return '邀請密文格式不符，請請好友重新生成。';
-    if (code === 'InvitePayloadInvalid' || code === 'InvitePayloadUnexpectedField') return '邀請內容格式不符，請請好友重新生成。';
-    if (code === 'InvitePayloadVersionMismatch' || code === 'InvitePayloadTypeMismatch') return '邀請版本不符，請請好友重新生成。';
-    if (code === 'InvitePayloadBundleInvalid') return '邀請內容缺少必要金鑰資訊。';
-    return err?.message || '取回邀請失敗。';
+    if (status === 404 || code === 'NotFound') return t('share.consumeNotFound');
+    if (status === 409 || code === 'AlreadyConsumed') return t('share.consumeAlreadyConsumed');
+    if (status === 410 || code === 'Expired') return t('share.consumeExpired');
+    if (status === 401 || status === 403) return t('share.consumeAuthRequired');
+    if (code === 'InviteEnvelopeInvalid') return t('share.consumeEnvelopeInvalid');
+    if (code === 'InvitePayloadInvalid' || code === 'InvitePayloadUnexpectedField') return t('share.consumePayloadInvalid');
+    if (code === 'InvitePayloadVersionMismatch' || code === 'InvitePayloadTypeMismatch') return t('share.consumeVersionMismatch');
+    if (code === 'InvitePayloadBundleInvalid') return t('share.consumeBundleInvalid');
+    return err?.message || t('share.consumeFailed');
   }
 
   function invitePayloadError(code, message, details) {
@@ -1182,9 +1183,9 @@ export function setupShareController(options) {
     if (!inviteCountdownEl) return;
     const status = shareState.currentInvite?.status || '';
     const prefix = status === 'DELIVERED'
-      ? '已投遞 '
+      ? t('share.delivered')
       : status === 'CONSUMED'
-        ? '已取回 '
+        ? t('share.consumed')
         : '';
     inviteCountdownEl.textContent = `${prefix}${formatCountdown(remainingSec)}`;
     inviteCountdownEl.classList.remove('is-error', 'is-loading');
@@ -1194,11 +1195,11 @@ export function setupShareController(options) {
     if (!shareState.currentInvite) return;
     shareState.currentInvite.expired = true;
     clearInviteCountdown();
-    setInviteStatus('已過期', { isError: true });
+    setInviteStatus(t('share.expired'), { isError: true });
     setInviteActionState({ hasInvite: true, expired: true, loading: false });
     if (inviteQrBox) {
       inviteQrBox.innerHTML = '';
-      inviteQrBox.textContent = '邀請已過期';
+      inviteQrBox.textContent = t('share.inviteExpired');
     }
   }
 
@@ -1301,12 +1302,12 @@ export function setupShareController(options) {
           boxId: inviteQrBox.id
         });
       } else {
-        inviteQrBox.textContent = '無法產生 QR，請稍後再試。';
+        inviteQrBox.textContent = t('share.qrGenerationFailed');
       }
     } catch (err) {
       const msg = err?.message || String(err);
       console.error('[share-controller] qrRenderError', err);
-      inviteQrBox.textContent = '生成 QR 時發生錯誤: ' + msg;
+      inviteQrBox.textContent = t('share.qrGenerationError') + msg;
     }
   }
 
@@ -1314,19 +1315,19 @@ export function setupShareController(options) {
     const ownerAccountDigest = currentOwnerDigest();
     const ownerDeviceId = ensureDeviceId();
     if (!ownerAccountDigest || !ownerDeviceId) {
-      setInviteStatus('尚未登入，無法生成交友邀請，請重新登入後再試。', { isError: true });
+      setInviteStatus(t('share.notLoggedInCannotCreate'), { isError: true });
       setInviteActionState({ hasInvite: false, expired: false, loading: false });
       return;
     }
     clearInviteCountdown();
     setInviteActionState({ hasInvite: false, expired: false, loading: true });
     try {
-      setInviteStatus('檢查交友金鑰配置…', { loading: true });
+      setInviteStatus(t('share.checkingFriendKeys'), { loading: true });
       await ensureOwnerPrekeys({ force: false, reason: 'invite' });
-      setInviteStatus('交友金鑰已就緒，正在建立邀請…', { loading: true });
+      setInviteStatus(t('share.friendKeysReadyCreating'), { loading: true });
       const invite = await invitesCreate();
       if (!invite || !invite.invite_id || !invite.expires_at || !invite.owner_public_key_b64 || !invite.prekey_bundle) {
-        throw new Error('伺服器回傳內容不完整');
+        throw new Error(t('share.serverResponseIncomplete'));
       }
       shareState.currentInvite = {
         inviteId: String(invite.invite_id),
@@ -1361,7 +1362,7 @@ export function setupShareController(options) {
       startInviteCountdown();
       setInviteActionState({ hasInvite: true, expired: false, loading: false });
     } catch (err) {
-      const msg = err?.message || '邀請建立失敗';
+      const msg = err?.message || t('share.inviteCreateFailed');
       setInviteStatus(msg, { isError: true });
       setInviteActionState({ hasInvite: false, expired: false, loading: false });
       throw err;
@@ -1432,7 +1433,7 @@ export function setupShareController(options) {
 
   async function ensureInviteScanner() {
     if (shareState.scanner) return shareState.scanner;
-    if (!inviteScanVideo) throw new Error('找不到掃描相機的影片元素');
+    if (!inviteScanVideo) throw new Error(t('share.scanVideoElementNotFound'));
     QrScanner.WORKER_PATH = '/app/lib/vendor/qr-scanner-worker.min.js';
     shareState.scanner = new QrScanner(inviteScanVideo, (res) => {
       if (!res) return;
@@ -1464,12 +1465,12 @@ export function setupShareController(options) {
   async function startInviteScanner() {
     if (!inviteScanStatus) return;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      inviteScanStatus.textContent = '此裝置不支援相機存取。';
+      inviteScanStatus.textContent = t('share.cameraNotSupported');
       console.warn('[share-controller] invite scanner not supported');
       shareState.scannerOpen = false;
       return;
     }
-    inviteScanStatus.textContent = '請將好友的交友 QR 對準框線';
+    inviteScanStatus.textContent = t('share.alignQrInFrame');
     try {
       const scanner = await ensureInviteScanner();
       await scanner.start();
@@ -1478,7 +1479,7 @@ export function setupShareController(options) {
       console.log('[share-controller] invite scanner started');
     } catch (err) {
       const msg = err?.message || String(err);
-      inviteScanStatus.textContent = `無法開啟相機：${msg}`;
+      inviteScanStatus.textContent = t('share.cameraOpenFailed') + msg;
       console.error('[share-controller]', { inviteScannerError: msg });
       shareState.scannerOpen = false;
     }
@@ -1500,7 +1501,7 @@ export function setupShareController(options) {
       try { await shareState.scanner.stop(); } catch (err) { console.error('[share-controller]', { inviteScannerStopError: err?.message || err }); }
       shareState.scannerActive = false;
     }
-    if (inviteScanStatus) inviteScanStatus.textContent = '解析中…';
+    if (inviteScanStatus) inviteScanStatus.textContent = t('share.parsing');
     let parsed = null;
     let deliverAttempted = false;
     let deliverOk = false;
@@ -1523,10 +1524,10 @@ export function setupShareController(options) {
       const expiresAt = Number(parsed.expiresAt || 0);
       const now = Math.floor(Date.now() / 1000);
       if (!Number.isFinite(expiresAt)) {
-        throw new Error('invite 缺少 expiresAt');
+        throw new Error(t('share.missingExpiresAt'));
       }
       if (expiresAt <= now) {
-        throw new Error('邀請已過期，請請好友重新生成 QR。');
+        throw new Error(t('share.inviteExpiredRegenerate'));
       }
       const ownerIdentity = normalizePeerIdentity({
         peerAccountDigest: parsed.ownerAccountDigest,
@@ -1534,16 +1535,16 @@ export function setupShareController(options) {
       });
       const ownerAccountDigest = ownerIdentity.accountDigest || parsed.ownerAccountDigest || null;
       const ownerDeviceId = ownerIdentity.deviceId || parsed.ownerDeviceId || null;
-      if (!ownerAccountDigest) throw new Error('invite 缺少 ownerAccountDigest');
-      if (!ownerDeviceId) throw new Error('invite 缺少 ownerDeviceId');
+      if (!ownerAccountDigest) throw new Error(t('share.missingOwnerDigest'));
+      if (!ownerDeviceId) throw new Error(t('share.missingOwnerDeviceId'));
       const ownerPublicKeyB64 = String(parsed.ownerPublicKeyB64 || '').trim();
-      if (!ownerPublicKeyB64) throw new Error('invite 缺少 ownerPublicKeyB64');
+      if (!ownerPublicKeyB64) throw new Error(t('share.missingOwnerPublicKey'));
       const ownerBundle = normalizeInviteOwnerBundle(parsed?.prekeyBundle || null);
-      if (!ownerBundle?.opkId || !ownerBundle?.opkPubB64) throw new Error('invite prekey bundle 缺少 opk');
+      if (!ownerBundle?.opkId || !ownerBundle?.opkPubB64) throw new Error(t('share.missingPrekeyOpk'));
       const resolvedOwnerDigest = ownerAccountDigest;
       const resolvedOwnerDeviceId = ownerDeviceId;
-      if (!resolvedOwnerDigest) throw new Error('owner digest 不完整，請重試');
-      if (!resolvedOwnerDeviceId) throw new Error('owner device 不完整，請重試');
+      if (!resolvedOwnerDigest) throw new Error(t('share.missingOwnerDigest'));
+      if (!resolvedOwnerDeviceId) throw new Error(t('share.missingOwnerDeviceId'));
 
       // Clear deletion guards so re-added contact can render in UI
       try {
@@ -1564,7 +1565,7 @@ export function setupShareController(options) {
             isContactComplete(resolvedOwnerDigest, c?.entry?.peerDeviceId || null)
           );
           const convId = completeContact?.entry?.conversationId || null;
-          if (inviteScanStatus) inviteScanStatus.textContent = '你們已經是好友了';
+          if (inviteScanStatus) inviteScanStatus.textContent = t('share.alreadyFriends');
           logCapped('inviteScanAlreadyFriends', {
             ownerDigestSuffix4: safeSuffix(resolvedOwnerDigest, 4),
             conversationId: convId ? safePrefix(convId, 8) : null
@@ -1589,16 +1590,16 @@ export function setupShareController(options) {
             ownerDigestSuffix4: safeSuffix(resolvedOwnerDigest, 4),
             cleanedCount: existingContacts.length
           }, 5);
-          if (inviteScanStatus) inviteScanStatus.textContent = '清除舊狀態，重新建立連線…';
+          if (inviteScanStatus) inviteScanStatus.textContent = t('share.clearingOldState');
         }
       }
 
       const devicePriv = await ensureDevicePrivLoaded();
-      if (!devicePriv) throw new Error('找不到裝置金鑰，請重新登入後再試');
+      if (!devicePriv) throw new Error(t('share.missingDeviceKey'));
       const guestAccountDigest = (getAccountDigest() || '').toUpperCase();
-      if (!guestAccountDigest) throw new Error('缺少 guestAccountDigest，請重新登入後再試');
+      if (!guestAccountDigest) throw new Error(t('share.missingGuestDigest'));
       const guestDeviceId = ensureDeviceId();
-      if (!guestDeviceId) throw new Error('缺少 guestDeviceId，請重新登入後再試');
+      if (!guestDeviceId) throw new Error(t('share.missingGuestDeviceId'));
       const ekPair = await genX25519Keypair();
       const guestBundle = buildGuestBundleForAccept(devicePriv, ekPair, {
         id: ownerBundle?.opkId ?? null,
@@ -1609,7 +1610,7 @@ export function setupShareController(options) {
       const normalizedNick = normalizeNickname(profileSnapshot?.nickname || '') || '';
       const hasAvatar = !!profileSnapshot?.avatar;
       if (!normalizedNick && !hasAvatar) {
-        throw new Error('請先設定暱稱或頭像後再投遞邀請。');
+        throw new Error(t('share.setProfileBeforeDeliver'));
       }
       const guestProfile = {
         nickname: normalizedNick || profileSnapshot.nickname || '',
@@ -1625,7 +1626,7 @@ export function setupShareController(options) {
         guestBundle,
         guestProfile
       };
-      if (inviteScanStatus) inviteScanStatus.textContent = '投遞中…';
+      if (inviteScanStatus) inviteScanStatus.textContent = t('share.delivering');
       const envelope = await sealInviteEnvelope({
         ownerPublicKeyB64,
         payload: contactInitPayload,
@@ -1638,8 +1639,8 @@ export function setupShareController(options) {
         ownerAccountDigest: resolvedOwnerDigest,
         ownerDeviceId: resolvedOwnerDeviceId,
         ownerBundle,
-        ekPrivB64: ekPair.priv,
-        ekPubB64: ekPair.pub,
+        ekPrivB64: b64(ekPair.secretKey),
+        ekPubB64: b64(ekPair.publicKey),
         guestBundle,
         guestProfile,
         deliverCompleted: false,
@@ -1749,7 +1750,7 @@ export function setupShareController(options) {
       removeDeliveryIntent(parsed.inviteId);
       try { document.dispatchEvent(new CustomEvent('contacts:pending-invites-updated')); } catch { }
 
-      if (inviteScanStatus) inviteScanStatus.textContent = '投遞成功，等待對方取回';
+      if (inviteScanStatus) inviteScanStatus.textContent = t('share.deliveredWaiting');
       switchTab('contacts');
       setTimeout(() => {
         if (pairingState.open) closePairingCodeModal();
@@ -1774,24 +1775,24 @@ export function setupShareController(options) {
       let friendly = msg;
       let shouldRestart = true;
       if (status === 409 || code === 'InviteAlreadyDelivered') {
-        friendly = '邀請已被使用，請請好友重新生成 QR。';
+        friendly = t('share.inviteAlreadyUsedRegenerate');
         shouldRestart = false;
       } else if (status === 410 || code === 'Expired' || msg.toLowerCase().includes('expired')) {
-        friendly = '邀請已過期，請請好友重新生成 QR。';
+        friendly = t('share.inviteExpiredRegenerateQR');
         shouldRestart = false;
       } else if (code && String(code).startsWith('InviteQr')) {
-        friendly = '無法解析邀請內容，請請好友重新生成 QR。';
+        friendly = t('share.cannotParseInvite');
         shouldRestart = false;
       } else if (status === 401 || status === 403) {
-        friendly = '需要登入才能投遞邀請，請重新登入後再試。';
+        friendly = t('share.loginRequiredToDeliver');
         shouldRestart = false;
       }
       console.error('[share-controller]', { inviteScanError: msg, status, code });
-      if (inviteScanStatus) inviteScanStatus.textContent = friendly || '無法解析邀請內容';
+      if (inviteScanStatus) inviteScanStatus.textContent = friendly || t('share.cannotParseInviteContent');
       if (shouldRestart) {
         setTimeout(() => {
           if (shareState.open && shareState.mode === 'scan') {
-            restartInviteScannerWithMessage('請再試一次，將 QR 置中掃描');
+            restartInviteScannerWithMessage(t('share.retryCenterQr'));
           }
         }, 1600);
       }
@@ -1825,7 +1826,7 @@ export function setupShareController(options) {
       throw new Error('contact-share missing required fields');
     }
     if (conversationId.startsWith('contacts-')) {
-      throw new Error('contact-share 缺少安全對話 ID，請重新同步好友後重試');
+      throw new Error(t('share.missingSecureConvId'));
     }
     if (!resolvedPeerDeviceId) {
       throw new Error('contact-share missing peerDeviceId (strict path)');
@@ -2195,7 +2196,7 @@ export function setupShareController(options) {
     if (!resolvedPeerDigest || !peerDeviceId) {
       console.warn('[share-controller]', { contactShareMissingPeerDevice: true, peerAccountDigest: resolvedPeerDigest || null, peerDeviceId });
       if (notifyToast) {
-        notifyToast('收到未知裝置的聯絡更新，請請好友重新掃碼', { variant: 'warning' });
+        notifyToast(t('share.unknownDeviceContact'), { variant: 'warning' });
       }
       return;
     }
@@ -2271,7 +2272,7 @@ export function setupShareController(options) {
           fromPayload: conversationRaw.peerDeviceId
         });
         if (notifyToast) {
-          notifyToast('對方裝置資訊不符，請請好友重新掃描 QR', { variant: 'warning' });
+          notifyToast(t('share.deviceMismatch'), { variant: 'warning' });
         }
         return;
       }
@@ -2323,7 +2324,7 @@ export function setupShareController(options) {
             appendUserMessage(conversation.conversation_id, {
               id: crypto.randomUUID(),
               msgType: 'system',
-              text: `對方的暱稱已更改為 ${newName}`,
+              text: t('share.peerNicknameChanged', { name: newName }),
               ts: Date.now() / 1000,
               direction: 'incoming',
               status: 'sent'
@@ -2333,7 +2334,7 @@ export function setupShareController(options) {
             appendUserMessage(conversation.conversation_id, {
               id: crypto.randomUUID(),
               msgType: 'system',
-              text: '對方已更改頭像',
+              text: t('share.peerAvatarChanged'),
               ts: Date.now() / 1000,
               direction: 'incoming',
               status: 'sent'
@@ -2373,6 +2374,24 @@ export function setupShareController(options) {
       } catch (err) {
         log({ contactShareProfilePersistError: err?.message || err, peerAccountDigest: resolvedPeerDigest });
       }
+
+      // [FIX] Re-uplink contact to D1 with the real nickname/avatar from the
+      // contact-share.  The scanner's initial uplink (at deliver time) only had
+      // peerAccountDigest + conversation — no profile data — because the peer's
+      // name wasn't known yet.  Without this, pull-to-refresh after a D1 restore
+      // shows the fallback "好友 XXXX" instead of the real nickname.
+      try {
+        uplinkContactToD1({
+          peerAccountDigest: resolvedPeerDigest,
+          nickname: payload.nickname || null,
+          avatar: payload.avatar || null,
+          conversation,
+          profileUpdatedAt: payload.updatedAt || payload.addedAt || Date.now()
+        }).catch(err => console.warn('[share-controller] contact-share uplink failed', err));
+      } catch (uplinkErr) {
+        console.warn('[share-controller] contact-share uplink sync error', uplinkErr);
+      }
+
       const drInitRaw = conversation.dr_init || null;
       const normalizedBundle = drInitRaw?.guest_bundle ? normalizeGuestBundle(drInitRaw.guest_bundle) : null;
       // 只有當對方裝置等於本機（owner/responder 端）才允許 responder bootstrap；guest 端禁止。
@@ -2395,14 +2414,14 @@ export function setupShareController(options) {
       const isProfileUpdateReason = reasonKey && CONTACT_UPDATE_REASONS.has(reasonKey);
       if (notifyToast) {
         if (!stored) {
-          notifyToast('已成功加入好友', { variant: 'success' });
+          notifyToast(t('share.friendAdded'), { variant: 'success' });
         } else if (isProfileUpdateReason) {
           const updateMessage =
             reasonKey === 'avatar'
-              ? '好友頭像已更新'
+              ? t('share.friendAvatarUpdated')
               : reasonKey === 'nickname'
-                ? '好友暱稱已更新'
-                : '好友資料已更新';
+                ? t('share.friendNicknameUpdated')
+                : t('share.friendInfoUpdated');
           notifyToast(updateMessage, { variant: 'success' });
         }
       }
@@ -2713,21 +2732,21 @@ export function setupShareController(options) {
       console.log('[share-controller]', `[invite-consume] start=${JSON.stringify({ inviteId: id, source })}`);
       const invite = shareState.currentInvite;
       if (invite && isInviteExpired(invite)) {
-        throw new Error('邀請已過期，無法取回');
+        throw new Error(t('share.consumeExpired'));
       }
       setInviteActionState({ hasInvite: !!invite, expired: false, loading: true });
       if (source === 'manual') {
-        setInviteStatus('取回邀請中…', { loading: true });
+        setInviteStatus(t('share.consuming'), { loading: true });
       }
       try {
         const devicePriv = await ensureDevicePrivLoaded();
         if (!devicePriv?.spk_priv_b64) {
-          throw new Error('裝置私鑰缺失，無法解密邀請');
+          throw new Error(t('share.missingPrivateKey'));
         }
         const res = await invitesConsume({ inviteId: id });
         const envelope = res?.ciphertext_envelope || null;
         if (!envelope) {
-          throw new Error('伺服器回傳內容不完整');
+          throw new Error(t('share.serverResponseIncomplete'));
         }
         let payload = null;
         try {
@@ -2775,11 +2794,15 @@ export function setupShareController(options) {
           dispatchOk: refreshDispatchOk,
           error: refreshDispatchError
         }, LOG_CAP);
+        // Contact was created via handleContactInitEvent — remove the pending
+        // invite immediately so the syncing placeholder disappears and the real
+        // contact renders on the next contacts list refresh.
+        removePendingInvite(id);
         logCapped('inviteConsumeResult', { inviteId: id, ok: true }, LOG_CAP);
         console.log('[share-controller]', `[invite-consume] result=${JSON.stringify({ inviteId: id, ok: true })}`);
         setInviteActionState({ hasInvite: !!invite, expired: false, loading: false });
         if (source === 'manual') {
-          setInviteStatus('已取回邀請', { loading: false });
+          setInviteStatus(t('share.inviteConsumed'), { loading: false });
         }
         if (pairingState.open) {
           closePairingCodeModal();
@@ -2811,7 +2834,7 @@ export function setupShareController(options) {
         setInviteActionState({ hasInvite: !!invite, expired: false, loading: false });
         // Show error to user so they know something went wrong
         if (pairingState.open) {
-          setPairingStatus(err?.message || '取回邀請失敗，請重試', { isError: true });
+          setPairingStatus(err?.message || t('share.consumeFailedRetry'), { isError: true });
         }
         throw err;
       }
@@ -2899,7 +2922,7 @@ export function setupShareController(options) {
     try {
       return await ensureDevicePrivAvailable();
     } catch (err) {
-      const msg = err?.message || '找不到裝置金鑰，請重新登入完成初始化';
+      const msg = err?.message || t('share.missingDeviceKey');
       throw new Error(msg);
     }
   }
@@ -3067,7 +3090,7 @@ export function setupShareController(options) {
     const devicePriv = await ensureDevicePrivLoaded();
     if (!devicePriv) throw new Error('replayDeliveryIntent: device key unavailable');
 
-    const ekPair = { priv: ekPrivB64, pub: ekPubB64 };
+    const ekPair = { secretKey: b64u8(ekPrivB64), publicKey: b64u8(ekPubB64) };
     const ownerBundleForInit = mapOwnerBundleToX3dh(storedOwnerBundle);
     const initiatorState = await x3dhInitiate(devicePriv, ownerBundleForInit, ekPair);
     if (!(initiatorState?.rk instanceof Uint8Array)) {

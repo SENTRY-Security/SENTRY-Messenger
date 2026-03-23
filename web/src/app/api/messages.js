@@ -256,19 +256,22 @@ export async function fetchOutgoingStatus({ conversationId, senderDeviceId, rece
   return { r, data };
 }
 
-export async function atomicSend({ conversationId, senderDeviceId, message, vault, backup } = {}) {
+export async function atomicSend({ conversationId, senderDeviceId, message, vault, backup, encrypted_previews } = {}) {
   if (!conversationId) throw new Error('conversationId required');
   const endpoint = '/api/v1/messages/atomic-send';
   const { headers, senderDeviceId: resolvedDeviceId } = buildMessageAuthHeaders({ endpoint, deviceId: senderDeviceId });
-  const payload = buildAccountPayload({
-    overrides: {
-      conversation_id: conversationId,
-      sender_device_id: resolvedDeviceId,
-      message,
-      vault,
-      backup
-    }
-  });
+  const overrides = {
+    conversation_id: conversationId,
+    sender_device_id: resolvedDeviceId,
+    message,
+    vault,
+    backup
+  };
+  // E2E push preview: forward per-device encrypted previews to server
+  if (encrypted_previews && Object.keys(encrypted_previews).length) {
+    overrides.encrypted_previews = encrypted_previews;
+  }
+  const payload = buildAccountPayload({ overrides });
   const r = await fetchWithTimeout(endpoint, jsonReq(payload, headers), 20000); // Higher timeout for transaction
   const text = await r.text();
   let data; try { data = JSON.parse(text); } catch { data = text; }
@@ -318,6 +321,24 @@ export async function listSecureMessages({ conversationId, limit = 20, cursorTs,
       source: 'listSecureMessages'
     });
   } catch { }
+  return { r, data };
+}
+
+/**
+ * Batch-fetch the latest messages for multiple conversations in a single request.
+ * Returns { conversations: { [conversationId]: { items: [...] } } }
+ */
+export async function batchLatestMessages({ conversationIds, limit = 20 } = {}) {
+  if (!Array.isArray(conversationIds) || !conversationIds.length) return { r: { ok: true }, data: { conversations: {} } };
+  const headers = buildAccountHeaders();
+  headers['Content-Type'] = 'application/json';
+  const r = await fetchWithTimeout('/api/v1/messages/batch-latest', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ conversationIds, limit })
+  }, 30000);
+  const text = await r.text();
+  let data; try { data = JSON.parse(text); } catch { data = text; }
   return { r, data };
 }
 

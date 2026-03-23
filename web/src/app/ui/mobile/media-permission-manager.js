@@ -5,6 +5,7 @@
 //   mgr.init();
 
 import { getMicrophoneConstraintProfiles, isConstraintUnsatisfiedError, isAutomationEnvironment } from './browser-detection.js';
+import { t } from '/locales/index.js';
 
 export function createMediaPermissionManager({
   overlay,
@@ -71,7 +72,7 @@ export function createMediaPermissionManager({
     if (!allowBtn || !allowLabel) return;
     allowBtn.classList.remove('state-confirm');
     allowBtn.disabled = false;
-    allowLabel.textContent = '允許麥克風';
+    allowLabel.textContent = t('mediaPermission.allowMicrophone');
   }
 
   function stopStreamTracks(stream) {
@@ -115,7 +116,7 @@ export function createMediaPermissionManager({
 
   async function requestAccess({ timeoutMs = 5000 } = {}) {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-      throw new Error('瀏覽器不支援麥克風授權，請改用最新版 Safari / Chrome。');
+      throw new Error(t('mediaPermission.browserNotSupported'));
     }
     const withTimeout = (promise, label) => Promise.race([
       promise,
@@ -133,28 +134,28 @@ export function createMediaPermissionManager({
         return { audioGranted: true, videoGranted: false };
       } catch (err) {
         lastError = err;
-        if (!isConstraintUnsatisfiedError(err)) throw err || new Error('需要授權麥克風才能繼續使用語音通話');
+        if (!isConstraintUnsatisfiedError(err)) throw err || new Error(t('mediaPermission.micRequiredForCall'));
         log({ mediaPermissionConstraintRetry: { name: err?.name, message: err?.message, nextProfile: attempt < profiles.length - 1 } });
       }
     }
-    throw lastError || new Error('需要授權麥克風才能繼續使用語音通話');
+    throw lastError || new Error(t('mediaPermission.micRequiredForCall'));
   }
 
   function describeError(err) {
-    if (!err) return '授權失敗，請在瀏覽器或系統設定中允許麥克風。';
+    if (!err) return t('mediaPermission.authFailedCheckSettings');
     const message = String(err?.message || '').toLowerCase();
     const name = (err.name || err.code || '').toLowerCase();
     if (name === 'overconstrainederror' || name === 'constraintnotsatisfiederror')
-      return '麥克風已允許，但此裝置不支援進階音訊設定，請改用預設麥克風或稍後再試。';
+      return t('mediaPermission.overconstrainedError');
     if (name === 'notallowederror' || name === 'securityerror')
-      return '你已拒絕麥克風，請到瀏覽器或系統設定重新允許後再試。';
+      return t('mediaPermission.deniedError');
     if (name === 'notfounderror' || name === 'devicesnotfounderror')
-      return '找不到可用的麥克風，請確認裝置已啟用。';
+      return t('mediaPermission.notFoundError');
     if (name === 'notreadableerror' || name === 'trackstarterror')
-      return '無法啟動麥克風，可能已被其他應用程式使用。';
+      return t('mediaPermission.notReadableError');
     if (message.includes('timeout'))
-      return '等待授權逾時，請確認瀏覽器有顯示「允許麥克風」提示或稍後再試。';
-    return err?.message || '授權失敗，請稍後再試或檢查系統權限設定。';
+      return t('mediaPermission.timeoutError');
+    return err?.message || t('mediaPermission.genericError');
   }
 
   async function warmUpAudio() {
@@ -195,14 +196,14 @@ export function createMediaPermissionManager({
     warmUpAudio().catch(() => {});
     markGranted();
     const msg = statusMessage !== undefined ? statusMessage
-      : warning ? '麥克風授權已允許，若仍無法通話請在設定中重新測試。'
-        : '麥克風已啟用，可立即使用語音通話。';
+      : warning ? t('mediaPermission.grantedWithWarning')
+        : t('mediaPermission.grantedReady');
     if (msg !== null) setStatus(msg, { success: true });
     if (allowBtn) allowBtn.disabled = false;
     setButtonState();
     systemGranted = false;
     showToast?.(
-      warning ? '麥克風已允許，但裝置暫時無法啟動；稍後可再嘗試通話。' : '已啟用麥克風，可使用語音通話',
+      warning ? t('mediaPermission.grantedDeviceWarning') : t('mediaPermission.grantedSuccess'),
       { variant: warning ? 'warning' : 'success' }
     );
     setTimeout(() => hide(), Math.max(0, Number(autoCloseDelayMs) || 0));
@@ -221,7 +222,7 @@ export function createMediaPermissionManager({
   }
 
   async function onDetected() {
-    await finalize({ warning: false, autoCloseDelayMs: 600, statusMessage: '已確認授權，稍後會自動關閉提示。' });
+    await finalize({ warning: false, autoCloseDelayMs: 600, statusMessage: t('mediaPermission.detectedAutoClose') });
     log({ mediaPermission: 'detected-by-watcher' });
   }
 
@@ -246,13 +247,13 @@ export function createMediaPermissionManager({
   async function startPrompt() {
     if (activePrompt) return;
     systemGranted = false;
-    setStatus('請在系統視窗中按下「允許」。');
+    setStatus(t('mediaPermission.promptAllow'));
     log({ mediaPermission: 'requestUserMedia:start' });
     activePrompt = requestAccess({ timeoutMs: 8000 })
       .then(async () => {
         systemGranted = true;
         try {
-          await finalize({ warning: false, autoCloseDelayMs: 600, statusMessage: '麥克風已啟用，稍後會自動關閉提示。' });
+          await finalize({ warning: false, autoCloseDelayMs: 600, statusMessage: t('mediaPermission.grantedAutoClose') });
           log({ mediaPermission: 'prompt-granted' });
         } catch (err) { log({ mediaPermissionPromptFinalizeError: err?.message || err }); }
       })
@@ -260,7 +261,7 @@ export function createMediaPermissionManager({
         log({ mediaPermissionError: err?.message || err });
         systemGranted = false;
         setStatus(describeError(err));
-        showToast?.('授權失敗，請再試一次', { variant: 'warning' });
+        showToast?.(t('mediaPermission.authFailed'), { variant: 'warning' });
         if (allowBtn) allowBtn.disabled = false;
       })
       .finally(() => { activePrompt = null; });
@@ -281,7 +282,7 @@ export function createMediaPermissionManager({
 
   async function requestAccessWithVideo({ timeoutMs = 8000 } = {}) {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-      throw new Error('瀏覽器不支援媒體授權，請改用最新版 Safari / Chrome。');
+      throw new Error(t('mediaPermission.browserNotSupported'));
     }
     const withTimeout = (promise, label) => Promise.race([
       promise,
@@ -315,7 +316,7 @@ export function createMediaPermissionManager({
           if (!isConstraintUnsatisfiedError(fallbackErr)) throw fallbackErr;
         }
       }
-      if (!stream) throw lastErr || new Error('需要授權麥克風才能繼續使用語音通話');
+      if (!stream) throw lastErr || new Error(t('mediaPermission.micRequiredForCall'));
     }
     // Permission is granted — release the hardware immediately so the
     // indicator light (iOS green/orange dot) turns off.  When a call is

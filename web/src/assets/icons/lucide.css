@@ -1,0 +1,193 @@
+/* ── Lucide Icon System ────────────────────────────────────────────
+ * Replaces Boxicons with Lucide SVG sprite icons.
+ * Usage:  <svg class="icon"><use href="#i-{name}"/></svg>
+ */
+
+/* ── Base icon ──────────────────────────────────────────────────── */
+.icon {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.125em;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex-shrink: 0;
+}
+
+/* Size variants */
+.icon-xs { width: 14px; height: 14px; }
+.icon-sm { width: 16px; height: 16px; }
+.icon-md { width: 20px; height: 20px; }
+.icon-lg { width: 24px; height: 24px; }
+.icon-xl { width: 28px; height: 28px; }
+.icon-2x { width: 32px; height: 32px; }
+
+/* ── Navbar icon base ───────────────────────────────────────────── */
+.navbtn .nav-icon {
+  width: 22px;
+  height: 22px;
+  overflow: visible;
+}
+
+/* All elements use pathLength="1" in HTML, so stroke-dasharray: 1
+   means "full path".  stroke-dashoffset: 1 hides it completely,
+   0 reveals it completely.  This makes draw animations trivial. */
+
+/* ═══════════════════════════════════════════════════════════════════
+ * NAVBAR ICON ANIMATIONS — stroke draw + stagger
+ *
+ * Each child element has pathLength="1" in the SVG markup.
+ * Animation: dashoffset 1→0 (draw) + slight scale (spring feel).
+ * Stagger via animation-delay on each element.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Contacts (circle-user): outer → face → body ───────────────── */
+.navbtn.active .nav-icon .ni-head {
+  animation: ni-draw 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.navbtn.active .nav-icon .ni-face {
+  animation: ni-draw-scale 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) 0.15s both;
+}
+.navbtn.active .nav-icon .ni-body {
+  animation: ni-draw 0.5s cubic-bezier(0.22, 1, 0.36, 1) 0.3s both;
+}
+
+/* Draw: stroke from hidden → fully drawn */
+@keyframes ni-draw {
+  0% {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+  }
+  100% {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 0;
+  }
+}
+
+/* Draw + scale: stroke draw with a pop */
+@keyframes ni-draw-scale {
+  0% {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+    transform: scale(0.5);
+    transform-origin: center;
+  }
+  70% {
+    transform: scale(1.15);
+  }
+  100% {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 0;
+    transform: scale(1);
+  }
+}
+
+/* ── Messages (message-circle): draw bubble + wobble ───────────── */
+.navbtn.active .nav-icon--msg .ni-bubble {
+  animation: ni-bubble-draw 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes ni-bubble-draw {
+  0% {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+    transform: scale(0.92);
+    transform-origin: center;
+  }
+  60% {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 0;
+    transform: scale(1.05) rotate(-4deg);
+  }
+  80% {
+    transform: scale(0.98) rotate(3deg);
+  }
+  100% {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 0;
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+/* ── Drive (cloud + lock): cloud draw → lock draw ──────────────── */
+.navbtn.active .nav-icon--drive .ni-cloud {
+  animation: ni-draw 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.navbtn.active .nav-icon--drive .ni-lock-shackle {
+  animation: ni-draw 0.4s cubic-bezier(0.22, 1, 0.36, 1) 0.3s both;
+}
+.navbtn.active .nav-icon--drive .ni-lock-body {
+  animation: ni-draw 0.35s cubic-bezier(0.22, 1, 0.36, 1) 0.4s both;
+}
+
+/* ── SAFE (globe): sphere → meridian → equator ─────────────────── */
+.navbtn.active .nav-icon--globe .ni-sphere {
+  animation: ni-draw 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.navbtn.active .nav-icon--globe .ni-meridian {
+  animation: ni-draw 0.5s cubic-bezier(0.22, 1, 0.36, 1) 0.2s both;
+}
+.navbtn.active .nav-icon--globe .ni-equator {
+  animation: ni-draw 0.4s cubic-bezier(0.22, 1, 0.36, 1) 0.35s both;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * UTILITY ANIMATIONS
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* Click/tap feedback */
+.icon-anim {
+  transition: transform 0.15s ease;
+}
+
+.icon-anim:active,
+button:active .icon-anim {
+  transform: scale(0.85);
+}
+
+/* Refresh / sync spin */
+.icon-spin {
+  animation: icon-spin 0.8s linear infinite;
+}
+
+@keyframes icon-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Bounce (for notifications, alerts) */
+.icon-bounce {
+  animation: icon-bounce 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes icon-bounce {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.25); }
+  100% { transform: scale(1); }
+}
+
+/* Shake (for errors, warnings) */
+.icon-shake {
+  animation: icon-shake 0.4s ease;
+}
+
+@keyframes icon-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-3px) rotate(-5deg); }
+  40% { transform: translateX(3px) rotate(5deg); }
+  60% { transform: translateX(-2px) rotate(-3deg); }
+  80% { transform: translateX(2px) rotate(3deg); }
+}
+
+/* Pulse (for loading, connecting) */
+.icon-pulse {
+  animation: icon-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes icon-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}

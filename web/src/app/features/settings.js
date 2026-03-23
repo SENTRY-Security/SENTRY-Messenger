@@ -5,6 +5,7 @@ import { listMessages } from '../api/messages.js';
 import { createMessage } from '../api/media.js';
 import { getMkRaw, getAccountDigest, buildAccountPayload, ensureDeviceId } from '../core/store.js';
 import { wrapWithMK_JSON, unwrapWithMK_JSON, assertEnvelopeStrict } from '../crypto/aead.js';
+import { t } from '/locales/index.js';
 
 const SETTINGS_INFO_TAG = 'settings/v1';
 const SETTINGS_ALLOWED_INFO_TAGS = new Set([SETTINGS_INFO_TAG]);
@@ -14,11 +15,15 @@ function convIdForSettings() {
   return acct ? `settings-${acct}` : null;
 }
 
+const SUPPORTED_LANGS = new Set(['en', 'zh-Hant', 'zh-Hans', 'ja', 'ko', 'th', 'vi']);
+
 export const DEFAULT_SETTINGS = Object.freeze({
-  showOnlineStatus: true,
   autoLogoutOnBackground: true,
   autoLogoutRedirectMode: 'default',
-  autoLogoutCustomUrl: ''
+  autoLogoutCustomUrl: '',
+  language: null,   // null = follow browser; 'en' | 'zh-Hant' = forced
+  pushNotifications: false,
+  sentryLab: false
 });
 
 function sanitizeLogoutUrl(input) {
@@ -39,11 +44,14 @@ function normalizeSettings(input = {}) {
   const sanitizedUrl = sanitizeLogoutUrl(input.autoLogoutCustomUrl);
   const wantsCustomRedirect = input.autoLogoutRedirectMode === 'custom';
   const hasUrl = !!sanitizedUrl;
+  const lang = typeof input.language === 'string' && SUPPORTED_LANGS.has(input.language) ? input.language : null;
   const normalized = {
-    showOnlineStatus: typeof input.showOnlineStatus === 'boolean' ? input.showOnlineStatus : DEFAULT_SETTINGS.showOnlineStatus,
     autoLogoutOnBackground: typeof input.autoLogoutOnBackground === 'boolean' ? input.autoLogoutOnBackground : DEFAULT_SETTINGS.autoLogoutOnBackground,
     autoLogoutRedirectMode: wantsCustomRedirect && hasUrl ? 'custom' : DEFAULT_SETTINGS.autoLogoutRedirectMode,
-    autoLogoutCustomUrl: sanitizedUrl || null
+    autoLogoutCustomUrl: sanitizedUrl || null,
+    language: lang,
+    pushNotifications: typeof input.pushNotifications === 'boolean' ? input.pushNotifications : DEFAULT_SETTINGS.pushNotifications,
+    sentryLab: typeof input.sentryLab === 'boolean' ? input.sentryLab : DEFAULT_SETTINGS.sentryLab
   };
   return normalized;
 }
@@ -162,7 +170,7 @@ export async function saveSettings(settings) {
   const normalized = normalizeSettings(settings);
   if (normalized.autoLogoutRedirectMode === 'custom' && !normalized.autoLogoutCustomUrl) {
     const err = new Error('autoLogoutCustomUrl required for custom redirect');
-    err.userMessage = '請輸入有效的 http/https 網址，或改選預設登出頁面。';
+    err.userMessage = t('misc.invalidUrl');
     throw err;
   }
   const now = Date.now();

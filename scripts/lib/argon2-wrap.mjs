@@ -10,6 +10,7 @@ if (!globalThis.crypto) {
 
 const TEXT_ENCODER = new TextEncoder();
 const DEFAULT_PARAMS = Object.freeze({ m: 64, t: 3, p: 1 });
+const KDF_AAD = TEXT_ENCODER.encode('sentry/mk-wrap');
 
 function toUint8Array(value) {
   if (value instanceof Uint8Array) return value;
@@ -45,9 +46,9 @@ export async function wrapMKWithPasswordArgon2id(pwd, mkRawU8, params = DEFAULT_
   const salt = crypto.webcrypto.getRandomValues(new Uint8Array(16));
   const iv = crypto.webcrypto.getRandomValues(new Uint8Array(12));
   const { kek, params: finalParams } = await deriveKEKFromPassword(pwd, salt, params);
-  const ciphertext = await crypto.webcrypto.subtle.encrypt({ name: 'AES-GCM', iv }, kek, mk);
+  const ciphertext = await crypto.webcrypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: KDF_AAD }, kek, mk);
   return {
-    v: 1,
+    v: 2,
     kdf: 'argon2id',
     m: finalParams.m,
     t: finalParams.t,
@@ -70,7 +71,10 @@ export async function unwrapMKWithPasswordArgon2id(pwd, blob) {
   const ct = b64ToBytes(blob.ct_b64);
   const { kek } = await deriveKEKFromPassword(pwd, salt, params);
   try {
-    const mkBuf = await crypto.webcrypto.subtle.decrypt({ name: 'AES-GCM', iv }, kek, ct);
+    // v2+ blobs use AAD; v1 legacy blobs do not
+    const params = { name: 'AES-GCM', iv };
+    if ((blob.v ?? 1) >= 2) params.additionalData = KDF_AAD;
+    const mkBuf = await crypto.webcrypto.subtle.decrypt(params, kek, ct);
     return new Uint8Array(mkBuf);
   } catch {
     return null;

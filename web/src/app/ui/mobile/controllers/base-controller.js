@@ -165,6 +165,9 @@ export function createControllerDeps(context) {
         updateComposerAvailability: context.updateComposerAvailability,
         applyMessagesLayout: context.applyMessagesLayout,
         setActiveConversation: context.setActiveConversation,
+        setActiveBizConv: context.setActiveBizConv,
+        openBizConvCreateModal: context.openBizConvCreateModal,
+        openBizConvInfoModal: context.openBizConvInfoModal,
         handleConversationDelete: context.handleConversationDelete,
         updateThreadAvatar: context.updateThreadAvatar,
         isLatestOutgoingForStatus: context.isLatestOutgoingForStatus,
@@ -178,6 +181,11 @@ export function createControllerDeps(context) {
         // Swipe dependencies
         setupSwipe: context.setupSwipe,
         closeSwipe: context.closeSwipe,
-        closeOpenSwipe: context.closeOpenSwipe
+        closeOpenSwipe: context.closeOpenSwipe,
+        // WS send (used by ephemeral E2EE key-exchange ack)
+        wsSend: context.wsSend,
+        // Misc
+        ensureDeviceId: context.ensureDeviceId,
+        scrollMessagesToBottomSoon: context.scrollMessagesToBottomSoon
     };
 }

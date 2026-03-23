@@ -13,9 +13,10 @@
 //   phase='load'   → WebCodecs capability check (instant, no WASM to load)
 //   phase='encode' → streaming transcode progress (0-100%)
 
+import { t } from '/locales/index.js';
 import { mergeInitSegments } from './mp4-remuxer.js';
 
-const MP4BOX_CDN_URL = 'https://esm.sh/mp4box@0.5.3';
+const MP4BOX_CDN_URL = '/assets/libs/mp4box.mjs';
 
 let _mp4boxModule = null;
 
@@ -199,36 +200,45 @@ function concatU8(arrays) {
 //   moof { mfhd, traf { tfhd, tfdt, trun } } + mdat { data }
 
 /**
- * Build a single-sample fMP4 fragment (moof + mdat).
+ * Build a multi-sample fMP4 fragment (moof + mdat).
+ *
+ * Packs N samples into a single moof with one trun, producing a standard
+ * fMP4 segment that iOS Safari / ManagedMediaSource handles correctly.
+ *
+ * Previously each sample got its own moof+mdat (buildMoofMdat called per
+ * frame), creating ~100 tiny moofs per segment. iOS Safari's MSE didn't
+ * always merge these into contiguous buffer ranges, causing the seek bar
+ * to show scattered/fragmented buffering indicators.
  *
  * @param {number} trackId - Track ID
  * @param {number} sequenceNumber - Moof sequence number (1-based, incrementing)
- * @param {number} baseDecodeTime - Base media decode time (in track timescale)
- * @param {number} duration - Sample duration (in track timescale)
- * @param {Uint8Array} sampleData - Encoded sample data
- * @param {boolean} isSync - Whether this is a sync (key) sample
- * @param {number} ctsOffset - CTS minus DTS (composition time offset)
- * @returns {Uint8Array} Binary fMP4 fragment
+ * @param {{ data: Uint8Array, duration: number, isSync: boolean, ctsOffset: number }[]} samples
+ * @param {number} baseDecodeTime - Base media decode time of the first sample (in track timescale)
+ * @returns {Uint8Array} Binary fMP4 fragment, or null if samples is empty
  */
-function buildMoofMdat(trackId, sequenceNumber, baseDecodeTime, duration, sampleData, isSync, ctsOffset) {
-  const dataLen = sampleData.byteLength;
+function buildMultiSampleMoofMdat(trackId, sequenceNumber, samples, baseDecodeTime) {
+  if (!samples || samples.length === 0) return null;
 
-  // Fixed box sizes (all version=0):
+  const sampleCount = samples.length;
+  let totalDataLen = 0;
+  for (let i = 0; i < sampleCount; i++) totalDataLen += samples[i].data.byteLength;
+
+  // Box sizes (all version=0):
   //   mfhd: 8(header) + 4(fullbox) + 4(seq_num) = 16
   //   tfhd: 8 + 4 + 4(track_id) = 16 (flag=0x020000 default-base-is-moof)
   //   tfdt: 8 + 4 + 4(baseMediaDecodeTime) = 16 (version 0, 32-bit time)
-  //   trun: 8 + 4 + 4(count) + 4(data_offset) + 16(1 sample * 4 fields) = 36
+  //   trun: 8 + 4 + 4(count) + 4(data_offset) + sampleCount * 16
   //         flags = data_offset(0x1) | duration(0x100) | size(0x200) | flags(0x400) | cts(0x800)
-  //   traf: 8 + 16 + 16 + 36 = 76
-  //   moof: 8 + 16 + 76 = 100
-  //   mdat: 8 + dataLen
+  //   traf: 8 + 16 + 16 + trun_size
+  //   moof: 8 + 16 + traf_size
+  //   mdat: 8 + totalDataLen
   const MFHD_SIZE = 16;
   const TFHD_SIZE = 16;
   const TFDT_SIZE = 16;
-  const TRUN_SIZE = 36;
+  const TRUN_SIZE = 20 + sampleCount * 16;
   const TRAF_SIZE = 8 + TFHD_SIZE + TFDT_SIZE + TRUN_SIZE;
   const MOOF_SIZE = 8 + MFHD_SIZE + TRAF_SIZE;
-  const MDAT_SIZE = 8 + dataLen;
+  const MDAT_SIZE = 8 + totalDataLen;
 
   const total = MOOF_SIZE + MDAT_SIZE;
   const buf = new ArrayBuffer(total);
@@ -255,22 +265,36 @@ function buildMoofMdat(trackId, sequenceNumber, baseDecodeTime, duration, sample
 
   // tfdt (version 0 = 32-bit baseMediaDecodeTime)
   wFullBoxHdr(TFDT_SIZE, 'tfdt', 0);
-  w32(baseDecodeTime >>> 0); // ensure unsigned 32-bit
+  w32(baseDecodeTime >>> 0);
 
-  // trun (flags: data_offset | duration | size | flags | cts_offset = 0xF01)
-  wFullBoxHdr(TRUN_SIZE, 'trun', 0xF01);
-  w32(1);                      // sample_count
+  // trun version 1: signed sample_composition_time_offset (required for
+  // B-frame videos where ctsOffset = PTS − DTS can be negative).
+  // flags: data_offset(0x1) | duration(0x100) | size(0x200) | flags(0x400) | cts(0x800) = 0xF01
+  w32(TRUN_SIZE); wStr('trun');
+  dv.setUint8(p, 1); p++;              // version = 1 (signed cts)
+  dv.setUint8(p, 0); p++;              // flags byte 0
+  dv.setUint8(p, 0x0F); p++;           // flags byte 1
+  dv.setUint8(p, 0x01); p++;           // flags byte 2 → 0x000F01
+  w32(sampleCount);
   dv.setInt32(p, MOOF_SIZE + 8); p += 4; // data_offset = moof_size + mdat_header(8)
-  w32(duration);               // sample_duration
-  w32(dataLen);                // sample_size
-  w32(isSync ? (1 << 25) : (1 << 16)); // sample_flags
-  w32(ctsOffset >>> 0);        // sample_composition_time_offset (unsigned)
+  for (let i = 0; i < sampleCount; i++) {
+    const s = samples[i];
+    w32(s.duration);
+    w32(s.data.byteLength);
+    w32(s.isSync ? (1 << 25) : (1 << 16));
+    dv.setInt32(p, s.ctsOffset); p += 4;  // SIGNED for version 1
+  }
 
   // ── mdat ──
   w32(MDAT_SIZE); wStr('mdat');
-  new Uint8Array(buf, p).set(sampleData);
+  const out = new Uint8Array(buf);
+  let dp = p;
+  for (let i = 0; i < sampleCount; i++) {
+    out.set(samples[i].data, dp);
+    dp += samples[i].data.byteLength;
+  }
 
-  return new Uint8Array(buf);
+  return out;
 }
 
 // ─── Codec description extraction from mp4box internals ───
@@ -461,7 +485,7 @@ export async function transcodeToFmp4(file, { onProgress, encoderConstraints, on
   const probeResult = await probeFileTracks(file, mp4boxMod);
 
   if (probeResult.tracks.length === 0) {
-    throw new Error('影片不包含可播放的音視訊軌道');
+    throw new Error(t('video.videoNoPlayableTracks'));
   }
 
   // 3. Check if transcoding is actually needed — BEFORE extracting samples
@@ -511,7 +535,7 @@ export async function probeTranscode(file, encoderConstraints) {
   const mp4boxMod = await loadMp4box();
   const probeResult = await probeFileTracks(file, mp4boxMod);
   if (probeResult.tracks.length === 0) {
-    throw new Error('影片不包含可播放的音視訊軌道');
+    throw new Error(t('video.videoNoPlayableTracks'));
   }
 
   const codecNeeds = needsTranscode(probeResult.tracks);
@@ -542,7 +566,7 @@ function probeFileTracks(file, mp4boxMod) {
     let fileDuration = 0;
 
     mp4boxFile.onError = (err) => {
-      reject(new Error('影片解析失敗：' + (err?.message || err)));
+      reject(new Error(t('video.videoParsingFailed') + (err?.message || err)));
     };
 
     mp4boxFile.onReady = (info) => {
@@ -598,7 +622,7 @@ function probeFileTracks(file, mp4boxMod) {
         mp4boxFile.flush();
       }
     } catch (err) {
-      reject(new Error('無法解析此影片：' + (err?.message || err)));
+      reject(new Error(t('video.cannotParseVideoFile') + (err?.message || err)));
       return;
     }
 
@@ -630,8 +654,8 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
 
   // ── Streaming mode: manual segment builder state ──
   // When onSegment is provided, encoder outputs are turned into fMP4 segments
-  // using our manual buildMoofMdat() function (bypasses mp4box.js's broken
-  // fragmentation path). mp4box.js is still used for addTrack and init segments.
+  // using our manual buildMultiSampleMoofMdat() function (bypasses mp4box.js's
+  // broken fragmentation path). mp4box.js is still used for addTrack and init segments.
   let incMuxer = null;
   let incMuxVideoTrackId = null;
   let incMuxAudioTrackId = null;
@@ -648,9 +672,12 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
 
   // Manual segment builder state
   let segSequenceNum = 0;          // moof sequence number (incrementing)
-  let videoFirstDts = null;        // first video DTS (for baseMediaDecodeTime)
-  let audioFirstDts = null;        // first audio DTS
-  const pendingFragments = [];     // accumulated moof+mdat fragments
+  let videoFirstPts = null;        // first video PTS (for PTS normalization)
+  let audioFirstPts = null;        // first audio PTS
+  let videoRunningDts = 0;         // monotonically increasing video DTS
+  let audioRunningDts = 0;         // monotonically increasing audio DTS
+  const pendingVideoSamples = [];  // accumulated video samples for multi-sample moof
+  const pendingAudioSamples = [];  // accumulated audio samples for multi-sample moof
   let samplesInPendingSegment = 0;
   const SAMPLES_PER_SEGMENT = 100;
 
@@ -742,7 +769,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
           setFatalError(err);
         }
       },
-      error: (err) => setFatalError(new Error('視訊編碼失敗：' + (err?.message || err))),
+      error: (err) => setFatalError(new Error(t('video.videoEncodeFailed') + (err?.message || err))),
     });
     videoEncoder.configure(config);
   }
@@ -808,7 +835,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
           setFatalError(err);
         }
       },
-      error: (err) => setFatalError(new Error('視訊解碼失敗：' + (err?.message || err))),
+      error: (err) => setFatalError(new Error(t('video.videoDecodeFailed') + (err?.message || err))),
     });
 
     const decoderConfig = {
@@ -868,7 +895,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
           setFatalError(err);
         }
       },
-      error: (err) => setFatalError(new Error('音訊編碼失敗：' + (err?.message || err))),
+      error: (err) => setFatalError(new Error(t('video.audioEncodeFailed') + (err?.message || err))),
     });
     audioEncoder.configure(aEncConfig);
 
@@ -882,7 +909,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
           setFatalError(err);
         }
       },
-      error: (err) => setFatalError(new Error('音訊解碼失敗：' + (err?.message || err))),
+      error: (err) => setFatalError(new Error(t('video.audioDecodeFailed') + (err?.message || err))),
     });
 
     const decoderConfig = {
@@ -1051,7 +1078,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
       // Generate init segment using mp4box.js (this works correctly).
       // setSegmentOptions + initializeSegmentation builds the ftyp+moov.
       // We do NOT call start() — media segments are built manually via
-      // buildMoofMdat() to bypass mp4box.js's broken DataStream write path.
+      // buildMultiSampleMoofMdat() to bypass mp4box.js's broken DataStream write path.
       incMuxer.setSegmentOptions(incMuxVideoTrackId, null, { nbSamples: 100 });
       if (incMuxAudioTrackId != null) {
         incMuxer.setSegmentOptions(incMuxAudioTrackId, null, { nbSamples: 100 });
@@ -1089,29 +1116,65 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
     }
   }
 
-  /** Flush accumulated fragments into a single ready segment. */
+  /**
+   * Flush accumulated per-track samples into multi-sample moof+mdat segments.
+   * Produces at most 2 moofs per flush (one video, one audio) instead of
+   * N per-sample moofs. This prevents iOS Safari from reporting fragmented
+   * buffer ranges in video.buffered.
+   *
+   * Samples are kept in encoder output order (= DTS / decode order).
+   * DO NOT sort by PTS — that would reorder encoded data and break decode
+   * dependencies (B-frames must be decoded after their reference P-frames).
+   * Instead, each sample carries a ctsOffset (= PTS − DTS) so the browser
+   * knows when to DISPLAY vs when to DECODE each frame.
+   */
   function flushPendingFragments() {
-    if (pendingFragments.length === 0) return;
+    if (pendingVideoSamples.length === 0 && pendingAudioSamples.length === 0) return;
     const ep = totalSamples > 0 ? Math.min(1, processedSamples / totalSamples) : 0;
-    const data = concatU8(pendingFragments);
-    readySegments.push({ trackIndex: 0, data, encodeProgress: ep });
-    pendingFragments.length = 0;
+    const fragments = [];
+
+    if (pendingVideoSamples.length > 0) {
+      const baseDts = pendingVideoSamples[0].baseDecodeTime;
+      const frag = buildMultiSampleMoofMdat(incMuxVideoTrackId, ++segSequenceNum, pendingVideoSamples, baseDts);
+      if (frag) fragments.push(frag);
+      pendingVideoSamples.length = 0;
+    }
+
+    if (pendingAudioSamples.length > 0) {
+      const baseDts = pendingAudioSamples[0].baseDecodeTime;
+      const frag = buildMultiSampleMoofMdat(incMuxAudioTrackId, ++segSequenceNum, pendingAudioSamples, baseDts);
+      if (frag) fragments.push(frag);
+      pendingAudioSamples.length = 0;
+    }
+
+    if (fragments.length > 0) {
+      const data = concatU8(fragments);
+      readySegments.push({ trackIndex: 0, data, encodeProgress: ep });
+    }
     samplesInPendingSegment = 0;
   }
 
   function feedVideoToIncMuxer(frame) {
     if (!frame?.data) return;
     const sampleData = frame.data instanceof Uint8Array ? frame.data : new Uint8Array(frame.data);
-    const ts = Math.round((frame.timestamp / 1_000_000) * 90000);
-    const dur = Math.round((frame.duration / 1_000_000) * 90000);
-    if (videoFirstDts === null) videoFirstDts = ts;
-    const baseDecodeTime = ts - videoFirstDts;
+    const pts = Math.round((frame.timestamp / 1_000_000) * 90000);
+    const dur = Math.round((frame.duration / 1_000_000) * 90000) || 3000;
+    if (videoFirstPts === null) videoFirstPts = pts;
+    const normalizedPts = pts - videoFirstPts;
 
-    const frag = buildMoofMdat(
-      incMuxVideoTrackId, ++segSequenceNum, baseDecodeTime,
-      dur || 3000, sampleData, !!frame.key, 0
-    );
-    pendingFragments.push(frag);
+    // DTS is monotonically increasing in encoder output order.
+    // Encoder output order IS decode order — the browser must decode
+    // frames in this order (P-frames before their dependent B-frames).
+    // ctsOffset tells the browser when to DISPLAY each frame (PTS)
+    // relative to when it's decoded (DTS).
+    const dts = videoRunningDts;
+    videoRunningDts += dur;
+    const ctsOffset = normalizedPts - dts;
+
+    pendingVideoSamples.push({
+      data: sampleData, baseDecodeTime: dts,
+      duration: dur, isSync: !!frame.key, ctsOffset
+    });
     samplesInPendingSegment++;
     if (samplesInPendingSegment >= SAMPLES_PER_SEGMENT) {
       flushPendingFragments();
@@ -1122,16 +1185,19 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
     if (!frame?.data) return;
     const sampleData = frame.data instanceof Uint8Array ? frame.data : new Uint8Array(frame.data);
     const audioTimescale = audioTrack?.audio?.sample_rate || 44100;
-    const ts = Math.round((frame.timestamp / 1_000_000) * audioTimescale);
-    const dur = Math.round((frame.duration / 1_000_000) * audioTimescale);
-    if (audioFirstDts === null) audioFirstDts = ts;
-    const baseDecodeTime = ts - audioFirstDts;
+    const pts = Math.round((frame.timestamp / 1_000_000) * audioTimescale);
+    const dur = Math.round((frame.duration / 1_000_000) * audioTimescale) || 1024;
+    if (audioFirstPts === null) audioFirstPts = pts;
+    const normalizedPts = pts - audioFirstPts;
 
-    const frag = buildMoofMdat(
-      incMuxAudioTrackId, ++segSequenceNum, baseDecodeTime,
-      dur || 1024, sampleData, frame.key !== false, 0
-    );
-    pendingFragments.push(frag);
+    const dts = audioRunningDts;
+    audioRunningDts += dur;
+    const ctsOffset = normalizedPts - dts;
+
+    pendingAudioSamples.push({
+      data: sampleData, baseDecodeTime: dts,
+      duration: dur, isSync: frame.key !== false, ctsOffset
+    });
     samplesInPendingSegment++;
     if (samplesInPendingSegment >= SAMPLES_PER_SEGMENT) {
       flushPendingFragments();
@@ -1158,7 +1224,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
   let readyResolve, readyReject;
   const readyPromise = new Promise((res, rej) => { readyResolve = res; readyReject = rej; });
 
-  demuxer.onError = (err) => readyReject(new Error('影片解析失敗：' + (err?.message || err)));
+  demuxer.onError = (err) => readyReject(new Error(t('video.videoParsingFailed') + (err?.message || err)));
 
   demuxer.onReady = async (info) => {
     try {
@@ -1182,7 +1248,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
       }
 
       if (!videoTrack) {
-        readyReject(new Error('影片不包含視訊軌道'));
+        readyReject(new Error(t('video.videoNoVideoTrack')));
         return;
       }
 
@@ -1190,7 +1256,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
       vEncConfig = videoEncoderConfig(videoTrack, encoderConstraints);
       const vSupport = await VideoEncoder.isConfigSupported(vEncConfig);
       if (!vSupport.supported) {
-        readyReject(new Error('此裝置不支援 H.264 編碼'));
+        readyReject(new Error(t('video.h264NotSupported')));
         return;
       }
 
@@ -1274,7 +1340,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
     const chunk = await file.slice(readOffset, end).arrayBuffer();
     chunk.fileStart = readOffset;
     try { demuxer.appendBuffer(chunk); } catch (e) {
-      throw fatalError || new Error('影片解析失敗（記憶體不足？）：' + (e?.message || e));
+      throw fatalError || new Error(t('video.videoParsingFailedMemory') + (e?.message || e));
     }
     readOffset = end;
     if (videoTrack) { await readyPromise; ready = true; break; }
@@ -1290,7 +1356,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
       const chunk = await file.slice(endOffset, end).arrayBuffer();
       chunk.fileStart = endOffset;
       try { demuxer.appendBuffer(chunk); } catch (e) {
-        throw fatalError || new Error('影片解析失敗（記憶體不足？）：' + (e?.message || e));
+        throw fatalError || new Error(t('video.videoParsingFailedMemory') + (e?.message || e));
       }
       endOffset = end;
       if (videoTrack) { await readyPromise; ready = true; break; }
@@ -1323,7 +1389,7 @@ async function streamingTranscode(file, mp4boxMod, onProgress, encoderConstraint
     const chunk = await file.slice(readOffset, end).arrayBuffer();
     chunk.fileStart = readOffset;
     try { demuxer.appendBuffer(chunk); } catch (e) {
-      throw fatalError || new Error('影片解析失敗（記憶體不足？）：' + (e?.message || e));
+      throw fatalError || new Error(t('video.videoParsingFailedMemory') + (e?.message || e));
     }
     readOffset = end;
     await processPendingSamples();

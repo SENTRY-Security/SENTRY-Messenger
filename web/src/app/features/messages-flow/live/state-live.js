@@ -253,6 +253,15 @@ async function ensureLiveReady(params = {}, adapters) {
 
   if (skipDrCheck) {
     const guestBundle = header?.dr_init?.guest_bundle || null;
+    if (DEBUG.drVerbose) {
+      console.warn('[dr-live:skip-dr-check]', {
+        msgType: msgTypeHint,
+        hasGuestBundle: !!guestBundle,
+        readyPeerAccountDigest: readyPeerAccountDigest ? readyPeerAccountDigest.slice(0, 8) : null,
+        readyPeerDeviceId: readyPeerDeviceId ? readyPeerDeviceId.slice(-6) : null,
+        conversationId: conversationId ? conversationId.slice(0, 8) : null
+      });
+    }
     if (guestBundle && adapters?.ensureDrReceiverState) {
       try {
         await adapters.ensureDrReceiverState(conversationId, readyPeerAccountDigest, readyPeerDeviceId, guestBundle);
@@ -375,10 +384,19 @@ async function decryptIncomingSingle(params = {}, adapters) {
     if (DEBUG.drVerbose) {
       console.log('[state-live] live-text check state', {
         peer: senderDigest ? senderDigest.slice(0, 8) : null,
+        peerDeviceId: senderDeviceId ? senderDeviceId.slice(-6) : null,
         hasState: !!rawState,
-        hasRk: !!rawState?.rk,
+        hasRk: !!(rawState?.rk instanceof Uint8Array),
+        hasCkS: !!(rawState?.ckS instanceof Uint8Array),
+        hasCkR: !!(rawState?.ckR instanceof Uint8Array),
+        hasMyPriv: !!(rawState?.myRatchetPriv instanceof Uint8Array),
+        hasTheirPub: !!(rawState?.theirRatchetPub instanceof Uint8Array),
         ns: rawState?.Ns,
-        nr: rawState?.Nr
+        nr: rawState?.Nr,
+        role: rawState?.baseKey?.role || null,
+        bornReason: rawState?.__bornReason || null,
+        lastWriteTag: rawState?.__lastWriteTag || null,
+        msgType: resolveMsgType(raw?.meta || header?.meta, header) || null
       });
     }
 
@@ -581,8 +599,67 @@ async function decryptIncomingSingle(params = {}, adapters) {
       result.failCount = 1;
     } else {
       const semantic = classifyDecryptedPayload(plaintext, { meta, header });
-      // Allow conversation-deleted and contact-share to pass through Live Route B.
-      const isAllowedControl = semantic.subtype === 'conversation-deleted' || semantic.subtype === 'contact-share';
+      // Allow conversation-deleted, contact-share, and biz-conv-kdm to pass through Live Route B.
+      const isAllowedControl = semantic.subtype === 'conversation-deleted'
+        || semantic.subtype === 'contact-share'
+        || semantic.subtype === 'biz-conv-kdm';
+
+      // KDM: route to BizConvStore + insert 1:1 tombstone, then skip normal message processing
+      if (semantic.subtype === 'biz-conv-kdm') {
+        try {
+          const { handleEpochKdm } = await import('../../biz-conv-key-rotation.js');
+          const text = typeof plaintext === 'string' ? plaintext : String(plaintext ?? '');
+          let kdmPayload = null;
+          try { kdmPayload = JSON.parse(text); } catch { /* not JSON */ }
+          if (!kdmPayload?.conversation_id) {
+            kdmPayload = meta?.conversation_id ? meta : null;
+          }
+          if (kdmPayload) {
+            await handleEpochKdm(kdmPayload);
+            console.log('[state-live] KDM processed', {
+              convId: kdmPayload?.conversation_id?.slice(0, 16),
+              epoch: kdmPayload?.epoch
+            });
+
+            // Insert tombstone in the 1:1 conversation
+            const oneOnOneConvId = conversationId; // DR session conversation ID = 1:1
+            if (oneOnOneConvId) {
+              try {
+                const { appendUserMessage } = await import('../../timeline-store.js');
+                const { getConversationThreads } = await import('../../conversation-updates.js');
+                const { t } = await import('/locales/index.js');
+                const groupName = kdmPayload?.meta?.name || kdmPayload?.name || null;
+                const threads = getConversationThreads();
+                const thread = threads.get(oneOnOneConvId);
+                const senderName = thread?.nickname || kdmPayload?.meta?.owner_nickname || null;
+                const tombstoneText = t('messages.bizConvGroupInviteTombstone', {
+                  sender: senderName || t('messages.bizConvGroupInviteSenderUnknown'),
+                  group: groupName || t('messages.bizConvGroupInviteGroupUnknown')
+                });
+                const tombstoneId = `kdm-invite-${kdmPayload?.conversation_id || ''}-epoch-${kdmPayload?.epoch || 0}`;
+                appendUserMessage(oneOnOneConvId, {
+                  messageId: tombstoneId,
+                  msgType: 'system',
+                  subtype: 'system',
+                  text: tombstoneText,
+                  ts: Math.floor(Date.now() / 1000),
+                  direction: 'incoming'
+                });
+              } catch (err) {
+                console.warn('[state-live] KDM tombstone insert failed', err?.message);
+              }
+            }
+          }
+        } catch (err) {
+          console.warn('[state-live] KDM processing failed', err?.message);
+        }
+        result.reasonCode = 'KDM_PROCESSED';
+        result.successCount = 1;
+        // CRITICAL: return mutatedState so the caller persists the ratchet advance.
+        // Without this, the DR session state is lost and subsequent messages fail.
+        result.mutatedState = state;
+        return result;
+      }
 
       if (semantic.kind !== SEMANTIC_KIND.USER_MESSAGE && !isAllowedControl) {
         result.reasonCode = 'CONTROL_SKIP';

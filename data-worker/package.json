@@ -1,0 +1,9 @@
+{
+  "name": "message-data-worker",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@cloudflare/containers": "^0.1.0",
+    "@cloudflare/opaque-ts": "^0.7.5"
+  }
+}

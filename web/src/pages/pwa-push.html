@@ -1,0 +1,802 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>SENTRY MESSENGER — Push Notifications</title>
+    <link rel="icon" href="/assets/favicon.ico" type="image/x-icon" />
+    <link rel="manifest" href="/manifest.json" />
+    <script>
+      // Inline i18n bootstrap (same as login.html)
+      (function(){
+        var lang = 'en';
+        try { lang = navigator.language || 'en'; } catch {}
+        var tag = lang.toLowerCase();
+        if (tag==='zh-hant'||tag==='zh-tw'||tag==='zh-hk'||tag.indexOf('zh-hant')===0) tag='zh-Hant';
+        else if (tag==='zh-hans'||tag==='zh-cn'||tag==='zh-sg'||tag.indexOf('zh-hans')===0||tag==='zh') tag='zh-Hans';
+        else tag = tag.split('-')[0];
+        var supported = {en:1,'zh-Hant':1,'zh-Hans':1,ja:1,ko:1,th:1,vi:1};
+        if (!supported[tag]) tag = 'en';
+        var msgs = {}, fb = {};
+        function loadSync(url) {
+          try { var x = new XMLHttpRequest(); x.open('GET', url, false); x.send(); return x.status===200 ? JSON.parse(x.responseText) : {}; } catch { return {}; }
+        }
+        fb = loadSync('/locales/en.json');
+        if (tag !== 'en') msgs = loadSync('/locales/' + tag + '.json');
+        function resolve(o, p) { return p.split('.').reduce(function(a,k){ return a&&a[k]; }, o); }
+        window.__t = function(key, params) {
+          var val = resolve(msgs, key) || resolve(fb, key) || key;
+          if (!params || typeof val !== 'string') return val;
+          return val.replace(/\{(\w+)\}/g, function(_, k) { return params[k] != null ? params[k] : '{'+k+'}'; });
+        };
+        document.documentElement.lang = tag;
+      })();
+    </script>
+    <style>
+      :root { color-scheme: dark; --bg:#0f172a; --fg:#e2e8f0; --muted:#94a3b8; --line:rgba(148,163,184,0.18); --accent:#38bdf8; --danger:#ef4444; --card:rgba(15,23,42,0.65); --gradient:linear-gradient(160deg,#0f172a,#1e293b 65%,#020617); }
+      * { box-sizing:border-box; margin:0; padding:0; }
+      html, body { height:100%; }
+      body {
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, 'Noto Sans TC', sans-serif;
+        background:var(--gradient); background-color:var(--bg); background-attachment:fixed;
+        color:var(--fg);
+        display:flex; justify-content:center;
+        padding:calc(24px + env(safe-area-inset-top,0px)) 16px calc(24px + env(safe-area-inset-bottom,0px));
+        overscroll-behavior:contain;
+        -webkit-text-size-adjust:100%;
+      }
+      .pwa-shell {
+        width:min(480px,100%); max-height:100%; overflow-y:auto;
+        -webkit-overflow-scrolling:touch;
+      }
+
+      /* Header */
+      .pwa-header { text-align:center; padding:32px 0 24px; }
+      .pwa-logo-wrap {
+        position:relative; display:inline-flex; align-items:center; justify-content:center;
+        width:72px; height:72px; margin-bottom:16px;
+      }
+      .pwa-logo-glow {
+        position:absolute; inset:-8px; border-radius:50%;
+        background:radial-gradient(circle, rgba(56,189,248,0.35) 0%, rgba(59,130,246,0.18) 50%, transparent 70%);
+        animation:logo-breathe 3s ease-in-out infinite;
+        pointer-events:none;
+      }
+      @keyframes logo-breathe {
+        0%, 100% { transform:scale(0.85); opacity:0.5; }
+        50% { transform:scale(1.2); opacity:1; }
+      }
+      .pwa-logo {
+        position:relative; z-index:1; width:56px; height:56px;
+        filter:brightness(0) saturate(100%) invert(62%) sepia(93%) saturate(1200%) hue-rotate(176deg) brightness(100%) contrast(96%);
+      }
+      .pwa-title { font-size:18px; font-weight:700; letter-spacing:1.5px; margin-bottom:4px; }
+      .pwa-subtitle { font-size:13px; color:var(--muted); }
+
+      /* Status card */
+      .status-card {
+        background:var(--card); border:1px solid var(--line); border-radius:14px;
+        padding:20px; margin-bottom:16px; backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+      }
+      .status-row { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
+      .status-dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
+      .status-dot.active { background:#22c55e; box-shadow:0 0 6px rgba(34,197,94,0.4); }
+      .status-dot.inactive { background:var(--muted); }
+      .status-label { font-size:15px; font-weight:600; flex:1; }
+      .status-detail { font-size:13px; color:var(--muted); line-height:1.5; }
+      .master-switch { margin-left:auto; }
+
+      /* Buttons */
+      .btn {
+        padding:12px 16px; border-radius:10px; border:none;
+        font-size:14px; font-weight:600; cursor:pointer;
+        display:inline-flex; align-items:center; justify-content:center; gap:6px;
+        transition:opacity .15s;
+      }
+      .btn:disabled { opacity:0.5; cursor:not-allowed; }
+
+      /* Info sections */
+      .info-section {
+        background:var(--card); border:1px solid var(--line); border-radius:14px;
+        padding:18px; margin-bottom:14px; backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+      }
+      .info-title { font-size:14px; font-weight:700; margin-bottom:10px; display:flex; align-items:center; gap:6px; }
+      .info-body { font-size:13px; color:var(--muted); line-height:1.7; }
+      .info-body strong { color:var(--fg); font-weight:600; }
+      .info-body ul { padding-left:18px; margin:6px 0; }
+      .info-body li { margin-bottom:4px; }
+      .info-body .platform-label { color:var(--accent); font-weight:600; font-size:13px; margin-top:10px; display:block; }
+
+      /* Notification type toggles */
+      .notify-types-card {
+        background:var(--card); border:1px solid var(--line); border-radius:14px;
+        padding:18px; margin-bottom:16px; backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+      }
+      .notify-types-title { font-size:14px; font-weight:700; margin-bottom:12px; }
+      .notify-type-row {
+        display:flex; align-items:center; gap:10px; padding:10px 0;
+        border-bottom:1px solid var(--line);
+      }
+      .notify-type-row:last-child { border-bottom:none; }
+      .notify-type-icon { width:28px; height:28px; flex-shrink:0; border-radius:6px; object-fit:contain; align-self:flex-start; margin-top:2px; }
+      .notify-type-text { flex:1; display:flex; flex-direction:column; gap:2px; }
+      .notify-type-label { font-size:14px; font-weight:500; }
+      .notify-type-desc { font-size:11px; color:var(--text-secondary, #888); line-height:1.4; }
+      .notify-switch {
+        position:relative; display:inline-block; width:42px; height:24px; flex-shrink:0;
+      }
+      .notify-switch input { opacity:0; width:0; height:0; }
+      .notify-track {
+        position:absolute; inset:0; border-radius:12px; cursor:pointer;
+        background:rgba(148,163,184,0.3); transition:background .2s;
+      }
+      .notify-track::after {
+        content:''; position:absolute; left:2px; top:2px; width:20px; height:20px;
+        border-radius:50%; background:#fff; transition:transform .2s;
+      }
+      .notify-switch input:checked + .notify-track { background:var(--accent); }
+      .notify-switch input:checked + .notify-track::after { transform:translateX(18px); }
+
+      /* Footer */
+      .pwa-footer { text-align:center; padding:20px 0; }
+
+      /* PIN digit boxes */
+      .pin-boxes { display:flex; gap:8px; justify-content:center; margin-bottom:14px; }
+      .pin-box {
+        width:44px; height:54px; border:1.5px solid var(--line); border-radius:12px;
+        background:rgba(15,23,42,0.5); color:var(--fg);
+        font-size:24px; font-weight:700; font-family:monospace;
+        text-align:center; line-height:54px;
+        caret-color:var(--accent);
+        outline:none; transition:border-color .15s, box-shadow .15s;
+        -webkit-text-security:none;
+      }
+      .pin-box:focus {
+        border-color:var(--accent);
+        box-shadow:0 0 0 3px rgba(56,189,248,0.2);
+      }
+      .pin-box.filled {
+        border-color:var(--accent);
+        background:rgba(56,189,248,0.06);
+      }
+
+      /* Confirm modal overlay */
+      .confirm-overlay {
+        position:fixed; inset:0; z-index:200;
+        background:rgba(0,0,0,0.55); backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
+        display:flex; align-items:center; justify-content:center;
+        padding:24px;
+        opacity:0; transition:opacity .2s; pointer-events:none;
+      }
+      .confirm-overlay.show { opacity:1; pointer-events:auto; }
+      .confirm-dialog {
+        width:min(360px,100%); background:var(--card); border:1px solid var(--line);
+        border-radius:16px; padding:24px; text-align:center;
+        transform:scale(0.92); transition:transform .2s;
+      }
+      .confirm-overlay.show .confirm-dialog { transform:scale(1); }
+      .confirm-title { font-size:16px; font-weight:700; margin-bottom:8px; }
+      .confirm-message { font-size:13px; color:var(--muted); line-height:1.6; margin-bottom:20px; }
+      .confirm-actions { display:flex; gap:10px; }
+      .confirm-actions .btn { flex:1; }
+      .btn-cancel { background:rgba(148,163,184,0.15); color:var(--fg); }
+      .btn-cancel:hover { background:rgba(148,163,184,0.25); }
+      .btn-danger { background:var(--danger); color:#fff; }
+      .btn-danger:hover { opacity:0.85; }
+
+      /* Toast */
+      .toast {
+        position:fixed; bottom:env(safe-area-inset-bottom,20px); left:50%; transform:translateX(-50%);
+        background:rgba(30,41,59,0.95); color:#fff; padding:10px 20px; border-radius:10px;
+        font-size:13px; opacity:0; transition:opacity .25s; pointer-events:none; z-index:100;
+        backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+      }
+      .toast.show { opacity:1; }
+    </style>
+  </head>
+  <body>
+    <div class="pwa-shell">
+      <div class="pwa-header">
+        <div class="pwa-logo-wrap">
+          <div class="pwa-logo-glow"></div>
+          <img src="/assets/images/logo.svg" alt="SENTRY" class="pwa-logo" />
+        </div>
+        <div class="pwa-title">SENTRY MESSENGER</div>
+        <div class="pwa-subtitle" data-i18n="push.pwaSubtitle"></div>
+      </div>
+
+      <!-- Push status card with master switch -->
+      <div class="status-card">
+        <div class="status-row">
+          <span class="status-dot inactive" id="statusDot"></span>
+          <span class="status-label" id="statusLabel"></span>
+          <label class="notify-switch master-switch" id="masterSwitchWrap" style="display:none">
+            <input type="checkbox" id="masterSwitch" />
+            <span class="notify-track"></span>
+          </label>
+        </div>
+        <div class="status-detail" id="statusDetail"></div>
+      </div>
+
+      <!-- PIN enrollment card (revealed when master switch turned ON while inactive) -->
+      <div class="status-card" id="pinCard" style="display:none">
+        <div style="font-weight:600;font-size:15px;margin-bottom:8px;" data-i18n="push.pinEnrollTitle"></div>
+        <div style="font-size:13px;color:var(--muted);line-height:1.5;margin-bottom:14px;" data-i18n="push.pinEnrollDesc"></div>
+        <div class="pin-boxes" id="pinBoxes">
+          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="0" autocomplete="off" />
+          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="1" autocomplete="off" />
+          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="2" autocomplete="off" />
+          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="3" autocomplete="off" />
+          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="4" autocomplete="off" />
+          <input type="text" inputmode="numeric" maxlength="1" class="pin-box" data-idx="5" autocomplete="off" />
+        </div>
+        <!-- Hidden field to gather the full PIN value -->
+        <input type="hidden" id="pinInput" />
+        <button class="btn" id="btnEnroll" type="button" style="width:100%;background:var(--accent);color:#000;" data-i18n="push.pinEnrollBtn"></button>
+        <div id="pinError" style="font-size:12px;color:var(--danger);margin-top:8px;display:none;"></div>
+      </div>
+
+      <!-- Notification type toggles (shown when push is active) -->
+      <div class="notify-types-card" id="notifyTypesCard" style="display:none">
+        <div class="notify-types-title" data-i18n="push.notifyTypesTitle"></div>
+        <div class="notify-type-row">
+          <img src="/assets/images/push/message.png" class="notify-type-icon" alt="" />
+          <div class="notify-type-text">
+            <span class="notify-type-label" data-i18n="push.notifyTypeMessage"></span>
+            <span class="notify-type-desc" data-i18n="push.notifyTypeMessageDesc"></span>
+          </div>
+          <label class="notify-switch"><input type="checkbox" checked data-ntype="message" /><span class="notify-track"></span></label>
+        </div>
+        <div class="notify-type-row">
+          <img src="/assets/images/push/group-chat.png" class="notify-type-icon" alt="" />
+          <div class="notify-type-text">
+            <span class="notify-type-label" data-i18n="push.notifyTypeGroupChat"></span>
+            <span class="notify-type-desc" data-i18n="push.notifyTypeGroupChatDesc"></span>
+          </div>
+          <label class="notify-switch"><input type="checkbox" checked data-ntype="group-chat" /><span class="notify-track"></span></label>
+        </div>
+        <div class="notify-type-row">
+          <img src="/assets/images/push/ephemeral.png" class="notify-type-icon" alt="" />
+          <div class="notify-type-text">
+            <span class="notify-type-label" data-i18n="push.notifyTypeEphemeral"></span>
+            <span class="notify-type-desc" data-i18n="push.notifyTypeEphemeralDesc"></span>
+          </div>
+          <label class="notify-switch"><input type="checkbox" checked data-ntype="ephemeral" /><span class="notify-track"></span></label>
+        </div>
+        <div class="notify-type-row">
+          <img src="/assets/images/push/incoming-call.png" class="notify-type-icon" alt="" />
+          <div class="notify-type-text">
+            <span class="notify-type-label" data-i18n="push.notifyTypeCall"></span>
+            <span class="notify-type-desc" data-i18n="push.notifyTypeCallDesc"></span>
+          </div>
+          <label class="notify-switch"><input type="checkbox" checked data-ntype="call" /><span class="notify-track"></span></label>
+        </div>
+        <div class="notify-type-row">
+          <img src="/assets/images/push/system.png" class="notify-type-icon" alt="" />
+          <div class="notify-type-text">
+            <span class="notify-type-label" data-i18n="push.notifyTypeSystem"></span>
+            <span class="notify-type-desc" data-i18n="push.notifyTypeSystemDesc"></span>
+          </div>
+          <label class="notify-switch"><input type="checkbox" checked data-ntype="system" /><span class="notify-track"></span></label>
+        </div>
+      </div>
+
+      <!-- Notification preview toggle (E2E encrypted) -->
+      <div class="notify-types-card" id="previewCard" style="display:none">
+        <div class="notify-types-title" data-i18n="push.previewTitle"></div>
+        <div class="notify-type-row" style="border-bottom:none;">
+          <div style="width:28px;height:28px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:18px;align-self:flex-start;margin-top:2px;">🔒</div>
+          <div class="notify-type-text">
+            <span class="notify-type-label" data-i18n="push.previewLabel"></span>
+            <span class="notify-type-desc" data-i18n="push.previewDesc"></span>
+          </div>
+          <label class="notify-switch"><input type="checkbox" id="previewToggle" /><span class="notify-track"></span></label>
+        </div>
+        <div id="previewE2eInfo" style="display:none;margin-top:4px;padding:12px;background:rgba(56,189,248,0.06);border-radius:10px;border:1px solid rgba(56,189,248,0.15);">
+          <div style="font-size:12px;color:var(--accent);font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:4px;">
+            <span>🔐</span> <span data-i18n="push.previewE2eTitle"></span>
+          </div>
+          <div style="font-size:11px;color:var(--muted);line-height:1.6;" data-i18n="push.previewE2eDesc"></div>
+        </div>
+        <div id="previewLockscreenWarn" style="display:none;margin-top:8px;padding:10px 12px;background:rgba(239,68,68,0.06);border-radius:10px;border:1px solid rgba(239,68,68,0.15);">
+          <div style="font-size:11px;color:#ef4444;line-height:1.5;display:flex;gap:6px;">
+            <span style="flex-shrink:0;">⚠️</span>
+            <span data-i18n="push.previewLockscreenWarn"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Push limitations: Reliability -->
+      <div class="info-section">
+        <div class="info-title" data-i18n="push.infoReliabilityTitle"></div>
+        <div class="info-body">
+          <ul>
+            <li data-i18n="push.infoReliability2"></li>
+            <li data-i18n="push.infoReliability3"></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="pwa-footer">
+        <span style="font-size:12px;color:var(--muted);">&copy; SENTRY MESSENGER</span>
+      </div>
+    </div>
+
+    <!-- Confirm modal -->
+    <div class="confirm-overlay" id="confirmOverlay">
+      <div class="confirm-dialog">
+        <div class="confirm-title" id="confirmTitle"></div>
+        <div class="confirm-message" id="confirmMessage"></div>
+        <div class="confirm-actions">
+          <button class="btn btn-cancel" id="confirmCancel" type="button"></button>
+          <button class="btn btn-danger" id="confirmOk" type="button"></button>
+        </div>
+      </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+      (function () {
+        var t = window.__t;
+        var VAPID_PUBLIC_KEY = 'BGNlllC_H-lqHnnKrxT2IhF_5_xei3is_loJHesBmzjhfgmGMwq_nwlVVaKkrOhTnCO9_DeFtlotIl3Oug3eI2k';
+
+        var statusDot = document.getElementById('statusDot');
+        var statusLabel = document.getElementById('statusLabel');
+        var statusDetail = document.getElementById('statusDetail');
+        var masterSwitchWrap = document.getElementById('masterSwitchWrap');
+        var masterSwitch = document.getElementById('masterSwitch');
+        var pinCard = document.getElementById('pinCard');
+        var pinInput = document.getElementById('pinInput');
+        var btnEnroll = document.getElementById('btnEnroll');
+        var pinError = document.getElementById('pinError');
+        var toastEl = document.getElementById('toast');
+        var notifyTypesCard = document.getElementById('notifyTypesCard');
+
+        // Track whether push is supported so the switch can be hidden when not
+        var pushSupported = true;
+
+        // Persist per-type notification preferences in localStorage
+        var NOTIFY_PREFS_KEY = 'sentry:push-notify-types';
+        function loadNotifyPrefs() {
+          try { return JSON.parse(localStorage.getItem(NOTIFY_PREFS_KEY)) || {}; } catch { return {}; }
+        }
+        function saveNotifyPrefs(prefs) {
+          try { localStorage.setItem(NOTIFY_PREFS_KEY, JSON.stringify(prefs)); } catch {}
+          // Persist to IndexedDB (SW cannot read localStorage)
+          saveNotifyPrefsToIDB(prefs);
+          // Notify running SW immediately
+          notifySwNotifyTypes(prefs);
+        }
+        function saveNotifyPrefsToIDB(prefs) {
+          try {
+            var req = indexedDB.open('sentry-push-prefs', 1);
+            req.onupgradeneeded = function(e) {
+              var db = e.target.result;
+              if (!db.objectStoreNames.contains('prefs')) db.createObjectStore('prefs');
+            };
+            req.onsuccess = function(e) {
+              var db = e.target.result;
+              var tx = db.transaction('prefs', 'readwrite');
+              tx.objectStore('prefs').put(prefs, 'notify-types');
+            };
+          } catch {}
+        }
+        function notifySwNotifyTypes(prefs) {
+          try {
+            navigator.serviceWorker.getRegistration('/sw.js').then(function(reg) {
+              if (reg && reg.active) {
+                reg.active.postMessage({ type: 'set-notify-types', value: prefs });
+              }
+            });
+          } catch {}
+        }
+        function initNotifyToggles() {
+          var prefs = loadNotifyPrefs();
+          // Sync current values to IDB + SW on page load
+          saveNotifyPrefsToIDB(prefs);
+          notifySwNotifyTypes(prefs);
+          document.querySelectorAll('[data-ntype]').forEach(function(input) {
+            var key = input.dataset.ntype;
+            if (prefs[key] === false) input.checked = false;
+            input.addEventListener('change', function() {
+              var p = loadNotifyPrefs();
+              p[key] = input.checked;
+              saveNotifyPrefs(p);
+            });
+          });
+        }
+
+        // ── E2E push preview keypair (ECDH P-256) ──
+        // Generate keypair for encrypting notification preview content.
+        // Public key → sent to backend; Private key → stored in IndexedDB for SW to decrypt.
+        function b64uEncode(buf) {
+          var bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+          var s = '';
+          for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+          return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+        }
+
+        async function generatePreviewKeypair() {
+          var kp = await crypto.subtle.generateKey(
+            { name: 'ECDH', namedCurve: 'P-256' },
+            true, ['deriveBits']
+          );
+          var pubRaw = await crypto.subtle.exportKey('raw', kp.publicKey);
+          var privPkcs8 = await crypto.subtle.exportKey('pkcs8', kp.privateKey);
+          return {
+            publicKeyB64: b64uEncode(pubRaw),
+            privateKeyB64: b64uEncode(privPkcs8)
+          };
+        }
+
+        function storePreviewPrivateKey(privateKeyB64) {
+          return new Promise(function(resolve) {
+            try {
+              var req = indexedDB.open('sentry-push-prefs', 1);
+              req.onupgradeneeded = function(e) {
+                var db = e.target.result;
+                if (!db.objectStoreNames.contains('prefs')) db.createObjectStore('prefs');
+              };
+              req.onsuccess = function(e) {
+                var db = e.target.result;
+                var tx = db.transaction('prefs', 'readwrite');
+                tx.objectStore('prefs').put(privateKeyB64, 'preview-private-key');
+                tx.oncomplete = function() { resolve(true); };
+                tx.onerror = function() { resolve(false); };
+              };
+              req.onerror = function() { resolve(false); };
+            } catch(ex) { resolve(false); }
+          });
+        }
+
+        // ── Preview toggle (E2E encrypted notification content) ──
+        var PREVIEW_PREF_KEY = 'sentry:push-preview';
+        var previewCard = document.getElementById('previewCard');
+        var previewToggle = document.getElementById('previewToggle');
+        var previewE2eInfo = document.getElementById('previewE2eInfo');
+        var previewLockscreenWarn = document.getElementById('previewLockscreenWarn');
+
+        function loadPreviewPref() {
+          try { return localStorage.getItem(PREVIEW_PREF_KEY) === '1'; } catch { return false; }
+        }
+        function savePreviewPref(on) {
+          try { localStorage.setItem(PREVIEW_PREF_KEY, on ? '1' : '0'); } catch {}
+          // Persist to IndexedDB (durable, for SW cold start)
+          savePreviewPrefToIDB(on);
+          // Notify running SW immediately via postMessage (no IDB delay)
+          notifySW(on);
+        }
+
+        function notifySW(on) {
+          try {
+            navigator.serviceWorker.getRegistration('/sw.js').then(function(reg) {
+              if (reg && reg.active) {
+                reg.active.postMessage({ type: 'set-preview-pref', value: on });
+              }
+            });
+          } catch {}
+        }
+
+        // IndexedDB helper — SW cannot read localStorage
+        function savePreviewPrefToIDB(on) {
+          try {
+            var req = indexedDB.open('sentry-push-prefs', 1);
+            req.onupgradeneeded = function(e) {
+              var db = e.target.result;
+              if (!db.objectStoreNames.contains('prefs')) db.createObjectStore('prefs');
+            };
+            req.onsuccess = function(e) {
+              var db = e.target.result;
+              var tx = db.transaction('prefs', 'readwrite');
+              tx.objectStore('prefs').put(on, 'preview');
+            };
+          } catch {}
+        }
+
+        function updatePreviewUI(on) {
+          if (previewE2eInfo) previewE2eInfo.style.display = on ? '' : 'none';
+          if (previewLockscreenWarn) previewLockscreenWarn.style.display = on ? '' : 'none';
+        }
+
+        function initPreviewToggle() {
+          var on = loadPreviewPref();
+          previewToggle.checked = on;
+          updatePreviewUI(on);
+          // Sync current value to SW immediately on load
+          notifySW(on);
+          previewToggle.addEventListener('change', function() {
+            var newVal = previewToggle.checked;
+            savePreviewPref(newVal);
+            updatePreviewUI(newVal);
+          });
+        }
+
+        // Apply i18n to data-i18n elements
+        document.querySelectorAll('[data-i18n]').forEach(function (el) {
+          var k = el.getAttribute('data-i18n');
+          if (k) el.textContent = t(k);
+        });
+
+        function urlBase64ToUint8Array(base64String) {
+          var padding = '='.repeat((4 - base64String.length % 4) % 4);
+          var base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+          var raw = atob(base64);
+          var arr = new Uint8Array(raw.length);
+          for (var i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+          return arr;
+        }
+
+        function showToast(msg) {
+          toastEl.textContent = msg;
+          toastEl.classList.add('show');
+          setTimeout(function () { toastEl.classList.remove('show'); }, 2500);
+        }
+
+        // Custom confirm modal (replaces native confirm())
+        var confirmOverlay = document.getElementById('confirmOverlay');
+        var confirmTitle = document.getElementById('confirmTitle');
+        var confirmMessage = document.getElementById('confirmMessage');
+        var confirmCancel = document.getElementById('confirmCancel');
+        var confirmOk = document.getElementById('confirmOk');
+
+        function showConfirm(opts) {
+          confirmTitle.textContent = opts.title || '';
+          confirmMessage.textContent = opts.message || '';
+          confirmCancel.textContent = opts.cancelText || t('common.cancel');
+          confirmOk.textContent = opts.confirmText || t('common.confirm');
+          confirmOverlay.classList.add('show');
+
+          return new Promise(function (resolve) {
+            function cleanup() {
+              confirmOverlay.classList.remove('show');
+              confirmCancel.removeEventListener('click', onCancel);
+              confirmOk.removeEventListener('click', onOk);
+              confirmOverlay.removeEventListener('click', onBackdrop);
+            }
+            function onCancel() { cleanup(); resolve(false); }
+            function onOk() { cleanup(); resolve(true); }
+            function onBackdrop(e) { if (e.target === confirmOverlay) { cleanup(); resolve(false); } }
+            confirmCancel.addEventListener('click', onCancel);
+            confirmOk.addEventListener('click', onOk);
+            confirmOverlay.addEventListener('click', onBackdrop);
+          });
+        }
+
+        function clearPinBoxes() {
+          document.querySelectorAll('.pin-box').forEach(function(b) {
+            b.value = ''; b.classList.remove('filled');
+          });
+          pinInput.value = '';
+          pinError.style.display = 'none';
+        }
+
+        function setStatus(active, label, detail) {
+          statusDot.className = 'status-dot ' + (active ? 'active' : 'inactive');
+          statusLabel.textContent = label;
+          statusDetail.textContent = detail;
+          // Sync master switch state (without triggering change event)
+          masterSwitch.checked = active;
+          // Show switch only when push is supported
+          masterSwitchWrap.style.display = pushSupported ? '' : 'none';
+          // Hide PIN card — only shown explicitly by switch toggle
+          pinCard.style.display = 'none';
+          clearPinBoxes();
+          // Show notification type toggles and preview card only when active
+          if (notifyTypesCard) {
+            notifyTypesCard.style.display = active ? '' : 'none';
+            if (active) initNotifyToggles();
+          }
+          if (previewCard) {
+            previewCard.style.display = active ? '' : 'none';
+            if (active) initPreviewToggle();
+          }
+        }
+
+        // Check push subscription status
+        async function checkStatus() {
+          if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+            pushSupported = false;
+            var isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+            setStatus(false, t('push.statusUnsupported'), isIOS ? t('push.iosRequiresPWA') : t('push.statusUnsupportedDetail'));
+            return;
+          }
+
+          if (Notification.permission === 'denied') {
+            pushSupported = false;
+            setStatus(false, t('push.statusDenied'), t('push.statusDeniedDetail'));
+            return;
+          }
+
+          pushSupported = true;
+          try {
+            var reg = await navigator.serviceWorker.getRegistration('/sw.js');
+            if (!reg) {
+              setStatus(false, t('push.statusInactive'), t('push.statusInactiveDetail'));
+              return;
+            }
+            var sub = await reg.pushManager.getSubscription();
+            if (sub) {
+              setStatus(true, t('push.statusActive'), t('push.statusActiveDetail'));
+            } else {
+              setStatus(false, t('push.statusInactive'), t('push.statusInactiveDetail'));
+            }
+          } catch (err) {
+            console.warn('[pwa-push] check failed', err);
+            setStatus(false, t('push.statusError'), err.message || String(err));
+          }
+        }
+
+        // Master switch: OFF→ON shows PIN card, ON→OFF disables push
+        masterSwitch.addEventListener('change', async function () {
+          if (masterSwitch.checked) {
+            // User toggled ON — show PIN enrollment card
+            clearPinBoxes();
+            pinCard.style.display = 'block';
+            // Focus the first PIN box after a brief delay
+            setTimeout(function() {
+              var firstBox = document.querySelector('.pin-box[data-idx="0"]');
+              if (firstBox) firstBox.focus();
+            }, 100);
+          } else {
+            // User toggled OFF — disable push with confirm modal
+            var confirmed = await showConfirm({
+              title: t('push.disableConfirmTitle'),
+              message: t('push.disableConfirm'),
+              confirmText: t('push.disableBtn'),
+              cancelText: t('common.cancel')
+            });
+            if (!confirmed) {
+              masterSwitch.checked = true;
+              return;
+            }
+            try {
+              var reg = await navigator.serviceWorker.getRegistration('/sw.js');
+              if (reg) {
+                var sub = await reg.pushManager.getSubscription();
+                if (sub) {
+                  var endpoint = sub.endpoint;
+                  await sub.unsubscribe();
+                  try {
+                    await fetch('/d1/push/unsubscribe', {
+                      method: 'POST',
+                      headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({ endpoint: endpoint })
+                    });
+                  } catch (e) { console.warn('[pwa-push] backend unsubscribe failed', e); }
+                }
+              }
+              showToast(t('push.disabledToast'));
+            } catch (err) {
+              console.error('[pwa-push] disable failed', err);
+              showToast(t('push.disableError'));
+            }
+            checkStatus();
+          }
+        });
+
+        // PIN enrollment: verify PIN → subscribe push
+        btnEnroll.addEventListener('click', async function () {
+          var pin = (pinInput.value || '').replace(/\D/g, '').trim();
+          if (pin.length !== 6) {
+            pinError.textContent = t('push.pinInvalid');
+            pinError.style.display = 'block';
+            return;
+          }
+          pinError.style.display = 'none';
+          btnEnroll.disabled = true;
+          btnEnroll.textContent = t('common.loading');
+
+          try {
+            // 1. Request notification permission
+            var permission = await Notification.requestPermission();
+            if (permission !== 'granted') {
+              throw { code: 'PERMISSION_DENIED', message: t('push.permissionDenied') };
+            }
+
+            // 2. Register SW + subscribe push
+            var reg = await navigator.serviceWorker.getRegistration('/sw.js');
+            if (!reg) {
+              reg = await navigator.serviceWorker.register('/sw.js');
+              await navigator.serviceWorker.ready;
+            }
+            var sub = await reg.pushManager.subscribe({
+              userVisibleOnly: true,
+              applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+            });
+            var subJSON = sub.toJSON();
+
+            // 2b. Generate E2E preview keypair (ECDH P-256)
+            var previewKeypair = null;
+            try {
+              previewKeypair = await generatePreviewKeypair();
+              await storePreviewPrivateKey(previewKeypair.privateKeyB64);
+            } catch (kpErr) {
+              console.warn('[pwa-push] preview keypair generation failed', kpErr);
+            }
+
+            // 3. Verify PIN + register subscription on backend
+            var res = await fetch('/d1/push/pin/verify', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                pin: pin,
+                subscription: subJSON,
+                userAgent: navigator.userAgent,
+                previewPublicKey: previewKeypair ? previewKeypair.publicKeyB64 : null
+              })
+            });
+            var data = await res.json();
+            if (!res.ok) {
+              try { await sub.unsubscribe(); } catch {}
+              throw new Error(data.message || data.error || 'Verification failed');
+            }
+
+            showToast(t('push.enabledToast'));
+            checkStatus();
+          } catch (err) {
+            console.error('[pwa-push] enroll failed', err);
+            pinError.textContent = err.message || t('push.pinVerifyFailed');
+            pinError.style.display = 'block';
+            // Revert the master switch since enrollment failed
+            masterSwitch.checked = false;
+          } finally {
+            btnEnroll.disabled = false;
+            btnEnroll.textContent = t('push.pinEnrollBtn');
+          }
+        });
+
+        // PIN digit boxes logic
+        var pinBoxes = document.querySelectorAll('.pin-box');
+        function syncPinValue() {
+          var val = '';
+          pinBoxes.forEach(function(b) { val += (b.value || ''); });
+          pinInput.value = val;
+        }
+        pinBoxes.forEach(function(box, i) {
+          box.addEventListener('input', function(e) {
+            var v = box.value.replace(/\D/g, '');
+            box.value = v.charAt(0) || '';
+            box.classList.toggle('filled', !!box.value);
+            syncPinValue();
+            if (box.value && i < 5) pinBoxes[i + 1].focus();
+            if (v.length > 1) {
+              var chars = v.split('');
+              for (var j = 0; j < chars.length && (i + j) < 6; j++) {
+                pinBoxes[i + j].value = chars[j];
+                pinBoxes[i + j].classList.add('filled');
+              }
+              var nextIdx = Math.min(i + chars.length, 5);
+              pinBoxes[nextIdx].focus();
+              syncPinValue();
+            }
+          });
+          box.addEventListener('keydown', function(e) {
+            if (e.key === 'Backspace' && !box.value && i > 0) {
+              pinBoxes[i - 1].value = '';
+              pinBoxes[i - 1].classList.remove('filled');
+              pinBoxes[i - 1].focus();
+              syncPinValue();
+            }
+            if (e.key === 'Enter') { e.preventDefault(); btnEnroll.click(); }
+          });
+          box.addEventListener('focus', function() { box.select(); });
+          box.addEventListener('paste', function(e) {
+            e.preventDefault();
+            var paste = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '').slice(0, 6);
+            for (var j = 0; j < 6; j++) {
+              pinBoxes[j].value = paste.charAt(j) || '';
+              pinBoxes[j].classList.toggle('filled', !!pinBoxes[j].value);
+            }
+            var focusIdx = Math.min(paste.length, 5);
+            pinBoxes[focusIdx].focus();
+            syncPinValue();
+          });
+        });
+
+        checkStatus();
+      })();
+    </script>
+  </body>
+</html>

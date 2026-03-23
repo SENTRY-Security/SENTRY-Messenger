@@ -3,6 +3,7 @@
  * Refactored from messages-pane.js handleIncomingSecureMessage.
  */
 
+import { t } from '/locales/index.js';
 import { log, logCapped } from '../../core/log.js';
 import {
     getConversationClearAfter,
@@ -170,6 +171,61 @@ export async function handleIncomingSecureMessage(event, deps) {
     // [FIX] Hoist Control Type calculation to prevent TDZ (ReferenceError)
     const rawMsgType = event?.meta?.msgType || event?.meta?.msg_type || event?.msgType || event?.msg_type || null;
     const normalizedControlType = normalizeControlMessageType(rawMsgType);
+
+    // ── Business Conversation KDM interception ──
+    // KDMs arrive via pairwise DR session. Detect and route to BizConvStore.
+    // For epoch rotations, also confirm the new epoch with the server.
+    if (rawMsgType === 'biz-conv-kdm' || event?.msg_type === 'biz-conv-kdm') {
+        let kdmPayload = null;
+        try {
+            const { handleEpochKdm } = await import('../biz-conv-key-rotation.js');
+            // KDM data is in the decrypted text body (JSON-stringified by sender)
+            const rawText = event?.text || event?.content?.text || event?.plaintext || '';
+            if (rawText) {
+                try { kdmPayload = JSON.parse(rawText); } catch { /* not JSON */ }
+            }
+            // Fallback: check if event itself or event.meta contains KDM fields
+            if (!kdmPayload?.conversation_id) {
+                kdmPayload = event?.meta?.conversation_id ? event.meta : event;
+            }
+            await handleEpochKdm(kdmPayload);
+            console.log('[entry-incoming] KDM processed + epoch confirmed', {
+                convId: kdmPayload?.conversation_id?.slice(0, 16),
+                epoch: kdmPayload?.epoch
+            });
+        } catch (err) {
+            console.warn('[entry-incoming] KDM processing failed', err?.message || err);
+        }
+
+        // Insert tombstone in the 1:1 conversation: "XXX added you to OOO group"
+        try {
+            const oneOnOneConvId = convId;
+            if (oneOnOneConvId) {
+                const groupName = kdmPayload?.meta?.name || kdmPayload?.name || null;
+                // Get sender nickname from conversation thread
+                const threads = getConversationThreads();
+                const thread = threads.get(oneOnOneConvId);
+                const senderName = thread?.nickname || kdmPayload?.meta?.owner_nickname || null;
+                const tombstoneText = t('messages.bizConvGroupInviteTombstone', {
+                    sender: senderName || t('messages.bizConvGroupInviteSenderUnknown'),
+                    group: groupName || t('messages.bizConvGroupInviteGroupUnknown')
+                });
+                const tombstoneId = `kdm-invite-${kdmPayload?.conversation_id || ''}-epoch-${kdmPayload?.epoch || 0}`;
+                appendUserMessage(oneOnOneConvId, {
+                    messageId: tombstoneId,
+                    msgType: 'system',
+                    subtype: 'system',
+                    text: tombstoneText,
+                    ts: Math.floor(Date.now() / 1000),
+                    direction: 'incoming'
+                });
+            }
+        } catch (err) {
+            console.warn('[entry-incoming] KDM tombstone insert failed', err?.message || err);
+        }
+
+        return { processed: true, reason: 'biz-conv-kdm' };
+    }
 
     // Logging omitted for brevity, logic remains
 
@@ -372,7 +428,7 @@ export async function handleIncomingSecureMessage(event, deps) {
 
     // Thread update
     const contactEntry = getContactCore(peerKey) || getContactCore(peerDigestForWrite) || null;
-    const nickname = contactEntry?.nickname || `好友 ${peerDigestForWrite.slice(-4)}`;
+    const nickname = contactEntry?.nickname || t('contacts.friendLabel', { id: peerDigestForWrite.slice(-4) });
     const avatar = contactEntry?.avatar || null;
 
     upsertConversationThread({

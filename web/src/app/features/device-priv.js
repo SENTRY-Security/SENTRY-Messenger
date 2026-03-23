@@ -9,6 +9,7 @@ import {
   waitForDevicePriv
 } from '../core/store.js';
 import { unwrapDevicePrivWithMK } from '../crypto/prekeys.js';
+import { t } from '/locales/index.js';
 
 let restoreInFlight = null;
 
@@ -72,7 +73,7 @@ export async function ensureDevicePrivAvailable({ timeoutMs = 4000 } = {}) {
 
   const mk = getMkRaw();
   if (!mk || !(mk instanceof Uint8Array) || mk.length === 0) {
-    throw new Error('尚未解鎖主金鑰，請重新登入完成初始化');
+    throw new Error(t('share.masterKeyNotUnlocked'));
   }
-  throw new Error('找不到裝置金鑰，請重新登入完成初始化');
+  throw new Error(t('share.missingDeviceKey'));
 }

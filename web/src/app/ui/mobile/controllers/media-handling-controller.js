@@ -11,10 +11,15 @@ import { downloadChunkedManifest, streamChunks, downloadAllChunks, getChunkUrls 
 import { isMseSupported, detectCodecFromInitSegment, buildMimeFromCodecString, createMsePlayer, isValidMseInitSegment, parseInitTimescales, parseMoofTiming } from '../../../features/mse-player.js';
 import { mergeInitSegments } from '../../../features/mp4-remuxer.js';
 import { renderPdfViewer, cleanupPdfViewer } from '../viewers/pdf-viewer.js';
+import { renderExcelViewer, cleanupExcelViewer, isExcelMime, isExcelFilename } from '../viewers/excel-viewer.js';
+import { renderWordViewer, cleanupWordViewer, isWordMime, isWordFilename } from '../viewers/word-viewer.js';
+import { renderZipViewer, cleanupZipViewer, isZipMime, isZipFilename } from '../viewers/zip-viewer.js';
+import { renderPptxViewer, cleanupPptxViewer, isPptxMime, isPptxFilename } from '../viewers/pptx-viewer.js';
 import { openImageViewer, cleanupImageViewer } from '../viewers/image-viewer.js';
 import { openVideoViewer, cleanupVideoViewer } from '../viewers/video-viewer.js';
 import { escapeHtml, fmtSize, escapeSelector } from '../ui-utils.js';
 import { isDownloadBusy, startDownload, updateDownloadProgress, endDownload } from '../../../features/transfer-progress.js';
+import { t } from '/locales/index.js';
 
 export class MediaHandlingController extends BaseController {
     constructor(deps) {
@@ -35,7 +40,7 @@ export class MediaHandlingController extends BaseController {
         const body = document.getElementById('modalBody');
         if (!modalEl || !title || !body) return;
         modalEl.classList.add('loading-modal');
-        title.textContent = text || '載入中…';
+        title.textContent = text || t('common.loading');
         body.innerHTML = '<div class="loading-wrap"><div class="progress-bar" style="width:100%;"><div id="loadingBar" class="progress-inner" style="width:0%;"></div></div><div id="loadingText" class="loading-text"></div></div>';
         this.deps.openPreviewModal?.();
     }
@@ -81,7 +86,7 @@ export class MediaHandlingController extends BaseController {
      */
     async downloadVideoInline(media, msgId) {
         if (!media?.chunked || !media.baseKey || !media.manifestEnvelope) {
-            this.deps.showToast?.('影片資料不完整，無法播放');
+            this.deps.showToast?.(t('mediaHandling.videoDataIncomplete'));
             return;
         }
         return this.downloadChunkedVideoInline(media, msgId);
@@ -104,13 +109,13 @@ export class MediaHandlingController extends BaseController {
         if (media._videoState === 'downloading') return;
 
         if (isDownloadBusy()) {
-            this.deps.showToast?.('目前有檔案正在下載，請稍候再試');
+            this.deps.showToast?.(t('mediaHandling.fileDownloading'));
             return;
         }
 
         // Check MSE support
         if (!isMseSupported()) {
-            this.deps.showToast?.('此瀏覽器不支援影片串流播放');
+            this.deps.showToast?.(t('mediaHandling.browserNoStreamSupport'));
             return;
         }
 
@@ -119,7 +124,7 @@ export class MediaHandlingController extends BaseController {
         this._updateVideoOverlayUI(msgId, media);
 
         const downloadAbort = new AbortController();
-        startDownload(media.name || '影片', () => {
+        startDownload(media.name || t('common.video'), () => {
             try { downloadAbort.abort(); } catch {}
             media._videoState = 'idle';
             media._videoProgress = 0;
@@ -137,7 +142,7 @@ export class MediaHandlingController extends BaseController {
 
         // Step 1: Open fullscreen video viewer immediately
         const viewer = openVideoViewer({
-            name: media.name || '影片',
+            name: media.name || t('common.video'),
             size: media.size,
             onClose: () => {
                 // User closed the viewer — abort download and release resources
@@ -213,7 +218,7 @@ export class MediaHandlingController extends BaseController {
 
             // Non-segment-aligned manifests cannot use MSE streaming.
             if (!manifest.segment_aligned || !manifest.tracks) {
-                throw new Error('此影片格式不支援串流播放（非分段對齊）');
+                throw new Error(t('mediaHandling.videoFormatNoStream'));
             }
 
             // Segment-aligned fMP4 — use MSE streaming with single muxed SourceBuffer.
@@ -338,7 +343,7 @@ export class MediaHandlingController extends BaseController {
                     if (mime && !codecs.includes(mime)) codecs.push(mime);
                 }
                 if (codecs.length === 0) {
-                    throw new Error('無法偵測影片編碼格式');
+                    throw new Error(t('mediaHandling.cannotDetectVideoCodec'));
                 }
 
                 let decodeErrors = 0;
@@ -528,7 +533,7 @@ export class MediaHandlingController extends BaseController {
                         consecutiveErrors++;
                         console.warn(`[mse] segment ${index} append failed (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}):`, appendErr?.message);
                         if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-                            appendError = new Error('MSE 串流持續失敗');
+                            appendError = new Error('MSE streaming persistent failure');
                             try { downloadAbort.abort(); } catch {}
                         }
                     });
@@ -681,10 +686,10 @@ export class MediaHandlingController extends BaseController {
             // Mark as expired if file not found
             if (err?.mediaExpired || err?.status === 404 || err?.status === 410) {
                 media._expired = true;
-                this.deps.showToast?.('影片已失效或被刪除');
+                this.deps.showToast?.(t('mediaHandling.videoExpiredOrDeleted'));
                 this.deps.controllers?.messageFlow?.updateMessagesUI?.({ forceFullRender: true });
             } else {
-                this.deps.showToast?.(`影片播放失敗：${err?.message || err}`);
+                this.deps.showToast?.(t('mediaHandling.videoPlaybackFailed') + '：' + (err?.message || err));
             }
         }
     }
@@ -812,7 +817,7 @@ export class MediaHandlingController extends BaseController {
             console.info(`[video-seek] proceeding with re-append for ${seekTime.toFixed(1)}s`);
 
             reappending = true;
-            viewer.showBuffering('載入中…');
+            viewer.showBuffering(t('common.loading'));
 
             try {
                 // Disable eviction during re-append to protect freshly-appended data
@@ -978,14 +983,14 @@ export class MediaHandlingController extends BaseController {
         if (!media) return;
         try {
             const { saveChatMediaToDrive } = await import('../../../features/media.js');
-            this.deps.showToast?.('正在存到雲端硬碟…');
+            this.deps.showToast?.(t('drive.savingToCloud'));
             await saveChatMediaToDrive({ media });
-            this.deps.showToast?.('已存到雲端硬碟');
+            this.deps.showToast?.(t('drive.savedToCloud'));
         } catch (err) {
             console.error('[saveToDrive] failed:', err);
-            const isNetwork = err instanceof TypeError && /fetch/i.test(err?.message);
-            const msg = isNetwork ? '網路連線失敗，請檢查網路後再試' : (err?.message || err);
-            this.deps.showToast?.(`存到雲端失敗：${msg}`);
+            const isNetwork = err instanceof TypeError && /fetch|load failed/i.test(err?.message);
+            const msg = isNetwork ? t('errors.networkError') : (err?.message || err);
+            this.deps.showToast?.(t('drive.saveToCloudFailed') + '：' + msg);
         }
     }
 
@@ -995,18 +1000,18 @@ export class MediaHandlingController extends BaseController {
     async openMediaPreview(media) {
         if (!media) return;
         try {
-            const displayName = media.name || '附件';
+            const displayName = media.name || t('common.attachment');
             let result = null;
 
             if (media.chunked && media.baseKey && media.manifestEnvelope) {
                 // Chunked file (large non-video files uploaded via chunked path)
-                this._showModalLoading('下載加密檔案中…');
-                this._updateLoadingModal({ percent: 5, text: '取得解密資訊中…' });
+                this._showModalLoading(t('mediaHandling.downloadEncryptedFile'));
+                this._updateLoadingModal({ percent: 5, text: t('mediaHandling.gettingDecryptInfo') });
                 const manifest = await downloadChunkedManifest({
                     baseKey: media.baseKey,
                     manifestEnvelope: media.manifestEnvelope
                 });
-                this._updateLoadingModal({ percent: 10, text: '下載加密分片中…' });
+                this._updateLoadingModal({ percent: 10, text: t('mediaHandling.downloadingChunks') });
                 result = await downloadAllChunks({
                     baseKey: media.baseKey,
                     manifest,
@@ -1014,38 +1019,38 @@ export class MediaHandlingController extends BaseController {
                     onProgress: ({ percent: pct }) => {
                         if (Number.isFinite(pct)) {
                             const mapped = 10 + Math.round(pct * 0.85);
-                            this._updateLoadingModal({ percent: mapped, text: `下載加密分片中… ${pct}%` });
+                            this._updateLoadingModal({ percent: mapped, text: `${t('mediaHandling.downloadingChunks')} ${pct}%` });
                         }
                     }
                 });
-                this._updateLoadingModal({ percent: 98, text: '組裝檔案中…' });
+                this._updateLoadingModal({ percent: 98, text: t('mediaHandling.assemblingFile') });
             } else if (media.objectKey && media.envelope) {
-                this._showModalLoading('下載加密檔案中…');
+                this._showModalLoading(t('mediaHandling.downloadEncryptedFile'));
                 result = await downloadAndDecrypt({
                     key: media.objectKey,
                     envelope: media.envelope,
                     messageKeyB64: media.messageKey_b64 || media.message_key_b64 || null,
                     onStatus: ({ stage, loaded, total }) => {
                         if (stage === 'sign') {
-                            this._updateLoadingModal({ percent: 5, text: '取得下載授權中…' });
+                            this._updateLoadingModal({ percent: 5, text: t('mediaHandling.gettingDownloadAuth') });
                         } else if (stage === 'download-start') {
-                            this._updateLoadingModal({ percent: 10, text: '下載加密檔案中…' });
+                            this._updateLoadingModal({ percent: 10, text: t('mediaHandling.downloadEncryptedFile') });
                         } else if (stage === 'download') {
                             const pct = total && total > 0 ? Math.round((loaded / total) * 100) : null;
                             const percent = pct != null ? Math.min(95, Math.max(15, pct)) : 45;
                             const text = pct != null
-                                ? `下載加密檔案中… ${pct}% (${fmtSize(loaded)} / ${fmtSize(total)})`
-                                : `下載加密檔案中… (${fmtSize(loaded)})`;
+                                ? `${t('mediaHandling.downloadEncryptedFile')} ${pct}% (${fmtSize(loaded)} / ${fmtSize(total)})`
+                                : `${t('mediaHandling.downloadEncryptedFile')} (${fmtSize(loaded)})`;
                             this._updateLoadingModal({ percent, text });
                         } else if (stage === 'decrypt') {
-                            this._updateLoadingModal({ percent: 98, text: '解密檔案中…' });
+                            this._updateLoadingModal({ percent: 98, text: t('mediaHandling.decryptingFile') });
                         }
                     }
                 });
             } else if (media.localUrl) {
-                this._showModalLoading(`準備 ${displayName}…`);
+                this._showModalLoading(`${t('mediaHandling.preparing')} ${displayName}…`);
                 const response = await fetch(media.localUrl);
-                if (!response.ok) throw new Error('讀取本機預覽失敗');
+                if (!response.ok) throw new Error(t('mediaHandling.readLocalPreviewFailed'));
                 const blob = await response.blob();
                 result = {
                     blob,
@@ -1053,7 +1058,7 @@ export class MediaHandlingController extends BaseController {
                     name: displayName
                 };
             } else {
-                throw new Error('無法預覽：無效的檔案來源');
+                throw new Error(t('mediaHandling.invalidFileSource'));
             }
 
             await this.renderMediaPreviewModal({
@@ -1068,11 +1073,11 @@ export class MediaHandlingController extends BaseController {
             // Mark media as expired/unavailable if the file was not found on R2
             if (err?.mediaExpired || err?.status === 404 || err?.status === 410) {
                 media._expired = true;
-                this.deps.showToast?.('檔案已失效或被刪除');
+                this.deps.showToast?.(t('mediaHandling.fileExpiredOrDeleted'));
                 // Re-render to show expired indicator
                 this.deps.controllers?.messageFlow?.updateMessagesUI?.({ forceFullRender: true });
             } else {
-                this.deps.showToast?.(`附件預覽失敗：${err?.message || err}`);
+                this.deps.showToast?.(t('mediaHandling.cannotPreviewAttachment') + '：' + (err?.message || err));
             }
         }
     }
@@ -1087,22 +1092,27 @@ export class MediaHandlingController extends BaseController {
 
         if (!modalEl || !body || !title) {
             this.deps.closePreviewModal?.();
-            this.deps.showToast?.('無法顯示附件預覽');
+            this.deps.showToast?.(t('mediaHandling.cannotPreviewAttachment'));
             return;
         }
 
         cleanupPdfViewer();
+        cleanupExcelViewer();
+        cleanupWordViewer();
+        cleanupZipViewer();
+        cleanupPptxViewer();
 
         // Clear all modal classes
         const classesToRemove = [
             'loading-modal', 'progress-modal', 'folder-modal', 'upload-modal',
             'confirm-modal', 'nickname-modal', 'avatar-modal',
-            'avatar-preview-modal', 'settings-modal'
+            'avatar-preview-modal', 'settings-modal',
+            'pdf-modal', 'excel-modal', 'word-modal', 'pptx-modal', 'zip-modal'
         ];
         modalEl.classList.remove(...classesToRemove);
 
         body.innerHTML = '';
-        const resolvedName = name || '附件';
+        const resolvedName = name || t('common.attachment');
         title.textContent = resolvedName;
         title.setAttribute('title', resolvedName);
 
@@ -1140,8 +1150,52 @@ export class MediaHandlingController extends BaseController {
 
             const msg = document.createElement('div');
             msg.className = 'preview-message';
-            msg.innerHTML = `PDF 無法內嵌預覽，將直接下載。<br/><br/><a class="primary" href="${url}" download="${escapeHtml(resolvedName)}">下載檔案</a>`;
+            msg.innerHTML = `${t('mediaHandling.pdfCannotEmbed')}<br/><br/><a class="primary" href="${url}" download="${escapeHtml(resolvedName)}">${t('drive.downloadFile')}</a>`;
             wrap.appendChild(msg);
+        } else if (isExcelMime(ct) || isExcelFilename(resolvedName)) {
+            const handled = await renderExcelViewer({
+                url,
+                blob,
+                name: resolvedName,
+                modalApi: { openModal, closeModal, showConfirmModal: showConfirm }
+            });
+            if (handled) {
+                this.deps.openPreviewModal?.();
+                return;
+            }
+        } else if (isWordMime(ct) || isWordFilename(resolvedName)) {
+            const handled = await renderWordViewer({
+                url,
+                blob,
+                name: resolvedName,
+                modalApi: { openModal, closeModal, showConfirmModal: showConfirm }
+            });
+            if (handled) {
+                this.deps.openPreviewModal?.();
+                return;
+            }
+        } else if (isPptxMime(ct) || isPptxFilename(resolvedName)) {
+            const handled = await renderPptxViewer({
+                url,
+                blob,
+                name: resolvedName,
+                modalApi: { openModal, closeModal, showConfirmModal: showConfirm }
+            });
+            if (handled) {
+                this.deps.openPreviewModal?.();
+                return;
+            }
+        } else if (isZipMime(ct) || isZipFilename(resolvedName)) {
+            const handled = await renderZipViewer({
+                url,
+                blob,
+                name: resolvedName,
+                modalApi: { openModal, closeModal, showConfirmModal: showConfirm }
+            });
+            if (handled) {
+                this.deps.openPreviewModal?.();
+                return;
+            }
         } else if (ct.startsWith('image/')) {
             // Use full-screen image viewer instead of basic modal
             closeModal?.();
@@ -1197,17 +1251,17 @@ export class MediaHandlingController extends BaseController {
             } catch {
                 const msg = document.createElement('div');
                 msg.className = 'preview-message';
-                msg.textContent = '無法顯示文字內容。';
+                msg.textContent = t('drive.cannotDisplayTextContent');
                 wrap.appendChild(msg);
             }
         } else {
             const message = document.createElement('div');
             message.style.textAlign = 'center';
-            message.innerHTML = `無法預覽此類型（${escapeHtml(contentType || '未知')}）。<br/><br/>`;
+            message.innerHTML = `${t('mediaHandling.cannotPreviewType')}（${escapeHtml(contentType || t('common.unknown'))}）<br/><br/>`;
             const link = document.createElement('a');
             link.href = url;
             link.download = resolvedName;
-            link.textContent = '下載檔案';
+            link.textContent = t('drive.downloadFile');
             link.className = 'primary';
             message.appendChild(link);
             wrap.appendChild(message);

@@ -68,7 +68,8 @@ const defaultSubscriptionState = {
   loading: false,
   expired: true,
   logs: [],
-  accountCreatedAt: null
+  accountCreatedAt: null,
+  tier: null
 };
 
 const CONVERSATION_INDEX_PATCHED = Symbol('conversationIndexPatched');

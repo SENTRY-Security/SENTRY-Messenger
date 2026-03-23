@@ -58,6 +58,7 @@ html.no-anim .cover-spinner {
   min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   padding-bottom: calc(var(--navbar-height) + 28px);
 }
 
@@ -161,10 +162,11 @@ html.no-anim .cover-spinner {
   border-color: rgba(148, 163, 184, 0.18);
 }
 
-.contacts-search-wrap > i {
+.contacts-search-wrap > .icon {
   position: absolute;
   left: 12px;
-  font-size: 18px;
+  width: 18px;
+  height: 18px;
   color: #94a3b8;
   pointer-events: none;
   z-index: 1;
@@ -203,7 +205,16 @@ html.no-anim .cover-spinner {
 
 #tab-profile {
   display: block;
-  overflow: auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  height: 100%;
+}
+
+#tab-safe {
+  display: block;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  height: 100%;
 }
 
 #tab-messages {
@@ -457,7 +468,8 @@ button.primary:active {
   transition: background .2s, color .2s, border-color .2s, transform .15s ease;
 }
 
-.list-actions button i {
+.list-actions button i,
+.list-actions button .icon {
   font-size: 18px;
   color: var(--fg);
 }

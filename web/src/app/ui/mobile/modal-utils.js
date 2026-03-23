@@ -1,6 +1,7 @@
 import { escapeHtml, fmtSize } from './ui-utils.js';
 import { sessionStore } from './session-store.js';
 import { cleanupImageViewer } from './viewers/image-viewer.js';
+import { t } from '/locales/index.js';
 
 export function setupModalController({ shareButtonProvider } = {}) {
   const getShareButton = typeof shareButtonProvider === 'function'
@@ -64,6 +65,11 @@ export function setupModalController({ shareButtonProvider } = {}) {
       'avatar-preview-modal',
       'settings-modal',
       'pdf-modal',
+      'excel-modal',
+      'word-modal',
+      'pptx-modal',
+      'zip-modal',
+      'safe-modal',
       'subscription-modal-shell'
     );
     document.querySelector('.pdf-confirm')?.remove();
@@ -151,9 +157,9 @@ export function setupModalController({ shareButtonProvider } = {}) {
     );
     modal.classList.add('security-modal');
     const modalTitle = document.getElementById('modalTitle');
-    if (modalTitle) modalTitle.textContent = title || '建立安全對話';
+    if (modalTitle) modalTitle.textContent = title || t('encryption.buildingSecureConversationTitle');
     const spinner = '<div class="loading-spinner"></div>';
-    const primary = escapeHtml(message || '正在建立安全對話，請稍候…');
+    const primary = escapeHtml(message || t('encryption.buildingSecureConversationMessage'));
     const secondary = typeof subMessage === 'string' && subMessage
       ? `<div class="security-hint">${escapeHtml(subMessage)}</div>`
       : '';
@@ -194,7 +200,7 @@ export function setupModalController({ shareButtonProvider } = {}) {
     body.innerHTML = `
       <div class="loading-wrap">
         <div class="progress-bar" style="width:100%;"><div id="loadingBar" class="progress-inner" style="width:0%;"></div></div>
-        <div id="loadingText" class="loading-text">${escapeHtml(text || '載入中…')}</div>
+        <div id="loadingText" class="loading-text">${escapeHtml(text || t('common.loading'))}</div>
       </div>`;
     openModal();
   }
@@ -210,7 +216,8 @@ export function setupModalController({ shareButtonProvider } = {}) {
     }
   }
 
-  function showConfirmModal({ title, message, confirmLabel = '確定', onConfirm, onCancel }) {
+  function showConfirmModal({ title, message, confirmLabel, onConfirm, onCancel }) {
+    confirmLabel = confirmLabel || t('modal.confirm');
     const modal = document.getElementById('modal');
     const body = document.getElementById('modalBody');
     if (!modal || !body) return;
@@ -234,7 +241,7 @@ export function setupModalController({ shareButtonProvider } = {}) {
       <div class="confirm-wrap">
         <div class="confirm-message">${escapeHtml(message || '')}</div>
         <div class="confirm-actions">
-          <button type="button" id="confirmCancel" class="btn-secondary">取消</button>
+          <button type="button" id="confirmCancel" class="btn-secondary">${escapeHtml(t('common.cancel'))}</button>
           <button type="button" id="confirmOk" class="btn-danger">${escapeHtml(confirmLabel)}</button>
         </div>
       </div>`;
@@ -251,7 +258,8 @@ export function setupModalController({ shareButtonProvider } = {}) {
     }, { once: true });
   }
 
-  function showAlertModal({ title, message, confirmLabel = '確定', onConfirm }) {
+  function showAlertModal({ title, message, confirmLabel, onConfirm }) {
+    confirmLabel = confirmLabel || t('modal.confirm');
     const modal = document.getElementById('modal');
     const body = document.getElementById('modalBody');
     if (!modal || !body) return;
@@ -270,7 +278,7 @@ export function setupModalController({ shareButtonProvider } = {}) {
     );
     modal.classList.add('alert-modal');
     const modalTitle = document.getElementById('modalTitle');
-    if (modalTitle) modalTitle.textContent = title || '提示';
+    if (modalTitle) modalTitle.textContent = title || t('modal.hint');
     body.innerHTML = `
       <div class="alert-wrap">
         <div class="alert-message">${escapeHtml(message || '')}</div>
@@ -313,8 +321,8 @@ export function setupModalController({ shareButtonProvider } = {}) {
     body.innerHTML = `
       <div class="progress-wrap">
         <div class="progress-icon progress-icon--uploading">${PROGRESS_ICON_UPLOAD}</div>
-        <div class="progress-title">${escapeHtml(name || '檔案')}</div>
-        <div class="progress-subtitle">準備上傳…</div>
+        <div class="progress-title">${escapeHtml(name || t('common.file'))}</div>
+        <div class="progress-subtitle">${escapeHtml(t('renderer.preparingUpload'))}</div>
         <div id="progressPercent" class="progress-percent">0<span>%</span></div>
         <div class="progress-bar"><div id="progressInner" class="progress-inner" style="width:0%;"></div></div>
         <div id="progressText" class="progress-text"></div>
@@ -342,7 +350,7 @@ export function setupModalController({ shareButtonProvider } = {}) {
     body.innerHTML = `
       <div class="progress-wrap">
         <div class="progress-icon progress-icon--done">${PROGRESS_ICON_CHECK}</div>
-        <div class="progress-done-text">上傳完成</div>
+        <div class="progress-done-text">${escapeHtml(t('drive.done'))}</div>
       </div>`;
     setTimeout(() => closeModal(), 800);
   }
@@ -353,8 +361,8 @@ export function setupModalController({ shareButtonProvider } = {}) {
     body.innerHTML = `
       <div class="progress-wrap">
         <div class="progress-icon progress-icon--fail">${PROGRESS_ICON_FAIL}</div>
-        <div class="progress-title">上傳失敗</div>
-        <div class="progress-fail-text">${escapeHtml(message || '未知錯誤')}</div>
+        <div class="progress-title">${escapeHtml(t('renderer.uploadFailed'))}</div>
+        <div class="progress-fail-text">${escapeHtml(message || t('modal.unknownError'))}</div>
       </div>`;
     setTimeout(() => closeModal(), 1800);
   }

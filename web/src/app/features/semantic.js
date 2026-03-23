@@ -15,6 +15,10 @@ export const MSG_SUBTYPE = Object.freeze({
   CALL_LOG: 'call-log',
   SYSTEM: 'system',
 
+  // Business Conversation User Messages
+  BIZ_CONV_TEXT: 'biz-conv-text',
+  BIZ_CONV_MEDIA: 'biz-conv-media',
+
   // Control State
   CONTACT_SHARE: 'contact-share',
   PROFILE_UPDATE: 'profile-update',
@@ -22,6 +26,11 @@ export const MSG_SUBTYPE = Object.freeze({
   SESSION_INIT: 'session-init',
   SESSION_ACK: 'session-ack',
   CONVERSATION_DELETED: 'conversation-deleted',
+
+  // Business Conversation Control State
+  BIZ_CONV_KDM: 'biz-conv-kdm',
+  BIZ_CONV_TOMBSTONE: 'biz-conv-tombstone',
+  BIZ_CONV_FRIEND_REQUEST: 'biz-conv-friend-request',
 
   // Transient Signals
   READ_RECEIPT: 'read-receipt',
@@ -35,7 +44,9 @@ export const USER_MESSAGE_SUBTYPES = new Set([
   MSG_SUBTYPE.TEXT,
   MSG_SUBTYPE.MEDIA,
   MSG_SUBTYPE.CALL_LOG,
-  MSG_SUBTYPE.SYSTEM
+  MSG_SUBTYPE.SYSTEM,
+  MSG_SUBTYPE.BIZ_CONV_TEXT,
+  MSG_SUBTYPE.BIZ_CONV_MEDIA
 ]);
 
 export const CONTROL_STATE_SUBTYPES = new Set([
@@ -44,7 +55,10 @@ export const CONTROL_STATE_SUBTYPES = new Set([
   MSG_SUBTYPE.SESSION_ERROR,
   MSG_SUBTYPE.SESSION_INIT,
   MSG_SUBTYPE.SESSION_ACK,
-  MSG_SUBTYPE.CONVERSATION_DELETED
+  MSG_SUBTYPE.CONVERSATION_DELETED,
+  MSG_SUBTYPE.BIZ_CONV_KDM,
+  MSG_SUBTYPE.BIZ_CONV_TOMBSTONE,
+  MSG_SUBTYPE.BIZ_CONV_FRIEND_REQUEST
 ]);
 
 export const TRANSIENT_SIGNAL_SUBTYPES = new Set([

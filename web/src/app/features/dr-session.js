@@ -20,7 +20,7 @@ import { prekeysBundle } from '../api/prekeys.js';
 import { x3dhInitiate, drEncryptText, x3dhRespond, buildDrAadFromHeader } from '../crypto/dr.js';
 import { b64, b64u8 } from '../crypto/nacl.js';
 import { getAccountDigest, drState, normalizePeerIdentity, getDeviceId, ensureDeviceId, normalizeAccountDigest, clearDrStatesByAccount, clearDrState, normalizePeerDeviceId, getMkRaw } from '../core/store.js';
-import { getContactSecret, setContactSecret, restoreContactSecrets, quarantineCorruptContact, normalizePeerKeyForQuarantine, recordPendingContact, clearPendingContact, buildPartialContactSecretsSnapshot, encryptContactSecretPayload, drEffectiveCounters, isDrRegression } from '../core/contact-secrets.js';
+import { getContactSecret, setContactSecret, restoreContactSecrets, quarantineCorruptContact, normalizePeerKeyForQuarantine, recordPendingContact, clearPendingContact, buildPartialContactSecretsSnapshot, encryptContactSecretPayload, drEffectiveCounters, isDrRegression, checkAndStorePeerIk } from '../core/contact-secrets.js';
 import {
   initContactSecretsBackup,
   triggerContactSecretsBackup,
@@ -56,6 +56,7 @@ const sendFailureCounter = new Map(); // peerDigest::deviceId -> count
 const transportCounterSeeded = new Set(); // conversationId::senderDeviceId
 const COUNTER_TOO_LOW_CODE = 'CounterTooLow';
 import { enqueueMediaMetaJob } from './queue/media.js';
+import { t } from '/locales/index.js';
 const SEND_PREFLIGHT_TRACE_LIMIT = 3;
 let sendPreflightTraceCount = 0;
 const DR_SNAPSHOT_REJECT_LIMIT = 3;
@@ -800,7 +801,7 @@ function appendDrHistoryEntry(params = {}) {
 }
 
 function restoreDrStateFromHistory(params = {}) {
-  throw new Error('DR history restore disabled；請重新同步好友或重新建立邀請');
+  throw new Error(t('encryption.noSecureSession'));
 }
 
 export function restoreDrStateToHistoryPoint(params = {}) {
@@ -1631,6 +1632,32 @@ export async function ensureDrSession(params = {}) {
 
       const peerBundle = normalizePeerBundleFromPrekeys(bundle);
 
+      // [TOFU] Check peer Identity Key against stored trusted key
+      const peerBundleDeviceId = bundle?.device_id || peerDeviceId || null;
+      const tofuResult = checkAndStorePeerIk(peer, peerBundle.ik_pub, { peerDeviceId: peerBundleDeviceId });
+      if (tofuResult.changed) {
+        console.warn('[dr-session:tofu] ⚠ IDENTITY KEY CHANGED for peer', {
+          peerAccountDigest: peer,
+          peerDeviceId: peerBundleDeviceId
+        });
+        try {
+          if (typeof document !== 'undefined') {
+            document.dispatchEvent(new CustomEvent('dr:identity-key-changed', {
+              detail: {
+                peerAccountDigest: peer,
+                peerDeviceId: peerBundleDeviceId,
+                previousIkPub: tofuResult.previousIkPub,
+                newIkPub: peerBundle.ik_pub,
+                context: 'x3dh-initiate',
+                timestamp: Date.now()
+              }
+            }));
+          }
+        } catch (e) {
+          console.error('[dr-session:tofu] Failed to dispatch identity-key-changed event', e);
+        }
+      }
+
       // [DEBUG-NOTIFY] Implicit Reset Path
       try {
         if (typeof document !== 'undefined') {
@@ -1812,7 +1839,7 @@ export async function sendDrPlaintextCore(params = {}) {
         throw err;
       }
     } else {
-      throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+      throw new Error(t('encryption.noSecureSession'));
     }
     state = drState({ peerAccountDigest: peer, peerDeviceId });
     hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
@@ -1852,7 +1879,7 @@ export async function sendDrPlaintextCore(params = {}) {
   }
 
   if (!hasDrState && !hasDrInit) {
-    throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+    throw new Error(t('encryption.noSecureSession'));
   }
   if (!state.baseKey) state.baseKey = {};
   if (conversationId && state.baseKey.conversationId !== conversationId) {
@@ -2065,6 +2092,13 @@ export async function sendDrPlaintextCore(params = {}) {
 
     let job;
     try {
+      // Build short preview for E2E push notification (truncated, never persisted on server)
+      const _previewText = (msgType === 'text' && typeof text === 'string' && text.length > 0)
+        ? text.slice(0, 140)
+        : null;
+      // Sender's display name for push notification title (E2E encrypted alongside body)
+      const _senderName = sessionStore?.profileState?.nickname || null;
+
       job = await enqueueOutboxJob({
         conversationId: finalConversationId,
         messageId,
@@ -2078,6 +2112,9 @@ export async function sendDrPlaintextCore(params = {}) {
         createdAt: now,
         peerAccountDigest: peer,
         peerDeviceId: peerDeviceId || null,
+        previewText: _previewText,
+        previewMsgType: msgType || 'text',
+        senderDisplayName: _senderName,
         meta: { msgType },
         dr: preSnapshot
           ? {
@@ -2526,7 +2563,7 @@ export async function sendDrPlaintextCore(params = {}) {
     const nextFail = (sendFailureCounter.get(key) || 0) + 1;
     sendFailureCounter.set(key, nextFail);
     if (nextFail >= 3) {
-      throw new Error('DR 送出連續失敗，請重新同步好友或重新建立邀請');
+      throw new Error(t('encryption.noSecureSession'));
     }
     /* [SECURITY FIX] DO NOT ROLLBACK DR STATE ON NETWORK FAILURE
     // If we restore state here, we risk reusing the same Ratchet Counter (N) for a future message.
@@ -2742,6 +2779,113 @@ async function buildVideoPreviewBlob(file) {
   }
 }
 
+const WORD_MIMES = [
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/msword',
+  'application/vnd.ms-word.document.macroenabled.12'
+];
+
+function isWordFile(file) {
+  const ct = resolveContentType(file).toLowerCase().split(';')[0].trim();
+  if (WORD_MIMES.some(m => ct === m)) return true;
+  const name = file?.name || '';
+  return /\.(docx|doc|docm)$/i.test(name);
+}
+
+async function buildWordPreviewBlob(file) {
+  if (!file) return null;
+  try {
+    // Ensure JSZip is loaded (docx-preview depends on window.JSZip)
+    if (typeof window.JSZip === 'undefined') {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = '/assets/libs/jszip.min.js';
+        s.onload = resolve;
+        s.onerror = () => reject(new Error('JSZip load failed'));
+        document.head.appendChild(s);
+      });
+    }
+    const mod = await import(/* webpackIgnore: true */ '/assets/libs/docx-preview.min.mjs');
+    const docxLib = mod.default || mod.docx || mod;
+    if (!docxLib?.renderAsync) return null;
+    const data = await file.arrayBuffer();
+
+    // Render docx into a hidden container
+    const RENDER_W = 680;
+    const CAPTURE_H = 900;
+    const container = document.createElement('div');
+    container.style.cssText = `position:fixed;left:-9999px;top:0;width:${RENDER_W}px;background:#fff;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,sans-serif;`;
+    document.body.appendChild(container);
+    try {
+      await docxLib.renderAsync(data, container, null, {
+        className: 'word-docx-preview',
+        inWrapper: false,
+        ignoreWidth: true,
+        ignoreHeight: true,
+        breakPages: false,
+        experimental: true,
+        useBase64URL: true,
+        ignoreFonts: false,
+        renderHeaders: false,
+        renderFooters: false,
+        renderFootnotes: false,
+        renderEndnotes: false
+      });
+
+      const section = container.querySelector('section') || container;
+      const contentW = Math.min(section.scrollWidth, RENDER_W);
+      const contentH = Math.min(section.scrollHeight, CAPTURE_H);
+      if (!contentW || !contentH) return null;
+
+      // Use SVG foreignObject to capture rendered HTML as image
+      // Serialize the rendered HTML
+      const clone = section.cloneNode(true);
+      // Remove scripts/iframes for safety
+      clone.querySelectorAll('script,iframe').forEach(el => el.remove());
+      const htmlStr = new XMLSerializer().serializeToString(clone);
+
+      const svgNS = 'http://www.w3.org/2000/svg';
+      const svg = `<svg xmlns="${svgNS}" width="${contentW}" height="${contentH}">
+        <foreignObject width="100%" height="100%">
+          <div xmlns="http://www.w3.org/1999/xhtml" style="width:${contentW}px;height:${contentH}px;overflow:hidden;background:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-size:14px;color:#1e293b;line-height:1.5;padding:16px;box-sizing:border-box;">
+            ${htmlStr}
+          </div>
+        </foreignObject>
+      </svg>`;
+
+      const svgBlob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+      const svgUrl = URL.createObjectURL(svgBlob);
+      try {
+        const img = new Image();
+        img.decoding = 'async';
+        await new Promise((resolve, reject) => {
+          img.onload = resolve;
+          img.onerror = reject;
+          img.src = svgUrl;
+        });
+
+        const target = scaleToPreviewSize(contentW, contentH);
+        const canvas = document.createElement('canvas');
+        canvas.width = target.width || contentW;
+        canvas.height = target.height || contentH;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const blob = await canvasToJpegBlob(canvas);
+        return { blob, width: canvas.width, height: canvas.height, contentType: 'image/jpeg' };
+      } finally {
+        URL.revokeObjectURL(svgUrl);
+      }
+    } finally {
+      container.remove();
+    }
+  } catch (err) {
+    logDrSend('word-preview-failed', { error: err?.message || err });
+    return null;
+  }
+}
+
 export async function buildMediaPreviewBlob(file) {
   const type = resolveContentType(file).toLowerCase();
   if (type.startsWith('image/')) {
@@ -2754,6 +2898,9 @@ export async function buildMediaPreviewBlob(file) {
       logDrSend('video-preview-failed', { error: err?.message || err });
       return null;
     }
+  }
+  if (isWordFile(file)) {
+    return buildWordPreviewBlob(file);
   }
   return null;
 }
@@ -2813,14 +2960,14 @@ export async function sendDrMedia(params = {}) {
       try {
         await ensureDrSession({ peerAccountDigest: peer, peerDeviceId });
       } catch (err) {
-        if (!hasDrInit) throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
-        throw new Error('DR 會話初始化失敗：' + (err?.message || err));
+        if (!hasDrInit) throw new Error(t('encryption.noSecureSession'));
+        throw new Error(t('encryption.drInitFailed') + (err?.message || err));
       }
       state = drState({ peerAccountDigest: peer, peerDeviceId });
       hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
     }
     if (!hasDrState && !hasDrInit) {
-      throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+      throw new Error(t('encryption.noSecureSession'));
     }
     // Assign ticket while holding the session lock — guarantees monotonic ordering.
     myTicket = mediaSendTicketCounter.get(queueKey) || 0;
@@ -3017,16 +3164,16 @@ export async function sendDrMediaCore(params = {}) {
         await ensureDrSession({ peerAccountDigest: peer, peerDeviceId });
       } catch (err) {
         if (!hasDrInit) {
-          throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+          throw new Error(t('encryption.noSecureSession'));
         }
-        throw new Error('DR 會話初始化失敗：' + (err?.message || err));
+        throw new Error(t('encryption.drInitFailed') + (err?.message || err));
       }
       state = drState({ peerAccountDigest: peer, peerDeviceId });
       hasDrState = state?.rk && state.myRatchetPriv && state.myRatchetPub;
     }
 
     if (!hasDrState && !hasDrInit) {
-      throw new Error('尚未建立安全對話，請重新同步好友或重新建立邀請');
+      throw new Error(t('encryption.noSecureSession'));
     }
 
     conversationId = convContext?.conversation_id || convContext?.conversationId || convId || null;
@@ -3101,7 +3248,7 @@ export async function sendDrMediaCore(params = {}) {
 
   const metadata = {
     type: 'media',
-    name: typeof file.name === 'string' && file.name ? file.name : '附件',
+    name: typeof file.name === 'string' && file.name ? file.name : t('common.attachment'),
     size: typeof file.size === 'number' ? file.size : uploadResult.size ?? uploadResult.totalSize ?? null,
     contentType: file.type || 'application/octet-stream',
     dir: Array.isArray(dir) && dir.length
@@ -3343,6 +3490,13 @@ export async function sendDrMediaCore(params = {}) {
     }
   }
 
+  // Resolve media content type to push preview msgType
+  const _mediaContentType = (metadata?.contentType || '').toLowerCase();
+  const _mediaMsgType = _mediaContentType.startsWith('image/') ? 'image'
+    : _mediaContentType.startsWith('video/') ? 'video'
+    : _mediaContentType.startsWith('audio/') ? 'audio'
+    : 'file';
+
   const job = await enqueueMediaMetaJob({
     conversationId,
     messageId,
@@ -3356,6 +3510,9 @@ export async function sendDrMediaCore(params = {}) {
     createdAt: now,
     meta: { msgType: msgType, media: metadata },
     peerAccountDigest: peer,
+    // E2E push preview for media messages
+    previewMsgType: _mediaMsgType,
+    senderDisplayName: sessionStore?.profileState?.nickname || null,
     dr: preSnapshot
       ? {
         snapshotBefore: preSnapshot,
@@ -3422,7 +3579,7 @@ export async function sendDrMediaCore(params = {}) {
         id: messageId,
         counter: vaultCounter,
         ts: now,
-        text: `[檔案] ${metadata.name}`,
+        text: t('messages.filePreview', { name: metadata.name }),
         type: 'media',
         media: buildReturnMedia(now)
       },
@@ -3440,7 +3597,7 @@ export async function sendDrMediaCore(params = {}) {
         id: messageId,
         counter: vaultCounter,
         ts: now,
-        text: `[檔案] ${metadata.name}`,
+        text: t('messages.filePreview', { name: metadata.name }),
         type: 'media',
         media: buildReturnMedia(now)
       },
@@ -3567,7 +3724,7 @@ export async function sendDrMediaCore(params = {}) {
             id: replacementMessageId,
             counter: repairVaultCounter,
             ts: repairNow,
-            text: `[檔案] ${metadata.name}`,
+            text: t('messages.filePreview', { name: metadata.name }),
             type: 'media',
             media: buildReturnMedia(repairNow)
           },
@@ -3586,7 +3743,7 @@ export async function sendDrMediaCore(params = {}) {
             id: replacementMessageId,
             counter: repairVaultCounter,
             ts: repairNow,
-            text: `[檔案] ${metadata.name}`,
+            text: t('messages.filePreview', { name: metadata.name }),
             type: 'media',
             media: buildReturnMedia(repairNow)
           },
@@ -3644,7 +3801,7 @@ export async function sendDrMediaCore(params = {}) {
           id: finalRepairMessageId,
           counter: repairVaultCounter,
           ts: repairNow,
-          text: `[檔案] ${metadata.name}`,
+          text: t('messages.filePreview', { name: metadata.name }),
           type: 'media',
           media: buildReturnMedia(repairNow)
         },
@@ -3715,7 +3872,7 @@ export async function sendDrMediaCore(params = {}) {
 }
 
 export async function sendDrCallLog(params = {}) {
-  const { callId, outcome, direction, reason } = params;
+  const { callId, outcome, direction, reason, kind } = params;
   const peerAccountDigest = resolvePeerDigest(params);
   const peerDeviceId = normalizePeerDeviceId(
     params.peerDeviceId
@@ -3742,6 +3899,7 @@ export async function sendDrCallLog(params = {}) {
     : (startedAtSec != null && endedAtSec != null ? Math.max(0, endedAtSec - startedAtSec) : 0);
   const conversationContext = conversationContextForPeer({ peerAccountDigest, peerDeviceId }) || {};
   const conversationId = conversationContext?.conversation_id || conversationContext?.conversationId || null;
+  const safeKind = kind === 'video' ? 'video' : 'voice';
   const payload = {
     type: 'call-log',
     callId: callId || null,
@@ -3751,6 +3909,7 @@ export async function sendDrCallLog(params = {}) {
     direction,
     reason,
     endReason: reason || null,
+    kind: safeKind,
     peerAccountDigest,
     peerDeviceId,
     startedAt: startedAtSec,
@@ -3763,13 +3922,17 @@ export async function sendDrCallLog(params = {}) {
     call_duration: safeDuration,
     call_direction: direction,
     call_reason: reason || null,
+    call_kind: safeKind,
     peer_account_digest: peerAccountDigest,
     peer_device_id: peerDeviceId,
     call_started_at: startedAtSec,
     call_ended_at: endedAtSec
   };
   const text = JSON.stringify(payload);
-  const conversation = params?.conversation || conversationContext || null;
+  // Merge conversationContext (has token_b64 from peer lookup) with params.conversation
+  // (has conversation_id from caller). Using || would discard the token when params.conversation
+  // is truthy but incomplete.
+  const conversation = { ...(conversationContext || {}), ...(params?.conversation || {}) };
   const result = await sendDrPlaintext({
     ...params,
     peerAccountDigest,
@@ -3790,6 +3953,34 @@ export async function bootstrapDrFromGuestBundle(params = {}) {
   const peerDeviceId = params?.peerDeviceId ?? null;
   const holder = drState({ peerAccountDigest: peer, peerDeviceId });
   if (holder?.rk && !force) return false;
+  // [TOFU] Check peer Identity Key against stored trusted key
+  const guestIkPub = guestBundle?.ik_pub || guestBundle?.ik || guestBundle?.ik_pub_b64 || null;
+  if (guestIkPub) {
+    const tofuResult = checkAndStorePeerIk(peer, guestIkPub, { peerDeviceId });
+    if (tofuResult.changed) {
+      console.warn('[dr-bootstrap:tofu] ⚠ IDENTITY KEY CHANGED for peer', {
+        peerAccountDigest: peer,
+        peerDeviceId
+      });
+      try {
+        if (typeof document !== 'undefined') {
+          document.dispatchEvent(new CustomEvent('dr:identity-key-changed', {
+            detail: {
+              peerAccountDigest: peer,
+              peerDeviceId,
+              previousIkPub: tofuResult.previousIkPub,
+              newIkPub: guestIkPub,
+              context: 'x3dh-respond',
+              timestamp: Date.now()
+            }
+          }));
+        }
+      } catch (e) {
+        console.error('[dr-bootstrap:tofu] Failed to dispatch identity-key-changed event', e);
+      }
+    }
+  }
+
   const priv = await ensureDevicePrivLoaded();
   const st = await x3dhRespond(priv, guestBundle);
   const logInvalid = (keyName, raw, reason) => {
@@ -3951,7 +4142,7 @@ export async function ensureDrReceiverState(params = {}) {
       return false;
     }
     secretInfo = { ...secretInfo, drState: null };
-    throw new Error('狀態損壞，需要重新同步/重新邀請');
+    throw new Error(t('encryption.corruptNeedResync'));
   }
   const snapshot = snapshotValidation.snapshot;
   secretInfo = { ...secretInfo, drState: snapshot };
@@ -4537,7 +4728,7 @@ export async function ensureDrReceiverState(params = {}) {
     return true;
   }
 
-  throw new Error('缺少安全會話狀態，請重新同步好友或重新建立邀請');
+  throw new Error(t('encryption.missingSessionState'));
 }
 
 export async function recoverDrState(params = {}) {
@@ -4559,7 +4750,7 @@ export function prepareDrForMessage(params = {}) {
   const deviceId = ensureDeviceId();
   const holder = stateOverride || drState({ peerAccountDigest: peer, peerDeviceId });
   if (!holder?.rk) {
-    throw new Error('缺少安全會話狀態，請重新同步好友或重新建立邀請');
+    throw new Error(t('encryption.missingSessionState'));
   }
   const stamp = Number(messageTs);
   const stampIsFinite = Number.isFinite(stamp);

@@ -26,6 +26,9 @@ export async function enqueueMediaMetaJob({
   receiverDeviceId,
   createdAt,
   meta,
+  // E2E push preview fields
+  previewMsgType = null,
+  senderDisplayName = null,
   vault = null,   // [ATOMIC-SEND]
   backup = null   // [ATOMIC-SEND]
 }) {
@@ -44,6 +47,8 @@ export async function enqueueMediaMetaJob({
     receiverDeviceId,
     createdAt,
     meta,
+    previewMsgType,
+    senderDisplayName,
     vault,    // [ATOMIC-SEND]
     backup    // [ATOMIC-SEND]
   });

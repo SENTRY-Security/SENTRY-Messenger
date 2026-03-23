@@ -5,7 +5,9 @@
 // ALWAYS returns MUXED single-track output so downstream code can use a single
 // MSE SourceBuffer and blob-URL fallback (concatenation = valid fMP4).
 
-const MP4BOX_CDN_URL = 'https://esm.sh/mp4box@0.5.3';
+import { t } from '/locales/index.js';
+
+const MP4BOX_CDN_URL = '/assets/libs/mp4box.mjs';
 
 let _mp4boxModule = null;
 
@@ -18,7 +20,7 @@ async function loadMp4box() {
     _mp4boxModule = await import(/* webpackIgnore: true */ MP4BOX_CDN_URL);
     return _mp4boxModule;
   } catch (err) {
-    throw new Error('無法載入影片處理模組：' + (err?.message || err));
+    throw new Error(t('video.cannotLoadVideoModule') + (err?.message || err));
   }
 }
 
@@ -630,7 +632,7 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
   // Check if this is a remuxable type
   if (!REMUXABLE_TYPES.has(type)) {
     if (type.startsWith('video/')) {
-      throw new UnsupportedVideoFormatError(`不支援此影片格式：${type}`);
+      throw new UnsupportedVideoFormatError(t('video.unsupportedFormat', { type }));
     }
     onProgress?.({ percent: 100 });
     return { tracks: null, segments: null, contentType: type || 'application/octet-stream', remuxed: false, name };
@@ -660,7 +662,7 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
       }
     }
     if (segments.length < 2 || !initSegment?.byteLength) {
-      throw new UnsupportedVideoFormatError('已分片的影片格式無法正確解析');
+      throw new UnsupportedVideoFormatError(t('upload.fragmentedVideoError'));
     }
     const track = { type: 'muxed', codec: null, initSegment, mediaSegments: null };
     onProgress?.({ percent: 100 });
@@ -681,7 +683,7 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
     try {
       mp4boxFile = MP4Box.createFile();
     } catch (err2) {
-      throw new Error('mp4box.js 初始化失敗：' + (err2?.message || err2));
+      throw new Error(t('video.mp4boxInitFailed') + (err2?.message || err2));
     }
   }
 
@@ -694,12 +696,12 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
   let mediaDurationSec = 0; // Total duration in seconds from mp4box.js info
 
   mp4boxFile.onError = (err) => {
-    mp4boxError = new Error('影片解析失敗：' + (err?.message || err || 'unknown mp4box error'));
+    mp4boxError = new Error(t('video.videoParsingFailed') + (err?.message || err || 'unknown mp4box error'));
   };
 
   mp4boxFile.onReady = (info) => {
     if (!info || !info.tracks || info.tracks.length === 0) {
-      mp4boxError = new UnsupportedVideoFormatError('影片不包含任何可播放的音視訊軌道');
+      mp4boxError = new UnsupportedVideoFormatError(t('video.videoNoPlayableTracks'));
       return;
     }
 
@@ -709,13 +711,13 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
       mediaDurationSec = info.duration / info.timescale;
     }
 
-    const avTracks = info.tracks.filter(t => {
-      const tt = getTrackType(t);
+    const avTracks = info.tracks.filter(tk => {
+      const tt = getTrackType(tk);
       return tt === 'video' || tt === 'audio';
     });
 
     if (avTracks.length === 0) {
-      mp4boxError = new UnsupportedVideoFormatError('影片不包含任何可播放的音視訊軌道');
+      mp4boxError = new UnsupportedVideoFormatError(t('video.videoNoPlayableTracks'));
       return;
     }
 
@@ -772,7 +774,7 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
       onProgress?.({ percent: 30 + Math.round((readOffset / file.size) * 40) });
     }
   } catch (err) {
-    throw new UnsupportedVideoFormatError('無法解析此影片檔案：' + (err?.message || err));
+    throw new UnsupportedVideoFormatError(t('video.cannotParseVideoFile') + (err?.message || err));
   }
 
   if (mp4boxError) throw mp4boxError;
@@ -794,14 +796,14 @@ export async function remuxToFragmentedMp4(file, { onProgress } = {}) {
   if (mp4boxError) throw mp4boxError;
 
   if (!readyFired) {
-    throw new UnsupportedVideoFormatError('影片不包含任何可播放的音視訊軌道');
+    throw new UnsupportedVideoFormatError(t('video.videoNoPlayableTracks'));
   }
 
   // Build result
   const perTrackData = trackOrder.map(tid => trackMap[tid]).filter(t => t && t.initSegment);
 
   if (perTrackData.length === 0) {
-    throw new UnsupportedVideoFormatError('影片轉檔失敗：無法產生有效的分片格式');
+    throw new UnsupportedVideoFormatError(t('video.videoTranscodeFailed'));
   }
 
   // Merge per-track init segments into one combined muxed init segment.

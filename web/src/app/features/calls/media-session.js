@@ -17,7 +17,9 @@ import {
 } from './state.js';
 import {
   getCallKeyContext,
-  supportsInsertableStreams
+  supportsInsertableStreams,
+  usesScriptTransform,
+  onKeyContextUpdate
 } from './key-manager.js';
 import { CALL_EVENT, subscribeCallEvent } from './events.js';
 import { createFaceBlurPipeline, isFaceBlurSupported, BLUR_MODE } from './face-blur.js';
@@ -25,6 +27,16 @@ import { normalizeAccountDigest, normalizePeerDeviceId, ensureDeviceId, getAccou
 import { getCallAudioConstraints } from '../../ui/mobile/browser-detection.js';
 import { toU8Strict } from '/shared/utils/u8-strict.js';
 import { buildCallPeerIdentity } from './identity.js';
+import { t } from '/locales/index.js';
+
+// Flag set by ephemeral-call-adapter when ephemeral mode is active.
+// Avoids circular import (media-session ↔ ephemeral-call-adapter).
+let _ephemeralModeActive = false;
+
+/** Called by ephemeral-call-adapter to toggle ephemeral mode awareness. */
+export function setMediaSessionEphemeralMode(active) {
+  _ephemeralModeActive = !!active;
+}
 
 let sendSignal = null;
 let showToast = () => { };
@@ -50,6 +62,8 @@ let faceBlurPipeline = null;
 let faceBlurMode = BLUR_MODE.FACE;
 let e2eeReceiverConfirmed = false;
 let peerConnectionEncodedStreams = false;
+/** Map<RTCRtpSender|RTCRtpReceiver, Worker> for RTCRtpScriptTransform workers */
+let scriptTransformWorkers = new Map();
 let remoteCandidateStats = { host: 0, srflx: 0, relay: 0, prflx: 0, total: 0 };
 let iceFailureCollecting = false; // guards against connectionstatechange racing with getStats()
 
@@ -277,7 +291,14 @@ export function initCallMediaSession({ sendSignalFn, showToastFn }) {
   if (unsubscribers.length) return;
   unsubscribers = [
     subscribeCallEvent(CALL_EVENT.SIGNAL, ({ signal }) => handleSignal(signal)),
-    subscribeCallEvent(CALL_EVENT.STATE, ({ session }) => handleSessionState(session))
+    subscribeCallEvent(CALL_EVENT.STATE, ({ session }) => handleSessionState(session)),
+    // Rekey ScriptTransform workers when call key context changes (key rotation)
+    // Also retroactively apply transforms for receivers/senders that were skipped
+    // because keyContext wasn't ready at ontrack time (race condition fix).
+    onKeyContextUpdate((ctx) => {
+      rekeyScriptTransformWorkers();
+      if (ctx) applyDeferredTransforms();
+    })
   ];
 }
 
@@ -289,6 +310,10 @@ export function disposeCallMediaSession() {
 }
 
 export async function startOutgoingCallMedia({ callId } = {}) {
+  if (!supportsInsertableStreams() && !_ephemeralModeActive) {
+    failCall('e2ee-not-supported', new Error(t('callKeys.e2eeNotSupported')));
+    return;
+  }
   activeCallId = callId;
   const identity = requirePeerIdentitySnapshot();
   activePeerKey = identity.peerKey;
@@ -305,6 +330,10 @@ export async function startOutgoingCallMedia({ callId } = {}) {
 }
 
 export async function acceptIncomingCallMedia({ callId } = {}) {
+  if (!supportsInsertableStreams() && !_ephemeralModeActive) {
+    failCall('e2ee-not-supported', new Error(t('callKeys.e2eeNotSupported')));
+    return;
+  }
   activeCallId = callId;
   const identity = requirePeerIdentitySnapshot();
   activePeerKey = identity.peerKey;
@@ -326,6 +355,43 @@ export async function acceptIncomingCallMedia({ callId } = {}) {
 
 export function endCallMediaSession(reason = 'hangup') {
   cleanupPeerConnection(reason);
+}
+
+/**
+ * Called when the page returns to the foreground during an active call.
+ * Re-attempts audio/video playback (browsers may suspend playback when
+ * backgrounded) and triggers an ICE restart if the connection dropped.
+ */
+export function recoverCallMediaOnResume() {
+  if (!peerConnection) return;
+  const iceState = peerConnection.iceConnectionState;
+  log({ callMediaResume: true, iceState, callId: activeCallId });
+
+  // Re-attempt audio/video playback — browsers suspend media elements
+  // when the tab is hidden and play() may have been rejected.
+  if (remoteAudioEl?.srcObject) attemptRemoteAudioPlayback();
+  if (remoteVideoEl?.srcObject) attemptRemoteVideoPlayback();
+
+  // ICE restart if the connection degraded while backgrounded
+  if (iceState === 'disconnected' || iceState === 'failed') {
+    log({ callIceRestart: true, iceState, callId: activeCallId });
+    peerConnection.createOffer({ iceRestart: true })
+      .then((offer) => peerConnection.setLocalDescription(offer))
+      .then(() => {
+        if (!peerConnection || !sendSignal) return;
+        const identity = requirePeerIdentitySnapshot();
+        sendSignal('call-offer', {
+          callId: activeCallId,
+          targetAccountDigest: identity.digest,
+          senderDeviceId: requireLocalDeviceId(),
+          targetDeviceId: identity.deviceId,
+          description: peerConnection.localDescription
+        });
+      })
+      .catch((err) => {
+        log({ callIceRestartError: err?.message || err, callId: activeCallId });
+      });
+  }
 }
 
 export function isLocalAudioMuted() {
@@ -450,7 +516,7 @@ export async function toggleLocalVideo(enabled) {
       updateCallMedia({ controls: { videoEnabled: true, videoMuted: false } });
     } catch (err) {
       log({ callToggleVideoError: err?.message || err });
-      showToast?.('無法啟動攝影機', { variant: 'error' });
+      showToast?.(t('callMedia.cannotStartCamera'), { variant: 'error' });
     }
   } else {
     // Destroy face blur pipeline when video is turned off
@@ -505,7 +571,7 @@ export async function switchCamera() {
     }
   } catch (err) {
     log({ callSwitchCameraError: err?.message || err });
-    showToast?.('無法切換攝影機', { variant: 'error' });
+    showToast?.(t('callMedia.cannotSwitchCamera'), { variant: 'error' });
   }
 }
 
@@ -573,13 +639,15 @@ async function ensurePeerConnection() {
     // Continue without explicit certificate — browser picks its default
   }
 
-  // NOTE: We intentionally do NOT set encodedInsertableStreams: true
-  // here because the peer might not support E2EE (e.g. iOS Safari)
-  // and we cannot reliably determine the peer's capability before
-  // creating the connection (the callee never sends its capabilities
-  // back to the caller).  Without the constructor flag, receiver
-  // createEncodedStreams() would throw "Too late"; the guard in
-  // setupInsertableStreamsForReceiver prevents the call entirely.
+  // Enable encodedInsertableStreams ONLY for the legacy createEncodedStreams()
+  // path (Chrome).  On Safari (RTCRtpScriptTransform), setting this flag
+  // puts the RTCPeerConnection into an encoded-streams mode that conflicts
+  // with ScriptTransform — video frames get queued waiting for
+  // createEncodedStreams() and never reach the ScriptTransform worker.
+  if (supportsInsertableStreams() && !usesScriptTransform()) {
+    rtcConfig.encodedInsertableStreams = true;
+    peerConnectionEncodedStreams = true;
+  }
   peerConnection = new RTCPeerConnection(rtcConfig);
   // Track gathered ICE candidate types for diagnostics
   const candidateStats = { host: 0, srflx: 0, relay: 0, prflx: 0, total: 0 };
@@ -628,8 +696,11 @@ async function ensurePeerConnection() {
   peerConnection.ontrack = (event) => {
     remoteStream = event.streams[0] || new MediaStream([event.track]);
     log({ callRemoteTrack: event.track?.kind, readyState: event.track?.readyState, callId: activeCallId });
-    attachRemoteStream(remoteStream);
+    // Set up receiver E2EE transform BEFORE attaching the stream to DOM
+    // elements.  This ensures encrypted frames are decrypted before the
+    // codec/decoder sees them — avoids decoder errors that abort play().
     setupInsertableStreamsForReceiver(event.receiver, event.track);
+    attachRemoteStream(remoteStream);
     promoteSessionToInCall('remote-track');
   };
   // Log DTLS transport state changes — DTLS failure is often
@@ -754,12 +825,12 @@ async function ensurePeerConnection() {
         hasRemoteDesc: !!peerConnection.remoteDescription,
         signalingState: peerConnection.signalingState
       });
-      showToast?.('通話連線失敗', { variant: 'error' });
+      showToast?.(t('callMedia.connectionFailed'), { variant: 'error' });
       completeCallSession({ reason: iceState, error: 'ice-connection-failed' });
       cleanupPeerConnection(iceState);
     } else if (iceState === 'disconnected') {
       log({ callIceDisconnected: true, callId: activeCallId });
-      showToast?.('通話連線不穩定', { variant: 'warning' });
+      showToast?.(t('callMedia.connectionUnstable'), { variant: 'warning' });
     }
   };
   peerConnection.onconnectionstatechange = () => {
@@ -774,12 +845,12 @@ async function ensurePeerConnection() {
       // skip cleanup here — the ICE handler owns the lifecycle and
       // will cleanup after stats are collected.
       if (iceFailureCollecting) return;
-      showToast?.('通話連線中斷', { variant: 'error' });
+      showToast?.(t('callMedia.connectionLost'), { variant: 'error' });
       completeCallSession({ reason: state, error: 'peer-connection-failed' });
       cleanupPeerConnection(state);
     } else if (state === 'disconnected') {
       log({ callConnectionDisconnected: true, callId: activeCallId });
-      showToast?.('通話連線不穩定', { variant: 'warning' });
+      showToast?.(t('callMedia.connectionUnstable'), { variant: 'warning' });
     } else if (state === 'closed') {
       cleanupPeerConnection(state);
     }
@@ -829,7 +900,7 @@ async function attachLocalMedia() {
       } catch (mediaErr) {
         if (wantVideo) {
           log({ callMediaCameraFallback: mediaErr?.message || mediaErr });
-          showToast?.('無法存取攝影機，改為語音通話', { variant: 'warning' });
+          showToast?.(t('callMedia.cameraFallbackToVoice'), { variant: 'warning' });
           freshStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
         } else {
           throw mediaErr;
@@ -885,7 +956,7 @@ async function attachLocalMedia() {
     updateCallMedia({ controls: { videoEnabled: hasVideo } });
     hydrateCallCapability({ video: hasVideo, insertableStreams: supportsInsertableStreams() });
   } catch (err) {
-    showToast?.('無法存取麥克風：' + (err?.message || err), { variant: 'error' });
+    showToast?.(t('callMedia.cannotAccessMic') + (err?.message || err), { variant: 'error' });
     log({ callMediaMicError: err?.message || err });
     failCall('microphone-access-failed', err);
   }
@@ -1279,6 +1350,10 @@ function cleanupPeerConnection(reason) {
     clearTimeout(audioPlayRetryTimer);
     audioPlayRetryTimer = null;
   }
+  if (videoPlayRetryTimer) {
+    clearTimeout(videoPlayRetryTimer);
+    videoPlayRetryTimer = null;
+  }
   if (peerConnection) {
     try { peerConnection.onicecandidate = null; } catch { }
     try { peerConnection.ontrack = null; } catch { }
@@ -1301,6 +1376,7 @@ function cleanupPeerConnection(reason) {
     }
     if (sessionStore) sessionStore.cachedMicrophoneStream = null;
   } catch { }
+  cleanupScriptTransformWorkers();
   peerConnection = null;
   localStream = null;
   remoteStream = null;
@@ -1369,17 +1445,25 @@ function attachRemoteStream(stream) {
       // interrupts playback and causes audible glitches), reassigning
       // srcObject on a <video> element only causes an invisible re-load,
       // so it is safe to do unconditionally.
-      const hasLiveVideo = stream.getVideoTracks().some((t) => t.readyState === 'live');
-      if (hasLiveVideo || remoteVideoEl.srcObject !== stream) {
-        remoteVideoEl.srcObject = stream;
+      const videoTracks = stream.getVideoTracks();
+      const hasLiveVideo = videoTracks.some((t) => t.readyState === 'live');
+      if (hasLiveVideo) {
+        // Give the video element a video-only stream.  iOS Safari can
+        // garble / double-process audio when the same audio track appears
+        // in both the <audio> and <video> element's MediaStream (even when
+        // the <video> element is muted).  Stripping audio tracks here
+        // prevents the conflict entirely — the <audio> element already
+        // carries a dedicated audio-only stream.
+        const videoOnlyStream = new MediaStream(videoTracks);
+        remoteVideoEl.srcObject = videoOnlyStream;
         remoteVideoEl.muted = true;
+      } else if (remoteVideoEl.srcObject) {
+        // No live video → clear video element
+        remoteVideoEl.srcObject = null;
       }
-      // Always call play() as a secondary measure for browsers that do
-      // pick up new tracks but need an explicit play() to start rendering.
-      const maybePlay = remoteVideoEl.play();
-      if (maybePlay && typeof maybePlay.catch === 'function') {
-        maybePlay.catch((err) => log({ callMediaVideoPlayError: err?.message || err }));
-      }
+      // Use the same retry mechanism as audio to avoid rapid play() calls
+      // aborting each other ("The operation was aborted." on iOS Safari).
+      if (hasLiveVideo) attemptRemoteVideoPlayback();
     } catch (err) {
       log({ callMediaVideoAttachError: err?.message || err });
     }
@@ -1418,6 +1502,37 @@ function attemptRemoteAudioPlayback(retryCount = 0) {
   }
 }
 
+let videoPlayRetryTimer = null;
+
+function attemptRemoteVideoPlayback(retryCount = 0) {
+  if (videoPlayRetryTimer) {
+    clearTimeout(videoPlayRetryTimer);
+    videoPlayRetryTimer = null;
+  }
+  if (!remoteVideoEl || typeof remoteVideoEl.play !== 'function') return;
+  try {
+    const maybePromise = remoteVideoEl.play();
+    if (maybePromise && typeof maybePromise.catch === 'function') {
+      maybePromise.catch((err) => {
+        log({ callMediaVideoPlayError: err?.message || err, retryCount });
+        // iOS Safari aborts play() when srcObject changes rapidly or the
+        // decoder hasn't received data yet.  Retry with exponential backoff
+        // (300ms, 600ms, 1200ms, 2400ms) up to 4 times.
+        const MAX_RETRIES = 4;
+        if (retryCount < MAX_RETRIES && remoteVideoEl && peerConnection) {
+          const delay = 300 * Math.pow(2, retryCount);
+          videoPlayRetryTimer = setTimeout(() => {
+            videoPlayRetryTimer = null;
+            attemptRemoteVideoPlayback(retryCount + 1);
+          }, delay);
+        }
+      });
+    }
+  } catch (err) {
+    log({ callMediaVideoPlayError: err?.message || err });
+  }
+}
+
 function peerSupportsInsertableStreams() {
   // After receiving the peer's key envelope, mediaState.capabilities
   // reflects the peer's advertised capability.  If the peer does not
@@ -1434,60 +1549,224 @@ function peerSupportsInsertableStreams() {
 }
 
 function setupInsertableStreamsForSender(sender, track) {
-  if (!supportsInsertableStreams() || !sender || !track) return;
-  if (!peerSupportsInsertableStreams()) return;
-  // Never encrypt until we've confirmed receiver transforms work.
-  // Without this gate the caller encrypts outgoing data in
-  // attachLocalMedia (key context is already set by
-  // prepareCallKeyEnvelope), but the receiver side fails with
-  // "Too late to create encoded streams" — the peer then receives
-  // encrypted frames it cannot decrypt, causing noise / no video.
-  if (!e2eeReceiverConfirmed) return;
+  if (!supportsInsertableStreams() || !sender || !track) {
+    log({ e2eeSenderSkip: 'no-support', kind: track?.kind, callId: activeCallId });
+    return;
+  }
+  // Safari's RTCRtpScriptTransform silently blocks video receiver frames
+  // (zero frames reach the worker even though onrtctransform fires).
+  // Skip video E2EE on ALL browsers to avoid a mismatch where one side
+  // encrypts video that the other side cannot decrypt.  Audio E2EE is
+  // unaffected and continues to work normally.
+  if (track.kind === 'video') {
+    log({ e2eeSenderSkip: 'video-e2ee-disabled', callId: activeCallId });
+    return;
+  }
+  if (!peerSupportsInsertableStreams()) {
+    // Peer advertised insertableStreams: false (e.g. ephemeral call where
+    // E2EE key exchange failed).  Skip encryption — do NOT fail the call.
+    // Unencrypted audio/video will flow normally.
+    log({ e2eeSenderSkip: 'peer-not-supported', kind: track?.kind, callId: activeCallId });
+    return;
+  }
+  if (!e2eeReceiverConfirmed) {
+    log({ e2eeSenderSkip: 'receiver-not-confirmed', kind: track?.kind, callId: activeCallId });
+    return;
+  }
   const keyContext = getCallKeyContext();
-  if (!keyContext) return;
+  if (!keyContext) {
+    log({ e2eeSenderSkip: 'no-key-context', kind: track?.kind, callId: activeCallId });
+    // Retry shortly — key derivation may complete between ontrack events
+    const cid = activeCallId;
+    setTimeout(() => {
+      if (activeCallId !== cid || !peerConnection) return;
+      if (scriptTransformWorkers.has(sender)) return;
+      if (getCallKeyContext()) {
+        log({ e2eeSenderRetry: true, kind: track?.kind, callId: cid });
+        setupInsertableStreamsForSender(sender, track);
+      }
+    }, 500);
+    return;
+  }
   const keyName = track.kind === 'video' ? 'videoTx' : 'audioTx';
+  if (usesScriptTransform()) {
+    const ok = applyScriptTransform(sender, keyName, 'encrypt');
+    log({ e2eeSenderApplied: ok, keyName, scriptTransform: true, callId: activeCallId });
+    return;
+  }
   const transform = createEncryptionTransform(keyName, 'encrypt');
   if (!transform) return;
-  applyTransformStream(sender, transform);
+  const ok = applyTransformStream(sender, transform);
+  log({ e2eeSenderApplied: ok, keyName, scriptTransform: false, callId: activeCallId });
 }
 
 function setupInsertableStreamsForReceiver(receiver, track) {
   // Receiver encoded streams require the encodedInsertableStreams
   // constructor flag.  Without it, createEncodedStreams() throws
   // "Too late" and may leave the receiver in a broken state.
-  if (!peerConnectionEncodedStreams) return;
-  if (!supportsInsertableStreams() || !receiver || !track) return;
-  if (!peerSupportsInsertableStreams()) return;
-  const keyContext = getCallKeyContext();
-  if (!keyContext) return;
-  const keyName = track.kind === 'video' ? 'videoRx' : 'audioRx';
-  const transform = createEncryptionTransform(keyName, 'decrypt');
-  if (!transform) return;
-  if (applyTransformStream(receiver, transform)) {
+  // (Not required for RTCRtpScriptTransform path.)
+  if (!usesScriptTransform() && !peerConnectionEncodedStreams) {
+    log({ e2eeReceiverSkip: 'no-script-transform-no-encoded-streams', kind: track?.kind, callId: activeCallId });
+    return;
+  }
+  if (!supportsInsertableStreams() || !receiver || !track) {
+    log({ e2eeReceiverSkip: 'no-support', kind: track?.kind, callId: activeCallId });
+    return;
+  }
+  // Safari's RTCRtpScriptTransform silently blocks video receiver frames
+  // (zero frames reach the worker).  Skip video E2EE on ALL browsers so
+  // neither side encrypts/decrypts video — avoids mismatches.  Audio E2EE
+  // continues to function correctly.
+  if (track.kind === 'video') {
+    log({ e2eeReceiverSkip: 'video-e2ee-disabled', kind: 'video', callId: activeCallId });
+    // Still confirm receiver so audio sender transforms can proceed.
     if (!e2eeReceiverConfirmed) {
       e2eeReceiverConfirmed = true;
-      // Receiver confirmed — now apply sender transforms for existing tracks.
+      log({ e2eeReceiverConfirmed: true, triggeredBy: 'video-skip', callId: activeCallId });
       applySenderTransformsDeferred();
     }
+    return;
+  }
+  if (!peerSupportsInsertableStreams()) {
+    // Peer advertised insertableStreams: false (e.g. ephemeral call where
+    // E2EE key exchange failed).  Skip decryption — do NOT fail the call.
+    // Unencrypted audio/video will flow normally.
+    log({ e2eeReceiverSkip: 'peer-not-supported', kind: track?.kind, callId: activeCallId });
+    // Still confirm receiver so sender transforms aren't blocked.
+    if (!e2eeReceiverConfirmed) {
+      e2eeReceiverConfirmed = true;
+      log({ e2eeReceiverConfirmed: true, triggeredBy: 'peer-not-supported', callId: activeCallId });
+      applySenderTransformsDeferred();
+    }
+    return;
+  }
+  const keyContext = getCallKeyContext();
+  if (!keyContext) {
+    log({ e2eeReceiverSkip: 'no-key-context', kind: track?.kind, callId: activeCallId });
+    // Schedule a retry — keyContext may arrive shortly after ontrack.
+    // The onKeyContextUpdate callback is the primary fallback, but if it
+    // fired between the video and audio ontrack events, this receiver
+    // would be missed.  A brief delay covers that gap.
+    const cid = activeCallId;
+    setTimeout(() => {
+      if (activeCallId !== cid || !peerConnection) return;
+      if (scriptTransformWorkers.has(receiver)) return;
+      if (getCallKeyContext()) {
+        log({ e2eeReceiverRetry: true, kind: track?.kind, callId: cid });
+        setupInsertableStreamsForReceiver(receiver, track);
+      }
+    }, 500);
+    return;
+  }
+  const keyName = track.kind === 'video' ? 'videoRx' : 'audioRx';
+  let applied = false;
+  if (usesScriptTransform()) {
+    applied = applyScriptTransform(receiver, keyName, 'decrypt');
+    log({ e2eeReceiverApplied: applied, keyName, scriptTransform: true, callId: activeCallId });
+  } else {
+    const transform = createEncryptionTransform(keyName, 'decrypt');
+    if (!transform) return;
+    applied = applyTransformStream(receiver, transform);
+    log({ e2eeReceiverApplied: applied, keyName, scriptTransform: false, callId: activeCallId });
+  }
+  if (applied && !e2eeReceiverConfirmed) {
+    e2eeReceiverConfirmed = true;
+    log({ e2eeReceiverConfirmed: true, triggeredBy: keyName, callId: activeCallId });
+  }
+  // Always retry sender transforms after a receiver is applied — in video
+  // calls the first applySenderTransformsDeferred (triggered by video ontrack)
+  // may have skipped audio because keyContext wasn't ready yet.  When the
+  // audio receiver is applied later, we must retry so the audio sender
+  // encrypt transform is applied.
+  if (applied) {
+    applySenderTransformsDeferred();
+  }
+  // After setting up a video receiver transform, request a keyframe from the
+  // peer.  The initial keyframe may have arrived before the transform was
+  // ready, leaving the video decoder unable to start rendering.  A brief
+  // delay gives the transform pipeline time to initialise before the
+  // keyframe request triggers a new I-frame from the sender.
+  if (applied && track.kind === 'video') {
+    requestKeyFrameFromPeer();
   }
 }
 
 function applySenderTransformsDeferred() {
   if (!peerConnection) return;
   for (const sender of peerConnection.getSenders()) {
-    if (sender.track) {
-      setupInsertableStreamsForSender(sender, sender.track);
-    }
+    if (!sender.track) continue;
+    // Skip senders that already have a ScriptTransform worker —
+    // re-applying would create a duplicate worker + reset the frame
+    // counter, risking a brief burst of noise.
+    if (scriptTransformWorkers.has(sender)) continue;
+    setupInsertableStreamsForSender(sender, sender.track);
   }
+}
+
+/**
+ * Retroactively apply receiver + sender transforms when keyContext arrives
+ * after ontrack already fired.  Without this, the receiver transform is
+ * never set up (ontrack checked keyContext → null → skipped), and later
+ * when keys are derived, only rekeyScriptTransformWorkers runs but there
+ * are no workers to update.  This causes one side to encrypt audio while
+ * the other can't decrypt — resulting in noise or silence.
+ */
+function applyDeferredTransforms() {
+  if (!peerConnection || !peerSupportsInsertableStreams()) return;
+  const ctx = getCallKeyContext();
+  if (!ctx) return;
+  // Apply receiver transforms for tracks that were skipped
+  for (const receiver of peerConnection.getReceivers()) {
+    if (!receiver.track) continue;
+    // Skip if this receiver already has a worker (transform already applied)
+    if (scriptTransformWorkers.has(receiver)) continue;
+    setupInsertableStreamsForReceiver(receiver, receiver.track);
+  }
+  // Sender transforms may also need applying if receiver was just confirmed
+  applySenderTransformsDeferred();
+}
+
+/**
+ * Request a keyframe after the video receiver transform is set up.
+ * Uses RTCRtpSender.generateKeyFrame() on the local VIDEO sender so the
+ * remote peer's receiver gets a clean I-frame.  Also triggers a deferred
+ * video play() retry via attemptRemoteVideoPlayback so the local decoder
+ * picks up the first decrypted keyframe.
+ */
+function requestKeyFrameFromPeer() {
+  if (!peerConnection) return;
+  // Generate a local keyframe so the remote peer gets a clean I-frame.
+  try {
+    for (const sender of peerConnection.getSenders()) {
+      if (sender.track?.kind === 'video' && typeof sender.generateKeyFrame === 'function') {
+        sender.generateKeyFrame().catch(() => {});
+      }
+    }
+  } catch { }
+  // Retry video play after a delay — the decoder may now have valid data.
+  setTimeout(() => {
+    if (!peerConnection) return;
+    attemptRemoteVideoPlayback();
+    // Second keyframe request in case the first was too early.
+    try {
+      for (const sender of peerConnection.getSenders()) {
+        if (sender.track?.kind === 'video' && typeof sender.generateKeyFrame === 'function') {
+          sender.generateKeyFrame().catch(() => {});
+        }
+      }
+    } catch { }
+  }, 500);
 }
 
 function createEncryptionTransform(keyName, mode) {
   const context = getCallKeyContext();
   const keyEntry = context?.keys?.[keyName];
   if (!keyEntry?.key || !keyEntry?.nonce) return null;
-  const baseNonce = new Uint8Array(keyEntry.nonce);
-  let cryptoKey = null;
   const usages = mode === 'encrypt' ? ['encrypt'] : ['decrypt'];
+  // Track current epoch so we re-import when keys rotate
+  let currentEpoch = context?.epoch ?? 0;
+  let cryptoKey = null;
+  let baseNonce = new Uint8Array(keyEntry.nonce);
   const importPromise = crypto.subtle.importKey(
     'raw',
     toU8Strict(keyEntry.key, 'web/src/app/features/calls/media-session.js:519:createEncryptionTransform'),
@@ -1499,20 +1778,81 @@ function createEncryptionTransform(keyName, mode) {
       cryptoKey = key;
       return key;
     });
+  let rekeyPromise = null;
+  let _frameCount = 0;
+  let _failCount = 0;
+  let _passthrough = false; // fallback: stop decrypting after too many failures
   const transform = new TransformStream({
     async transform(encodedFrame, controller) {
       if (!cryptoKey) {
-        await importPromise;
+        try { await importPromise; } catch { controller.enqueue(encodedFrame); return; }
+      }
+      // Check if epoch has changed (key rotation occurred)
+      const latestCtx = getCallKeyContext();
+      const latestEpoch = latestCtx?.epoch ?? 0;
+      if (latestEpoch !== currentEpoch && latestCtx?.keys?.[keyName]?.key) {
+        if (!rekeyPromise) {
+          rekeyPromise = crypto.subtle.importKey(
+            'raw',
+            toU8Strict(latestCtx.keys[keyName].key, 'media-session:rekey'),
+            { name: 'AES-GCM' },
+            false,
+            usages
+          ).then((key) => {
+            cryptoKey = key;
+            baseNonce = new Uint8Array(latestCtx.keys[keyName].nonce);
+            currentEpoch = latestEpoch;
+            rekeyPromise = null;
+            _failCount = 0;
+            _passthrough = false;
+          });
+        }
+        try { await rekeyPromise; } catch { /* ignore */ }
+      }
+      _frameCount++;
+      // Diagnostic: log first frame + every 200th frame
+      if (_frameCount === 1 || _frameCount % 200 === 0) {
+        logCapped({ e2eeFrame: { mode, keyName, frame: _frameCount, fails: _failCount, passthrough: _passthrough, hasKey: !!cryptoKey, byteLen: encodedFrame.data?.byteLength } });
+      }
+      // Passthrough mode: too many consecutive decrypt failures → peer likely
+      // not encrypting.  Stop corrupting frames by attempting invalid decryption.
+      if (_passthrough) {
+        controller.enqueue(encodedFrame);
+        return;
       }
       try {
-        const counter = incrementFrameCounter(keyName);
-        const iv = buildNonce(baseNonce, counter);
-        const op = mode === 'encrypt' ? 'encrypt' : 'decrypt';
-        const result = await crypto.subtle[op]({ name: 'AES-GCM', iv }, cryptoKey, encodedFrame.data);
-        encodedFrame.data = result instanceof ArrayBuffer ? result : encodedFrame.data;
+        if (mode === 'encrypt') {
+          const counter = incrementFrameCounter(keyName);
+          const iv = buildNonce(baseNonce, counter);
+          const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, cryptoKey, encodedFrame.data);
+          const counterBytes = new Uint8Array(4);
+          new DataView(counterBytes.buffer).setUint32(0, counter, false);
+          const combined = new Uint8Array(4 + encrypted.byteLength);
+          combined.set(counterBytes, 0);
+          combined.set(new Uint8Array(encrypted), 4);
+          encodedFrame.data = combined.buffer;
+        } else {
+          const data = new Uint8Array(encodedFrame.data);
+          if (data.byteLength < 5) { controller.enqueue(encodedFrame); return; }
+          const counter = new DataView(data.buffer, data.byteOffset, 4).getUint32(0, false);
+          const iv = buildNonce(baseNonce, counter);
+          const ciphertext = data.slice(4);
+          const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, cryptoKey, ciphertext);
+          encodedFrame.data = decrypted;
+          _failCount = 0; // reset on success
+        }
         controller.enqueue(encodedFrame);
       } catch (err) {
-        log({ callMediaTransformError: err?.message || err, mode, keyName });
+        _failCount++;
+        if (_failCount <= 3 || _failCount % 100 === 0) {
+          log({ callMediaTransformError: err?.message || err, mode, keyName, frame: _frameCount, consecutiveFails: _failCount });
+        }
+        // After 50 consecutive decrypt failures, assume E2EE mismatch —
+        // switch to passthrough so audio is at least audible (unencrypted).
+        if (mode === 'decrypt' && _failCount >= 50) {
+          _passthrough = true;
+          log({ e2eePassthroughActivated: true, keyName, frame: _frameCount, reason: 'consecutive-decrypt-failures' });
+        }
         controller.enqueue(encodedFrame);
       }
     }
@@ -1545,6 +1885,159 @@ function applyTransformStream(target, transformStream) {
     log({ callMediaTransformUnsupported: err?.message || err });
   }
   return false;
+}
+
+// --- RTCRtpScriptTransform support (Safari 15.4+, Chrome 118+) ---
+
+const SCRIPT_TRANSFORM_WORKER_CODE = `
+let cryptoKey = null;
+let baseNonce = null;
+let frameCounter = 0;
+let mode = 'encrypt';
+let importPromise = null;
+let _fc = 0;
+let _fails = 0;
+let _passthrough = false;
+
+self.onmessage = async (event) => {
+  const msg = event.data;
+  if (msg.type === 'key') {
+    mode = msg.mode || mode;
+    const usages = mode === 'encrypt' ? ['encrypt'] : ['decrypt'];
+    baseNonce = new Uint8Array(msg.nonce);
+    if (msg.resetCounter) frameCounter = 0;
+    _fails = 0;
+    _passthrough = false;
+    try {
+      importPromise = crypto.subtle.importKey(
+        'raw', new Uint8Array(msg.key), { name: 'AES-GCM' }, false, usages
+      ).then(k => { cryptoKey = k; });
+      await importPromise;
+    } catch (err) {
+      console.error('[e2ee-worker] key import failed', err?.message || err);
+    }
+  }
+};
+
+self.onrtctransform = (event) => {
+  const { readable, writable } = event.transformer;
+  const ts = new TransformStream({
+    async transform(frame, controller) {
+      if (!cryptoKey) {
+        if (importPromise) { try { await importPromise; } catch {} }
+        if (!cryptoKey) { controller.enqueue(frame); return; }
+      }
+      _fc++;
+      if (_passthrough) { controller.enqueue(frame); return; }
+      try {
+        if (mode === 'encrypt') {
+          frameCounter++;
+          const iv = new Uint8Array(baseNonce);
+          new DataView(iv.buffer).setUint32(iv.length - 4, frameCounter, false);
+          const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, cryptoKey, frame.data);
+          const counterBytes = new Uint8Array(4);
+          new DataView(counterBytes.buffer).setUint32(0, frameCounter, false);
+          const combined = new Uint8Array(4 + encrypted.byteLength);
+          combined.set(counterBytes, 0);
+          combined.set(new Uint8Array(encrypted), 4);
+          frame.data = combined.buffer;
+        } else {
+          const data = new Uint8Array(frame.data);
+          if (data.byteLength < 5) { controller.enqueue(frame); return; }
+          const counter = new DataView(data.buffer, data.byteOffset, 4).getUint32(0, false);
+          const iv = new Uint8Array(baseNonce);
+          new DataView(iv.buffer).setUint32(iv.length - 4, counter, false);
+          const ciphertext = data.slice(4);
+          const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, cryptoKey, ciphertext);
+          frame.data = decrypted;
+          _fails = 0;
+        }
+        controller.enqueue(frame);
+      } catch (err) {
+        _fails++;
+        if (_fails <= 3) console.warn('[e2ee-worker]', mode, 'fail #' + _fails, err?.message);
+        if (mode === 'decrypt' && _fails >= 50) {
+          _passthrough = true;
+          console.warn('[e2ee-worker] passthrough activated after', _fails, 'consecutive decrypt failures');
+        }
+        controller.enqueue(frame);
+      }
+    }
+  });
+  readable.pipeThrough(ts).pipeTo(writable).catch(() => {});
+};
+`;
+
+let scriptTransformWorkerUrl = null;
+
+function getScriptTransformWorkerUrl() {
+  if (!scriptTransformWorkerUrl) {
+    const blob = new Blob([SCRIPT_TRANSFORM_WORKER_CODE], { type: 'text/javascript' });
+    scriptTransformWorkerUrl = URL.createObjectURL(blob);
+  }
+  return scriptTransformWorkerUrl;
+}
+
+function applyScriptTransform(target, keyName, mode) {
+  try {
+    const context = getCallKeyContext();
+    const keyEntry = context?.keys?.[keyName];
+    if (!keyEntry?.key || !keyEntry?.nonce) return false;
+    const worker = new Worker(getScriptTransformWorkerUrl());
+    // Send initial key material
+    const keyBuf = toU8Strict(keyEntry.key, 'media-session:scriptTransform:key');
+    const nonceBuf = new Uint8Array(keyEntry.nonce);
+    worker.postMessage({
+      type: 'key',
+      mode,
+      keyName,
+      key: keyBuf.buffer,
+      nonce: nonceBuf.buffer,
+      resetCounter: true
+    }, [keyBuf.buffer.slice(0), nonceBuf.buffer.slice(0)]);
+    target.transform = new RTCRtpScriptTransform(worker, { operation: mode, keyName });
+    scriptTransformWorkers.set(target, worker);
+    return true;
+  } catch (err) {
+    log({ callScriptTransformError: err?.message || err, keyName, mode });
+    return false;
+  }
+}
+
+/** Send updated keys to all active ScriptTransform workers (key rotation). */
+function rekeyScriptTransformWorkers() {
+  const context = getCallKeyContext();
+  if (!context) return;
+  for (const [target, worker] of scriptTransformWorkers) {
+    // Determine keyName from the transform options set during creation
+    const isReceiver = target instanceof RTCRtpReceiver;
+    const track = target.track;
+    const kind = track?.kind || 'audio';
+    const keyName = isReceiver
+      ? (kind === 'video' ? 'videoRx' : 'audioRx')
+      : (kind === 'video' ? 'videoTx' : 'audioTx');
+    const entry = context.keys?.[keyName];
+    if (!entry?.key || !entry?.nonce) continue;
+    try {
+      const keyBuf = toU8Strict(entry.key, 'media-session:scriptTransform:rekey');
+      const nonceBuf = new Uint8Array(entry.nonce);
+      worker.postMessage({
+        type: 'key',
+        key: keyBuf.buffer,
+        nonce: nonceBuf.buffer,
+        resetCounter: false
+      }, [keyBuf.buffer.slice(0), nonceBuf.buffer.slice(0)]);
+    } catch (err) {
+      log({ callScriptTransformRekeyError: err?.message || err, keyName });
+    }
+  }
+}
+
+function cleanupScriptTransformWorkers() {
+  for (const [, worker] of scriptTransformWorkers) {
+    try { worker.terminate(); } catch {}
+  }
+  scriptTransformWorkers = new Map();
 }
 
 function incrementFrameCounter(keyName) {

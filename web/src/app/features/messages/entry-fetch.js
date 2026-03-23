@@ -48,6 +48,7 @@ import {
 import { isVaultPutNetworkError } from './vault.js';
 import { updateTimelineEntryStatusByCounter, appendUserMessage } from '../timeline-store.js';
 import { applyContactShareFromCommit } from '../contacts.js';
+import { t } from '/locales/index.js';
 import { decryptContactPayload, normalizeContactShareEnvelope } from '../contact-share.js';
 
 // Re-export constants if needed or just use them locally
@@ -190,12 +191,12 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
             // But existing logic returned control-state. Let's stick to generating a user message if possible.
         }
 
-        let friendlyText = '您已與對方成為好友';
+        let friendlyText = t('contacts.becomeFriends');
         let contact = null;
         try {
             contact = getContactCore(peerDigest);
             if (contact && contact.nickname) {
-                friendlyText = `您已與 ${contact.nickname} 成為好友`;
+                friendlyText = t('contacts.becameFriendsWith', { name: contact.nickname });
             }
         } catch (ignore) { }
 
@@ -250,7 +251,7 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
                             appendUserMessage(conversationId, {
                                 id: `${item.serverMessageId || counter}-sys-nick`,
                                 msgType: 'system',
-                                text: `對方的暱稱已更改為 ${diff.nickname.to}`,
+                                text: t('contacts.peerNicknameChanged', { name: diff.nickname.to }),
                                 ts: Date.now() / 1000,
                                 direction: 'incoming',
                                 status: 'sent'
@@ -260,7 +261,7 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
                             appendUserMessage(conversationId, {
                                 id: `${item.serverMessageId || counter}-sys-avatar`,
                                 msgType: 'system',
-                                text: '對方已更改頭像',
+                                text: t('contacts.avatarChanged'),
                                 ts: Date.now() / 1000,
                                 direction: 'incoming',
                                 status: 'sent'
@@ -327,10 +328,10 @@ export async function decryptPipelineItem(item, ctx = {}, deps = {}) {
 
         if (isContactShare) {
             // Logic to build fallback message
-            let friendlyText = '您已與對方成為好友';
+            let friendlyText = t('contacts.becomeFriends');
             try {
                 const c = getContactCore(peerDigest);
-                if (c && c.nickname) friendlyText = `您已與 ${c.nickname} 成為好友`;
+                if (c && c.nickname) friendlyText = t('contacts.becameFriendsWith', { name: c.nickname });
             } catch (ignore) { }
 
             return {
@@ -918,7 +919,7 @@ export async function listSecureAndDecrypt(params = {}, deps = {}) {
     if (!lockAttempt?.granted || !lockAttempt.token) {
         return {
             items: [],
-            errors: ['同步進行中，請稍後再試'],
+            errors: [t('messages.syncInProgress')],
             locked: true
         };
     }
@@ -929,7 +930,7 @@ export async function listSecureAndDecrypt(params = {}, deps = {}) {
         const now = Date.now();
         const backoffUntil = secureFetchBackoff.get(conversationId) || 0;
         if (now < backoffUntil) {
-            return { items: [], errors: ['訊息服務暫時無法使用，請稍後再試。'] };
+            return { items: [], errors: [t('messages.serviceUnavailable')] };
         }
 
         if (lockToken.cancelled) return { items: [], errors: [], yielded: true };
@@ -1036,7 +1037,7 @@ export async function listSecureAndDecrypt(params = {}, deps = {}) {
 
             if (!r.ok) {
                 if (r.status === 404 || r.status >= 500) {
-                    errs.push(`訊息服務暫時無法使用（HTTP ${r.status}）`);
+                    errs.push(t('messages.serviceUnavailableHttp', { status: r.status }));
                     if (r.status >= 500) secureFetchBackoff.set(conversationId, now + 60_000);
                 } else {
                     throw new Error('listSecureMessages failed: ' + (typeof data === 'string' ? data : JSON.stringify(data)));

@@ -9,7 +9,8 @@ import {
   getSession, setSession,
   getHasMK, setHasMK,
   getWrappedMK, setWrappedMK,
-  getAccountToken, getAccountDigest
+  getAccountToken, getAccountDigest,
+  getBrandKey
 } from '../core/store.js';
 
 /** Normalize hex string (keep 0-9a-f, uppercased) */
@@ -59,7 +60,8 @@ export async function exchangeFromURLIfPresent(url) {
     wrapped: !!getWrappedMK(),
     uidHex: p.uidHex,
     accountToken: getAccountToken() || null,
-    accountDigest: getAccountDigest() || null
+    accountDigest: getAccountDigest() || null,
+    brand: getBrandKey() || null
   };
 }
 
@@ -84,6 +86,7 @@ export async function exchangeWithParams(p) {
     hasMK: getHasMK(),
     wrapped: !!getWrappedMK(),
     accountToken: getAccountToken() || null,
-    accountDigest: getAccountDigest() || null
+    accountDigest: getAccountDigest() || null,
+    brand: getBrandKey() || null
   };
 }

@@ -6,8 +6,12 @@ import { sessionStore } from './session-store.js';
 import { escapeHtml, fmtSize, safeJSON } from './ui-utils.js';
 import { b64 } from '../../crypto/aead.js';
 import { openImageViewer } from './viewers/image-viewer.js';
-import { importWithSRI } from '/shared/utils/sri.js';
-import { CDN_SRI } from '/shared/utils/cdn-integrity.js';
+import { renderPdfViewer, cleanupPdfViewer } from './viewers/pdf-viewer.js';
+import { renderExcelViewer, cleanupExcelViewer, isExcelMime, isExcelFilename } from './viewers/excel-viewer.js';
+import { renderWordViewer, cleanupWordViewer, isWordMime, isWordFilename } from './viewers/word-viewer.js';
+import { renderZipViewer, cleanupZipViewer, isZipMime, isZipFilename } from './viewers/zip-viewer.js';
+import { renderPptxViewer, cleanupPptxViewer, isPptxMime, isPptxFilename } from './viewers/pptx-viewer.js';
+import { t } from '/locales/index.js';
 
 const DEFAULT_DRIVE_QUOTA_BYTES = 3 * 1024 * 1024 * 1024; // 3GB
 const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024; // 1GB per file
@@ -35,8 +39,6 @@ export function initDrivePane({
   const driveRefreshEl = dom.driveRefresh ?? document.getElementById('driveRefreshHint');
   const driveRefreshLabelEl = dom.driveRefreshLabel ?? document.querySelector('#driveRefreshHint .label');
   const driveScrollEl = dom.driveScroll ?? document.getElementById('tab-drive');
-  let activePdfCleanup = null;
-  let pdfJsLibPromise = null;
   const isSubscriptionActive = () => true; // DEV: 硬解鎖訂閱
   const requireSubscriptionActive = () => {
     if (isSubscriptionActive()) return true;
@@ -53,8 +55,8 @@ export function initDrivePane({
   const SYSTEM_DIR_SENT = '__SYS_SENT__';
   const SYSTEM_DIR_RECEIVED = '__SYS_RECV__';
   const SYSTEM_DIR_LABELS = Object.freeze({
-    [SYSTEM_DIR_SENT]: '已傳送',
-    [SYSTEM_DIR_RECEIVED]: '已接收'
+    [SYSTEM_DIR_SENT]: t('drive.sent'),
+    [SYSTEM_DIR_RECEIVED]: t('drive.received')
   });
   const RESERVED_DIRS = new Set([SYSTEM_DIR_SENT, SYSTEM_DIR_RECEIVED]);
   const DRIVE_PULL_THRESHOLD = 60;
@@ -121,10 +123,10 @@ export function initDrivePane({
       if (spinner && labelEl) {
         if (driveRefreshing) {
           spinner.classList.add('spin');
-          labelEl.textContent = '刷新中…';
+          labelEl.textContent = t('common.refreshing');
         } else {
           spinner.classList.remove('spin');
-          labelEl.textContent = clamped >= DRIVE_PULL_THRESHOLD ? '鬆開更新檔案' : '下拉更新檔案';
+          labelEl.textContent = clamped >= DRIVE_PULL_THRESHOLD ? t('drive.releaseToRefresh') : t('drive.pullToRefresh');
         }
       }
     }
@@ -223,231 +225,7 @@ export function initDrivePane({
     }
   }
 
-  const PDFJS_ESM_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/+esm';
-  const PDFJS_WORKER_URL = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.worker.min.mjs';
-
-  async function getPdfJs() {
-    if (pdfJsLibPromise) return pdfJsLibPromise;
-    pdfJsLibPromise = importWithSRI(PDFJS_ESM_URL, CDN_SRI[PDFJS_ESM_URL], { useNativeImport: true })
-      .then((lib) => {
-        try { lib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL; } catch (err) { log({ pdfWorkerInitError: err?.message || err }); }
-        return lib;
-      })
-      .catch((err) => { pdfJsLibPromise = null; throw err; });
-    return pdfJsLibPromise;
-  }
-
-  function cleanupPdfViewer() {
-    if (typeof activePdfCleanup === 'function') {
-      try { activePdfCleanup(); } catch {}
-    }
-    activePdfCleanup = null;
-  }
-
-  async function renderPdfPreview({ url, name, modalApi }) {
-    const { openModal, closeModal, showConfirmModal } = modalApi || {};
-    let pdfjsLib;
-    try {
-      pdfjsLib = await getPdfJs();
-    } catch (err) {
-      log({ drivePdfLoadError: err?.message || err });
-      return false;
-    }
-    const modalEl = document.getElementById('modal');
-    const body = document.getElementById('modalBody');
-    const modalTitle = document.getElementById('modalTitle');
-    const closeBtn = document.getElementById('modalClose');
-    const closeArea = document.getElementById('modalCloseArea');
-    if (!modalEl || !body || !modalTitle) return false;
-    cleanupPdfViewer();
-    modalEl.classList.add('pdf-modal');
-    modalTitle.textContent = '';
-    body.innerHTML = `
-      <div class="pdf-viewer">
-        <div class="pdf-toolbar">
-          <button type="button" class="pdf-btn" id="pdfCloseBtn" aria-label="關閉"><svg viewBox="0 0 16 16" fill="none"><path d="M3 8h10M8 3l-5 5 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-          <div class="pdf-title" title="${escapeHtml(name || 'PDF')}">${escapeHtml(name || 'PDF')}</div>
-          <div class="pdf-actions">
-            <a class="pdf-btn" id="pdfDownload" href="${escapeHtml(url)}" download="${escapeHtml(name || 'file.pdf')}">下載</a>
-          </div>
-        </div>
-        <div class="pdf-stage">
-          <div class="pdf-canvas-wrap">
-            <canvas id="pdfCanvas" class="pdf-canvas"></canvas>
-            <div class="pdf-loading" id="pdfLoading">載入中…</div>
-          </div>
-        </div>
-        <div class="pdf-footer">
-          <div class="pdf-actions-row">
-            <div class="pdf-page-info">
-              <button type="button" class="pdf-btn" id="pdfPrev" aria-label="上一頁">‹</button>
-              <span id="pdfPageLabel">– / –</span>
-              <button type="button" class="pdf-btn" id="pdfNext" aria-label="下一頁">›</button>
-            </div>
-          </div>
-        </div>
-      </div>`;
-    openModal?.();
-
-    const canvas = body.querySelector('#pdfCanvas');
-    const loadingEl = body.querySelector('#pdfLoading');
-    const pageLabel = body.querySelector('#pdfPageLabel');
-    const stage = body.querySelector('.pdf-stage');
-
-    let pdfDoc = null;
-    let pageNum = 1;
-    let scale = 1;
-    let rendering = false;
-    let pendingPage = null;
-    let fitWidth = true;
-
-    const updateLabels = () => {
-      if (pageLabel && pdfDoc) pageLabel.textContent = `${pageNum} / ${pdfDoc.numPages}`;
-    };
-
-    const cleanupCore = () => {
-      try { pdfDoc?.cleanup?.(); pdfDoc?.destroy?.(); } catch {}
-      modalEl.classList.remove('pdf-modal');
-    };
-
-    const renderPage = async (num) => {
-      if (!pdfDoc || !canvas) return;
-      rendering = true;
-      const page = await pdfDoc.getPage(num);
-      const baseViewport = page.getViewport({ scale: 1 });
-      if (fitWidth && stage?.clientWidth) {
-        const maxWidth = Math.max(stage.clientWidth, 320);
-        scale = Math.min(3, Math.max(0.6, maxWidth / baseViewport.width));
-      }
-      const viewport = page.getViewport({ scale });
-      const ctx = canvas.getContext('2d');
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      canvas.style.width = `${viewport.width}px`;
-      canvas.style.height = `${viewport.height}px`;
-      if (loadingEl) loadingEl.textContent = `載入第 ${num} 頁…`;
-      await page.render({ canvasContext: ctx, viewport }).promise;
-      rendering = false;
-      updateLabels();
-      if (loadingEl) loadingEl.textContent = '';
-      if (pendingPage) {
-        const next = pendingPage;
-        pendingPage = null;
-        renderPage(next);
-      }
-      if (stage) stage.style.touchAction = scale > 1 ? 'none' : 'auto';
-    };
-
-    try {
-      pdfDoc = await pdfjsLib.getDocument({ url }).promise;
-      pageNum = 1;
-      updateLabels();
-      await renderPage(pageNum);
-    } catch (err) {
-      if (loadingEl) {
-        loadingEl.textContent = `PDF 載入失敗：${err?.message || err}`;
-        loadingEl.classList.add('pdf-error');
-      }
-      return true;
-    }
-
-    const queueRender = (num) => {
-      if (num < 1 || num > pdfDoc.numPages) return;
-      pageNum = num;
-      if (rendering) {
-        pendingPage = num;
-      } else {
-        renderPage(num);
-      }
-    };
-
-    body.querySelector('#pdfPrev')?.addEventListener('click', () => queueRender(pageNum - 1));
-    body.querySelector('#pdfNext')?.addEventListener('click', () => queueRender(pageNum + 1));
-    const downloadBtn = body.querySelector('#pdfDownload');
-    downloadBtn?.addEventListener('click', (e) => {
-      e.preventDefault();
-      const proceed = () => triggerDownload(url, name || 'file.pdf');
-      if (typeof showConfirmModal === 'function') {
-        showConfirmModal({
-          title: '下載 PDF',
-          message: '下載後會在外部開啟，回到通訊軟體需重新感應。確定要下載嗎？',
-          confirmLabel: '下載',
-          onConfirm: proceed
-        });
-      } else {
-        showConfirmModal?.({ title: '下載 PDF', message: '下載後會在外部開啟，回到通訊軟體需重新感應。確定要下載嗎？', confirmLabel: '下載', onConfirm: proceed });
-      }
-    });
-    body.querySelector('#pdfCloseBtn')?.addEventListener('click', () => activePdfCleanup?.());
-    closeBtn?.addEventListener('click', () => activePdfCleanup?.(), { once: true });
-    closeArea?.addEventListener('click', () => activePdfCleanup?.(), { once: true });
-    const handleResize = () => { if (fitWidth) queueRender(pageNum); };
-    window.addEventListener('resize', handleResize);
-
-    // Pinch/pan
-    let pinchStartDist = null;
-    let pinchStartScale = scale;
-    let panStart = null;
-    const getDistance = (touches) => {
-      if (!touches || touches.length < 2) return null;
-      const [a, b] = touches;
-      const dx = a.clientX - b.clientX;
-      const dy = a.clientY - b.clientY;
-      return Math.sqrt(dx * dx + dy * dy);
-    };
-    const onTouchStart = (e) => {
-      if (e.touches.length === 2) {
-        pinchStartDist = getDistance(e.touches);
-        pinchStartScale = scale;
-        panStart = null;
-        if (stage) stage.style.touchAction = 'none';
-      } else if (e.touches.length === 1 && scale > 1 && stage) {
-        const t = e.touches[0];
-        panStart = { x: t.clientX, y: t.clientY, scrollLeft: stage.scrollLeft, scrollTop: stage.scrollTop };
-        stage.style.touchAction = 'none';
-      }
-    };
-    const onTouchMove = (e) => {
-      if (e.touches.length === 2 && pinchStartDist) {
-        const dist = getDistance(e.touches);
-        if (!dist) return;
-        e.preventDefault();
-        const factor = dist / pinchStartDist;
-        scale = Math.min(3, Math.max(0.6, pinchStartScale * factor));
-        fitWidth = false;
-        queueRender(pageNum);
-      } else if (e.touches.length === 1 && panStart && stage) {
-        e.preventDefault();
-        const t = e.touches[0];
-        stage.scrollLeft = panStart.scrollLeft - (t.clientX - panStart.x);
-        stage.scrollTop = panStart.scrollTop - (t.clientY - panStart.y);
-      }
-    };
-    const onTouchEnd = () => {
-      pinchStartDist = null;
-      panStart = null;
-      if (stage && scale <= 1) stage.style.touchAction = 'auto';
-    };
-    stage?.addEventListener('touchstart', onTouchStart, { passive: false });
-    stage?.addEventListener('touchmove', onTouchMove, { passive: false });
-    stage?.addEventListener('touchend', onTouchEnd);
-    stage?.addEventListener('touchcancel', onTouchEnd);
-
-    const prevCleanup = activePdfCleanup;
-    activePdfCleanup = () => {
-      if (typeof prevCleanup === 'function') prevCleanup();
-      cleanupCore();
-      window.removeEventListener('resize', handleResize);
-      stage?.removeEventListener('touchstart', onTouchStart);
-      stage?.removeEventListener('touchmove', onTouchMove);
-      stage?.removeEventListener('touchend', onTouchEnd);
-      stage?.removeEventListener('touchcancel', onTouchEnd);
-      closeModal?.();
-      activePdfCleanup = null;
-      if (stage) stage.style.touchAction = 'auto';
-    };
-    return true;
-  }
+  // PDF viewer is now shared with chat — imported from viewers/pdf-viewer.js
 
   const {
     openModal,
@@ -474,7 +252,7 @@ export function initDrivePane({
   const PLACEHOLDER_NAME = '.empty-folder';
   const PLACEHOLDER_CT = 'application/x-empty-folder';
 
-  function showBlockingModal(message, { title = '無法上傳', confirmLabel = '知道了' } = {}) {
+  function showBlockingModal(message, { title = t('drive.cannotUpload'), confirmLabel = t('drive.understood') } = {}) {
     if (typeof showConfirmModal === 'function') {
       showConfirmModal({
         title,
@@ -650,7 +428,7 @@ export function initDrivePane({
   function renderCrumb() {
     if (!crumbEl) return;
     const cwd = ensureSafeCwd();
-    const parts = [{ name: '根目錄', path: '' }, ...cwd.map((seg, idx) => ({ name: displayFolderName(seg), path: cwd.slice(0, idx + 1).join('/') }))];
+    const parts = [{ name: t('drive.rootDir'), path: '' }, ...cwd.map((seg, idx) => ({ name: displayFolderName(seg), path: cwd.slice(0, idx + 1).join('/') }))];
     crumbEl.innerHTML = '';
     parts.forEach((p, i) => {
       const isLast = i === parts.length - 1;
@@ -664,7 +442,7 @@ export function initDrivePane({
           driveState.cwd = p.path ? p.path.split('/') : [];
           refreshDriveList().catch((err) => {
             log({ driveCrumbError: err?.message || err });
-            showBlockingModal('無法載入資料夾，請稍後再試。', { title: '載入失敗' });
+            showBlockingModal(t('drive.cannotLoadFolder'), { title: t('errors.loadFailed') });
           });
         });
       }
@@ -748,7 +526,7 @@ export function initDrivePane({
       await refreshDriveList();
     } catch (err) {
       log({ driveNavigateError: err?.message || err, cwd: driveState.cwd });
-      showBlockingModal('無法載入資料夾，請稍後再試。', { title: '載入失敗' });
+      showBlockingModal(t('drive.cannotLoadFolder'), { title: t('errors.loadFailed') });
     }
   }
 
@@ -759,7 +537,7 @@ export function initDrivePane({
     const { items, truncated } = await fetchDriveMessages({ convId });
     const deduped = dedupeMessagesByObject(items);
     if (truncated) {
-      log({ driveListWarning: '列表已截斷，僅顯示最新項目', convId, items: items.length });
+      log({ driveListWarning: t('drive.listTruncated'), convId, items: items.length });
     }
     driveState.currentMessages = deduped;
     driveState.currentConvId = convId;
@@ -808,9 +586,9 @@ export function initDrivePane({
       const fileCount = Number(summary?.files || 0);
       const folderCount = summary?.subfolders instanceof Set ? summary.subfolders.size : 0;
       const parts = [];
-      if (folderCount > 0) parts.push(`${folderCount} 個資料夾`);
-      if (fileCount > 0) parts.push(`${fileCount} 個檔案`);
-      const subLabel = parts.length ? parts.join(' · ') : '空資料夾';
+      if (folderCount > 0) parts.push(t('drive.folderCount', { count: folderCount }));
+      if (fileCount > 0) parts.push(t('drive.fileCount', { count: fileCount }));
+      const subLabel = parts.length ? parts.join(' · ') : t('common.emptyFolder');
       const li = document.createElement('li');
       li.className = 'file-item folder' + (isSystem ? ' system-folder' : '');
       li.dataset.type = 'folder';
@@ -818,16 +596,16 @@ export function initDrivePane({
       li.setAttribute('role', 'button');
       li.tabIndex = 0;
       const badge = isSystem
-        ? `<span class="badge badge-system" style="margin-left:6px;padding:2px 8px;border-radius:10px;background:#e0f2ff;color:#0b6bcb;font-weight:600;font-size:12px;">系統資料夾</span>`
+        ? `<span class="badge badge-system" style="margin-left:6px;padding:2px 8px;border-radius:10px;background:#e0f2ff;color:#0b6bcb;font-weight:600;font-size:12px;">${t('drive.systemFolder')}</span>`
         : '';
       li.innerHTML = `
         <div class="item-content">
           <div class="meta">
-            <div class="name"><i class='bx bx-folder' aria-hidden="true"></i><span class="label">${escapeHtml(displayName)}</span>${badge}</div>
+            <div class="name"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg><span class="label">${escapeHtml(displayName)}</span>${badge}</div>
             <div class="sub">${subLabel}</div>
           </div>
         </div>
-        ${isSystem ? '' : `<button type="button" class="item-delete" aria-label="刪除"><i class='bx bx-trash'></i></button>`}`;
+        ${isSystem ? '' : `<button type="button" class="item-delete" aria-label="${t('drive.deleteAriaLabel')}"><svg class="icon"><use href="#i-trash-2"/></svg></button>`}`;
       const open = async () => {
         if (li.classList.contains('show-delete')) {
           closeSwipe?.(li);
@@ -871,8 +649,8 @@ export function initDrivePane({
       const iconColor = fileIconColor(name, ct);
       const isImage = ct.startsWith('image/') || ['jpg','jpeg','png','gif','webp','bmp','svg','heic','heif','avif'].includes(String(name || '').split('.').pop().toLowerCase());
       const iconHtml = isImage
-        ? `<span class="file-thumb" aria-hidden="true"><i class='${iconClass}'></i></span>`
-        : `<i class='${iconClass}' style="color:${iconColor}" aria-hidden="true"></i>`;
+        ? `<span class="file-thumb" aria-hidden="true"><svg class="icon"><use href="#i-${iconClass}"/></svg></span>`
+        : `<svg class="icon" style="color:${iconColor}" aria-hidden="true"><use href="#i-${iconClass}"/></svg>`;
       const li = document.createElement('li');
       li.className = 'file-item file';
       li.dataset.type = 'file';
@@ -887,7 +665,7 @@ export function initDrivePane({
             <div class="sub">${fmtSize(size)} · ${escapeHtml(friendlyCt)}${ts ? ` · ${escapeHtml(ts)}` : ''}</div>
           </div>
         </div>
-        <button type="button" class="item-delete" aria-label="刪除"><i class='bx bx-trash'></i></button>`;
+        <button type="button" class="item-delete" aria-label="${t('drive.deleteAriaLabel')}"><svg class="icon"><use href="#i-trash-2"/></svg></button>`;
       const preview = () => {
         if (li.classList.contains('show-delete')) {
           closeSwipe?.(li);
@@ -927,10 +705,10 @@ export function initDrivePane({
       const emptyLi = document.createElement('li');
       emptyLi.className = 'empty-state';
       emptyLi.innerHTML = `
-        <i class='bx bx-cloud-upload' aria-hidden="true"></i>
-        <p class="empty-state-title">這裡還沒有檔案</p>
-        <p class="empty-state-hint">上傳檔案或建立資料夾開始使用</p>
-        <button type="button" class="empty-state-btn">上傳檔案</button>`;
+        <svg class="icon" aria-hidden="true"><use href="#i-cloud-upload"/></svg>
+        <p class="empty-state-title">${t('drive.noFilesYet')}</p>
+        <p class="empty-state-hint">${t('drive.emptyStateHint')}</p>
+        <button type="button" class="empty-state-btn">${t('drive.uploadFileTitle')}</button>`;
       emptyLi.querySelector('.empty-state-btn')?.addEventListener('click', () => openUploadModal());
       driveListEl.appendChild(emptyLi);
     }
@@ -939,16 +717,16 @@ export function initDrivePane({
   function fileIconForName(name, contentType) {
     const ext = String(name || '').split('.').pop().toLowerCase();
     const ct = String(contentType || '').toLowerCase();
-    if (ct.startsWith('image/') || ['jpg','jpeg','png','gif','webp','bmp','svg','heic','heif','avif'].includes(ext)) return 'bx bx-image';
-    if (ct.startsWith('video/') || ['mp4','mov','m4v','webm','avi','mkv'].includes(ext)) return 'bx bx-video';
-    if (ct.startsWith('audio/') || ['mp3','wav','m4a','aac','flac','ogg'].includes(ext)) return 'bx bx-music';
-    if (ext === 'pdf') return 'bx bxs-file-pdf';
-    if (['doc','docx','rtf','odt','pages'].includes(ext)) return 'bx bx-file';
-    if (['xls','xlsx','csv','ods','numbers'].includes(ext)) return 'bx bx-spreadsheet';
-    if (['ppt','pptx','odp','key'].includes(ext)) return 'bx bx-slideshow';
-    if (['zip','rar','7z','gz','tar','tgz','bz2'].includes(ext)) return 'bx bx-archive';
-    if (['txt','md','log','json','xml','yml','yaml'].includes(ext) || ct.startsWith('text/')) return 'bx bx-file';
-    return 'bx bx-file';
+    if (ct.startsWith('image/') || ['jpg','jpeg','png','gif','webp','bmp','svg','heic','heif','avif'].includes(ext)) return 'image';
+    if (ct.startsWith('video/') || ['mp4','mov','m4v','webm','avi','mkv'].includes(ext)) return 'film';
+    if (ct.startsWith('audio/') || ['mp3','wav','m4a','aac','flac','ogg'].includes(ext)) return 'music';
+    if (ext === 'pdf') return 'file-text';
+    if (['doc','docx','rtf','odt','pages'].includes(ext)) return 'file';
+    if (['xls','xlsx','csv','ods','numbers'].includes(ext)) return 'file-spreadsheet';
+    if (['ppt','pptx','odp','key'].includes(ext)) return 'presentation';
+    if (['zip','rar','7z','gz','tar','tgz','bz2'].includes(ext)) return 'archive';
+    if (['txt','md','log','json','xml','yml','yaml'].includes(ext) || ct.startsWith('text/')) return 'file';
+    return 'file';
   }
 
   function fileIconColor(name, contentType) {
@@ -967,16 +745,16 @@ export function initDrivePane({
 
   function friendlyContentType(ct) {
     const s = String(ct || '').toLowerCase();
-    if (s.startsWith('image/')) return s.replace('image/', '').toUpperCase() + ' 圖片';
-    if (s.startsWith('video/')) return s.replace('video/', '').toUpperCase() + ' 影片';
-    if (s.startsWith('audio/')) return s.replace('audio/', '').toUpperCase() + ' 音檔';
-    if (s === 'application/pdf') return 'PDF 文件';
-    if (s.includes('word') || s.includes('document')) return 'Word 文件';
-    if (s.includes('sheet') || s.includes('excel')) return '試算表';
-    if (s.includes('presentation') || s.includes('powerpoint')) return '簡報';
-    if (s.includes('zip') || s.includes('compressed') || s.includes('archive') || s.includes('rar') || s.includes('7z') || s.includes('tar') || s.includes('gzip')) return '壓縮檔';
-    if (s.startsWith('text/')) return s.replace('text/', '').toUpperCase() + ' 文字';
-    if (s === 'application/octet-stream') return '檔案';
+    if (s.startsWith('image/')) return s.replace('image/', '').toUpperCase() + ' ' + t('drive.typeImage');
+    if (s.startsWith('video/')) return s.replace('video/', '').toUpperCase() + ' ' + t('drive.typeVideo');
+    if (s.startsWith('audio/')) return s.replace('audio/', '').toUpperCase() + ' ' + t('drive.typeAudio');
+    if (s === 'application/pdf') return t('drive.typePdf');
+    if (s.includes('word') || s.includes('document')) return t('drive.typeWord');
+    if (s.includes('sheet') || s.includes('excel')) return t('drive.spreadsheet');
+    if (s.includes('presentation') || s.includes('powerpoint')) return t('drive.presentation');
+    if (s.includes('zip') || s.includes('compressed') || s.includes('archive') || s.includes('rar') || s.includes('7z') || s.includes('tar') || s.includes('gzip')) return t('drive.archive');
+    if (s.startsWith('text/')) return s.replace('text/', '').toUpperCase() + ' ' + t('drive.typeText');
+    if (s === 'application/octet-stream') return t('common.file');
     if (s === 'application/json') return 'JSON';
     return s;
   }
@@ -987,17 +765,17 @@ export function initDrivePane({
     const now = new Date();
     const diffMs = now - date;
     const diffSec = Math.floor(diffMs / 1000);
-    if (diffSec < 60) return '剛剛';
+    if (diffSec < 60) return t('common.justNow');
     const diffMin = Math.floor(diffSec / 60);
-    if (diffMin < 60) return `${diffMin} 分鐘前`;
+    if (diffMin < 60) return t('drive.minutesAgo', { count: diffMin });
     const diffHr = Math.floor(diffMin / 60);
-    if (diffHr < 24) return `${diffHr} 小時前`;
+    if (diffHr < 24) return t('drive.hoursAgo', { count: diffHr });
     const diffDay = Math.floor(diffHr / 24);
-    if (diffDay < 7) return `${diffDay} 天前`;
+    if (diffDay < 7) return t('drive.daysAgo', { count: diffDay });
     const y = date.getFullYear();
     const m = date.getMonth() + 1;
     const d = date.getDate();
-    if (y === now.getFullYear()) return `${m}月${d}日`;
+    if (y === now.getFullYear()) return t('drive.monthDay', { month: m, day: d });
     return `${y}/${m}/${d}`;
   }
 
@@ -1035,15 +813,15 @@ export function initDrivePane({
     if (!modalEl || !body) return;
     modalEl.classList.remove('security-modal', 'progress-modal', 'upload-modal', 'nickname-modal', 'folder-modal', 'pdf-modal');
     modalEl.classList.add('nickname-modal');
-    if (title) title.textContent = type === 'folder' ? '重新命名資料夾' : '重新命名檔案';
+    if (title) title.textContent = type === 'folder' ? t('drive.renameFolder') : t('drive.renameFile');
     body.innerHTML = `
       <form id="renameForm" class="nickname-form">
-        <label for="renameInput">${type === 'folder' ? '資料夾名稱' : '檔案名稱'}</label>
+        <label for="renameInput">${type === 'folder' ? t('drive.folderName') : t('drive.fileName')}</label>
         <input id="renameInput" type="text" value="${escapeHtml(name || '')}" autocomplete="off" spellcheck="false" />
-        <p class="nickname-hint">名稱不可為空。</p>
+        <p class="nickname-hint">${t('drive.nameCannotBeEmpty')}</p>
         <div class="nickname-actions">
-          <button type="button" id="renameCancel" class="secondary">取消</button>
-          <button type="submit" class="primary">儲存</button>
+          <button type="button" id="renameCancel" class="secondary">${t('common.cancel')}</button>
+          <button type="submit" class="primary">${t('common.save')}</button>
         </div>
       </form>`;
     openModal?.();
@@ -1060,19 +838,19 @@ export function initDrivePane({
         return;
       }
       closeModal?.();
-      showModalLoading?.('重新命名中…');
-      updateLoadingModal?.({ percent: 12, text: '準備重新命名…' });
+      showModalLoading?.(t('drive.renaming'));
+      updateLoadingModal?.({ percent: 12, text: t('drive.preparingRename') });
       try {
         if (type === 'folder') {
           await renameFolder(name, newName);
-          updateLoadingModal?.({ percent: 55, text: '同步資料夾名稱…' });
+          updateLoadingModal?.({ percent: 55, text: t('drive.syncingFolderName') });
         } else if (type === 'file') {
           await renameFile(key, newName);
-          updateLoadingModal?.({ percent: 55, text: '同步檔案名稱…' });
+          updateLoadingModal?.({ percent: 55, text: t('drive.syncingFileName') });
         }
-        updateLoadingModal?.({ percent: 85, text: '刷新列表…' });
+        updateLoadingModal?.({ percent: 85, text: t('drive.refreshingList') });
         await refreshDriveList();
-        updateLoadingModal?.({ percent: 98, text: '完成' });
+        updateLoadingModal?.({ percent: 98, text: t('drive.done') });
       } catch (err) {
         log({ renameError: err?.message || err });
       } finally {
@@ -1087,7 +865,7 @@ export function initDrivePane({
     if (!acct) throw new Error('Account missing');
     const convId = driveState.currentConvId || `drive-${acct}`;
     const entry = findMessageEntryByKey(driveState.currentMessages, key);
-    if (!entry) throw new Error('找不到檔案，請重新整理');
+    if (!entry) throw new Error(t('drive.fileNotFound'));
     const header = { ...entry.header, name: newName };
     const ciphertext_b64 = buildCiphertextForRename({ msg: entry.msg, header });
     const messageId = crypto.randomUUID();
@@ -1101,7 +879,7 @@ export function initDrivePane({
     };
     const body = buildAccountPayload({ overrides: msgPayload });
     const { r, data } = await createMessage(body);
-    if (!r.ok) throw new Error('重新命名失敗：' + JSON.stringify(data));
+    if (!r.ok) throw new Error(t('drive.renameFailed') + JSON.stringify(data));
   }
 
   async function renameFolder(oldName, newName) {
@@ -1143,7 +921,7 @@ export function initDrivePane({
     for (const msgPayload of batch) {
       const body = buildAccountPayload({ overrides: msgPayload });
       const { r, data } = await createMessage(body);
-      if (!r.ok) throw new Error('重新命名失敗：' + JSON.stringify(data));
+      if (!r.ok) throw new Error(t('drive.renameFailed') + JSON.stringify(data));
     }
   }
 
@@ -1155,23 +933,23 @@ export function initDrivePane({
     if (!modalEl || !body) return;
     modalEl.classList.remove('security-modal', 'progress-modal', 'folder-modal', 'nickname-modal', 'pdf-modal');
     modalEl.classList.add('upload-modal');
-    if (title) title.textContent = '上傳檔案';
+    if (title) title.textContent = t('drive.uploadFileTitle');
     body.innerHTML = `
       <form id="uploadForm" class="upload-form">
         <div class="upload-field">
           <input id="uploadFileInput" type="file" class="upload-input" multiple />
           <label for="uploadFileInput" class="upload-callout">
-            <i class='bx bx-cloud-upload'></i>
-            <span>點擊選擇檔案（可多選）</span>
+            <svg class="icon"><use href="#i-cloud-upload"/></svg>
+            <span>${t('drive.clickToSelectFiles')}</span>
           </label>
         </div>
-        <div id="uploadFileName" class="upload-name">尚未選擇檔案</div>
+        <div id="uploadFileName" class="upload-name">${t('drive.noFileSelected')}</div>
         <ul id="uploadFileList" class="upload-file-list"></ul>
-        <p class="upload-hint">支援 iOS Safari：會開啟照片、檔案選擇器。</p>
+        <p class="upload-hint">${t('drive.iosSafariHint')}</p>
         <p class="upload-error" role="alert"></p>
         <div class="upload-actions">
-          <button type="button" id="uploadCancel" class="secondary">取消</button>
-          <button type="submit" class="primary">上傳</button>
+          <button type="button" id="uploadCancel" class="secondary">${t('common.cancel')}</button>
+          <button type="submit" class="primary">${t('common.upload')}</button>
         </div>
       </form>`;
     openModal?.();
@@ -1183,7 +961,7 @@ export function initDrivePane({
     const form = body.querySelector('#uploadForm');
 
     const formatUploadFileName = (name) => {
-      const safe = typeof name === 'string' && name.trim() ? name.trim() : '未命名';
+      const safe = typeof name === 'string' && name.trim() ? name.trim() : t('drive.unnamed');
       const max = 26;
       const tail = 8;
       if (safe.length <= max) return safe;
@@ -1194,18 +972,18 @@ export function initDrivePane({
     input?.addEventListener('change', () => {
       const files = input?.files ? Array.from(input.files).filter(Boolean) : [];
       if (!files.length) {
-        if (nameEl) nameEl.textContent = '尚未選擇檔案';
+        if (nameEl) nameEl.textContent = t('drive.noFileSelected');
         if (listEl) listEl.innerHTML = '';
         if (errorEl) errorEl.textContent = '';
         return;
       }
       const oversized = files.filter((file) => Number(file?.size || 0) > MAX_UPLOAD_BYTES);
       if (oversized.length) {
-        const msg = `單檔上限 1GB：${escapeHtml(oversized[0].name || '檔案')} 超過限制`;
+        const msg = t('drive.singleFileLimit1GB', { name: escapeHtml(oversized[0].name || t('common.file')) });
         if (errorEl) errorEl.textContent = msg;
-        showBlockingModal(msg, { title: '檔案過大' });
+        showBlockingModal(msg, { title: t('drive.fileTooLarge') });
         input.value = '';
-        if (nameEl) nameEl.textContent = '尚未選擇檔案';
+        if (nameEl) nameEl.textContent = t('drive.noFileSelected');
         if (listEl) listEl.innerHTML = '';
         return;
       }
@@ -1213,7 +991,7 @@ export function initDrivePane({
       if (nameEl) {
         nameEl.textContent = files.length === 1
           ? formatUploadFileName(files[0].name)
-          : `${files.length} 個檔案 · ${fmtSize(totalSize)}`;
+          : t('drive.filesCountSize', { count: files.length, size: fmtSize(totalSize) });
       }
       if (listEl) {
         listEl.innerHTML = files
@@ -1226,14 +1004,14 @@ export function initDrivePane({
       e.preventDefault();
       const files = input?.files ? Array.from(input.files).filter(Boolean) : [];
       if (!files.length) {
-        if (errorEl) errorEl.textContent = '請先選擇要上傳的檔案。';
+        if (errorEl) errorEl.textContent = t('drive.selectFileFirst');
         return;
       }
       const oversized = files.filter((file) => Number(file?.size || 0) > MAX_UPLOAD_BYTES);
       if (oversized.length) {
-        const msg = `單檔上限 1GB：${escapeHtml(oversized[0].name || '檔案')} 超過限制`;
+        const msg = t('drive.singleFileLimit1GB', { name: escapeHtml(oversized[0].name || t('common.file')) });
         if (errorEl) errorEl.textContent = msg;
-        showBlockingModal(msg, { title: '檔案過大' });
+        showBlockingModal(msg, { title: t('drive.fileTooLarge') });
         return;
       }
       closeModal?.();
@@ -1253,16 +1031,16 @@ export function initDrivePane({
     if (!modalEl || !body) return;
     modalEl.classList.remove('security-modal', 'progress-modal', 'upload-modal', 'nickname-modal', 'pdf-modal');
     modalEl.classList.add('folder-modal');
-    if (title) title.textContent = '新增資料夾';
+    if (title) title.textContent = t('drive.newFolderTitle');
     body.innerHTML = `
       <form id="folderForm" class="folder-form">
-        <label for="folderNameInput">資料夾名稱</label>
-        <input id="folderNameInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="例如：旅行紀錄 ✈️" />
-        <p class="folder-hint">可輸入中文或 emoji，僅禁止使用 / 等分隔符號。</p>
+        <label for="folderNameInput">${t('drive.folderName')}</label>
+        <input id="folderNameInput" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="${t('drive.folderNamePlaceholder')}" />
+        <p class="folder-hint">${t('drive.folderNameHint')}</p>
         <p class="folder-error" role="alert"></p>
         <div class="folder-actions">
-          <button type="button" id="folderCancel" class="secondary">取消</button>
-          <button type="submit" class="primary">建立</button>
+          <button type="button" id="folderCancel" class="secondary">${t('common.cancel')}</button>
+          <button type="submit" class="primary">${t('common.create')}</button>
         </div>
       </form>`;
     openModal?.();
@@ -1276,13 +1054,13 @@ export function initDrivePane({
       e.preventDefault();
       const safeName = sanitizeFolderName(input?.value || '');
       if (!safeName) {
-        if (errorEl) errorEl.textContent = '資料夾名稱不可為空，且不可包含 / 或控制字元。';
+        if (errorEl) errorEl.textContent = t('drive.folderNameEmpty');
         input?.focus();
         input?.select?.();
         return;
       }
       if (isReservedDir(safeName)) {
-        if (errorEl) errorEl.textContent = '此名稱為系統保留資料夾，請改用其他名稱。';
+        if (errorEl) errorEl.textContent = t('drive.reservedFolderName');
         input?.focus();
         input?.select?.();
         return;
@@ -1294,18 +1072,18 @@ export function initDrivePane({
       driveState.cwd = [...targetPath];
       ensureSafeCwd();
       closeModal?.();
-      showModalLoading?.('建立資料夾中…');
-      updateLoadingModal?.({ percent: 12, text: '準備建立資料夾…' });
+      showModalLoading?.(t('drive.creatingFolder'));
+      updateLoadingModal?.({ percent: 12, text: t('drive.preparingCreateFolder') });
       try {
         await createFolderPlaceholder(targetPath);
-        updateLoadingModal?.({ percent: 55, text: '同步資料夾…' });
+        updateLoadingModal?.({ percent: 55, text: t('drive.syncingFolder') });
         await refreshDriveList();
-        updateLoadingModal?.({ percent: 95, text: '完成' });
+        updateLoadingModal?.({ percent: 95, text: t('drive.done') });
         setTimeout(() => closeModal?.(), 120);
       } catch (err) {
         log({ driveListError: String(err?.message || err) });
         closeModal?.();
-        showBlockingModal('建立資料夾失敗，請稍後再試。', { title: '建立失敗' });
+        showBlockingModal(t('drive.createFolderFailed'), { title: t('errors.createFailed') });
       }
     }, { once: true });
   }
@@ -1315,8 +1093,8 @@ export function initDrivePane({
     if (!files.length) return;
     const oversized = files.filter((file) => Number(file?.size || 0) > MAX_UPLOAD_BYTES);
     if (oversized.length) {
-      const name = escapeHtml(oversized[0].name || '檔案');
-      showBlockingModal(`無法上傳：${name} 超過 1GB 單檔限制`, { title: '檔案過大' });
+      const name = escapeHtml(oversized[0].name || t('common.file'));
+      showBlockingModal(t('drive.cannotUploadExceeds1GB', { name }), { title: t('drive.fileTooLarge') });
       return;
     }
     const quotaBytes = resolveDriveQuotaBytes();
@@ -1327,17 +1105,17 @@ export function initDrivePane({
       if (!Number.isFinite(size)) continue;
       projected += size;
       if (quotaBytes && projected > quotaBytes) {
-        showBlockingModal('雲端空間容量不足，請刪除檔案後再上傳。', { title: '空間不足' });
+        showBlockingModal(t('drive.cloudSpaceInsufficient'), { title: t('drive.spaceInsufficient') });
         return;
       }
     }
     const acct = (getAccountDigest() || '').toUpperCase();
     if (!acct) {
-      showBlockingModal('尚未登入，請重新登入後再試。', { title: '尚未登入' });
+      showBlockingModal(t('drive.notLoggedInRelogin'), { title: t('drive.notLoggedIn') });
       return;
     }
     const convId = driveState.currentConvId || `drive-${acct}`;
-    showProgressModal?.(files.length === 1 ? (files[0].name || '檔案') : `${files.length} 個檔案`);
+    showProgressModal?.(files.length === 1 ? (files[0].name || t('common.file')) : t('drive.nFiles', { count: files.length }));
     await new Promise((resolve) => setTimeout(resolve, 0));
     const titleEl = document.querySelector('.progress-wrap .progress-title');
     const subtitleEl = document.querySelector('.progress-wrap .progress-subtitle');
@@ -1347,8 +1125,8 @@ export function initDrivePane({
     try {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        if (titleEl) titleEl.textContent = file.name || '檔案';
-        if (subtitleEl) subtitleEl.textContent = files.length > 1 ? `檔案 ${i + 1} / ${files.length}` : '上傳中…';
+        if (titleEl) titleEl.textContent = file.name || t('common.file');
+        if (subtitleEl) subtitleEl.textContent = files.length > 1 ? t('drive.fileNofM', { current: i + 1, total: files.length }) : t('drive.uploading');
         if (innerEl) innerEl.style.width = '0%';
         if (pctEl) pctEl.innerHTML = '0<span>%</span>';
         if (textEl) textEl.textContent = '';
@@ -1374,7 +1152,7 @@ export function initDrivePane({
         });
         if (innerEl) innerEl.style.width = '100%';
         if (pctEl) pctEl.innerHTML = '100<span>%</span>';
-        if (textEl) textEl.textContent = files.length > 1 ? `已完成 ${i + 1} / ${files.length}` : '';
+        if (textEl) textEl.textContent = files.length > 1 ? t('drive.completedNofM', { current: i + 1, total: files.length }) : '';
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
       completeProgressModal?.();
@@ -1419,16 +1197,16 @@ export function initDrivePane({
 
     // ── Chunked non-video: download all chunks then preview ──
     if (chunkedMeta?.chunked) {
-      showModalLoading?.('下載加密檔案中…');
+      showModalLoading?.(t('drive.downloadEncryptedFile'));
       try {
         cleanupPdfViewer();
         const { downloadChunkedManifest, downloadAllChunks } = await import('../../features/chunked-download.js');
-        updateLoadingModal?.({ percent: 5, text: '取得解密資訊中…' });
+        updateLoadingModal?.({ percent: 5, text: t('drive.gettingDecryptInfo') });
         const manifest = await downloadChunkedManifest({
           baseKey: chunkedMeta.baseKey,
           manifestEnvelope: chunkedMeta.manifestEnvelope
         });
-        updateLoadingModal?.({ percent: 10, text: '下載加密分片中…' });
+        updateLoadingModal?.({ percent: 10, text: t('drive.downloadingEncryptedChunks') });
         const result = await downloadAllChunks({
           baseKey: chunkedMeta.baseKey,
           manifest,
@@ -1436,11 +1214,11 @@ export function initDrivePane({
           onProgress: ({ percent: pct }) => {
             if (Number.isFinite(pct)) {
               const mapped = 10 + Math.round(pct * 0.85);
-              updateLoadingModal?.({ percent: mapped, text: `下載加密分片中… ${pct}%` });
+              updateLoadingModal?.({ percent: mapped, text: `${t('drive.downloadingEncryptedChunks')} ${pct}%` });
             }
           }
         });
-        updateLoadingModal?.({ percent: 98, text: '組裝檔案中…' });
+        updateLoadingModal?.({ percent: 98, text: t('drive.assemblingFile') });
         doPreviewFromBlob(result.blob, result.contentType || ct, result.name || resolvedName);
       } catch (err) {
         closeModal?.();
@@ -1450,7 +1228,7 @@ export function initDrivePane({
     }
 
     // ── Standard single-object file ──
-    showModalLoading?.('下載加密檔案中…');
+    showModalLoading?.(t('drive.downloadEncryptedFile'));
     const envelope = findEnvelopeInMessages(driveState.currentMessages, key);
     try {
       cleanupPdfViewer();
@@ -1459,18 +1237,18 @@ export function initDrivePane({
         envelope,
         onProgress: ({ stage, loaded, total }) => {
           if (stage === 'sign') {
-            updateLoadingModal?.({ percent: 5, text: '取得下載授權中…' });
+            updateLoadingModal?.({ percent: 5, text: t('drive.gettingDownloadAuth') });
           } else if (stage === 'download-start') {
-            updateLoadingModal?.({ percent: 10, text: '下載加密檔案中…' });
+            updateLoadingModal?.({ percent: 10, text: t('drive.downloadingEncryptedFile') });
           } else if (stage === 'download') {
             const pct = total && total > 0 ? Math.round((loaded / total) * 100) : null;
             const percent = pct != null ? Math.min(95, Math.max(15, pct)) : 45;
             const text = pct != null
-              ? `下載加密檔案中… ${pct}% (${fmtSize(loaded)} / ${fmtSize(total)})`
-              : `下載加密檔案中… (${fmtSize(loaded)})`;
+              ? `${t('drive.downloadingEncryptedFile')} ${pct}% (${fmtSize(loaded)} / ${fmtSize(total)})`
+              : `${t('drive.downloadingEncryptedFile')} (${fmtSize(loaded)})`;
             updateLoadingModal?.({ percent, text });
           } else if (stage === 'decrypt') {
-            updateLoadingModal?.({ percent: 98, text: '解密檔案中…' });
+            updateLoadingModal?.({ percent: 98, text: t('drive.decryptingFile') });
           }
         }
       });
@@ -1492,6 +1270,15 @@ export function initDrivePane({
       return;
     }
 
+    // Clear stale modal classes before opening a new viewer
+    const modalEl = document.getElementById('modal');
+    if (modalEl) {
+      modalEl.classList.remove(
+        'loading-modal', 'progress-modal',
+        'pdf-modal', 'excel-modal', 'word-modal', 'pptx-modal', 'zip-modal'
+      );
+    }
+
     body.innerHTML = '';
     title.textContent = resolvedName;
     title.setAttribute('title', resolvedName);
@@ -1509,7 +1296,7 @@ export function initDrivePane({
     const ct = (contentType || '').toLowerCase();
 
     if (ct === 'application/pdf' || ct.startsWith('application/pdf')) {
-      renderPdfPreview({
+      renderPdfViewer({
         url,
         name: resolvedName,
         modalApi: { openModal, closeModal, showConfirmModal }
@@ -1520,6 +1307,66 @@ export function initDrivePane({
         iframe.className = 'viewer';
         iframe.title = resolvedName;
         wrap.appendChild(iframe);
+        openModal?.();
+      });
+      return;
+    } else if (isExcelMime(ct) || isExcelFilename(resolvedName)) {
+      renderExcelViewer({
+        url,
+        blob,
+        name: resolvedName,
+        modalApi: { openModal, closeModal, showConfirmModal }
+      }).then((handled) => {
+        if (handled) return;
+        const msg = document.createElement('div');
+        msg.className = 'preview-message';
+        msg.textContent = t('drive.cannotPreviewType', { type: ct });
+        wrap.appendChild(msg);
+        openModal?.();
+      });
+      return;
+    } else if (isWordMime(ct) || isWordFilename(resolvedName)) {
+      renderWordViewer({
+        url,
+        blob,
+        name: resolvedName,
+        modalApi: { openModal, closeModal, showConfirmModal }
+      }).then((handled) => {
+        if (handled) return;
+        const msg = document.createElement('div');
+        msg.className = 'preview-message';
+        msg.textContent = t('drive.cannotPreviewType', { type: ct });
+        wrap.appendChild(msg);
+        openModal?.();
+      });
+      return;
+    } else if (isPptxMime(ct) || isPptxFilename(resolvedName)) {
+      renderPptxViewer({
+        url,
+        blob,
+        name: resolvedName,
+        modalApi: { openModal, closeModal, showConfirmModal }
+      }).then((handled) => {
+        if (handled) return;
+        const msg = document.createElement('div');
+        msg.className = 'preview-message';
+        msg.textContent = t('drive.cannotPreviewType', { type: ct });
+        wrap.appendChild(msg);
+        openModal?.();
+      });
+      return;
+    } else if (isZipMime(ct) || isZipFilename(resolvedName)) {
+      renderZipViewer({
+        url,
+        blob,
+        name: resolvedName,
+        modalApi: { openModal, closeModal, showConfirmModal }
+      }).then((handled) => {
+        if (handled) return;
+        const msg = document.createElement('div');
+        msg.className = 'preview-message';
+        msg.textContent = t('drive.cannotPreviewType', { type: ct });
+        wrap.appendChild(msg);
         openModal?.();
       });
       return;
@@ -1564,18 +1411,18 @@ export function initDrivePane({
       } catch (err) {
         const msg = document.createElement('div');
         msg.className = 'preview-message';
-        msg.textContent = '無法顯示文字內容。';
+        msg.textContent = t('drive.cannotDisplayTextContent');
         wrap.appendChild(msg);
       }
     } else {
       const message = document.createElement('div');
       message.className = 'preview-message';
-      message.textContent = `無法預覽此類型（${ct}）`;
+      message.textContent = t('drive.cannotPreviewType', { type: ct });
       wrap.appendChild(message);
       const link = document.createElement('a');
       link.href = url;
       link.download = resolvedName;
-      link.textContent = '下載檔案';
+      link.textContent = t('drive.downloadFile');
       link.className = 'preview-download';
       wrap.appendChild(link);
     }
@@ -1604,13 +1451,13 @@ export function initDrivePane({
     if (!manifest.segment_aligned || !manifest.tracks) {
       // Non-segment-aligned: fall back to full download + blob URL
       const { downloadAllChunks } = await import('../../features/chunked-download.js');
-      showModalLoading?.('下載影片中…');
+      showModalLoading?.(t('drive.downloadingVideo'));
       const result = await downloadAllChunks({
         baseKey: chunkedMeta.baseKey,
         manifest,
         manifestEnvelope: chunkedMeta.manifestEnvelope,
         onProgress: ({ percent }) => {
-          updateLoadingModal?.({ percent: Math.min(95, percent), text: `下載影片中… ${percent}%` });
+          updateLoadingModal?.({ percent: Math.min(95, percent), text: `${t('drive.downloadingVideo')} ${percent}%` });
         }
       });
       doPreviewFromBlob(result.blob, result.contentType || contentType, result.name || name);
@@ -1678,7 +1525,7 @@ export function initDrivePane({
           const m = buildMimeFromCodecString(cs);
           if (m && !codecs.includes(m)) codecs.push(m);
         }
-        if (!codecs.length) throw new Error('無法偵測影片編碼格式');
+        if (!codecs.length) throw new Error(t('mediaHandling.cannotDetectVideoCodec'));
 
         for (let i = 0; i < codecs.length; i++) {
           try {
@@ -1813,9 +1660,9 @@ export function initDrivePane({
 
       if (element) closeSwipe?.(element);
       showConfirmModal?.({
-        title: '確認刪除',
-        message: `確定刪除「${escapeHtml(name || key)}」？`,
-        confirmLabel: '刪除',
+        title: t('drive.confirmDelete'),
+        message: t('drive.confirmDeleteFile', { name: escapeHtml(name || key) }),
+        confirmLabel: t('drive.deleteAriaLabel'),
         onConfirm: async () => {
           try {
             await performDelete({ keys: [key], ids });
@@ -1854,7 +1701,7 @@ export function initDrivePane({
     const visibleCount = targetMessages.filter((m) => !m.placeholder).length;
 
     if (!targetMessages.length) {
-      log({ deleteInfo: `資料夾「${folderName}」內沒有檔案` });
+      log({ deleteInfo: t('drive.folderNoFiles', { name: folderName }) });
       return;
     }
 
@@ -1863,11 +1710,11 @@ export function initDrivePane({
 
     if (element) closeSwipe?.(element);
     showConfirmModal?.({
-      title: '確認刪除',
+      title: t('drive.confirmDelete'),
       message: visibleCount > 0
-        ? `刪除資料夾「${escapeHtml(folderName)}」及其 ${visibleCount} 個檔案？`
-        : `刪除資料夾「${escapeHtml(folderName)}」（空資料夾）？`,
-      confirmLabel: '刪除',
+        ? t('drive.deleteFolderWithCount', { name: escapeHtml(folderName), count: visibleCount })
+        : t('drive.deleteFolderEmpty', { name: escapeHtml(folderName) }),
+      confirmLabel: t('drive.deleteAriaLabel'),
       onConfirm: async () => {
         try {
           await performDelete({ keys, ids });
@@ -1920,7 +1767,7 @@ export function initDrivePane({
     updateUsageSummary();
     const hit = findEnvelopeInMessages(items, key);
     if (hit) return hit;
-    throw new Error('找不到封套資料（此物件可能來自尚未更新索引格式的舊版本或尚未同步）');
+    throw new Error(t('drive.missingEnvelopeData'));
   }
 
   function bindDomEvents() {

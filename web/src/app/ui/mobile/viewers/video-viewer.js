@@ -13,6 +13,8 @@
  * <video> element via MSE. This module owns only the UI.
  */
 
+import { t } from '/locales/index.js';
+
 /* ── Helpers ── */
 const escHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
@@ -59,7 +61,7 @@ const ICON_ROTATE_CW = '<svg viewBox="0 0 24 24" fill="none"><path d="M21.5 2v6h
  * @param {Function} [opts.onClose]   – Called when viewer is closed (caller should abort download)
  * @returns {{ video, showBuffering, hideBuffering, updateChunkStats, setMsePlayer, destroy }}
  */
-export function openVideoViewer({ name = '影片', size, onClose } = {}) {
+export function openVideoViewer({ name = t('common.video'), size, onClose } = {}) {
     cleanupVideoViewer();
 
     /* ── State ── */
@@ -80,22 +82,22 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
 
     overlay.innerHTML = `
         <div class="vv-toolbar">
-            <button type="button" class="vv-btn" data-action="close" aria-label="關閉">${ICON_BACK}</button>
+            <button type="button" class="vv-btn" data-action="close" aria-label="${t('viewer.close')}">${ICON_BACK}</button>
             <div class="vv-title">${escHtml(name)}</div>
             <div class="vv-toolbar-actions">
-                <button type="button" class="vv-btn vv-rotate-btn" data-action="rotate-ccw" aria-label="向左旋轉">${ICON_ROTATE_CCW}</button>
-                <button type="button" class="vv-btn vv-rotate-btn" data-action="rotate-cw" aria-label="向右旋轉">${ICON_ROTATE_CW}</button>
-                <button type="button" class="vv-btn vv-stats-toggle" data-action="stats" aria-label="串流資訊">i</button>
+                <button type="button" class="vv-btn vv-rotate-btn" data-action="rotate-ccw" aria-label="${t('viewer.rotateLeft')}">${ICON_ROTATE_CCW}</button>
+                <button type="button" class="vv-btn vv-rotate-btn" data-action="rotate-cw" aria-label="${t('viewer.rotateRight')}">${ICON_ROTATE_CW}</button>
+                <button type="button" class="vv-btn vv-stats-toggle" data-action="stats" aria-label="${t('viewer.streamInfo')}">i</button>
             </div>
         </div>
         <div class="vv-stage">
             <video playsinline></video>
             <div class="vv-buffering">
                 <div class="vv-buffering-spinner"><img class="vv-buffering-logo" src="/assets/images/logo.svg" alt="" /></div>
-                <div class="vv-buffering-text">緩衝中...</div>
+                <div class="vv-buffering-text">${t('viewer.buffering')}</div>
             </div>
             <div class="vv-stats">
-                <button type="button" class="vv-stats-close" aria-label="隱藏資訊">${ICON_CLOSE_SM}</button>
+                <button type="button" class="vv-stats-close" aria-label="${t('viewer.hideInfo')}">${ICON_CLOSE_SM}</button>
                 <table class="stats-table">
                     <tr class="stats-section-header"><td colspan="2"><span class="stats-label">BUFFER</span></td></tr>
                     <tr><td colspan="2"><div class="vv-stats-buffer-bar"><div class="buf-range"></div><div class="buf-played"></div><div class="buf-cursor"></div></div></td></tr>
@@ -116,10 +118,10 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
                     <tr><td class="stats-key">Per-Chunk</td><td class="stats-val good">AES-256-GCM</td></tr>
                 </table>
             </div>
-            <button type="button" class="vv-center-play" data-action="toggle" aria-label="播放">${ICON_PLAY_CENTER}</button>
+            <button type="button" class="vv-center-play" data-action="toggle" aria-label="${t('viewer.play')}">${ICON_PLAY_CENTER}</button>
         </div>
         <div class="vv-controls">
-            <button type="button" class="vv-ctrl-btn" data-action="toggle" aria-label="播放/暫停">${ICON_PLAY}</button>
+            <button type="button" class="vv-ctrl-btn" data-action="toggle" aria-label="${t('viewer.playPause')}">${ICON_PLAY}</button>
             <span class="vv-time vv-time-current">0:00</span>
             <div class="vv-seekbar">
                 <div class="vv-seekbar-track">
@@ -130,7 +132,7 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
             </div>
             <span class="vv-time vv-time-total">0:00</span>
         </div>
-        <div class="vv-footer">使用 &copy; SENTRY 分片加密串流播放器</div>
+        <div class="vv-footer">${t('viewer.sentryStreamPlayer')}</div>
     `;
 
     /* ── Query elements ── */
@@ -286,7 +288,7 @@ export function openVideoViewer({ name = '影片', size, onClose } = {}) {
                 waitingTimer = null;
                 // Only show if still waiting (not already resumed)
                 if (!destroyed && video.readyState < 3) {
-                    if (bufText) bufText.textContent = '緩衝中…';
+                    if (bufText) bufText.textContent = t('viewer.buffering');
                     bufOverlay.classList.remove('vv-buf-hidden');
                 }
             }, 400);

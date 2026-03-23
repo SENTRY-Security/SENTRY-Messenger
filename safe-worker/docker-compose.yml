@@ -1,0 +1,20 @@
+# KasmVNC Chromium — local/VPS deployment for SENTRY SAFE
+#
+# Usage:
+#   docker compose up -d
+#
+# Then in SENTRY SAFE tab, enter:
+#   https://your-server-ip:6901
+#   Password: sentry
+#
+# For production, change KASM_VNC_PASSWORD and use a reverse proxy with TLS.
+
+services:
+  browser:
+    image: kasmweb/chromium:1.18.0
+    shm_size: "512m"
+    ports:
+      - "6901:6901"
+    environment:
+      VNC_PW: "sentry"
+    restart: unless-stopped

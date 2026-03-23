@@ -41,7 +41,9 @@ export {
   initCallKeyManager,
   prepareCallKeyEnvelope,
   getCallKeyContext,
-  supportsInsertableStreams
+  supportsInsertableStreams,
+  isKeyDerivationPending,
+  retryDeriveKeys
 } from './key-manager.js';
 export {
   initCallMediaSession,
@@ -49,6 +51,7 @@ export {
   startOutgoingCallMedia,
   acceptIncomingCallMedia,
   endCallMediaSession,
+  recoverCallMediaOnResume,
   isLocalAudioMuted,
   setLocalAudioMuted,
   isRemoteAudioMuted,
@@ -74,3 +77,13 @@ export {
   isFaceBlurSupported,
   BLUR_MODE
 } from './face-blur.js';
+export {
+  activateEphemeralCallMode,
+  deactivateEphemeralCallMode,
+  updateEphemeralCallContext,
+  isEphemeralCallMode,
+  getEphemeralCallContext,
+  handleEphemeralCallMessage,
+  initiateEphemeralCall,
+  deriveCallTokenFromDR
+} from './ephemeral-call-adapter.js';

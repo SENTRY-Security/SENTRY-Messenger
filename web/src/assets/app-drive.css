@@ -148,11 +148,13 @@
   white-space: nowrap;
 }
 
-.file-item .meta .name i {
+.file-item .meta .name i,
+.file-item .meta .name .icon {
   font-size: 20px;
 }
 
-.file-item.folder .meta .name i {
+.file-item.folder .meta .name i,
+.file-item.folder .meta .name .icon {
   color: #f59e0b;
 }
 
@@ -167,7 +169,8 @@
   justify-content: center;
 }
 
-.file-thumb i {
+.file-thumb i,
+.file-thumb .icon {
   font-size: 20px;
   color: #16a34a;
 }
@@ -197,7 +200,8 @@
   opacity: 0;
 }
 
-.file-item .item-delete i {
+.file-item .item-delete i,
+.file-item .item-delete .icon {
   pointer-events: none;
 }
 
@@ -223,7 +227,8 @@
   text-align: center;
 }
 
-.empty-state > i {
+.empty-state > i,
+.empty-state > .icon {
   font-size: 44px;
   color: #94a3b8;
   margin-bottom: 4px;
@@ -408,7 +413,8 @@ pre#out {
   pointer-events: none;
 }
 
-.upload-callout i {
+.upload-callout i,
+.upload-callout .icon {
   font-size: 28px;
   color: #38bdf8;
 }

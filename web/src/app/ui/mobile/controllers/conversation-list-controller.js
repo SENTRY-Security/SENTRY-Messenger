@@ -10,11 +10,28 @@ import { restorePendingInvites } from '../session-store.js';
 import { escapeHtml, resolveMessagePreview, updateThreadPreview, formatThreadPreview } from '../ui-utils.js';
 import { normalizeTimelineMessageId, extractMessageTimestampMs, normalizeMsgTypeValue, deriveMessageDirectionFromEnvelopeMeta } from '../../../features/messages/parser.js';
 import { getLocalProcessedCounter } from '../../../features/messages-flow/local-counter.js'; // [FIX] Import unread counter logic
-import { listSecureMessages as apiListSecureMessages } from '../../../api/messages.js';
+import { listSecureMessages as apiListSecureMessages, batchLatestMessages } from '../../../api/messages.js';
 import { getMessagesUnreadCount } from '../../../features/messages-flow/server-api.js'; // [FIX] Backend Unread API
+import { t } from '/locales/index.js';
 
 const CONV_PULL_THRESHOLD = 60;
 const CONV_PULL_MAX = 100;
+
+/**
+ * Resolve parsed header from a server message item.
+ * Server returns header_json (string) not header (object).
+ */
+function resolveHeader(msg) {
+    if (!msg) return null;
+    let header = msg.header || null;
+    if (!header && typeof msg.header_json === 'string') {
+        try { header = JSON.parse(msg.header_json); } catch { return null; }
+    }
+    if (typeof header === 'string') {
+        try { header = JSON.parse(header); } catch { return null; }
+    }
+    return header && typeof header === 'object' ? header : null;
+}
 
 export class ConversationListController extends BaseController {
     constructor(deps) {
@@ -28,6 +45,8 @@ export class ConversationListController extends BaseController {
         this.conversationsRefreshing = false;
         // Scroll-vs-tap detection: suppress click when user is scrolling
         this._touchStartY = 0;
+        this._touchStartX = 0;
+        this._touchStartScroll = 0;
         this._scrolledDuringTouch = false;
     }
 
@@ -226,7 +245,8 @@ export class ConversationListController extends BaseController {
             });
         }
         for (const convId of Array.from(threads.keys())) {
-            if (!seen.has(convId)) threads.delete(convId);
+            const thread = threads.get(convId);
+            if (!seen.has(convId) && thread?.type !== 'biz-conv') threads.delete(convId);
         }
         return threads;
     }
@@ -263,20 +283,86 @@ export class ConversationListController extends BaseController {
         const threadsMap = this.getThreads();
         const threads = Array.from(threadsMap.values());
 
-        // [FIX] Parallel Fetch Config (Batch size 5)
-        const CHUNK_SIZE = 5;
-        const threadChunks = [];
-        for (let i = 0; i < threads.length; i += CHUNK_SIZE) {
-            threadChunks.push(threads.slice(i, i + CHUNK_SIZE));
-        }
+        // Filter eligible threads
+        const eligible = threads.filter(thread => {
+            const peerDigest = this._threadPeer(thread);
+            if (!thread?.conversationId || !thread?.conversationToken || !peerDigest || !thread?.peerDeviceId) {
+                if (!thread?.peerDeviceId) {
+                    try { this.deps.log?.({ previewSkipMissingPeerDevice: thread?.conversationId || null }); } catch { }
+                }
+                return false;
+            }
+            if (!force && thread.previewLoaded && !thread.needsRefresh) return false;
+            return true;
+        });
+
+        if (!eligible.length) return;
 
         if (this.deps.contactCoreVerbose) {
-            console.log(`[ConvList] refreshPreviews starting. Threads: ${threads.length}, Chunks: ${threadChunks.length}`);
+            console.log(`[ConvList] refreshPreviews starting. Threads: ${eligible.length}`);
         }
         console.time('[ConvList] refreshPreviews duration');
 
-        for (const [chunkIdx, chunk] of threadChunks.entries()) {
-            // [FIX] Batch Fetch Unread Counts from Backend
+        const allConvIds = eligible.map(t => t.conversationId).filter(Boolean);
+        const selfDigest = this.deps.sessionStore?.accountDigest;
+
+        // [PERF] Single batch fetch: messages + unread counts in parallel
+        let batchMessages = {};
+        let unreadCountsMap = {};
+        try {
+            const [batchResult, unreadResult] = await Promise.all([
+                batchLatestMessages({ conversationIds: allConvIds, limit: 20 }),
+                selfDigest
+                    ? getMessagesUnreadCount({ conversationIds: allConvIds, selfAccountDigest: selfDigest })
+                    : Promise.resolve({ counts: {} })
+            ]);
+            batchMessages = batchResult?.data?.conversations || {};
+            unreadCountsMap = unreadResult?.counts || {};
+        } catch (err) {
+            console.warn('[ConvList] Batch preview fetch failed, falling back to individual', err);
+            // Fallback: fetch individually in chunks (original behavior)
+            await this._refreshPreviewsFallback(eligible, threadsMap, force);
+            console.timeEnd('[ConvList] refreshPreviews duration');
+            return;
+        }
+
+        // Process all results locally
+        for (const thread of eligible) {
+            try {
+                const convData = batchMessages[thread.conversationId];
+                const messages = convData?.items || [];
+
+                // Apply unread count
+                const backendCount = unreadCountsMap[thread.conversationId] || 0;
+                const currentThreadVal = threadsMap.get(thread.conversationId);
+                if (currentThreadVal) {
+                    currentThreadVal.unreadCount = backendCount;
+                    currentThreadVal.offlineUnreadCount = 0;
+                }
+
+                if (!messages.length) continue;
+
+                this._applyPreviewFromMessages(thread, messages, threadsMap);
+            } catch (err) {
+                console.error('Preview processing failed', err);
+            }
+        }
+
+        this.renderConversationList();
+        console.timeEnd('[ConvList] refreshPreviews duration');
+    }
+
+    /**
+     * Fallback: fetch previews individually in chunks (used when batch API fails).
+     */
+    async _refreshPreviewsFallback(eligible, threadsMap, force) {
+        const CHUNK_SIZE = 5;
+        const threadChunks = [];
+        for (let i = 0; i < eligible.length; i += CHUNK_SIZE) {
+            threadChunks.push(eligible.slice(i, i + CHUNK_SIZE));
+        }
+
+        for (const chunk of threadChunks) {
             let unreadCountsMap = {};
             try {
                 const chunkIds = chunk.map(t => t.conversationId).filter(Boolean);
@@ -290,207 +376,140 @@ export class ConversationListController extends BaseController {
             }
 
             await Promise.all(chunk.map(async (thread) => {
-                const peerDigest = this._threadPeer(thread);
-                if (!thread?.conversationId || !thread?.conversationToken || !peerDigest || !thread?.peerDeviceId) {
-                    if (!thread?.peerDeviceId) {
-                        try { this.deps.log?.({ previewSkipMissingPeerDevice: thread?.conversationId || null }); } catch { }
-                    }
-                    return;
-                }
-                if (!force && thread.previewLoaded && !thread.needsRefresh) return;
-
                 try {
-                    // Assuming apiListSecureMessages is available (need to verify import)
-                    if (typeof apiListSecureMessages !== 'function') {
-                        console.warn('apiListSecureMessages not available');
-                        return;
-                    }
-
+                    if (typeof apiListSecureMessages !== 'function') return;
                     const result = await apiListSecureMessages({
                         conversationId: thread.conversationId,
-                        limit: 20 // [FIX] Fetch more to find last valid content
+                        limit: 20
                     });
-
                     const messages = result?.data?.items || [];
-                    if (!messages.length) return;
 
-                    // [FIX] Backend Unread Count (The "Vault Missing" Logic)
-                    // We now use the backend API to count messages that are:
-                    // 1. Incoming (Not me)
-                    // 2. Control/Hidden types excluded
-                    // 3. NO Key in Vault (Offline/Unread)
-                    // This accurately reflects the "Red Dot" count requested by user.
-                    // We assume the backend count is the "Total Unread".
-
-                    // Note: We fetch this per chunk/batch in parallel with listSecureMessages?
-                    // Ideally we should batch it. But here we are inside the per-thread map.
-                    // For now, to keep structure simple, we update it if we have the data.
-                    // Wait, we can't call this API 20 times in parallel efficienty.
-                    // Better approach: Fetch counts for the WHOLE CHUNK before this map loop.
-
-                    // See above loop change.
-                    // Access pre-fetched count:
-                    // See above loop change.
-                    // Access pre-fetched count:
                     const backendCount = (unreadCountsMap && unreadCountsMap[thread.conversationId]) || 0;
                     const currentThreadVal = threadsMap.get(thread.conversationId);
                     if (currentThreadVal) {
                         currentThreadVal.unreadCount = backendCount;
-                        // Clear offline count as it is subsumed by the main count or not applicable
                         currentThreadVal.offlineUnreadCount = 0;
                     }
 
-                    // [FIX] Deletion-Aware Preview Logic
-                    // API provides DESC (newest first). First pass: find the newest
-                    // conversation-deleted tombstone so we only consider messages after it.
-
-                    let tombstoneIndex = -1;
-                    for (let i = 0; i < messages.length; i++) {
-                        const payload = messages[i].payload || {};
-                        let type = normalizeMsgTypeValue(payload.type);
-                        if (!type && messages[i].header) {
-                            let header = messages[i].header;
-                            if (typeof header === 'string') {
-                                try { header = JSON.parse(header); } catch { }
-                            }
-                            type = normalizeMsgTypeValue(header?.meta?.msgType || header?.meta?.msg_type);
-                        }
-                        if (type === 'conversation-deleted') {
-                            tombstoneIndex = i;
-                            break; // newest tombstone (DESC order) → everything after this index is older
-                        }
-                    }
-
-                    // Only consider messages BEFORE the tombstone in DESC order
-                    // (i.e. messages newer than the tombstone).
-                    const candidates = tombstoneIndex >= 0
-                        ? messages.slice(0, tombstoneIndex)
-                        : messages;
-                    const isDeleted = tombstoneIndex >= 0 && candidates.length === 0;
-
-                    let previewMsg = null;
-                    let skippedCount = 0;
-
-                    for (const msg of candidates) {
-                        const payload = msg.payload || {};
-                        let type = normalizeMsgTypeValue(payload.type);
-                        if (!type && msg.header) {
-                            let header = msg.header;
-                            if (typeof header === 'string') {
-                                try { header = JSON.parse(header); } catch { }
-                            }
-                            type = normalizeMsgTypeValue(header?.meta?.msgType || header?.meta?.msg_type);
-                        }
-
-                        // Skip conversation-deleted (shouldn't appear but be safe)
-                        if (type === 'conversation-deleted') continue;
-
-                        // Skip control / transient / internal messages
-                        const isControl = type === 'sys' || type === 'system' || type === 'control' ||
-                            (type && ['profile-update', 'session-init', 'session-ack',
-                                'session-error', 'read-receipt', 'delivery-receipt', 'placeholder'].includes(type));
-
-                        if (isControl) {
-                            skippedCount++;
-                            continue;
-                        }
-
-                        // Ensure it's content
-                        if (type && ['text', 'media', 'call-log', 'call_log', 'contact-share'].includes(type)) {
-                            previewMsg = msg;
-                            break; // Found newest valid content
-                        } else {
-                            if (!type && msg.ciphertext_b64) {
-                                previewMsg = msg;
-                                break;
-                            }
-                            skippedCount++;
-                        }
-                    }
-
-                    let text = '尚無訊息';
-                    let type = null;
-                    let ts = null;
-                    let direction = null;
-
-                    if (isDeleted) {
-                        text = '尚無訊息';
-                        type = 'conversation-deleted';
-                        // Use the tombstone's own timestamp (not messages[0] which may not exist after slicing)
-                        ts = tombstoneIndex >= 0 ? extractMessageTimestampMs(messages[tombstoneIndex]) : extractMessageTimestampMs(messages[0] || {});
-                        // No visible messages after tombstone → unread must be 0
-                        const ct = threadsMap.get(thread.conversationId);
-                        if (ct) { ct.unreadCount = 0; ct.offlineUnreadCount = 0; }
-                    } else if (previewMsg) {
-                        const payload = previewMsg.payload || {};
-                        const meta = previewMsg.meta || {}; // Note: Valid even if encrypted if we parse header... wait meta is from PayloadWrapper usually.
-                        // If encrypted, we construct meta from header
-                        let header = previewMsg.header;
-                        if (typeof header === 'string') { try { header = JSON.parse(header); } catch { } }
-
-                        const effectiveMeta = meta.sender ? meta : (header?.meta || {});
-
-                        // Resolve type again
-                        type = normalizeMsgTypeValue(payload.type || effectiveMeta.msgType || effectiveMeta.msg_type || 'text'); // Default to text if encrypted
-                        ts = extractMessageTimestampMs(previewMsg);
-
-                        const sender = normalizePeerKey(effectiveMeta.sender || previewMsg.sender_device_id); // Fallback to device ID if sender missing? No, sender_account_digest usually available in row.
-                        // Actually row has sender_account_digest.
-                        const senderDigest = previewMsg.sender_account_digest;
-
-                        direction = senderDigest === this.deps.sessionStore.activePeerDigest ? 'incoming' : 'outgoing';
-                        // Wait, activePeerDigest is the OTHER person.
-                        // sending to me -> Incoming.
-                        // senderDigest == activePeerDigest -> Incoming.
-                        // senderDigest == MY_DIGEST -> Outgoing.
-
-                        if (type === 'text') {
-                            text = payload.text || (previewMsg.ciphertext_b64 ? '🔒 加密訊息' : '文字訊息');
-                        } else if (type === 'media') {
-                            const mime = (payload.contentType || payload.mimeType || '').toLowerCase();
-                            if (mime.startsWith('image/')) {
-                                text = '[圖片]';
-                            } else if (mime.startsWith('video/')) {
-                                text = '[影片]';
-                            } else {
-                                text = `[檔案] ${payload.filename || payload.name || '附件'}`;
-                            }
-                        } else if (type === 'call_log' || type === 'call-log') {
-                            const clKind = payload?.kind || previewMsg?.callLog?.kind || '';
-                            text = clKind === 'video' ? '[視訊通話]' : '[語音通話]';
-                        } else if (type === 'contact-share' || type === 'contact_share') {
-                            const csReason = payload?.reason;
-                            if (csReason === 'nickname') text = '已更新暱稱';
-                            else if (csReason === 'avatar') text = '已更新頭像';
-                            else if (csReason === 'profile' || csReason === 'update' || csReason === 'manual') text = '已更新個人資料';
-                            else text = '已建立安全連線';
-                        } else {
-                            text = previewMsg.ciphertext_b64 ? '🔒 加密訊息' : '新訊息';
-                        }
-                    } else {
-                        // Fallback logging
-                    }
-
-                    const currentThread = threadsMap.get(thread.conversationId);
-                    if (!currentThread) return;
-
-                    updateThreadPreview(currentThread, {
-                        text,
-                        ts,
-                        messageId: previewMsg ? normalizeTimelineMessageId(previewMsg) : null,
-                        direction,
-                        msgType: type
-                    });
+                    if (!messages.length) return;
+                    this._applyPreviewFromMessages(thread, messages, threadsMap);
                 } catch (err) {
                     console.error('Preview refresh failed', err);
                 }
             }));
-
-            // [FIX] Progressive Render: Update UI after each chunk so user sees progress
             this.renderConversationList();
         }
+    }
 
-        console.timeEnd('[ConvList] refreshPreviews duration');
+    /**
+     * Extract preview text/metadata from a list of messages (DESC order) and apply to thread.
+     */
+    _applyPreviewFromMessages(thread, messages, threadsMap) {
+        // Deletion-Aware Preview Logic
+        // Messages are DESC (newest first). Find the newest conversation-deleted tombstone.
+        let tombstoneIndex = -1;
+        for (let i = 0; i < messages.length; i++) {
+            const payload = messages[i].payload || {};
+            let type = normalizeMsgTypeValue(payload.type);
+            if (!type) {
+                const header = resolveHeader(messages[i]);
+                type = normalizeMsgTypeValue(header?.meta?.msgType || header?.meta?.msg_type);
+            }
+            if (type === 'conversation-deleted') {
+                tombstoneIndex = i;
+                break;
+            }
+        }
+
+        const candidates = tombstoneIndex >= 0
+            ? messages.slice(0, tombstoneIndex)
+            : messages;
+        const isDeleted = tombstoneIndex >= 0 && candidates.length === 0;
+
+        let previewMsg = null;
+
+        for (const msg of candidates) {
+            const payload = msg.payload || {};
+            let type = normalizeMsgTypeValue(payload.type);
+            if (!type) {
+                const header = resolveHeader(msg);
+                type = normalizeMsgTypeValue(header?.meta?.msgType || header?.meta?.msg_type);
+            }
+
+            if (type === 'conversation-deleted') continue;
+
+            const isControl = type === 'sys' || type === 'system' || type === 'control' ||
+                (type && ['profile-update', 'session-init', 'session-ack',
+                    'session-error', 'read-receipt', 'delivery-receipt', 'placeholder'].includes(type));
+            if (isControl) continue;
+
+            if (type && ['text', 'media', 'call-log', 'call_log', 'contact-share'].includes(type)) {
+                previewMsg = msg;
+                break;
+            } else if (!type && msg.ciphertext_b64) {
+                previewMsg = msg;
+                break;
+            }
+        }
+
+        let text = t('messages.noMessages');
+        let type = null;
+        let ts = null;
+        let direction = null;
+
+        if (isDeleted) {
+            text = t('messages.noMessages');
+            type = 'conversation-deleted';
+            ts = tombstoneIndex >= 0 ? extractMessageTimestampMs(messages[tombstoneIndex]) : extractMessageTimestampMs(messages[0] || {});
+            const ct = threadsMap.get(thread.conversationId);
+            if (ct) { ct.unreadCount = 0; ct.offlineUnreadCount = 0; }
+        } else if (previewMsg) {
+            const payload = previewMsg.payload || {};
+            const meta = previewMsg.meta || {};
+            const header = resolveHeader(previewMsg);
+            const effectiveMeta = meta.sender ? meta : (header?.meta || {});
+
+            type = normalizeMsgTypeValue(payload.type || effectiveMeta.msgType || effectiveMeta.msg_type || 'text');
+            ts = extractMessageTimestampMs(previewMsg);
+
+            const senderDigest = previewMsg.sender_account_digest;
+            direction = senderDigest === this.deps.sessionStore.activePeerDigest ? 'incoming' : 'outgoing';
+
+            if (type === 'text') {
+                text = payload.text || (previewMsg.ciphertext_b64 ? t('messages.encryptedMessage') : t('messages.textMessage'));
+            } else if (type === 'media') {
+                const mime = (payload.contentType || payload.mimeType || '').toLowerCase();
+                if (mime.startsWith('image/')) {
+                    text = t('messages.imagePreview');
+                } else if (mime.startsWith('video/')) {
+                    text = t('messages.videoPreview');
+                } else {
+                    text = t('messages.filePreview', { name: payload.filename || payload.name || t('common.attachment') });
+                }
+            } else if (type === 'call_log' || type === 'call-log') {
+                const clKind = payload?.kind || previewMsg?.callLog?.kind || effectiveMeta?.call_kind || '';
+                text = clKind === 'video' ? t('calls.videoCallPreview') : t('calls.voiceCallPreview');
+            } else if (type === 'contact-share' || type === 'contact_share') {
+                const csReason = payload?.reason;
+                if (csReason === 'nickname') text = t('profile.updatedNickname');
+                else if (csReason === 'avatar') text = t('profile.updatedAvatar');
+                else if (csReason === 'profile' || csReason === 'update' || csReason === 'manual') text = t('profile.updatedProfile');
+                else text = t('messages.secureConnectionEstablished');
+            } else {
+                text = previewMsg.ciphertext_b64 ? t('messages.encryptedMessage') : t('messages.newMessage');
+            }
+        }
+
+        const currentThread = threadsMap.get(thread.conversationId);
+        if (!currentThread) return;
+
+        updateThreadPreview(currentThread, {
+            text,
+            ts,
+            messageId: previewMsg ? normalizeTimelineMessageId(previewMsg) : null,
+            direction,
+            msgType: type
+        });
     }
 
     /**
@@ -505,7 +524,7 @@ export class ConversationListController extends BaseController {
         const lastMsg = timeline[timeline.length - 1];
         const msgType = lastMsg.msgType || lastMsg.subtype || 'text';
         const text = msgType === 'conversation-deleted'
-            ? '尚無訊息'
+            ? t('messages.noMessages')
             : resolveMessagePreview(lastMsg);
         const ts = lastMsg.ts || Date.now();
 
@@ -608,7 +627,7 @@ export class ConversationListController extends BaseController {
         const yesterday = new Date(now);
         yesterday.setDate(yesterday.getDate() - 1);
         if (date.toDateString() === yesterday.toDateString()) {
-            return '昨天';
+            return t('common.yesterday');
         }
         return date.toLocaleDateString('zh-TW', { month: 'short', day: 'numeric' });
     }
@@ -619,6 +638,13 @@ export class ConversationListController extends BaseController {
     applyConversationPullTransition(enable) {
         if (this.elements.conversationRefreshEl) {
             this.elements.conversationRefreshEl.style.transition = enable ? 'transform 120ms ease-out, opacity 120ms ease-out' : 'none';
+        }
+        const toggleEl = document.getElementById('quickActionsToggle');
+        if (toggleEl) {
+            toggleEl.style.transition = enable ? 'transform 120ms ease-out' : '';
+        }
+        if (this.elements.conversationQuickActions) {
+            this.elements.conversationQuickActions.style.transition = enable ? 'transform 120ms ease-out' : '';
         }
         if (this.elements.conversationList) {
             this.elements.conversationList.style.transition = enable ? 'transform 120ms ease-out' : '';
@@ -636,18 +662,28 @@ export class ConversationListController extends BaseController {
             const fadeRange = 25;
             const alpha = Math.min(1, Math.max(0, (clamped - fadeStart) / fadeRange));
             this.elements.conversationRefreshEl.style.opacity = String(alpha);
-            this.elements.conversationRefreshEl.style.transform = 'translateY(0)';
+            // Centre the indicator in the gap opened by the pull
+            const indicatorH = this.elements.conversationRefreshEl.offsetHeight || 36;
+            const centerY = Math.max(0, (clamped - indicatorH) / 2);
+            this.elements.conversationRefreshEl.style.transform = `translateY(${centerY}px)`;
             const spinner = this.elements.conversationRefreshEl.querySelector('.icon');
             const labelEl = this.elements.conversationRefreshLabelEl || this.elements.conversationRefreshEl.querySelector('.label');
             if (spinner && labelEl) {
                 if (this.conversationsRefreshing) {
                     spinner.classList.add('spin');
-                    labelEl.textContent = '刷新中…';
+                    labelEl.textContent = t('common.refreshing');
                 } else {
                     spinner.classList.remove('spin');
-                    labelEl.textContent = clamped >= CONV_PULL_THRESHOLD ? '鬆開更新對話列表' : '下拉更新對話';
+                    labelEl.textContent = clamped >= CONV_PULL_THRESHOLD ? t('messages.releaseToRefreshConversations') : t('messages.pullToRefreshConversations');
                 }
             }
+        }
+        const toggleEl = document.getElementById('quickActionsToggle');
+        if (toggleEl) {
+            toggleEl.style.transform = clamped > 0 ? `translateY(${clamped}px)` : '';
+        }
+        if (this.elements.conversationQuickActions) {
+            this.elements.conversationQuickActions.style.transform = clamped > 0 ? `translateY(${clamped}px)` : '';
         }
         if (this.elements.conversationList) {
             this.elements.conversationList.style.transform = clamped > 0 ? `translateY(${clamped}px)` : '';
@@ -725,7 +761,6 @@ export class ConversationListController extends BaseController {
     handleConversationPullMove(e) {
         if (!this.conversationPullTracking || this.conversationPullInvalid || this.conversationsRefreshing) return;
         if (e.touches?.length !== 1) return;
-        console.log('[ConvPull] move check', { y: e.touches[0].clientY, startY: this.conversationPullStartY, tracking: this.conversationPullTracking });
         const dy = e.touches[0].clientY - this.conversationPullStartY;
         const dx = Math.abs(e.touches[0].clientX - this.conversationPullStartX);
         if (!this.conversationPullDecided) {
@@ -749,11 +784,13 @@ export class ConversationListController extends BaseController {
      * Handle touch end for pull-to-refresh.
      */
     handleConversationPullEnd() {
-        if (!this.conversationPullTracking) return;
+        const wasTracking = this.conversationPullTracking;
         this.conversationPullTracking = false;
-        if (this.conversationsRefreshing) return;
-        if (this.conversationPullInvalid) {
-            this.resetConversationPull({ animate: true });
+        // Always reset visual if any pull offset was applied, regardless of tracking state
+        if (!wasTracking || this.conversationsRefreshing || this.conversationPullInvalid) {
+            if (this.conversationPullDistance > 0 || this.conversationsRefreshing) {
+                this.resetConversationPull({ animate: true });
+            }
             return;
         }
         if (this.conversationPullDistance >= CONV_PULL_THRESHOLD) {
@@ -772,8 +809,9 @@ export class ConversationListController extends BaseController {
         const contacts = Array.isArray(this.sessionStore.contactState) ? [...this.sessionStore.contactState] : [];
         let state = this.getMessageState();
 
-        // Handle active peer removed from contacts
-        if (state.activePeerDigest) {
+        // Handle active peer removed from contacts (skip for ephemeral conversations)
+        const isEphemeralActive = state.activePeerDigest && this.deps.controllers?.ephemeral?.isEphemeralConversation?.(state.conversationId);
+        if (state.activePeerDigest && !isEphemeralActive) {
             const exists = contacts.some((c) => this._contactPeerKey(c) === state.activePeerDigest);
             if (!exists) {
                 const { digest: activeDigest, deviceId: activeDeviceId } = splitPeerKey(state.activePeerDigest || null);
@@ -793,7 +831,7 @@ export class ConversationListController extends BaseController {
                     this.deps.resetMessageStateWithPlaceholders?.();
                     state = this.getMessageState();
                     if (!this.deps.isDesktopLayout?.()) state.viewMode = 'list';
-                    if (this.elements.peerName) this.elements.peerName.textContent = '選擇好友開始聊天';
+                    if (this.elements.peerName) this.elements.peerName.textContent = t('contacts.selectToChat');
                     this.deps.setMessagesStatus?.('');
                     this.deps.clearMessagesView?.();
                     this.deps.updateComposerAvailability?.();
@@ -809,7 +847,7 @@ export class ConversationListController extends BaseController {
 
         const threads = this.deps.getConversationThreads?.() || new Map();
         const threadEntries = Array.from(threads.values())
-            .filter((thread) => thread?.conversationId && this._threadPeer(thread))
+            .filter((thread) => thread?.conversationId && (thread.type === 'biz-conv' || this._threadPeer(thread)))
             .sort((a, b) => (b.lastMessageTs || 0) - (a.lastMessageTs || 0));
 
         const totalUnread = threadEntries.reduce((sum, thread) => sum + Number(thread.unreadCount || 0) + Number(thread.offlineUnreadCount || 0), 0);
@@ -824,12 +862,67 @@ export class ConversationListController extends BaseController {
         if (!threadEntries.length) {
             const li = document.createElement('li');
             li.className = 'conversation-item disabled';
-            li.innerHTML = `<div class="conversation-empty">尚未有任何訊息</div>`;
+            li.innerHTML = `<div class="conversation-empty">${t('messages.noMessages')}</div>`;
             this.elements.conversationList.appendChild(li);
-            return;
+            // Don't return — ephemeral items still need to render below
         }
 
         for (const thread of threadEntries) {
+            // ── Biz-conv (business conversation / group) thread ──
+            if (thread.type === 'biz-conv') {
+                const li = document.createElement('li');
+                li.className = 'conversation-item biz-conv-item';
+                li.style.touchAction = 'pan-y';
+                li.dataset.conversationId = thread.conversationId;
+                li.dataset.bizConv = '1';
+
+                const isActive = state.conversationId === thread.conversationId && state.activeBizConv;
+                if (isActive) li.classList.add('active');
+
+                const groupName = thread.bizConvName || t('messages.bizConvDefault');
+                const memberCount = thread.bizConvMemberCount || 0;
+                const initials = groupName.slice(0, 2).toUpperCase();
+                const timeLabel = this._formatConversationPreviewTime(thread.lastMessageTs);
+                const snippet = thread.lastMessageText || '';
+                const unread = Number.isFinite(thread.unreadCount) ? thread.unreadCount : 0;
+                const avatarHtml = thread.bizConvAvatar
+                    ? `<img class="conversation-avatar biz-conv-avatar-img" src="${escapeHtml(thread.bizConvAvatar)}" alt="" />`
+                    : `<div class="conversation-avatar biz-conv-avatar"><span>${escapeHtml(initials)}</span></div>`;
+
+                li.innerHTML = `
+        <div class="item-content conversation-item-content">
+          ${avatarHtml}
+          <div class="conversation-content">
+            <div class="conversation-row conversation-row-top">
+              <span class="conversation-name"><svg class="icon" style="margin-right:4px;vertical-align:middle"><use href="#i-users"/></svg>${escapeHtml(groupName)}</span>
+              <span class="conversation-time">${escapeHtml(timeLabel)}</span>
+            </div>
+            <div class="conversation-row conversation-row-bottom">
+              <span class="conversation-snippet">${escapeHtml(snippet || t('messages.noMessages'))}</span>
+              ${unread > 0 ? `<span class="conversation-badge conversation-badge-small">${escapeHtml(unread > 99 ? '99+' : String(unread))}</span>` : ''}
+            </div>
+          </div>
+        </div>
+      `;
+                // No swipe-to-delete for biz-conv — members can only "leave"
+
+                li.addEventListener('click', (e) => {
+                    if (this._scrolledDuringTouch) return;
+                    if (this.elements.conversationList && Math.abs(this.elements.conversationList.scrollTop - this._touchStartScroll) > 2) return;
+                    this.deps.setActiveBizConv?.(thread.conversationId);
+                });
+                li.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        this.deps.setActiveBizConv?.(thread.conversationId);
+                    }
+                });
+
+                this.elements.conversationList.appendChild(li);
+                continue;
+            }
+
+            // ── Standard 1-to-1 thread ──
             const peerDigest = this._threadPeer(thread);
             if (!peerDigest) continue;
 
@@ -845,7 +938,7 @@ export class ConversationListController extends BaseController {
             if (isActivePeer && isActiveDevice) li.classList.add('active');
             if (openPeer && openPeer === peerDigest) li.classList.add('show-delete');
 
-            const nickname = thread.nickname || `好友 ${peerDigest.slice(-4)}`;
+            const nickname = thread.nickname || `${t('contacts.friendPrefix')}${peerDigest.slice(-4)}`;
             const initials = this._initialsFromName(nickname, peerDigest);
             const avatarSrc = thread.avatar?.thumbDataUrl || thread.avatar?.previewDataUrl || thread.avatar?.url || null;
             const timeLabel = this._formatConversationPreviewTime(thread.lastMessageTs);
@@ -862,12 +955,12 @@ export class ConversationListController extends BaseController {
               <span class="conversation-time">${escapeHtml(timeLabel)}</span>
             </div>
             <div class="conversation-row conversation-row-bottom">
-              <span class="conversation-snippet">${escapeHtml(snippet || '尚無訊息')}</span>
+              <span class="conversation-snippet">${escapeHtml(snippet || t('messages.noMessages'))}</span>
               ${unread > 0 ? `<span class="conversation-badge conversation-badge-small ${offlineUnread > 0 ? 'badge-offline-gap' : ''}">${escapeHtml(unread > 99 ? '99+' : String(unread))}</span>` : ''}
             </div>
           </div>
         </div>
-        <button type="button" class="item-delete" aria-label="刪除對話"><i class='bx bx-trash'></i></button>
+        <button type="button" class="item-delete" aria-label="${t('messages.deleteConversationAriaLabel')}"><svg class="icon"><use href="#i-trash-2"/></svg></button>
       `;
 
             const deleteBtn = li.querySelector('.item-delete');
@@ -880,6 +973,8 @@ export class ConversationListController extends BaseController {
             li.addEventListener('click', (e) => {
                 // Suppress accidental selection when user was scrolling
                 if (this._scrolledDuringTouch) return;
+                // Fallback: check if container scrolled since touchstart
+                if (this.elements.conversationList && Math.abs(this.elements.conversationList.scrollTop - this._touchStartScroll) > 2) return;
                 if (li.classList.contains('show-delete')) {
                     e.preventDefault();
                     e.stopPropagation();
@@ -909,6 +1004,9 @@ export class ConversationListController extends BaseController {
             this.deps.setupSwipe?.(li);
             this.elements.conversationList.appendChild(li);
         }
+
+        // Render ephemeral sessions pinned at top
+        this.deps.controllers?.ephemeral?.renderEphemeralItems?.(this.elements.conversationList);
     }
 
     /**
@@ -922,20 +1020,62 @@ export class ConversationListController extends BaseController {
             this.elements.conversationList.addEventListener('touchend', () => this.handleConversationPullEnd());
             this.elements.conversationList.addEventListener('touchcancel', () => this.handleConversationPullEnd());
 
-            // Scroll-vs-tap: track vertical finger movement to suppress click during scroll
+            // Scroll-vs-tap: robust detection using scroll event + finger movement
+            this._touchActive = false;
             this.elements.conversationList.addEventListener('touchstart', (e) => {
                 if (e.touches.length === 1) {
+                    this._touchActive = true;
                     this._touchStartY = e.touches[0].clientY;
+                    this._touchStartX = e.touches[0].clientX;
+                    this._touchStartScroll = this.elements.conversationList.scrollTop;
                     this._scrolledDuringTouch = false;
                 }
             }, { passive: true });
+            this.elements.conversationList.addEventListener('touchend', () => {
+                // Keep _touchActive true briefly so the scroll event that fires
+                // after touchend (iOS momentum) still suppresses the click
+                setTimeout(() => { this._touchActive = false; }, 400);
+            }, { passive: true });
+            // The scroll event fires reliably on iOS even during momentum scroll
+            this.elements.conversationList.addEventListener('scroll', () => {
+                if (this._touchActive) this._scrolledDuringTouch = true;
+            }, { passive: true });
             this.elements.conversationList.addEventListener('touchmove', (e) => {
                 if (!this._scrolledDuringTouch && e.touches.length === 1) {
-                    if (Math.abs(e.touches[0].clientY - this._touchStartY) > 10) {
+                    const dy = Math.abs(e.touches[0].clientY - this._touchStartY);
+                    const dx = Math.abs(e.touches[0].clientX - this._touchStartX);
+                    if (dy > 6 || dx > 6) {
                         this._scrolledDuringTouch = true;
                     }
                 }
             }, { passive: true });
+        }
+
+        // Quick-actions toggle (chevron tap or pull-down)
+        this._quickActionsExpanded = false;
+        const toggleEl = document.getElementById('quickActionsToggle');
+        const qaEl = this.elements.conversationQuickActions || document.getElementById('conversationQuickActions');
+        if (toggleEl && qaEl) {
+            const expand = () => {
+                this._quickActionsExpanded = true;
+                qaEl.classList.remove('collapsed');
+                toggleEl.classList.add('expanded');
+            };
+            const collapse = () => {
+                this._quickActionsExpanded = false;
+                qaEl.classList.add('collapsed');
+                toggleEl.classList.remove('expanded');
+            };
+            // Tap chevron to toggle
+            toggleEl.addEventListener('click', () => {
+                if (this._quickActionsExpanded) collapse(); else expand();
+            });
+            // Auto-collapse after a button inside is clicked
+            qaEl.addEventListener('click', (e) => {
+                if (e.target.closest('.quick-action-btn')) {
+                    setTimeout(() => collapse(), 300);
+                }
+            });
         }
     }
 }

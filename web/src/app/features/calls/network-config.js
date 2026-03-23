@@ -1,6 +1,7 @@
 import { buildAccountPayload, ensureDeviceId } from '../../core/store.js';
 import { CALL_EVENT, emitCallEvent } from './events.js';
 import { setCallNetworkConfig } from './state.js';
+import { t } from '/locales/index.js';
 
 const API_CONFIG_URL = '/api/v1/calls/network-config';
 
@@ -142,7 +143,7 @@ async function fetchFromApi({ signal } = {}) {
     signal
   });
   if (!response.ok) {
-    throw new Error(`無法載入通話設定 (${response.status})`);
+    throw new Error(t('callMedia.loadConfigFailed', { status: response.status }));
   }
   const json = await response.json();
   const payload = json?.config || json;

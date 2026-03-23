@@ -13,6 +13,7 @@
 //
 // Each chunk is independently encrypted with AES-256-GCM via HKDF-derived key.
 
+import { t } from '/locales/index.js';
 import { signPutChunked as apiSignPutChunked, cleanupChunked as apiCleanupChunked } from '../api/media.js';
 import { getMkRaw } from '../core/store.js';
 import { encryptWithMK as aeadEncryptWithMK, createBulkEncryptor } from '../crypto/aead.js';
@@ -211,7 +212,7 @@ async function _streamingUploadFragmented({
     extractDurationFromFile(file)
   ]);
   if (moofCount === 0) {
-    throw new UnsupportedVideoFormatError('已分片的影片格式無法正確解析');
+    throw new UnsupportedVideoFormatError(t('upload.fragmentedVideoError'));
   }
 
   const chunkCount = 1 + moofCount;
@@ -234,7 +235,7 @@ async function _streamingUploadFragmented({
     const errCode = signData?.error || 'Unknown';
     if (errCode === 'FileTooLarge') {
       const limitMB = signData?.maxBytes ? Math.round(signData.maxBytes / 1024 / 1024) : '?';
-      throw new Error(`檔案大小超過伺服器限制 (${limitMB}MB)，請確認伺服器已更新至最新版本`);
+      throw new Error(t('upload.fileTooLargeServer', { limitMB }));
     }
     throw new Error('sign-put-chunked failed: ' + JSON.stringify(signData));
   }
@@ -356,7 +357,7 @@ async function _streamingUploadFragmented({
   onProgress?.({ percent: PHASE.manifestEnd });
 
   const manifestEnvelope = {
-    v: useSharedKey ? 2 : 1, aead: 'aes-256-gcm',
+    v: 2, aead: 'aes-256-gcm',
     iv_b64: b64(manifestCt.iv), hkdf_salt_b64: b64(manifestCt.hkdfSalt),
     info_tag: MANIFEST_INFO_TAG, key_type: useSharedKey ? 'shared' : 'mk'
   };
@@ -396,7 +397,7 @@ async function _streamingTranscodeUpload({
     const errCode = signData?.error || 'Unknown';
     if (errCode === 'FileTooLarge') {
       const limitMB = signData?.maxBytes ? Math.round(signData.maxBytes / 1024 / 1024) : '?';
-      throw new Error(`檔案大小超過伺服器限制 (${limitMB}MB)，請確認伺服器已更新至最新版本`);
+      throw new Error(t('upload.fileTooLargeServer', { limitMB }));
     }
     throw new Error('sign-put-chunked failed: ' + JSON.stringify(signData));
   }
@@ -442,7 +443,7 @@ async function _streamingTranscodeUpload({
       loaded: Math.round(ratio * rawFileSize),
       total: rawFileSize,
       percent: pct,
-      statusText: segmentsComplete > 0 ? `上傳中 ${segmentsComplete}/${totalExpectedSegments}` : undefined,
+      statusText: segmentsComplete > 0 ? t('upload.uploadingProgress', { done: segmentsComplete, total: totalExpectedSegments }) : undefined,
     });
   };
 
@@ -528,7 +529,7 @@ async function _streamingTranscodeUpload({
             const encodeRatio = percent / 100;
             onProgress?.({
               percent: encodePercent,
-              statusText: `正在轉碼… ${percent}%`,
+              statusText: t('upload.transcoding', { percent }),
               loaded: Math.round(encodeRatio * rawFileSize),
               total: rawFileSize,
             });
@@ -572,7 +573,7 @@ async function _streamingTranscodeUpload({
   onProgress?.({ percent: PHASE.manifestEnd, statusText: null });
 
   const manifestEnvelope = {
-    v: useSharedKey ? 2 : 1, aead: 'aes-256-gcm',
+    v: 2, aead: 'aes-256-gcm',
     iv_b64: b64(manifestCt.iv), hkdf_salt_b64: b64(manifestCt.hkdfSalt),
     info_tag: MANIFEST_INFO_TAG, key_type: useSharedKey ? 'shared' : 'mk'
   };
@@ -626,7 +627,7 @@ export async function encryptAndPutChunked({
   // only to be rejected by the server's 413 response at sign-put-chunked.
   const fileSize = typeof file.size === 'number' ? file.size : null;
   if (fileSize != null && fileSize > MAX_UPLOAD_BYTES) {
-    throw new Error(`檔案大小超過 ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB 限制`);
+    throw new Error(t('upload.fileSizeExceeded', { limitMB: Math.round(MAX_UPLOAD_BYTES / 1024 / 1024) }));
   }
 
   const rawType = (typeof file.type === 'string' ? file.type : '').toLowerCase().trim();
@@ -691,16 +692,16 @@ export async function encryptAndPutChunked({
       .trim();
     // Truncate to keep UI readable
     const short = stripped.length > 80 ? stripped.slice(0, 78) + '…' : stripped;
-    return short || '未知錯誤';
+    return short || t('common.unknownError');
   };
 
   if (isVideo) {
     // Step 0: Format detection
-    const fmtIdx = _addStep('格式偵測', 'active');
+    const fmtIdx = _addStep(t('upload.formatDetection'), 'active');
 
     if (!canRemuxVideo(file)) {
       _setStep(fmtIdx, 'error', rawType);
-      throw new UnsupportedVideoFormatError(`不支援此影片格式：${rawType}`);
+      throw new UnsupportedVideoFormatError(t('video.unsupportedFormat', { type: rawType }));
     }
     _setStep(fmtIdx, 'done', rawType);
 
@@ -716,8 +717,8 @@ export async function encryptAndPutChunked({
         // ── Streaming pipeline: transcode → encrypt → upload per-segment ──
         // Segments are encrypted and uploaded as they're produced by the encoder,
         // so the upload starts within seconds instead of waiting for full transcode.
-        const tcIdx = _addStep('轉碼上傳 (720p)', 'active');
-        onProgress?.({ percent: 1, statusText: '正在轉碼並上傳…' });
+        const tcIdx = _addStep(t('upload.transcodingLabel'), 'active');
+        onProgress?.({ percent: 1, statusText: t('upload.transcodingAndUploading') });
         try {
           const result = await _streamingTranscodeUpload({
             file, probe: transcodeProbe, convId, cryptoKey, useSharedKey, sharedKeyU8,
@@ -743,7 +744,7 @@ export async function encryptAndPutChunked({
       const peekBuf = await file.slice(0, 64 * 1024).arrayBuffer();
       if (isAlreadyFragmented(new Uint8Array(peekBuf))) {
         // Already-fragmented fMP4: streaming upload (low memory).
-        const uploadIdx = _addStep('加密上傳', 'active');
+        const uploadIdx = _addStep(t('upload.encryptedUpload'), 'active');
         onProgress?.({ percent: PHASE.remuxEnd, statusText: null });
         const result = await _streamingUploadFragmented({
           file, convId, cryptoKey, useSharedKey, sharedKeyU8,
@@ -755,7 +756,7 @@ export async function encryptAndPutChunked({
       }
 
       // Not fragmented — remux to fMP4 via mp4box.js (keeps original codec)
-      const remuxIdx = _addStep('影片封裝', 'active');
+      const remuxIdx = _addStep(t('upload.videoContainer'), 'active');
       preprocessResult = await remuxToFragmentedMp4(file, {
         onProgress: ({ percent }) => {
           onProgress?.({ percent: Math.round(percent * PHASE.remuxEnd / 100) });
@@ -773,14 +774,14 @@ export async function encryptAndPutChunked({
           console.info(`[chunked-upload] proceeding with HEVC fMP4 (MSE HEVC supported on this browser)`);
         } else {
           throw new UnsupportedVideoFormatError(
-            '此影片使用 HEVC 編碼，無法在此裝置上串流播放。請在相機設定中切換為「最相容」(H.264) 後重新錄製。'
+            t('upload.hevcNotSupported')
           );
         }
       }
     }
 
     // Add upload step (will be set to 'done' after chunks + manifest)
-    _addStep('加密上傳', 'active');
+    _addStep(t('upload.encryptedUpload'), 'active');
 
     onProgress?.({ percent: PHASE.remuxEnd, statusText: null });
     contentType = preprocessResult.contentType;
@@ -863,7 +864,7 @@ export async function encryptAndPutChunked({
     const errCode = signData?.error || 'Unknown';
     if (errCode === 'FileTooLarge') {
       const limitMB = signData?.maxBytes ? Math.round(signData.maxBytes / 1024 / 1024) : '?';
-      throw new Error(`檔案大小超過伺服器限制 (${limitMB}MB)，請確認伺服器已更新至最新版本`);
+      throw new Error(t('upload.fileTooLargeServer', { limitMB }));
     }
     throw new Error('sign-put-chunked failed: ' + JSON.stringify(signData));
   }
@@ -1075,7 +1076,7 @@ export async function encryptAndPutChunked({
   }
 
   const manifestEnvelope = {
-    v: useSharedKey ? 2 : 1,
+    v: 2,
     aead: 'aes-256-gcm',
     iv_b64: b64(manifestCt.iv),
     hkdf_salt_b64: b64(manifestCt.hkdfSalt),
