@@ -853,42 +853,35 @@ function extractDocImage(dataStream, offset) {
       continue;
     }
 
-    // OfficeArt BLIP types: 0xF01A-0xF02F
+    // OfficeArt BLIP types (MS-ODRAW):
+    // 0xF01A/0xF02A=EMF, 0xF01B/0xF02B=WMF, 0xF01C/0xF02C=PICT
+    // 0xF01D/0xF02D=JPEG, 0xF01E/0xF02E=PNG, 0xF01F/0xF02F=DIB, 0xF029=TIFF
     if (recType >= 0xF01A && recType <= 0xF02F && recLen > 20) {
-      let imgOff = artOff;
-      let mime = '';
-      const is2uid = (recInst & 1) === 1; // odd recInstance = 2-UID variant
+      const is2uid = (recInst & 1) === 1;
       const uidSkip = is2uid ? 32 : 16;
 
-      if (recType === 0xF01D || recType === 0xF02D) {
-        mime = 'image/png';
-        imgOff += uidSkip + 1; // UIDs + tag
-      } else if (recType === 0xF01E || recType === 0xF02E) {
-        mime = 'image/png';
-        imgOff += uidSkip + 1;
-      } else if (recType === 0xF01F || recType === 0xF02F) {
-        mime = 'image/x-dib'; // DIB
-        imgOff += uidSkip + 1;
-      } else if (recType === 0xF01D) {
-        mime = 'image/jpeg';
-        imgOff += uidSkip + 1;
-      } else if (recType === 0xF01A || recType === 0xF02A ||
-                 recType === 0xF01B || recType === 0xF02B ||
-                 recType === 0xF01C || recType === 0xF02C) {
-        // EMF/WMF/PICT — metafile, skip (browsers can't render)
-        artOff += recLen; continue;
-      } else {
+      // EMF/WMF/PICT — metafile, skip (can't render in browser)
+      if (recType === 0xF01A || recType === 0xF02A ||
+          recType === 0xF01B || recType === 0xF02B ||
+          recType === 0xF01C || recType === 0xF02C) {
         artOff += recLen; continue;
       }
+
+      let imgOff = artOff + uidSkip + 1; // UIDs + tag byte
+      let mime = '';
+      if (recType === 0xF01D || recType === 0xF02D) mime = 'image/jpeg';
+      else if (recType === 0xF01E || recType === 0xF02E) mime = 'image/png';
+      else if (recType === 0xF01F || recType === 0xF02F) { artOff += recLen; continue; } // DIB unsupported
+      else { artOff += recLen; continue; }
 
       const imgLen = recLen - (imgOff - artOff);
       if (imgLen <= 0 || imgOff + imgLen > artEnd) { artOff += recLen; continue; }
 
-      // Validate image magic bytes
+      // Validate with magic bytes
       const b0 = dataStream[imgOff], b1 = dataStream[imgOff + 1];
-      if (b0 === 0x89 && b1 === 0x50) mime = 'image/png';       // PNG magic
-      else if (b0 === 0xFF && b1 === 0xD8) mime = 'image/jpeg';  // JPEG magic
-      else if (mime === 'image/x-dib') { artOff += recLen; continue; } // skip DIB
+      if (b0 === 0x89 && b1 === 0x50) mime = 'image/png';
+      else if (b0 === 0xFF && b1 === 0xD8) mime = 'image/jpeg';
+      else { artOff += recLen; continue; } // unknown format
 
       const blob = new Blob([dataStream.slice(imgOff, imgOff + imgLen)], { type: mime });
       return `<img src="${URL.createObjectURL(blob)}" style="${style}" alt="" class="word-img">`;
@@ -1137,19 +1130,11 @@ function renderDocBinary(buffer) {
         // to maintain correct CP↔formatting alignment
         const content = renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream);
 
-        // Detect heading: use outlineLvl (0-8) from paragraph Sprm, or fall back to font size
+        // Detect heading: ONLY use outlineLvl from paragraph Sprm (MS-DOC standard)
+        // No font-size heuristic — it causes false positives on bold paragraphs
         let headingLevel = 0;
         if (paraProps.outlineLvl !== undefined && paraProps.outlineLvl <= 5) {
           headingLevel = paraProps.outlineLvl + 1; // outlineLvl 0 = H1, ..., 5 = H6
-        } else {
-          // Heuristic: large bold text that's short = heading
-          // Require bold AND large font to avoid false positives in form documents
-          const firstCharRun = charRuns.find(r => r.cpStart <= cpStart && r.cpEnd > cpStart);
-          const fs = firstCharRun?.props?.fontSize;
-          const isBold = firstCharRun?.props?.bold;
-          if (fs && fs >= 22 && isBold && visibleText.length < 120) {
-            headingLevel = fs >= 32 ? 1 : fs >= 26 ? 2 : 3;
-          }
         }
 
         if (headingLevel >= 1 && headingLevel <= 6) {
@@ -1254,12 +1239,7 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts, dataStream) {
         if (p.ulColor) deco += `;text-decoration-color:${p.ulColor}`;
         css.push(deco);
       }
-      if (p.fontSize) {
-        // Scale font sizes for mobile: A4 content width ~450pt, mobile ~250pt
-        const vw = typeof window !== 'undefined' ? window.innerWidth : 800;
-        const scaled = vw < 600 ? Math.round(p.fontSize * 0.75 * 10) / 10 : p.fontSize;
-        css.push(`font-size:${scaled}pt`);
-      }
+      if (p.fontSize) css.push(`font-size:${p.fontSize}pt`);
       if (p.color) css.push(`color:${p.color}`);
       if (p.highlight) css.push(`background-color:${p.highlight}`);
       if (p.fontIdx !== undefined && fonts[p.fontIdx]) css.push(`font-family:"${fonts[p.fontIdx]}",sans-serif`);

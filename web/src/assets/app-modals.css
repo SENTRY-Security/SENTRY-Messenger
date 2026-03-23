@@ -1019,13 +1019,11 @@
   word-wrap: break-word;
   overflow-wrap: break-word;
 }
-/* Mobile: tighter padding + smaller base font to match A4 proportions on narrow screens */
+/* Mobile: tighter padding */
 @media (max-width: 600px) {
   .word-page {
     margin: 8px auto;
     padding: 20px 14px;
-    font-size: 9.5pt;
-    line-height: 1.45;
   }
 }
 
@@ -1038,14 +1036,6 @@ h3.word-h { font-size: 13pt; }
 h4.word-h { font-size: 11pt; }
 h5.word-h { font-size: 10pt; }
 h6.word-h { font-size: 9pt; }
-@media (max-width: 600px) {
-  h1.word-h { font-size: 16pt; }
-  h2.word-h { font-size: 14pt; }
-  h3.word-h { font-size: 12pt; }
-  h4.word-h { font-size: 10pt; }
-  h5.word-h { font-size: 9pt; }
-  h6.word-h { font-size: 8pt; }
-}
 
 .word-link { color: #2563eb; text-decoration: underline; }
 .word-tab { display: inline-block; min-width: 36pt; }
@@ -1089,10 +1079,6 @@ h6.word-h { font-size: 9pt; }
 .word-tc {
   padding: 4pt 6pt;
   vertical-align: top;
-}
-@media (max-width: 600px) {
-  .word-tc { padding: 2pt 4pt; font-size: 8.5pt; }
-  .word-tbl { font-size: 8.5pt; }
 }
 .word-tc .word-p { margin: 0 0 2pt 0; }
 .word-tc .word-p:last-child { margin-bottom: 0; }
