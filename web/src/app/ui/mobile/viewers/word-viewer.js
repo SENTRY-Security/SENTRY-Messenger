@@ -1618,8 +1618,16 @@ function renderDocBinary(buffer) {
       // Single-paragraph tables: all cells in one paragraph separated by \x07.
 
       if (!inTable) {
-        // Find ALL tableRowEnd runs for this table to determine maxCols and table width
-        tblAllRowEnds = paraRuns.filter(r => r.props.tableRowEnd && r.cpStart >= cpStart);
+        // Find tableRowEnd runs for THIS table only (same grid boundary origin).
+        // Different tables have different _cellBoundaries[0] (left edge position).
+        const allCandidates = paraRuns.filter(r => r.props.tableRowEnd && r.cpStart >= cpStart);
+        const firstBound0 = allCandidates[0]?.props._cellBoundaries?.[0];
+        tblAllRowEnds = firstBound0 !== undefined
+          ? allCandidates.filter(r => {
+              const b0 = r.props._cellBoundaries?.[0];
+              return b0 === undefined || b0 === firstBound0;
+            })
+          : allCandidates;
         tblRowIdx = 0;
         tblMaxCols = 0;
         let maxTblWidth = 0;
@@ -1924,7 +1932,35 @@ function renderDocBinary(buffer) {
             tableRow.push({ html: cellHtml, closed: true });
           }
         } else {
-          // No \x07 — content continuation within a cell
+          // No \x07 — content continuation within a cell.
+          // But first check: if the next tableRowEnd has a different grid boundary,
+          // this paragraph is between two different tables → close current table.
+          if (inTable && tblAllRowEnds.length > 0) {
+            const nextRowEnd = paraRuns.find(r => r.props.tableRowEnd && r.cpStart > cpStart);
+            if (nextRowEnd) {
+              const curB0 = tblAllRowEnds[0]?.props._cellBoundaries?.[0];
+              const nextB0 = nextRowEnd.props._cellBoundaries?.[0];
+              if (curB0 !== undefined && nextB0 !== undefined && curB0 !== nextB0) {
+                // Different table grid — close current table
+                if (tableRow.length > 0) {
+                  html.push('<tr>');
+                  for (const cell of tableRow) html.push(`<td class="word-tc">${cell.html}</td>`);
+                  html.push('</tr>');
+                  tableRow = [];
+                }
+                html.push('</table></div>');
+                inTable = false; tableRow = []; tblMaxCols = 0; tblAllRowEnds = []; tblRowIdx = 0;
+                // Render this paragraph as normal text, then let next iteration start new table
+                const styleParts2 = [];
+                if (paraProps.align && paraProps.align !== 'left') styleParts2.push(`text-align:${paraProps.align}`);
+                const sa2 = styleParts2.length ? ` style="${styleParts2.join(';')}"` : '';
+                const visTxt2 = paraText.replace(/[\x01\x07\x08\x13\x14\x15]/g, '').trim();
+                if (visTxt2) html.push(`<p class="word-p"${sa2}>${renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream, oleChart, artImages, paraProps._charProps)}</p>`);
+                cp = cpEnd + 1;
+                continue;
+              }
+            }
+          }
           const cellHtml = renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream, oleChart, artImages, paraProps._charProps);
           if (tableRow.length > 0 && !tableRow[tableRow.length - 1].closed) {
             tableRow[tableRow.length - 1].html += '<br>' + cellHtml;
@@ -1983,20 +2019,32 @@ function renderDocBinary(buffer) {
           html.push('</tr>');
           tableRow = [];
         }
-        // Check if next paragraph continues the table
+        // Check if next paragraph continues the SAME table or starts a new one.
+        // Different tables may both have inTable=true but have different cell boundaries.
         const nextParaProps = (() => {
           const nextCp = cpEnd + 1;
           for (const pr of paraRuns) { if (pr.cpStart <= nextCp && pr.cpEnd > nextCp) return pr.props; }
           return {};
         })();
+        const visTxt = paraText.replace(/[\x01\x07\x08\x13\x14\x15]/g, '').trim();
         if (nextParaProps.inTable) {
-          // Non-table paragraph between table rows — add as full-width row
-          const visTxt = paraText.replace(/[\x01\x07\x08\x13\x14\x15]/g, '').trim();
-          if (visTxt) {
-            html.push(`<tr><td class="word-tc" colspan="99">${renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream, oleChart, artImages, paraProps._charProps)}</td></tr>`);
+          // Check if the next table's row-end has different grid boundaries → new table
+          const curBound0 = tblAllRowEnds[0]?.props._cellBoundaries?.[0];
+          const nextRowEnd = paraRuns.find(r => r.props.tableRowEnd && r.cpStart >= cpEnd);
+          const nextBound0 = nextRowEnd?.props._cellBoundaries?.[0];
+          const sameGrid = curBound0 !== undefined && nextBound0 !== undefined && curBound0 === nextBound0;
+          if (sameGrid && !visTxt) {
+            // Same table grid, empty gap paragraph — keep table open
             cp = cpEnd + 1;
             continue;
           }
+          if (sameGrid && visTxt) {
+            // Same table grid, non-empty gap — keep as full-width row
+            html.push(`<tr><td class="word-tc" colspan="${tblMaxCols}">${renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream, oleChart, artImages, paraProps._charProps)}</td></tr>`);
+            cp = cpEnd + 1;
+            continue;
+          }
+          // Different grid → close current table, let next iteration start a new one
         }
         html.push('</table></div>'); inTable = false; tableRow = []; tblMaxCols = 0; tblAllRowEnds = []; tblRowIdx = 0;
       }
