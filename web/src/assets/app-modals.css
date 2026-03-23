@@ -958,6 +958,17 @@
   min-height: 100%;
 }
 
+.word-format-notice {
+  max-width: 800px;
+  margin: 16px auto 0;
+  padding: 8px 16px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 12px;
+  border-radius: 6px;
+  text-align: center;
+}
+
 /* Self-rendered Word document styles */
 .word-page {
   background: #fff;

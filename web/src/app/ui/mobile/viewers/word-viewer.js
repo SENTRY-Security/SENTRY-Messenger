@@ -55,6 +55,306 @@ export function isWordFilename(name) {
   return /\.(docx|doc|docm)$/i.test(name);
 }
 
+// ══════════════════════════════════════════════════════════════
+// ── OLE2 Compound Binary File parser (for .doc support) ──
+// ══════════════════════════════════════════════════════════════
+
+function parseOLE2(buffer) {
+  const view = new DataView(buffer);
+  // Verify OLE2 signature: D0 CF 11 E0 A1 B1 1A E1
+  const sig = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+  for (let i = 0; i < 8; i++) {
+    if (view.getUint8(i) !== sig[i]) throw new Error('Not an OLE2 file');
+  }
+
+  const sectorSizePow = view.getUint16(0x1E, true);
+  const sectorSize = 1 << sectorSizePow;
+  const miniSectorSizePow = view.getUint16(0x20, true);
+  const miniSectorSize = 1 << miniSectorSizePow;
+  const firstDirSector = view.getUint32(0x30, true);
+  const miniStreamCutoff = view.getUint32(0x38, true);
+  const firstMiniFATSector = view.getInt32(0x3C, true);
+  const miniFATSectorCount = view.getUint32(0x40, true);
+  const firstDIFATSector = view.getInt32(0x44, true);
+  const difatSectorCount = view.getUint32(0x48, true);
+
+  // Build DIFAT: first 109 entries from header
+  const difat = [];
+  for (let i = 0; i < 109; i++) {
+    const v = view.getInt32(0x4C + i * 4, true);
+    if (v >= 0) difat.push(v);
+  }
+  // Additional DIFAT sectors
+  let difatSec = firstDIFATSector;
+  for (let i = 0; i < difatSectorCount && difatSec >= 0; i++) {
+    const off = (difatSec + 1) * sectorSize;
+    for (let j = 0; j < sectorSize / 4 - 1; j++) {
+      const v = view.getInt32(off + j * 4, true);
+      if (v >= 0) difat.push(v);
+    }
+    difatSec = view.getInt32(off + sectorSize - 4, true);
+  }
+
+  // Build FAT from DIFAT sectors
+  const fat = [];
+  for (const sec of difat) {
+    const off = (sec + 1) * sectorSize;
+    for (let i = 0; i < sectorSize / 4; i++) {
+      fat.push(view.getInt32(off + i * 4, true));
+    }
+  }
+
+  // Read a chain of sectors into a Uint8Array
+  function readChain(startSector) {
+    const chunks = [];
+    let sec = startSector;
+    const visited = new Set();
+    while (sec >= 0 && sec < fat.length && !visited.has(sec)) {
+      visited.add(sec);
+      const off = (sec + 1) * sectorSize;
+      if (off + sectorSize <= buffer.byteLength) {
+        chunks.push(new Uint8Array(buffer, off, sectorSize));
+      }
+      sec = fat[sec] ?? -2;
+    }
+    const total = chunks.reduce((s, a) => s + a.length, 0);
+    const result = new Uint8Array(total);
+    let pos = 0;
+    for (const c of chunks) { result.set(c, pos); pos += c.length; }
+    return result;
+  }
+
+  // Read directory entries
+  const dirData = readChain(firstDirSector);
+  const entries = [];
+  for (let i = 0; i + 128 <= dirData.length; i += 128) {
+    const nameSize = dirData[i + 0x40] | (dirData[i + 0x41] << 8);
+    if (nameSize === 0) continue;
+    let name = '';
+    for (let j = 0; j < nameSize - 2; j += 2) {
+      name += String.fromCharCode(dirData[i + j] | (dirData[i + j + 1] << 8));
+    }
+    const type = dirData[i + 0x42];
+    const dv = new DataView(dirData.buffer, dirData.byteOffset + i, 128);
+    const startSector = dv.getInt32(0x74, true);
+    const size = dv.getUint32(0x78, true);
+    entries.push({ name, type, startSector, size });
+  }
+
+  // Build mini FAT
+  let miniFAT = [];
+  if (firstMiniFATSector >= 0 && miniFATSectorCount > 0) {
+    const mfData = readChain(firstMiniFATSector);
+    const mfView = new DataView(mfData.buffer, mfData.byteOffset, mfData.byteLength);
+    for (let i = 0; i < mfData.length / 4; i++) {
+      miniFAT.push(mfView.getInt32(i * 4, true));
+    }
+  }
+
+  // Mini stream (from root entry)
+  const rootEntry = entries.find(e => e.type === 5);
+  let miniStream = null;
+  if (rootEntry && rootEntry.startSector >= 0) {
+    miniStream = readChain(rootEntry.startSector);
+  }
+
+  // Get named stream data
+  function getStream(streamName) {
+    const entry = entries.find(e => e.name === streamName && e.type === 2);
+    if (!entry || entry.startSector < 0) return null;
+    if (entry.size < miniStreamCutoff && miniStream) {
+      // Read from mini stream using mini FAT
+      const data = new Uint8Array(entry.size);
+      let sec = entry.startSector;
+      let pos = 0;
+      const visited = new Set();
+      while (sec >= 0 && pos < entry.size && !visited.has(sec)) {
+        visited.add(sec);
+        const off = sec * miniSectorSize;
+        const len = Math.min(miniSectorSize, entry.size - pos);
+        if (off + len <= miniStream.length) {
+          data.set(miniStream.slice(off, off + len), pos);
+        }
+        pos += len;
+        sec = miniFAT[sec] ?? -2;
+      }
+      return data;
+    }
+    const chain = readChain(entry.startSector);
+    return chain.slice(0, entry.size);
+  }
+
+  return { entries, getStream };
+}
+
+// ── Extract text from Word Binary (.doc) ──
+function extractDocText(buffer) {
+  const ole2 = parseOLE2(buffer);
+  const wordDoc = ole2.getStream('WordDocument');
+  if (!wordDoc) throw new Error('WordDocument stream not found');
+
+  const wdView = new DataView(wordDoc.buffer, wordDoc.byteOffset, wordDoc.byteLength);
+  const wIdent = wdView.getUint16(0, true);
+  if (wIdent !== 0xA5EC) throw new Error('Invalid Word document magic');
+
+  const flags = wdView.getUint16(0x0A, true);
+  const fEncrypted = !!(flags & 0x0100);
+  if (fEncrypted) throw new Error('ENCRYPTED');
+  const fWhichTblStm = !!(flags & 0x0200);
+
+  // Read FIB structure offsets
+  // fibBase: 0x00-0x1F (32 bytes)
+  // csw at 0x20, then fibRgW (csw * 2 bytes)
+  // cslw, then fibRgLw (cslw * 4 bytes)
+  // cbRgFcLcb, then fibRgFcLcb pairs (each 8 bytes: fc + lcb)
+  let off = 0x20;
+  if (off + 2 > wordDoc.length) throw new Error('FIB too short');
+  const csw = wdView.getUint16(off, true);
+  off += 2 + csw * 2;
+  if (off + 2 > wordDoc.length) throw new Error('FIB too short');
+  const cslw = wdView.getUint16(off, true);
+  off += 2 + cslw * 4;
+  if (off + 2 > wordDoc.length) throw new Error('FIB too short');
+  const cbRgFcLcb = wdView.getUint16(off, true);
+  off += 2;
+
+  // CLX is at index 66 in fibRgFcLcb (Word 97+)
+  const clxIndex = 66;
+  if (clxIndex >= cbRgFcLcb) {
+    // Fallback: try raw text extraction
+    return fallbackTextExtract(wordDoc);
+  }
+
+  const fcClx = wdView.getUint32(off + clxIndex * 8, true);
+  const lcbClx = wdView.getUint32(off + clxIndex * 8 + 4, true);
+  if (lcbClx === 0) return fallbackTextExtract(wordDoc);
+
+  // Get table stream
+  const tableName = fWhichTblStm ? '1Table' : '0Table';
+  const tableStream = ole2.getStream(tableName);
+  if (!tableStream || fcClx + lcbClx > tableStream.length) {
+    return fallbackTextExtract(wordDoc);
+  }
+
+  // Parse CLX: skip Prc records (0x01), find Pcdt (0x02)
+  let clxOff = fcClx;
+  const tsView = new DataView(tableStream.buffer, tableStream.byteOffset, tableStream.byteLength);
+  while (clxOff < fcClx + lcbClx) {
+    const type = tableStream[clxOff];
+    if (type === 0x01) {
+      const cbGrpprl = tsView.getUint16(clxOff + 1, true);
+      clxOff += 3 + cbGrpprl;
+    } else if (type === 0x02) {
+      clxOff += 1;
+      break;
+    } else {
+      break;
+    }
+  }
+
+  if (clxOff + 4 > tableStream.length) return fallbackTextExtract(wordDoc);
+  const lcbPcdt = tsView.getUint32(clxOff, true);
+  clxOff += 4;
+
+  // Piece table: (n+1) CPs (uint32) + n PCDs (8 bytes each)
+  // lcbPcdt = (n+1)*4 + n*8 → n = (lcbPcdt - 4) / 12
+  const n = Math.floor((lcbPcdt - 4) / 12);
+  if (n <= 0) return fallbackTextExtract(wordDoc);
+
+  // Read character positions
+  const cps = [];
+  for (let i = 0; i <= n; i++) {
+    cps.push(tsView.getUint32(clxOff + i * 4, true));
+  }
+
+  // Read piece descriptors and extract text
+  const pcdBase = clxOff + (n + 1) * 4;
+  const textParts = [];
+  for (let i = 0; i < n; i++) {
+    const charCount = cps[i + 1] - cps[i];
+    if (charCount <= 0) continue;
+    const pcdOff = pcdBase + i * 8;
+    if (pcdOff + 8 > tableStream.length) break;
+    const fc = tsView.getUint32(pcdOff + 2, true);
+    const fCompressed = !!(fc & 0x40000000);
+    const fcValue = fc & 0x3FFFFFFF;
+
+    try {
+      if (fCompressed) {
+        // ANSI text (1 byte per char)
+        const byteOff = fcValue / 2;
+        if (byteOff + charCount <= wordDoc.length) {
+          const bytes = wordDoc.slice(byteOff, byteOff + charCount);
+          textParts.push(new TextDecoder('windows-1252').decode(bytes));
+        }
+      } else {
+        // Unicode text (2 bytes per char)
+        if (fcValue + charCount * 2 <= wordDoc.length) {
+          const bytes = wordDoc.slice(fcValue, fcValue + charCount * 2);
+          textParts.push(new TextDecoder('utf-16le').decode(bytes));
+        }
+      }
+    } catch { /* skip bad piece */ }
+  }
+
+  if (textParts.length === 0) return fallbackTextExtract(wordDoc);
+  return textParts.join('');
+}
+
+// Fallback: scan binary for readable text sequences
+function fallbackTextExtract(data) {
+  // Try to find text after FIB (typically starts at 0x200 or later)
+  const parts = [];
+  let current = '';
+  for (let i = 0x200; i < data.length; i++) {
+    const b = data[i];
+    if (b >= 0x20 && b < 0x7F) {
+      current += String.fromCharCode(b);
+    } else if (b === 0x0D || b === 0x0A) {
+      if (current.trim()) parts.push(current);
+      current = '';
+    } else if (b === 0x09) {
+      current += '\t';
+    } else {
+      if (current.length > 2) parts.push(current);
+      current = '';
+    }
+  }
+  if (current.trim()) parts.push(current);
+  if (parts.length === 0) throw new Error('No readable text found');
+  return parts.join('\r');
+}
+
+// Convert extracted .doc plain text to HTML
+function docTextToHtml(rawText) {
+  // Word uses \r for paragraph breaks, \x07 for table cell/row marks
+  // Clean up special chars
+  const cleaned = rawText
+    .replace(/\x07/g, '\t')      // Cell marks → tab
+    .replace(/\x01/g, '')         // Picture placeholders
+    .replace(/\x08/g, '')         // Drawing anchors
+    .replace(/\x13[^\x15]*\x15/g, '') // Field codes
+    .replace(/\x13|\x14|\x15/g, '')   // Remaining field markers
+    .replace(/\r\n/g, '\r')
+    .replace(/\n/g, '\r');
+
+  const paragraphs = cleaned.split('\r');
+  const html = [];
+  for (const para of paragraphs) {
+    const trimmed = para.trim();
+    if (!trimmed) {
+      html.push('<p class="word-p word-empty">&nbsp;</p>');
+    } else {
+      html.push(`<p class="word-p">${escapeHtml(trimmed)}</p>`);
+    }
+  }
+  return html.join('');
+}
+
+// ══════════════════════════════════════════════════════════════
+// ── DOCX XML parsing helpers ──
+// ══════════════════════════════════════════════════════════════
+
 // ── XML parsing helpers ──
 const NS_W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const NS_R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -686,23 +986,41 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
     }
 
     // Check if this is a ZIP-based DOCX or an old binary .doc
-    const header = new Uint8Array(arrayBuffer, 0, 4);
+    const header = new Uint8Array(arrayBuffer, 0, Math.min(8, arrayBuffer.byteLength));
     const isZip = header[0] === 0x50 && header[1] === 0x4B && header[2] === 0x03 && header[3] === 0x04;
-    if (!isZip) {
-      // Old .doc (OLE2) or corrupted file — not supported for inline viewing
+    const isOle2 = header[0] === 0xD0 && header[1] === 0xCF && header[2] === 0x11 && header[3] === 0xE0;
+
+    let resultHtml = '';
+    let isDocFormat = false;
+
+    if (isZip) {
+      // DOCX (ZIP-based)
+      const zip = await JSZip.loadAsync(arrayBuffer);
+      const result = await renderDocxToHtml(zip);
+      objectUrls = result.objectUrls || [];
+      resultHtml = result.html;
+    } else if (isOle2) {
+      // Old .doc (OLE2 binary)
+      isDocFormat = true;
+      const rawText = extractDocText(arrayBuffer);
+      resultHtml = docTextToHtml(rawText);
+    } else {
       throw new Error('NOT_DOCX');
     }
-
-    const zip = await JSZip.loadAsync(arrayBuffer);
-    const result = await renderDocxToHtml(zip);
-    objectUrls = result.objectUrls || [];
 
     // Create document container
     const docContainer = document.createElement('div');
     docContainer.className = 'word-doc-container';
+    if (isDocFormat) {
+      // Show format notice for .doc
+      const notice = document.createElement('div');
+      notice.className = 'word-format-notice';
+      notice.textContent = t('viewer.wordDocNotice') || '.doc 格式僅支援文字預覽，下載可查看完整格式。';
+      docContainer.appendChild(notice);
+    }
     const page = document.createElement('div');
     page.className = 'word-page';
-    page.innerHTML = result.html;
+    page.innerHTML = resultHtml;
     docContainer.appendChild(page);
     stageEl.appendChild(docContainer);
     if (loadingEl) loadingEl.remove();
@@ -734,10 +1052,13 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
     };
   } catch (err) {
     log({ wordViewerError: err?.message || err });
-    const isOldDoc = err?.message === 'NOT_DOCX';
-    const errorMsg = isOldDoc
-      ? (t('viewer.wordOldFormat') || '此檔案為舊版 .doc 格式，僅支援 .docx 線上預覽。請下載後使用其他應用程式開啟。')
-      : t('viewer.wordLoadFailed', { error: err?.message || err });
+    const isNotDocx = err?.message === 'NOT_DOCX';
+    const isEncrypted = err?.message === 'ENCRYPTED';
+    const errorMsg = isNotDocx
+      ? (t('viewer.wordOldFormat') || '無法辨識的檔案格式，請下載後使用其他應用程式開啟。')
+      : isEncrypted
+        ? (t('viewer.wordEncrypted') || '此檔案已加密，無法線上預覽。請下載後使用其他應用程式開啟。')
+        : t('viewer.wordLoadFailed', { error: err?.message || err });
     if (stageEl) {
       stageEl.innerHTML = `
         <div class="viewer-error-state">
