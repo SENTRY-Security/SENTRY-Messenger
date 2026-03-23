@@ -822,7 +822,11 @@ function renderDocBinary(buffer) {
     }
 
     // ── Table handling ──
-    if (paraProps.inTable) {
+    // Detect table via PAPX inTable flag, or fallback: presence of \x07 (cell mark) in text
+    const hasCellMark = paraText.indexOf('\x07') !== -1;
+    const isTable = paraProps.inTable || hasCellMark;
+
+    if (isTable) {
       // Split cells by \x07 (cell mark)
       const cells = paraText.split('\x07');
       let cellCp = cpStart;
@@ -833,7 +837,13 @@ function renderDocBinary(buffer) {
         }
         cellCp += cellText.length + 1; // +1 for \x07
       }
-      if (paraProps.tableRowEnd) {
+
+      // Row end: PAPX flag, or fallback heuristic — paragraph is just a cell mark
+      // (row-end paragraph in Word binary is typically a lone \x07 or empty)
+      const isRowEnd = paraProps.tableRowEnd ||
+        (hasCellMark && !paraProps.inTable && tableRow.length > 0);
+
+      if (isRowEnd) {
         if (!inTable) { html.push('<div class="word-tbl-wrap"><table class="word-tbl word-tbl-bordered">'); inTable = true; }
 
         // Row style from TAP properties
@@ -843,11 +853,13 @@ function renderDocBinary(buffer) {
         }
         html.push(`<tr${rowStyle.length ? ` style="${rowStyle.join(';')}"` : ''}>`);
 
-        // Last cell is the row-end marker itself, skip it
-        const dataCells = tableRow.slice(0, -1);
-        const cells2 = dataCells.length ? dataCells : tableRow;
-        for (let ci = 0; ci < cells2.length; ci++) {
-          const cell = cells2[ci];
+        // Filter out empty trailing cell (row-end marker)
+        let dataCells = tableRow;
+        while (dataCells.length > 1 && !dataCells[dataCells.length - 1].text.trim()) {
+          dataCells = dataCells.slice(0, -1);
+        }
+        for (let ci = 0; ci < dataCells.length; ci++) {
+          const cell = dataCells[ci];
           const tdStyle = [];
           // Apply cell width from sprmTDefTable
           if (paraProps.cellWidths && ci < paraProps.cellWidths.length) {
@@ -915,10 +927,12 @@ function renderDocBinary(buffer) {
           headingLevel = paraProps.outlineLvl + 1; // outlineLvl 0 = H1, ..., 5 = H6
         } else {
           // Heuristic: large bold text that's short = heading
+          // Require bold AND large font to avoid false positives in form documents
           const firstCharRun = charRuns.find(r => r.cpStart <= cpStart && r.cpEnd > cpStart);
           const fs = firstCharRun?.props?.fontSize;
-          if (fs && fs >= 18 && visibleText.length < 200) {
-            headingLevel = fs >= 28 ? 1 : fs >= 22 ? 2 : 3;
+          const isBold = firstCharRun?.props?.bold;
+          if (fs && fs >= 22 && isBold && visibleText.length < 120) {
+            headingLevel = fs >= 32 ? 1 : fs >= 26 ? 2 : 3;
           }
         }
 
@@ -1005,7 +1019,12 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts) {
         if (p.ulColor) deco += `;text-decoration-color:${p.ulColor}`;
         css.push(deco);
       }
-      if (p.fontSize) css.push(`font-size:${p.fontSize}pt`);
+      if (p.fontSize) {
+        // Scale font sizes for mobile: A4 content width ~450pt, mobile ~250pt
+        const vw = typeof window !== 'undefined' ? window.innerWidth : 800;
+        const scaled = vw < 600 ? Math.round(p.fontSize * 0.75 * 10) / 10 : p.fontSize;
+        css.push(`font-size:${scaled}pt`);
+      }
       if (p.color) css.push(`color:${p.color}`);
       if (p.highlight) css.push(`background-color:${p.highlight}`);
       if (p.fontIdx !== undefined && fonts[p.fontIdx]) css.push(`font-family:"${fonts[p.fontIdx]}",sans-serif`);
