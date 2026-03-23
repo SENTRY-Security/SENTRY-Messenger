@@ -376,16 +376,8 @@ function parseSprms(data, offset, length) {
       case 0x2407: props.pageBreakBefore = toggleVal(data[pos]); break; // sprmPFPageBreakBefore (ispmd=7)
       case 0x2416: props.inTable = toggleVal(data[pos]); break; // sprmPFInTable (ispmd=22)
       case 0x2417: props.tableRowEnd = toggleVal(data[pos]); break; // sprmPFTtp (ispmd=23)
-      case 0x260A: props.ilvl = data[pos]; break; // sprmPIlvl (list level 0-8)
-      case 0x460B: { // sprmPIlfo (list override) OR sprmPDyaBefore (Word 97)
-        const val0B = data[pos] | (data[pos + 1] << 8);
-        // Heuristic: list override indices are typically small (< 100)
-        // DyaBefore values are typically large (>= 100 twips)
-        if (val0B < 100) props.ilfo = val0B;
-        else props.spaceBefore = val0B / 20;
-        break;
-      }
-      case 0xA413: props.spaceBefore = (data[pos] | (data[pos + 1] << 8)) / 20; break; // sprmPDyaBefore (Word 2000+)
+      case 0x460B: case 0xA413: // sprmPDyaBefore (Word 97 / Word 2000+)
+        props.spaceBefore = (data[pos] | (data[pos + 1] << 8)) / 20; break;
       case 0x460C: case 0xA414: // sprmPDyaAfter (Word 97 / Word 2000+)
         props.spaceAfter = (data[pos] | (data[pos + 1] << 8)) / 20; break;
       case 0x840E: case 0x845E: { // sprmPDxaLeft / sprmPDxaLeft80
@@ -789,11 +781,8 @@ function renderDocBinary(buffer) {
   try { fonts = parseFontTable(tableStream, ftPair.fc, ftPair.lcb); } catch { /* use empty */ }
 
   // Parse STSH (Style Sheet) for style-based formatting (FIB index 1)
+  // TODO: re-enable after verifying FIB index is correct
   let styles = new Map();
-  try {
-    const stshPair = fib.fibPair(1);
-    styles = parseStyleSheet(tableStream, stshPair.fc, stshPair.lcb);
-  } catch { /* proceed without styles */ }
 
   // Parse character and paragraph formatting (non-fatal if these fail)
   let charRuns = [], paraRuns = [];
@@ -808,41 +797,10 @@ function renderDocBinary(buffer) {
     paraRuns = parseParaFormatting(wordDoc, tableStream, papxPair.fc, papxPair.lcb, pieces);
   } catch { /* proceed without paragraph formatting */ }
 
-  // Apply style properties to paragraph runs (style provides defaults, direct PAPX overrides)
-  if (styles.size > 0) {
-    for (const pr of paraRuns) {
-      const istd = pr.props._istd;
-      if (istd !== undefined && styles.has(istd)) {
-        const style = styles.get(istd);
-        // Merge: style props as defaults, direct props override
-        const merged = { ...style.props, ...pr.props };
-        pr.props = merged;
-      }
-    }
-  }
+  // Style merging disabled until STSH FIB index is verified
 
-  // Parse DOP (Document Properties) for page margins (FIB index 31)
+  // DOP page margins disabled — FIB index 31 needs verification
   let pageMargins = null;
-  try {
-    const dopPair = fib.fibPair(31);
-    if (dopPair.lcb >= 28 && dopPair.fc + dopPair.lcb <= tableStream.length) {
-      const dopView = new DataView(tableStream.buffer, tableStream.byteOffset + dopPair.fc, dopPair.lcb);
-      // DOP offsets: dxaLeft(28), dxaRight(30), dyaTop(16), dyaBottom(18)
-      // Offsets may vary by version. Standard Word 97 DOP layout:
-      const dyaTop = dopView.getInt16(16, true);   // top margin (twips, signed)
-      const dyaBottom = dopView.getInt16(18, true); // bottom margin
-      if (dopPair.lcb >= 32) {
-        const dxaLeft = dopView.getUint16(28, true);  // left margin
-        const dxaRight = dopView.getUint16(30, true);  // right margin
-        pageMargins = {
-          top: Math.max(0, dyaTop / 20),
-          bottom: Math.max(0, dyaBottom / 20),
-          left: Math.max(0, dxaLeft / 20),
-          right: Math.max(0, dxaRight / 20),
-        };
-      }
-    }
-  } catch { /* proceed without page margins */ }
 
   // Build paragraphs: split text by \r (paragraph mark in Word binary)
   const html = [];
@@ -966,14 +924,6 @@ function renderDocBinary(buffer) {
 
         if (headingLevel >= 1 && headingLevel <= 6) {
           html.push(`<h${headingLevel} class="word-h"${styleAttr}>${content}</h${headingLevel}>`);
-        } else if (paraProps.ilfo && paraProps.ilfo > 0) {
-          // List paragraph: render with bullet/number marker
-          const lvl = paraProps.ilvl || 0;
-          const indent = 18 + lvl * 18; // indent per level
-          // Determine bullet vs number (heuristic: odd ilfo = bullet, even = number)
-          const markers = ['•', '◦', '▪', '•', '◦', '▪', '•', '◦', '▪'];
-          const marker = markers[lvl] || '•';
-          html.push(`<p class="word-p word-list" style="padding-left:${indent}pt;text-indent:-12pt${styleAttr ? ';' + styleParts.join(';') : ''}"><span class="word-list-marker">${marker} </span>${content}</p>`);
         } else {
           html.push(`<p class="word-p"${styleAttr}>${content}</p>`);
         }
@@ -987,105 +937,23 @@ function renderDocBinary(buffer) {
   return { html: html.join(''), pageMargins };
 }
 
-// Special chars to strip from display (picture placeholders, cell marks)
-// Note: \x13 \x14 \x15 are field delimiters, handled by the field state machine
-const SPECIAL_CHAR_RE = /[\x01\x07\x08]/g;
+// Special chars to strip from display (field codes, picture placeholders, cell marks)
+const SPECIAL_CHAR_RE = /[\x01\x07\x08\x13\x14\x15]/g;
 
 // Render text with character formatting applied.
 // `text` is raw paragraph text (including special chars), `cpOffset` is the CP of text[0].
 // We iterate by raw position to keep CP alignment with charRuns, but skip special chars in output.
 function renderFormattedRun(text, cpOffset, charRuns, fonts) {
   if (!text) return '';
-
-  // ── Field code state machine ──
-  // Pre-scan to identify field regions: \x13 = begin, \x14 = separator, \x15 = end
-  // For HYPERLINK fields, extract URL from instruction and wrap display text in <a>
-  const fieldRegions = []; // { type, url, displayStart, displayEnd }
-  const fieldStack = []; // nested field support
-  for (let i = 0; i < text.length; i++) {
-    const ch = text.charCodeAt(i);
-    if (ch === 0x13) {
-      fieldStack.push({ instrStart: i + 1, instrEnd: -1, displayStart: -1, displayEnd: -1 });
-    } else if (ch === 0x14 && fieldStack.length > 0) {
-      const f = fieldStack[fieldStack.length - 1];
-      f.instrEnd = i;
-      f.displayStart = i + 1;
-    } else if (ch === 0x15 && fieldStack.length > 0) {
-      const f = fieldStack.pop();
-      if (f.displayStart >= 0) f.displayEnd = i;
-      else { f.instrEnd = i; f.displayEnd = i; }
-      // Parse instruction
-      if (f.instrEnd > f.instrStart) {
-        const instr = text.slice(f.instrStart, f.instrEnd).replace(SPECIAL_CHAR_RE, '').trim();
-        const hm = instr.match(/^HYPERLINK\s+"([^"]+)"/i) || instr.match(/^HYPERLINK\s+(\S+)/i);
-        if (hm) {
-          fieldRegions.push({ type: 'hyperlink', url: hm[1], displayStart: f.displayStart, displayEnd: f.displayEnd });
-        }
-      }
-    }
-  }
-
-  // Build a set of positions to skip (field delimiters + instruction text)
-  const skipRanges = []; // [start, end) ranges to skip
-  for (const f of fieldRegions) {
-    // Skip from \x13 to display start (instruction part)
-    // The \x13 char itself is at displayStart - instrLen - 2... let's use fieldStack data
-  }
-  // Simpler approach: mark positions as field-instruction (hidden) or field-display (visible)
-  const posFlags = new Uint8Array(text.length);
-  // 0 = normal, 1 = field delimiter (skip), 2 = field instruction (skip), 3 = field display (wrap in <a>)
-  for (let i = 0; i < text.length; i++) {
-    const ch = text.charCodeAt(i);
-    if (ch === 0x13 || ch === 0x14 || ch === 0x15) posFlags[i] = 1;
-  }
-  // Re-scan to mark instruction vs display regions
-  const fieldStack2 = [];
-  for (let i = 0; i < text.length; i++) {
-    const ch = text.charCodeAt(i);
-    if (ch === 0x13) {
-      fieldStack2.push({ inInstr: true });
-    } else if (ch === 0x14 && fieldStack2.length) {
-      fieldStack2[fieldStack2.length - 1].inInstr = false;
-    } else if (ch === 0x15 && fieldStack2.length) {
-      fieldStack2.pop();
-    } else if (fieldStack2.length > 0) {
-      if (fieldStack2[fieldStack2.length - 1].inInstr) {
-        posFlags[i] = 2; // instruction text — skip
-      }
-    }
-  }
-
-  // Find which field region covers a display position
-  function findFieldUrl(textPos) {
-    for (const f of fieldRegions) {
-      if (textPos >= f.displayStart && textPos < f.displayEnd) return f.url;
-    }
-    return null;
-  }
-
   const parts = [];
   let pos = 0;
-  let currentFieldUrl = null;
 
   while (pos < text.length) {
-    // Skip field delimiters and instruction text
-    if (posFlags[pos] === 1 || posFlags[pos] === 2) {
-      pos++;
-      continue;
-    }
-    // Skip other special chars
+    // Skip special chars (they occupy CP space but produce no output)
     if (SPECIAL_CHAR_RE.test(text[pos])) {
-      SPECIAL_CHAR_RE.lastIndex = 0;
+      SPECIAL_CHAR_RE.lastIndex = 0; // reset regex state
       pos++;
       continue;
-    }
-
-    // Check if we're entering/leaving a hyperlink field
-    const fieldUrl = findFieldUrl(pos);
-    if (fieldUrl !== currentFieldUrl) {
-      if (currentFieldUrl) parts.push('</a>');
-      if (fieldUrl) parts.push(`<a href="${escapeHtml(fieldUrl)}" class="word-link" target="_blank" rel="noopener">`);
-      currentFieldUrl = fieldUrl;
     }
 
     const cpPos = cpOffset + pos;
@@ -1154,7 +1022,6 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts) {
     }
     pos = runEnd;
   }
-  if (currentFieldUrl) parts.push('</a>');
   return parts.join('');
 }
 
