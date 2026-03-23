@@ -200,8 +200,8 @@ await page.setViewportSize({ width: vpWidth, height: Math.min(bodyHeight + 40, 1
 await page.screenshot({ path: outputFile, fullPage: true });
 await browser.close();
 
-// Cleanup
+// Cleanup (skip if KEEP_HTML env is set)
 import { unlinkSync } from 'fs';
-try { unlinkSync(tempHtml); } catch {}
+if (!process.env.KEEP_HTML) try { unlinkSync(tempHtml); } catch {}
 
 console.log('Screenshot saved to:', outputFile);

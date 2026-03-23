@@ -3118,7 +3118,10 @@ function renderTable(tblEl, styles, relMap, imageData, numbering, listCounters, 
     if (tblInd) {
       const indW = getAttr(tblInd, 'w');
       const indType = getAttr(tblInd, 'type');
-      if (indW && indType === 'dxa') tblStyles.push(`margin-left:${Math.round(Number(indW) / 20)}pt`);
+      if (indW && indType === 'dxa') {
+        const indPt = Math.round(Number(indW) / 20);
+        if (indPt > 0) tblStyles.push(`margin-left:${indPt}pt`);
+      }
     }
 
     // ── §17.4.53 tblLayout — Table Layout (fixed / auto) ──
