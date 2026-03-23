@@ -312,7 +312,20 @@ function parseSprms(data, offset, length) {
       case 2: case 4: case 5: opSize = 2; break;
       case 3: opSize = 4; break;
       case 7: opSize = 3; break;
-      case 6: opSize = pos < end ? (data[pos++]) : 0; break;
+      case 6: {
+        // Variable-length operand: first byte (or 2 bytes for specific sprms) is size
+        // sprmTDefTable(0xD608), sprmTDefTableShd(0xD612), sprmTCellShd(0xD670),
+        // sprmTInsert(0xD613), sprmTBrcTopCv(0xD634), sprmTBrcLeftCv, sprmTBrcBottomCv, sprmTBrcRightCv
+        // and sprmTDefTableShd80(0xD609) all use 2-byte size prefix per [MS-DOC]
+        if (sprm === 0xD608 || sprm === 0xD609 || sprm === 0xD612 || sprm === 0xD613 ||
+            sprm === 0xD634 || sprm === 0xD670) {
+          opSize = pos + 1 < end ? (data[pos] | (data[pos + 1] << 8)) : 0;
+          pos += 2;
+        } else {
+          opSize = pos < end ? data[pos++] : 0;
+        }
+        break;
+      }
       default: opSize = 0;
     }
     if (pos + opSize > end) break;
@@ -458,19 +471,17 @@ function parseSprms(data, offset, length) {
 
       // ── Table (TAP) properties ──
       case 0xD608: { // sprmTDefTable - defines cell boundaries + TC properties
-        // Variable-length: spra=6 means first byte is the operand size
-        // But the operand was already read. Parse from `pos` which points to data start.
-        // Structure: 2 bytes = number of cells (itcMac)
-        // Then (itcMac+1) * 2 bytes = cell boundary positions (dxa, twips from left margin)
-        // Then itcMac * 20 bytes = TC structures (cell properties)
-        if (opSize < 4) break;
-        const itcMac = data[pos] | (data[pos + 1] << 8);
-        if (itcMac <= 0 || itcMac > 64) break; // sanity
+        // Operand format: 1 byte itcMac (cell count),
+        // then (itcMac+1) * 2 bytes = cell boundary positions (dxa, twips from left margin)
+        // then itcMac * 20 bytes = TC structures (cell properties)
+        if (opSize < 3) break;
+        const itcMac = data[pos]; // 1 byte, NOT 2
+        if (itcMac <= 0 || itcMac > 64) break;
         const boundaryBytes = (itcMac + 1) * 2;
-        if (2 + boundaryBytes > opSize) break;
+        if (1 + boundaryBytes > opSize) break;
         const cellBoundaries = [];
         for (let c = 0; c <= itcMac; c++) {
-          let bnd = data[pos + 2 + c * 2] | (data[pos + 3 + c * 2] << 8);
+          let bnd = data[pos + 1 + c * 2] | (data[pos + 2 + c * 2] << 8);
           if (bnd > 0x7FFF) bnd -= 0x10000; // signed
           cellBoundaries.push(bnd);
         }
@@ -482,8 +493,8 @@ function parseSprms(data, offset, length) {
         props.cellWidths = cellWidths;
         props.cellCount = itcMac;
         // Parse TC structures (20 bytes each) for borders/shading
-        const tcBase = pos + 2 + boundaryBytes;
-        if (2 + boundaryBytes + itcMac * 20 <= opSize) {
+        const tcBase = pos + 1 + boundaryBytes;
+        if (1 + boundaryBytes + itcMac * 20 <= opSize) {
           const cellTCs = [];
           for (let c = 0; c < itcMac; c++) {
             const tcOff = tcBase + c * 20;
@@ -1017,6 +1028,65 @@ function extractDocImage(dataStream, offset) {
   return '';
 }
 
+// ── Extract images from OfficeArt Drawing Group (BStoreContainer in Table stream → BLIPs in WordDocument) ──
+// Returns an array of {index, html} where index is the 1-based BSE reference.
+function extractOfficeArtImages(tableStream, wordDoc, fib) {
+  const images = [];
+  // Try multiple FIB pair indices for DggInfo (varies by Word version)
+  let dggFc = 0, dggLcb = 0;
+  for (const idx of [22, 50]) {
+    const p = fib.fibPair(idx);
+    if (p.lcb > 0) { dggFc = p.fc; dggLcb = p.lcb; break; }
+  }
+  if (!dggLcb || dggFc + dggLcb > tableStream.length) return images;
+
+  // Scan DggContainer for BStoreContainer → BSE entries
+  let off = dggFc;
+  const end = dggFc + dggLcb;
+  while (off + 8 <= end) {
+    const rt = tableStream[off + 2] | (tableStream[off + 3] << 8);
+    const len = tableStream[off + 4] | (tableStream[off + 5] << 8) | (tableStream[off + 6] << 16) | (tableStream[off + 7] << 24);
+    const ver = tableStream[off] & 0x0F;
+
+    if (ver === 0x0F) { off += 8; continue; } // enter container
+
+    if (rt === 0xF007 && len >= 36) {
+      // BSE record — extract foDelay (offset into WordDocument)
+      const btWin32 = tableStream[off + 8];
+      const size = tableStream[off + 28] | (tableStream[off + 29] << 8) | (tableStream[off + 30] << 16) | (tableStream[off + 31] << 24);
+      const foDelay = tableStream[off + 36] | (tableStream[off + 37] << 8) | (tableStream[off + 38] << 16) | (tableStream[off + 39] << 24);
+
+      if (foDelay > 0 && foDelay + 8 < wordDoc.length) {
+        // Read BLIP record from WordDocument at foDelay
+        const blipRt = wordDoc[foDelay + 2] | (wordDoc[foDelay + 3] << 8);
+        const blipLen = wordDoc[foDelay + 4] | (wordDoc[foDelay + 5] << 8) | (wordDoc[foDelay + 6] << 16) | (wordDoc[foDelay + 7] << 24);
+
+        if (blipRt >= 0xF01A && blipRt <= 0xF02F && blipLen > 20 && foDelay + 8 + blipLen <= wordDoc.length) {
+          const inst = ((wordDoc[foDelay] >> 4) | (wordDoc[foDelay + 1] << 4)) & 0xFFF;
+          const is2uid = (inst & 1) === 1;
+          const uidSkip = is2uid ? 32 : 16;
+          const imgOff = foDelay + 8 + uidSkip + 1; // header + UIDs + tag
+
+          let mime = '';
+          const b0 = wordDoc[imgOff], b1 = wordDoc[imgOff + 1];
+          if (b0 === 0xFF && b1 === 0xD8) mime = 'image/jpeg';
+          else if (b0 === 0x89 && b1 === 0x50) mime = 'image/png';
+
+          if (mime) {
+            const imgLen = blipLen - uidSkip - 1;
+            if (imgLen > 0 && imgOff + imgLen <= wordDoc.length) {
+              const blob = new Blob([wordDoc.slice(imgOff, imgOff + imgLen)], { type: mime });
+              images.push(`<img src="${URL.createObjectURL(blob)}" style="max-width:100%;height:auto" alt="" class="word-img">`);
+            }
+          }
+        }
+      }
+    }
+    off += 8 + len;
+  }
+  return images;
+}
+
 // ── Build formatted HTML from .doc binary ──
 function renderDocBinary(buffer) {
   const ole2 = parseOLE2(buffer);
@@ -1031,7 +1101,10 @@ function renderDocBinary(buffer) {
   const tableStream = ole2.getStream(fib.tableName);
   const dataStream = ole2.getStream('Data');
 
-  // Pre-render OLE embedded objects (charts, etc.)
+  // Extract images from OfficeArt Drawing Group (BSE → BLIP in WordDocument)
+  let artImages = [];
+  try { artImages = extractOfficeArtImages(tableStream, wordDoc, fib); } catch { /* skip */ }
+
   // Pre-render OLE charts — returns HTML string or {_asyncChart, raw} for deflate
   let oleChartHtml = '';
   let _oleChartAsync = null;
@@ -1164,23 +1237,32 @@ function renderDocBinary(buffer) {
 
       if (!inTable) { html.push('<div class="word-tbl-wrap"><table class="word-tbl word-tbl-bordered">'); inTable = true; }
 
+      // Find cellWidths/cellShds from tableRowEnd paraRuns for this table region
+      const rowEndRuns = paraRuns.filter(r => r.props.tableRowEnd && r.cpStart >= cpStart && r.cpStart <= cpEnd + 500);
+      let rowIdx = 0;
+
       for (let si = 0; si < segments.length; si++) {
         const seg = segments[si];
         if (seg) {
           rowCells.push({ text: seg, cpStart: cellCp });
         } else if (rowCells.length > 0) {
           // Empty segment = row boundary (\x07\x07)
-          const maxCols = paraProps.cellWidths?.length || rowCells.length;
+          // Get cellWidths from paraProps or from the corresponding tableRowEnd paraRun
+          const rowEndProps = rowEndRuns[rowIdx]?.props || {};
+          const cw = paraProps.cellWidths || rowEndProps.cellWidths;
+          const cs2 = paraProps.cellShds || rowEndProps.cellShds;
+          const maxCols = cw?.length || rowCells.length;
+          rowIdx++;
           html.push('<tr>');
           for (let ci = 0; ci < rowCells.length; ci++) {
             const cell = rowCells[ci];
             const tdStyle = [];
-            if (paraProps.cellWidths && ci < paraProps.cellWidths.length) tdStyle.push(`width:${paraProps.cellWidths[ci]}pt`);
-            if (paraProps.cellShds && ci < paraProps.cellShds.length && paraProps.cellShds[ci]) tdStyle.push(`background-color:${paraProps.cellShds[ci]}`);
+            if (cw && ci < cw.length) tdStyle.push(`width:${cw[ci]}pt`);
+            if (cs2 && ci < cs2.length && cs2[ci]) tdStyle.push(`background-color:${cs2[ci]}`);
             const isLast = ci === rowCells.length - 1;
             const cs = isLast && rowCells.length < maxCols ? ` colspan="${maxCols - ci}"` : '';
             const sa = tdStyle.length ? ` style="${tdStyle.join(';')}"` : '';
-            html.push(`<td class="word-tc"${sa}${cs}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream, oleChartHtml)}</td>`);
+            html.push(`<td class="word-tc"${sa}${cs}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream, oleChartHtml, artImages)}</td>`);
           }
           html.push('</tr>');
           rowCells = [];
@@ -1189,9 +1271,15 @@ function renderDocBinary(buffer) {
       }
       // Flush remaining cells as a row
       if (rowCells.length > 0) {
+        const rowEndProps = rowEndRuns[rowIdx]?.props || {};
+        const cw = paraProps.cellWidths || rowEndProps.cellWidths;
         html.push('<tr>');
-        for (const cell of rowCells) {
-          html.push(`<td class="word-tc">${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream, oleChartHtml)}</td>`);
+        for (let ci = 0; ci < rowCells.length; ci++) {
+          const cell = rowCells[ci];
+          const tdStyle = [];
+          if (cw && ci < cw.length) tdStyle.push(`width:${cw[ci]}pt`);
+          const sa = tdStyle.length ? ` style="${tdStyle.join(';')}"` : '';
+          html.push(`<td class="word-tc"${sa}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream, oleChartHtml, artImages)}</td>`);
         }
         html.push('</tr>');
       }
@@ -1229,7 +1317,7 @@ function renderDocBinary(buffer) {
             const cell = row[ci];
             const isLast = ci === row.length - 1;
             const cs = isLast && row.length < maxCols ? ` colspan="${maxCols - ci}"` : '';
-            html.push(`<td class="word-tc"${cs}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream, oleChartHtml)}</td>`);
+            html.push(`<td class="word-tc"${cs}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream, oleChartHtml, artImages)}</td>`);
           }
           html.push('</tr>');
         }
@@ -1243,7 +1331,7 @@ function renderDocBinary(buffer) {
         const visTxt = paraText.replace(/[\x01\x07\x08\x13\x14\x15]/g, '').trim();
         if (nextHasCell && visTxt) {
           // Add as full-width continuation row within the table
-          html.push(`<tr><td class="word-tc" colspan="99">${renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream, oleChartHtml)}</td></tr>`);
+          html.push(`<tr><td class="word-tc" colspan="99">${renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream, oleChartHtml, artImages)}</td></tr>`);
           cp = cpEnd + 1;
           continue; // skip normal paragraph rendering
         }
@@ -1278,7 +1366,7 @@ function renderDocBinary(buffer) {
       } else {
         // Pass raw paraText + cpStart — renderFormattedRun skips special chars internally
         // to maintain correct CP↔formatting alignment
-        const content = renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream, oleChartHtml);
+        const content = renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream, oleChartHtml, artImages);
 
         // Detect heading: ONLY use outlineLvl from paragraph Sprm (MS-DOC standard)
         // No font-size heuristic — it causes false positives on bold paragraphs
@@ -1316,7 +1404,7 @@ const SPECIAL_CHAR_RE = /[\x01\x07\x08\x13\x14\x15]/g;
 // `text` is raw paragraph text (including special chars), `cpOffset` is the CP of text[0].
 // We iterate by raw position to keep CP alignment with charRuns, but skip special chars in output.
 // `dataStream` is the OLE2 Data stream for extracting inline pictures (may be null).
-function renderFormattedRun(text, cpOffset, charRuns, fonts, dataStream, oleChartHtml) {
+function renderFormattedRun(text, cpOffset, charRuns, fonts, dataStream, oleChartHtml, artImages) {
   if (!text) return '';
   const parts = [];
   let pos = 0;
@@ -1336,8 +1424,14 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts, dataStream, oleChar
         }
         // picLocation=0x7FFFFFFF or failed extraction → try OLE chart
         if (oleChartHtml) { parts.push(oleChartHtml); oleChartHtml = ''; pos++; continue; }
-      } else if (oleChartHtml) {
-        // No picLocation but we have an OLE chart to show
+      }
+      // Try OfficeArt images (from BStoreContainer)
+      if (artImages && artImages.length > 0) {
+        parts.push(artImages.shift());
+        pos++; continue;
+      }
+      // Try OLE chart as last fallback
+      if (oleChartHtml) {
         parts.push(oleChartHtml); oleChartHtml = ''; pos++; continue;
       }
       pos++; continue;
