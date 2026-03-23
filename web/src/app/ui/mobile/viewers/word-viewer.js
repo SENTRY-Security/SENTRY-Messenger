@@ -637,6 +637,7 @@ function parseLists(tableStream, fib) {
           pos += 28; // LVLF size
           pos += cbPapx; // skip PAPX grpprl
           pos += cbChpx; // skip CHPX grpprl
+          if (pos > end) break;
           // Read number text (xst): 2-byte count + unicode chars
           if (pos + 2 <= end) {
             const cch = tableStream[pos] | (tableStream[pos + 1] << 8);
@@ -1057,8 +1058,8 @@ function extractDocImage(dataStream, offset) {
   const avail = dataStream.length - offset;
   const dv = new DataView(dataStream.buffer, dataStream.byteOffset + offset, avail);
   const lcb = dv.getUint32(0, true);       // total size
-  const cbHeader = dv.getUint16(4, true);  // PICF header size (MUST be 0x44 = 68)
-  if (lcb < 68 || offset + lcb > dataStream.length) return '';
+  const cbHeader = dv.getUint16(4, true);  // PICF header size (typically 0x44 = 68)
+  if (cbHeader < 28 || lcb < cbHeader || offset + lcb > dataStream.length) return '';
   const mm = dv.getUint16(6, true);        // mfpf.mm: 0x0064=MM_SHAPE, 0x0066=MM_SHAPEFILE
 
   // PICMID starts at PICF offset 28 (§2.9.176)
@@ -1071,7 +1072,7 @@ function extractDocImage(dataStream, offset) {
   const style = wPt && hPt ? `max-width:100%;width:${wPt}pt;height:auto` : 'max-width:100%;height:auto';
 
   // OfficeArt data offset — after PICF header (+ optional filename for MM_SHAPEFILE)
-  let artOff = offset + 68;
+  let artOff = offset + cbHeader;
   if (mm === 0x0066 && artOff < offset + lcb) {
     const cchPicName = dataStream[artOff];
     artOff += 1 + cchPicName;
@@ -1676,7 +1677,8 @@ function renderDocBinary(buffer) {
 }
 
 // Special chars to strip from display (picture placeholders, cell marks, field markers)
-const SPECIAL_CHAR_RE = /[\x01\x07\x08\x13\x14\x15]/g;
+const SPECIAL_CHAR_RE = /[\x01\x07\x08\x13\x14\x15]/g; // global for replace()
+const SPECIAL_CHAR_TEST = /[\x01\x07\x08\x13\x14\x15]/; // non-global for test()
 
 // Render text with character formatting applied.
 // `text` is raw paragraph text (including special chars), `cpOffset` is the CP of text[0].
@@ -1763,8 +1765,7 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts, dataStream, oleChar
       // No matching separator/end — skip field start
       pos++; continue;
     }
-    if (SPECIAL_CHAR_RE.test(ch)) {
-      SPECIAL_CHAR_RE.lastIndex = 0;
+    if (SPECIAL_CHAR_TEST.test(ch)) {
       pos++;
       continue;
     }
