@@ -654,12 +654,13 @@ function parseParaFormatting(wordDoc, tableStream, fc, lcb, pieces) {
       const papxByteOff = papxWordOff * 2;
       if (papxByteOff >= 511) continue;
       // PapxInFkp (MS-DOC §2.9.182):
-      //   cb (1 byte): if non-zero, GrpPrlAndIstd is (2*cb - 1) bytes
-      //   if cb == 0:  next byte cb', GrpPrlAndIstd is (2*cb') bytes
+      //   cb (1 byte): if non-zero, GrpPrlAndIstd is 2*cb bytes
+      //     (spec says 2*cb-1 but Apache POI uses 2*cb — more reliable)
+      //   if cb == 0:  next byte cb', GrpPrlAndIstd is 2*cb' bytes
       const cbRaw = page[papxByteOff];
       let grpSize, grpStart;
       if (cbRaw !== 0) {
-        grpSize = 2 * cbRaw - 1;
+        grpSize = 2 * cbRaw;
         grpStart = papxByteOff + 1;
       } else if (papxByteOff + 1 < 511) {
         grpSize = page[papxByteOff + 1] * 2;
