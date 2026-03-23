@@ -391,18 +391,33 @@
   justify-content: stretch;
   overflow: hidden;
 }
-/* Ensure all viewer modals are truly edge-to-edge */
+/* Ensure all viewer modals are truly edge-to-edge.
+   styles.css sets .modal-panel { padding:24px 22px; gap:16px; margin:auto; align-self:center }
+   which leaks into viewer modals — must override ALL of these. */
 .modal.pdf-modal .modal-panel,
 .modal.excel-modal .modal-panel,
 .modal.word-modal .modal-panel,
 .modal.pptx-modal .modal-panel,
 .modal.zip-modal .modal-panel {
+  padding: 0 !important;
+  gap: 0 !important;
+  margin: 0 !important;
   border: none !important;
   box-shadow: none !important;
   max-width: none !important;
   border-radius: 0 !important;
+  align-self: stretch !important;
+  flex-shrink: 1 !important;
 }
 
+/* Hide base modal-head in viewer modals — each viewer has its own toolbar */
+.modal.pdf-modal .modal-head,
+.modal.excel-modal .modal-head,
+.modal.word-modal .modal-head,
+.modal.pptx-modal .modal-head,
+.modal.zip-modal .modal-head {
+  display: none !important;
+}
 /* Override styles.css safe-zone pseudo-elements that steal 48px from fullscreen viewers */
 .modal.pdf-modal::before, .modal.pdf-modal::after,
 .modal.excel-modal::before, .modal.excel-modal::after,
