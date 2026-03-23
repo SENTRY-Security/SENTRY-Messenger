@@ -189,14 +189,18 @@ function parseOLE2(buffer) {
 
 // ── Parse FIB (File Information Block) from WordDocument stream ──
 function parseFIB(wordDoc) {
+  if (wordDoc.length < 0x22) throw new Error('FIB too short');
   const v = new DataView(wordDoc.buffer, wordDoc.byteOffset, wordDoc.byteLength);
   if (v.getUint16(0, true) !== 0xA5EC) throw new Error('Invalid Word document magic');
   const flags = v.getUint16(0x0A, true);
   if (flags & 0x0100) throw new Error('ENCRYPTED');
 
   let off = 0x20;
+  if (off + 2 > wordDoc.length) throw new Error('FIB too short');
   const csw = v.getUint16(off, true); off += 2 + csw * 2;
+  if (off + 2 > wordDoc.length) throw new Error('FIB too short');
   const cslw = v.getUint16(off, true); off += 2 + cslw * 4;
+  if (off + 2 > wordDoc.length) throw new Error('FIB too short');
   const cbRgFcLcb = v.getUint16(off, true); off += 2;
 
   const fibPair = (idx) => idx < cbRgFcLcb
@@ -347,6 +351,14 @@ function parseSprms(data, offset, length) {
         if (ico > 0 && ico < icoMap.length) props.color = icoMap[ico];
         break;
       }
+      case 0x2A0C: { // sprmCHighlight - highlight color index
+        const hlMap = [null, '#000000', '#0000ff', '#00ffff', '#00ff00', '#ff00ff',
+          '#ff0000', '#ffff00', '#ffffff', '#00008b', '#008b8b', '#006400',
+          '#8b008b', '#8b0000', '#808000', '#808080', '#c0c0c0'];
+        const hl = data[pos];
+        if (hl > 0 && hl < hlMap.length) props.highlight = hlMap[hl];
+        break;
+      }
       case 0x2A48: props.istdChar = data[pos]; break; // character style index
       case 0x484B: { // sprmCHpsPos - vertical position (superscript/subscript)
         const hpsPos = data[pos] | (data[pos + 1] << 8);
@@ -380,17 +392,24 @@ function parseSprms(data, offset, length) {
         props.firstLine = (val > 0x7FFF ? val - 0x10000 : val) / 20;
         break;
       }
-      case 0x6412: { // sprmPDyaLine - line spacing
-        const dyaLine = data[pos] | (data[pos + 1] << 8);
+      case 0x6412: { // sprmPDyaLine - line spacing (4 bytes: dyaLine int16 + fMultLinespace int16)
+        let dyaLine = data[pos] | (data[pos + 1] << 8);
+        if (dyaLine > 0x7FFF) dyaLine -= 0x10000; // signed int16
         const fMultLinespace = data[pos + 2] | (data[pos + 3] << 8);
         if (fMultLinespace) {
-          props.lineHeight = (dyaLine / 240).toFixed(2);
+          // Proportional: value/240 = multiplier (e.g., 480 = double spacing)
+          props.lineHeight = (Math.abs(dyaLine) / 240).toFixed(2);
+        } else if (dyaLine < 0) {
+          // Exact line spacing (negative = exact)
+          props.lineHeight = (Math.abs(dyaLine) / 20) + 'pt';
         } else if (dyaLine > 0) {
+          // At-least line spacing
           props.lineHeight = (dyaLine / 20) + 'pt';
         }
         break;
       }
       case 0x2423: props.outlineLvl = data[pos]; break; // sprmPOutLvl (heading level)
+      case 0x2406: props.pageBreakBefore = toggleVal(data[pos]); break; // sprmPFPageBreakBefore
     }
     pos += opSize;
   }
@@ -449,10 +468,10 @@ function parseCharFormatting(wordDoc, tableStream, fc, lcb, pieces) {
     const crun = page[511];
     if (crun === 0) continue;
 
+    const pgView = new DataView(page.buffer, page.byteOffset, page.byteLength);
     for (let r = 0; r < crun; r++) {
-      const rgfcOff = r * 4;
-      const fcStart = page[rgfcOff] | (page[rgfcOff + 1] << 8) | (page[rgfcOff + 2] << 16) | (page[rgfcOff + 3] << 24);
-      const fcEnd = page[rgfcOff + 4] | (page[rgfcOff + 5] << 8) | (page[rgfcOff + 6] << 16) | (page[rgfcOff + 7] << 24);
+      const fcStart = pgView.getUint32(r * 4, true);
+      const fcEnd = pgView.getUint32((r + 1) * 4, true);
       // BX entry: 1 byte offset (in 2-byte words within page)
       const bxOff = (crun + 1) * 4 + r;
       const chpxWordOff = page[bxOff];
@@ -489,10 +508,10 @@ function parseParaFormatting(wordDoc, tableStream, fc, lcb, pieces) {
     const crun = page[511];
     if (crun === 0) continue;
 
+    const pgView = new DataView(page.buffer, page.byteOffset, page.byteLength);
     for (let r = 0; r < crun; r++) {
-      const rgfcOff = r * 4;
-      const fcStart = page[rgfcOff] | (page[rgfcOff + 1] << 8) | (page[rgfcOff + 2] << 16) | (page[rgfcOff + 3] << 24);
-      const fcEnd = page[rgfcOff + 4] | (page[rgfcOff + 5] << 8) | (page[rgfcOff + 6] << 16) | (page[rgfcOff + 7] << 24);
+      const fcStart = pgView.getUint32(r * 4, true);
+      const fcEnd = pgView.getUint32((r + 1) * 4, true);
       // PAPX BX: 13 bytes (1 byte offset + 12 bytes PHE)
       const bxBase = (crun + 1) * 4 + r * 13;
       if (bxBase >= 511) continue;
@@ -527,7 +546,10 @@ function renderDocBinary(buffer) {
   if (!wordDoc) throw new Error('WordDocument stream not found');
 
   let fib;
-  try { fib = parseFIB(wordDoc); } catch { return fallbackRender(wordDoc); }
+  try { fib = parseFIB(wordDoc); } catch (e) {
+    if (e?.message === 'ENCRYPTED') throw e; // let caller show encrypted notice
+    return fallbackRender(wordDoc);
+  }
   const tableStream = ole2.getStream(fib.tableName);
 
   // Parse piece table for text + FC mapping
@@ -559,7 +581,6 @@ function renderDocBinary(buffer) {
   const html = [];
   let inTable = false;
   let tableRow = [];
-  let tableCellCpStart = 0;
   let cp = 0;
 
   const paragraphs = text.split('\r');
@@ -593,8 +614,7 @@ function renderDocBinary(buffer) {
         // Last cell is the row-end marker itself, skip it
         const dataCells = tableRow.slice(0, -1);
         for (const cell of (dataCells.length ? dataCells : tableRow)) {
-          const cleanCell = cell.text.replace(/[\x01\x08\x13\x14\x15]/g, '');
-          html.push(`<td class="word-tc">${renderFormattedRun(cleanCell, cell.cpStart, charRuns, fonts)}</td>`);
+          html.push(`<td class="word-tc">${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts)}</td>`);
         }
         html.push('</tr>');
         tableRow = [];
@@ -602,9 +622,6 @@ function renderDocBinary(buffer) {
     } else {
       // ── Close open table ──
       if (inTable) { html.push('</table></div>'); inTable = false; tableRow = []; }
-
-      // Clean special chars (field codes, picture placeholders, etc.)
-      const cleanText = paraText.replace(/[\x01\x08\x13\x14\x15\x07]/g, '');
 
       // Build paragraph style
       const styleParts = [];
@@ -618,22 +635,28 @@ function renderDocBinary(buffer) {
         else styleParts.push(`text-indent:${paraProps.firstLine}pt;padding-left:${(paraProps.indentLeft || 0) - paraProps.firstLine}pt`);
       }
       if (paraProps.lineHeight) styleParts.push(`line-height:${paraProps.lineHeight}`);
+      if (paraProps.pageBreakBefore) styleParts.push('page-break-before:always');
       const styleAttr = styleParts.length ? ` style="${styleParts.join(';')}"` : '';
 
-      if (!cleanText.trim()) {
+      // Check if paragraph has visible text (strip special chars for check only)
+      const visibleText = paraText.replace(/[\x01\x07\x08\x13\x14\x15]/g, '').trim();
+
+      if (!visibleText) {
         html.push(`<p class="word-p word-empty"${styleAttr}>&nbsp;</p>`);
       } else {
-        const content = renderFormattedRun(cleanText, cpStart, charRuns, fonts);
+        // Pass raw paraText + cpStart — renderFormattedRun skips special chars internally
+        // to maintain correct CP↔formatting alignment
+        const content = renderFormattedRun(paraText, cpStart, charRuns, fonts);
 
         // Detect heading: use outlineLvl (0-8) from paragraph Sprm, or fall back to font size
         let headingLevel = 0;
-        if (paraProps.outlineLvl !== undefined && paraProps.outlineLvl <= 8) {
-          headingLevel = paraProps.outlineLvl + 1; // outlineLvl 0 = Heading 1
+        if (paraProps.outlineLvl !== undefined && paraProps.outlineLvl <= 5) {
+          // outlineLvl 0-5 → Heading 1-6; outlineLvl 9 = body text (skip)
         } else {
           // Heuristic: large bold text that's short = heading
           const firstCharRun = charRuns.find(r => r.cpStart <= cpStart && r.cpEnd > cpStart);
           const fs = firstCharRun?.props?.fontSize;
-          if (fs && fs >= 18 && cleanText.trim().length < 200) {
+          if (fs && fs >= 18 && visibleText.length < 200) {
             headingLevel = fs >= 28 ? 1 : fs >= 22 ? 2 : 3;
           }
         }
@@ -653,24 +676,35 @@ function renderDocBinary(buffer) {
   return html.join('');
 }
 
-// Render text with character formatting applied
+// Special chars to strip from display (field codes, picture placeholders, cell marks)
+const SPECIAL_CHAR_RE = /[\x01\x07\x08\x13\x14\x15]/g;
+
+// Render text with character formatting applied.
+// `text` is raw paragraph text (including special chars), `cpOffset` is the CP of text[0].
+// We iterate by raw position to keep CP alignment with charRuns, but skip special chars in output.
 function renderFormattedRun(text, cpOffset, charRuns, fonts) {
   if (!text) return '';
   const parts = [];
   let pos = 0;
 
   while (pos < text.length) {
+    // Skip special chars (they occupy CP space but produce no output)
+    if (SPECIAL_CHAR_RE.test(text[pos])) {
+      SPECIAL_CHAR_RE.lastIndex = 0; // reset regex state
+      pos++;
+      continue;
+    }
+
     const cpPos = cpOffset + pos;
-    // Find formatting run covering this position
+    // Find formatting run covering this CP position
     let run = null;
     for (const r of charRuns) {
       if (r.cpStart <= cpPos && r.cpEnd > cpPos) { run = r; break; }
     }
 
-    // Find how far this run extends
+    // Determine how far this run extends (in raw text positions)
     let runEnd = text.length;
     if (run) runEnd = Math.min(runEnd, run.cpEnd - cpOffset);
-    // Also check when next different run starts
     for (const r of charRuns) {
       if (r.cpStart > cpPos && r.cpStart - cpOffset < runEnd) {
         runEnd = r.cpStart - cpOffset;
@@ -679,23 +713,23 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts) {
     }
     if (runEnd <= pos) runEnd = pos + 1;
 
-    const chunk = text.slice(pos, runEnd);
+    // Extract chunk, stripping special chars for display
+    const rawChunk = text.slice(pos, runEnd);
+    const chunk = rawChunk.replace(SPECIAL_CHAR_RE, '');
+    if (!chunk) { pos = runEnd; continue; }
 
     if (run && run.props) {
       const p = run.props;
       // Skip hidden text
       if (p.vanish) { pos = runEnd; continue; }
 
-      // Apply text transforms before escaping
       let displayText = chunk;
       if (p.allCaps) displayText = displayText.toUpperCase();
-      // smallCaps: don't transform text — CSS font-variant handles it
       const escaped = escapeHtml(displayText);
 
       const css = [];
       if (p.bold) css.push('font-weight:bold');
       if (p.italic) css.push('font-style:italic');
-      // Text decoration: combine underline + strikethrough
       const decoParts = [];
       if (p.underline) decoParts.push('underline');
       if (p.strike) decoParts.push('line-through');
@@ -706,6 +740,7 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts) {
       }
       if (p.fontSize) css.push(`font-size:${p.fontSize}pt`);
       if (p.color) css.push(`color:${p.color}`);
+      if (p.highlight) css.push(`background-color:${p.highlight}`);
       if (p.fontIdx !== undefined && fonts[p.fontIdx]) css.push(`font-family:"${fonts[p.fontIdx]}",sans-serif`);
       if (p.smallCaps && !p.allCaps) css.push('font-variant:small-caps');
       if (p.vertAlign) css.push(`vertical-align:${p.vertAlign};font-size:0.75em`);
