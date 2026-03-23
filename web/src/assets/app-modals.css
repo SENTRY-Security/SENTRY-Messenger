@@ -1195,6 +1195,61 @@ h6.word-h { font-size: 9pt; }
   border-radius: 2px;
 }
 
+/* Math formulas (OMML) */
+.word-math {
+  font-family: 'Cambria Math', 'Latin Modern Math', 'STIX Two Math', serif;
+  font-style: italic;
+}
+.word-math-para {
+  display: flex;
+  justify-content: center;
+  margin: 8pt 0;
+  font-family: 'Cambria Math', 'Latin Modern Math', 'STIX Two Math', serif;
+  font-style: italic;
+}
+.word-math-r { font-style: italic; }
+.word-math-frac {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  vertical-align: middle;
+  text-align: center;
+  margin: 0 2px;
+}
+.word-math-num {
+  border-bottom: 1px solid currentColor;
+  padding: 0 4px 1px;
+  line-height: 1.2;
+}
+.word-math-den {
+  padding: 1px 4px 0;
+  line-height: 1.2;
+}
+.word-math-nary {
+  display: inline-flex;
+  align-items: center;
+}
+.word-math-op {
+  font-size: 1.6em;
+  font-style: normal;
+  line-height: 1;
+}
+.word-math-rad { white-space: nowrap; }
+.word-math-matrix {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  vertical-align: middle;
+}
+.word-math-mrow {
+  display: flex;
+  gap: 8px;
+}
+.word-math-mcell {
+  text-align: center;
+  padding: 2px 4px;
+}
+
 .word-page img {
   max-width: 100%;
   height: auto;

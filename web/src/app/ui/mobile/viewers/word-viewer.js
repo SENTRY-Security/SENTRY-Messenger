@@ -1111,7 +1111,11 @@ function renderDocBinary(buffer) {
   try {
     const chartResult = renderOleChart(ole2);
     if (typeof chartResult === 'string') oleChartHtml = chartResult;
-    else if (chartResult && chartResult._asyncChart) _oleChartAsync = chartResult;
+    else if (chartResult && chartResult._asyncChart) {
+      _oleChartAsync = chartResult;
+      // Insert a placeholder that will be replaced after async decompression
+      oleChartHtml = '<div id="word-ole-chart-placeholder" class="word-chart" style="text-align:center;padding:24px;color:#94a3b8">Loading chart…</div>';
+    }
   } catch { /* skip */ }
 
   // Parse piece table for text + FC mapping
@@ -1343,12 +1347,15 @@ function renderDocBinary(buffer) {
       if (paraProps.align && paraProps.align !== 'left') styleParts.push(`text-align:${paraProps.align}`);
       if (paraProps.spaceBefore) styleParts.push(`margin-top:${paraProps.spaceBefore}pt`);
       if (paraProps.spaceAfter) styleParts.push(`margin-bottom:${paraProps.spaceAfter}pt`);
-      if (paraProps.indentLeft && paraProps.indentLeft > 0) styleParts.push(`padding-left:${paraProps.indentLeft}pt`);
-      if (paraProps.indentRight && paraProps.indentRight > 0) styleParts.push(`padding-right:${paraProps.indentRight}pt`);
-      if (paraProps.firstLine) {
-        if (paraProps.firstLine > 0) styleParts.push(`text-indent:${paraProps.firstLine}pt`);
-        else styleParts.push(`text-indent:${paraProps.firstLine}pt;padding-left:${(paraProps.indentLeft || 0) - paraProps.firstLine}pt`);
+      if (paraProps.firstLine && paraProps.firstLine < 0) {
+        // Hanging indent: text-indent is negative, padding-left includes both indent + hanging
+        styleParts.push(`text-indent:${paraProps.firstLine}pt`);
+        styleParts.push(`padding-left:${(paraProps.indentLeft || 0) - paraProps.firstLine}pt`);
+      } else {
+        if (paraProps.indentLeft && paraProps.indentLeft > 0) styleParts.push(`padding-left:${paraProps.indentLeft}pt`);
+        if (paraProps.firstLine && paraProps.firstLine > 0) styleParts.push(`text-indent:${paraProps.firstLine}pt`);
       }
+      if (paraProps.indentRight && paraProps.indentRight > 0) styleParts.push(`padding-right:${paraProps.indentRight}pt`);
       if (paraProps.lineHeight) styleParts.push(`line-height:${paraProps.lineHeight}`);
       if (paraProps.pageBreakBefore) styleParts.push('page-break-before:always');
       if (paraProps.paraBg) styleParts.push(`background-color:${paraProps.paraBg};padding:2pt 4pt`);
@@ -1434,6 +1441,32 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts, dataStream, oleChar
       if (oleChartHtml) {
         parts.push(oleChartHtml); oleChartHtml = ''; pos++; continue;
       }
+      pos++; continue;
+    }
+    // Field code handling: \x13 = field start, \x14 = field separator, \x15 = field end
+    // Parse HYPERLINK fields as <a> links
+    if (ch === '\x13') {
+      // Find matching \x14 (separator) and \x15 (end)
+      const sepIdx = text.indexOf('\x14', pos + 1);
+      const endIdx = text.indexOf('\x15', sepIdx > pos ? sepIdx + 1 : pos + 1);
+      if (sepIdx > pos && endIdx > sepIdx) {
+        const fieldCode = text.slice(pos + 1, sepIdx);
+        const fieldResult = text.slice(sepIdx + 1, endIdx);
+        // Check for HYPERLINK field
+        const hypMatch = fieldCode.match(/HYPERLINK\s+"([^"]+)"/i) || fieldCode.match(/HYPERLINK\s+(\S+)/i);
+        if (hypMatch && fieldResult.replace(SPECIAL_CHAR_RE, '').trim()) {
+          const url = hypMatch[1];
+          const linkText = escapeHtml(fieldResult.replace(SPECIAL_CHAR_RE, ''));
+          parts.push(`<a href="${escapeHtml(url)}" class="word-link" target="_blank" rel="noopener noreferrer">${linkText}</a>`);
+        } else {
+          // Non-hyperlink field: just show result text
+          const visText = fieldResult.replace(SPECIAL_CHAR_RE, '');
+          if (visText) parts.push(escapeHtml(visText));
+        }
+        pos = endIdx + 1;
+        continue;
+      }
+      // No matching separator/end — skip field start
       pos++; continue;
     }
     if (SPECIAL_CHAR_RE.test(ch)) {
@@ -1996,10 +2029,127 @@ function renderRuns(parentEl, styleRProps, styles, relMap, imageData) {
       } else {
         parts.push(linkContent);
       }
+    } else if (child.localName === 'oMath') {
+      // Inline math
+      parts.push(`<span class="word-math">${renderOmml(child)}</span>`);
+    } else if (child.localName === 'oMathPara') {
+      // Display math paragraph
+      parts.push(`<div class="word-math-para">${renderOmml(child)}</div>`);
     } else if (child.localName === 'bookmarkStart' || child.localName === 'bookmarkEnd' ||
                child.localName === 'proofErr' || child.localName === 'commentRangeStart' ||
                child.localName === 'commentRangeEnd') {
       // Skip metadata elements
+    }
+  }
+  return parts.join('');
+}
+
+// ── OMML Math rendering → HTML ──
+const NS_M = 'http://schemas.openxmlformats.org/officeDocument/2006/math';
+function renderOmml(el) {
+  if (!el) return '';
+  const parts = [];
+  for (const child of el.children) {
+    const ln = child.localName;
+    if (ln === 'r') {
+      // Math run — extract text from <m:t>
+      const t = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 't')[0] : null;
+      if (!t) { const t2 = child.querySelector('t'); parts.push(t2?.textContent || ''); }
+      else parts.push(`<span class="word-math-r">${escapeHtml(t.textContent || '')}</span>`);
+    } else if (ln === 'f') {
+      // Fraction: <m:num> / <m:den>
+      const num = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 'num')[0] : child.querySelector('num');
+      const den = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 'den')[0] : child.querySelector('den');
+      parts.push(`<span class="word-math-frac"><span class="word-math-num">${renderOmml(num)}</span><span class="word-math-den">${renderOmml(den)}</span></span>`);
+    } else if (ln === 'rad') {
+      // Radical: <m:deg> (degree) + <m:e> (expression)
+      const deg = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 'deg')[0] : child.querySelector('deg');
+      const e = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 'e')[0] : child.querySelector('e');
+      const degText = deg ? renderOmml(deg) : '';
+      if (degText && degText.replace(/<[^>]*>/g, '').trim()) {
+        parts.push(`<span class="word-math-rad"><sup>${degText}</sup>&radic;<span style="text-decoration:overline">${renderOmml(e)}</span></span>`);
+      } else {
+        parts.push(`<span class="word-math-rad">&radic;<span style="text-decoration:overline">${renderOmml(e)}</span></span>`);
+      }
+    } else if (ln === 'sSup') {
+      // Superscript: <m:e> + <m:sup>
+      const e = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 'e')[0] : child.querySelector('e');
+      const sup = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 'sup')[0] : child.querySelector('sup');
+      parts.push(`${renderOmml(e)}<sup>${renderOmml(sup)}</sup>`);
+    } else if (ln === 'sSub') {
+      // Subscript: <m:e> + <m:sub>
+      const e = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 'e')[0] : child.querySelector('e');
+      const sub = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 'sub')[0] : child.querySelector('sub');
+      parts.push(`${renderOmml(e)}<sub>${renderOmml(sub)}</sub>`);
+    } else if (ln === 'sSubSup') {
+      // Sub-superscript: <m:e> + <m:sub> + <m:sup>
+      const e = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 'e')[0] : child.querySelector('e');
+      const sub = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 'sub')[0] : child.querySelector('sub');
+      const sup = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 'sup')[0] : child.querySelector('sup');
+      parts.push(`${renderOmml(e)}<sub>${renderOmml(sub)}</sub><sup>${renderOmml(sup)}</sup>`);
+    } else if (ln === 'nary') {
+      // N-ary operator (sum, integral, etc.): <m:naryPr> + <m:sub> + <m:sup> + <m:e>
+      const naryPr = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 'naryPr')[0] : child.querySelector('naryPr');
+      const chr = naryPr?.getElementsByTagNameNS ? naryPr.getElementsByTagNameNS(NS_M, 'chr')[0] : naryPr?.querySelector('chr');
+      const op = chr?.getAttribute('m:val') || chr?.getAttribute('val') || '\u222B'; // default integral
+      const sub = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 'sub')[0] : child.querySelector('sub');
+      const sup = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 'sup')[0] : child.querySelector('sup');
+      const e = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 'e')[0] : child.querySelector('e');
+      parts.push(`<span class="word-math-nary"><span class="word-math-op">${escapeHtml(op)}</span>`);
+      if (sub) parts.push(`<sub>${renderOmml(sub)}</sub>`);
+      if (sup) parts.push(`<sup>${renderOmml(sup)}</sup>`);
+      parts.push(`${renderOmml(e)}</span>`);
+    } else if (ln === 'd') {
+      // Delimiters (parentheses, brackets, etc.)
+      const dPr = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 'dPr')[0] : child.querySelector('dPr');
+      const begChr = dPr?.getElementsByTagNameNS ? dPr.getElementsByTagNameNS(NS_M, 'begChr')[0] : dPr?.querySelector('begChr');
+      const endChr = dPr?.getElementsByTagNameNS ? dPr.getElementsByTagNameNS(NS_M, 'endChr')[0] : dPr?.querySelector('endChr');
+      const open = begChr?.getAttribute('m:val') ?? begChr?.getAttribute('val') ?? '(';
+      const close = endChr?.getAttribute('m:val') ?? endChr?.getAttribute('val') ?? ')';
+      const e = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 'e')[0] : child.querySelector('e');
+      parts.push(`${escapeHtml(open)}${renderOmml(e)}${escapeHtml(close)}`);
+    } else if (ln === 'func') {
+      // Function: <m:fName> + <m:e>
+      const fName = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 'fName')[0] : child.querySelector('fName');
+      const e = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 'e')[0] : child.querySelector('e');
+      parts.push(`${renderOmml(fName)}${renderOmml(e)}`);
+    } else if (ln === 'eqArr') {
+      // Equation array (multi-line)
+      for (const eChild of child.children) {
+        if (eChild.localName === 'e') parts.push(`<div>${renderOmml(eChild)}</div>`);
+      }
+    } else if (ln === 'limLow' || ln === 'limUpp') {
+      // Limit: <m:e> with <m:lim> below/above
+      const e = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 'e')[0] : child.querySelector('e');
+      const lim = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 'lim')[0] : child.querySelector('lim');
+      parts.push(`${renderOmml(e)}<sub>${renderOmml(lim)}</sub>`);
+    } else if (ln === 'm') {
+      // Matrix
+      const rows = child.getElementsByTagNameNS ? child.getElementsByTagNameNS(NS_M, 'mr') : child.querySelectorAll('mr');
+      parts.push('<span class="word-math-matrix">');
+      for (const mr of rows) {
+        parts.push('<span class="word-math-mrow">');
+        const cells = mr.getElementsByTagNameNS ? mr.getElementsByTagNameNS(NS_M, 'e') : mr.querySelectorAll('e');
+        for (const mc of cells) parts.push(`<span class="word-math-mcell">${renderOmml(mc)}</span>`);
+        parts.push('</span>');
+      }
+      parts.push('</span>');
+    } else if (ln === 'oMath') {
+      parts.push(renderOmml(child));
+    } else if (ln === 'oMathPara') {
+      parts.push(`<div class="word-math-para">${renderOmml(child)}</div>`);
+    } else if (ln === 'e' || ln === 'num' || ln === 'den' || ln === 'sub' || ln === 'sup' ||
+               ln === 'fName' || ln === 'lim' || ln === 'deg') {
+      // Container elements — recurse
+      parts.push(renderOmml(child));
+    } else if (ln === 'rPr' || ln === 'ctrlPr' || ln === 'naryPr' || ln === 'fPr' ||
+               ln === 'dPr' || ln === 'radPr' || ln === 'sSubPr' || ln === 'sSupPr' ||
+               ln === 'funcPr' || ln === 'limLowPr' || ln === 'limUppPr' || ln === 'mPr' ||
+               ln === 'eqArrPr' || ln === 'sSubSupPr') {
+      // Property elements — skip
+    } else {
+      // Unknown element — recurse
+      parts.push(renderOmml(child));
     }
   }
   return parts.join('');
@@ -2204,13 +2354,17 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
           readAll().then(xml => {
             const chartHtml = parseOdfChartXml(xml);
             if (chartHtml) {
-              // Insert chart into rendered page (replace placeholder)
-              const pageEl = document.querySelector('.word-page');
-              if (pageEl) {
-                const tmp = document.createElement('div');
-                tmp.innerHTML = chartHtml;
-                // Append at the end or find \x01 placeholder location
-                pageEl.appendChild(tmp.firstElementChild || tmp);
+              // Replace placeholder with actual chart
+              const placeholder = document.getElementById('word-ole-chart-placeholder');
+              if (placeholder) {
+                placeholder.outerHTML = chartHtml;
+              } else {
+                const pageEl = document.querySelector('.word-page');
+                if (pageEl) {
+                  const tmp = document.createElement('div');
+                  tmp.innerHTML = chartHtml;
+                  pageEl.appendChild(tmp.firstElementChild || tmp);
+                }
               }
             }
           }).catch(() => {});
