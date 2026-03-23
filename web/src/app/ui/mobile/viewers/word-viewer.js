@@ -1025,43 +1025,46 @@ function renderDocBinary(buffer) {
     const hasCellMark = paraText.indexOf('\x07') !== -1;
 
     if (paraProps.inTable) {
-      // ── PAPX-based table (preferred path) ──
-      const cells = paraText.split('\x07');
+      // ── PAPX-based table ──
+      // Split cells by \x07 and detect rows by \x07\x07 (same as fallback)
+      const segments = paraText.split('\x07');
+      let rowCells = [];
       let cellCp = cpStart;
-      for (let ci = 0; ci < cells.length; ci++) {
-        const cellText = cells[ci];
-        if (cellText || ci < cells.length - 1) {
-          tableRow.push({ text: cellText, cpStart: cellCp });
-        }
-        cellCp += cellText.length + 1;
-      }
-      if (paraProps.tableRowEnd) {
-        if (!inTable) { html.push('<div class="word-tbl-wrap"><table class="word-tbl word-tbl-bordered">'); inTable = true; }
-        const rowStyle = [];
-        if (paraProps.rowHeight) rowStyle.push(`height:${paraProps.rowHeight}pt`);
-        html.push(`<tr${rowStyle.length ? ` style="${rowStyle.join(';')}"` : ''}>`);
-        // Remove trailing empty cells (row-end marker)
-        while (tableRow.length > 1 && !tableRow[tableRow.length - 1].text.trim()) tableRow.pop();
-        for (let ci = 0; ci < tableRow.length; ci++) {
-          const cell = tableRow[ci];
-          const tdStyle = [];
-          if (paraProps.cellWidths && ci < paraProps.cellWidths.length) tdStyle.push(`width:${paraProps.cellWidths[ci]}pt`);
-          if (paraProps.cellShds && ci < paraProps.cellShds.length && paraProps.cellShds[ci]) tdStyle.push(`background-color:${paraProps.cellShds[ci]}`);
-          let skipCell = false;
-          if (paraProps.cellTCs && ci < paraProps.cellTCs.length) {
-            const tc = paraProps.cellTCs[ci];
-            if (tc.fVertMerge && !tc.fVertRestart) skipCell = true;
-          }
-          if (skipCell) {
-            html.push('<td class="word-tc word-tc-merged" style="display:none"></td>');
-          } else {
+
+      if (!inTable) { html.push('<div class="word-tbl-wrap"><table class="word-tbl word-tbl-bordered">'); inTable = true; }
+
+      for (let si = 0; si < segments.length; si++) {
+        const seg = segments[si];
+        if (seg) {
+          rowCells.push({ text: seg, cpStart: cellCp });
+        } else if (rowCells.length > 0) {
+          // Empty segment = row boundary (\x07\x07)
+          const maxCols = paraProps.cellWidths?.length || rowCells.length;
+          html.push('<tr>');
+          for (let ci = 0; ci < rowCells.length; ci++) {
+            const cell = rowCells[ci];
+            const tdStyle = [];
+            if (paraProps.cellWidths && ci < paraProps.cellWidths.length) tdStyle.push(`width:${paraProps.cellWidths[ci]}pt`);
+            if (paraProps.cellShds && ci < paraProps.cellShds.length && paraProps.cellShds[ci]) tdStyle.push(`background-color:${paraProps.cellShds[ci]}`);
+            const isLast = ci === rowCells.length - 1;
+            const cs = isLast && rowCells.length < maxCols ? ` colspan="${maxCols - ci}"` : '';
             const sa = tdStyle.length ? ` style="${tdStyle.join(';')}"` : '';
-            html.push(`<td class="word-tc"${sa}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream)}</td>`);
+            html.push(`<td class="word-tc"${sa}${cs}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream)}</td>`);
           }
+          html.push('</tr>');
+          rowCells = [];
+        }
+        cellCp += seg.length + 1;
+      }
+      // Flush remaining cells as a row
+      if (rowCells.length > 0) {
+        html.push('<tr>');
+        for (const cell of rowCells) {
+          html.push(`<td class="word-tc">${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream)}</td>`);
         }
         html.push('</tr>');
-        tableRow = [];
       }
+      tableRow = [];
     } else if (hasCellMark) {
       // ── Fallback: detect table from \x07 cell marks ──
       // In Word binary, each cell ends with \x07, and each row ends with an
@@ -1155,7 +1158,7 @@ function renderDocBinary(buffer) {
 
         if (headingLevel >= 1 && headingLevel <= 6) {
           html.push(`<h${headingLevel} class="word-h"${styleAttr}>${content}</h${headingLevel}>`);
-        } else if (paraProps.ilfo && paraProps.ilfo > 0) {
+        } else if (paraProps.ilfo > 0 || paraProps.ilvl !== undefined) {
           // List paragraph — render with bullet/number prefix
           const lvl = paraProps.ilvl || 0;
           const indent = (lvl + 1) * 24;
