@@ -144,7 +144,28 @@ const diag = await page.evaluate(() => {
     });
     if (i < 25) rowDump.push({ row: i, cellCount: tds2.length, cells });
   });
-  return { tableCount: tables.length, tdCount, trCount, tblTag: tblMatch?.[0] || 'none', rowDump: rowDump.map(r => ({ row: r.row, cells: r.cells.map(c => c.text.slice(0,20) + '(cs' + c.colspan + ')').join('|') })) };
+  // Dump table 2 cells in detail
+  const table2 = tables.length > 1 ? tables[1] : tables[0];
+  const t2El = document.querySelectorAll('table')[tables.length > 1 ? 1 : 0];
+  const t2Rows = t2El ? t2El.querySelectorAll('tr') : [];
+  const t2Dump = [];
+  t2Rows.forEach((tr, ri) => {
+    const tds3 = tr.querySelectorAll('td');
+    const cells2 = [];
+    tds3.forEach((td, ci) => {
+      cells2.push({
+        text: td.textContent.trim().slice(0, 60),
+        cs: td.getAttribute('colspan') || '1',
+        rs: td.getAttribute('rowspan') || '1',
+        w: td.style.width || '',
+        hidden: td.style.display === 'none'
+      });
+    });
+    t2Dump.push({ r: ri, cells: cells2 });
+  });
+  // Collect DOC-TBL debug logs
+  const debugLogs = (window.__docTblLogs || []).slice(0, 50);
+  return { tableCount: tables.length, t2Dump, debugLogs };
 });
 console.log('Diagnostic:', JSON.stringify(diag, null, 2));
 // Get actual content height

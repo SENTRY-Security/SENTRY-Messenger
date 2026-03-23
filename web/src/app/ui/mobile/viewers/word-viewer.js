@@ -1770,9 +1770,11 @@ function renderDocBinary(buffer) {
               const visibleCount = tableRow.length - hSkip.size;
               const isLastVisible = (() => { for (let k = ci + 1; k < tableRow.length; k++) { if (!hSkip.has(k)) return false; } return true; })();
               if (isLastVisible && visibleCount < tblMaxCols) {
+                // usedCols = grid columns consumed by all visible cells + extra from hmerge
                 const usedCols = visibleCount + [...hSkip].reduce((sum, idx) => sum + (hSpans[idx] > 1 ? hSpans[idx] - 1 : 0), 0);
+                // remaining = extra grid columns this last cell must span beyond its own 1
                 const remaining = tblMaxCols - usedCols;
-                if (remaining > 1) csAttr = ` colspan="${remaining}"`;
+                if (remaining > 0) csAttr = ` colspan="${remaining + 1}"`;
               }
             }
             // Vertical merge start → rowspan
@@ -1801,12 +1803,32 @@ function renderDocBinary(buffer) {
           // Each row = cellCount data cells + 1 row-end marker cell (\x07)
           const segments = paraText.split('\x07');
           let cellCp = cpStart;
-          // Find ALL rowEndRuns within this paragraph's CP range
+          // Find rowEndRuns for this paragraph: search up to cpEnd + enough range to cover
+          // all cell content that follows (multi-paragraph cells can extend far beyond).
+          // Use a generous range but cap at the next non-table paragraph or table boundary.
           const rowEndRuns = paraRuns.filter(r => r.props.tableRowEnd && r.cpStart >= cpStart && r.cpStart <= cpEnd + 200);
           let segIdx = 0;
           for (let ri = 0; ri < rowEndRuns.length && segIdx < segments.length; ri++) {
             const reProps = rowEndRuns[ri].props;
             const cellCount = reProps.cellWidths?.length || reProps.cellCount || 4;
+            // Check if we have enough segments to fill this entire row.
+            const segsNeeded = cellCount + 1; // data cells + row-end marker
+            const segsAvail = segments.length - segIdx;
+            if (segsAvail < segsNeeded) {
+              // Not enough segments — push remaining as partial cells to tableRow
+              // for the next tableRowEnd paragraph to flush
+              while (segIdx < segments.length) {
+                const seg = segments[segIdx];
+                const segText = seg.replace(/[\x01-\x08\x13-\x15]/g, '').trim();
+                if (segText) {
+                  const cellHtml = renderFormattedRun(seg, cellCp, charRuns, fonts, dataStream, oleChart, artImages, paraProps._charProps);
+                  tableRow.push({ html: cellHtml, closed: false });
+                }
+                cellCp += seg.length + 1;
+                segIdx++;
+              }
+              break; // exit rowEnd loop — let subsequent paragraphs fill remaining cells
+            }
             const cw = paraProps.cellWidths || reProps.cellWidths;
             const cs2 = paraProps.cellShds || reProps.cellShds;
             const tcs = reProps.cellTCs;
@@ -1894,7 +1916,7 @@ function renderDocBinary(buffer) {
                 const isLastVis = (() => { for (let k = ci + 1; k < cellCount; k++) { if (!hSkip2.has(k)) return false; } return true; })();
                 if (isLastVis && visCnt < tblMaxCols) {
                   const remaining = tblMaxCols - visCnt;
-                  if (remaining > 1) csAttr = ` colspan="${remaining}"`;
+                  if (remaining > 0) csAttr = ` colspan="${remaining + 1}"`;
                 }
               }
               // Vertical merge
@@ -1921,6 +1943,8 @@ function renderDocBinary(buffer) {
               segIdx++;
             }
           }
+          // Any remaining segments (after all rowEnds or partial row) are already
+          // pushed to tableRow by the partial-row handler above.
         } else if (cellMarkCount === 1) {
           // Single cell end (\x07) — this paragraph is one cell in a multi-paragraph table
           const cellText = paraText.replace(/\x07$/, '');
