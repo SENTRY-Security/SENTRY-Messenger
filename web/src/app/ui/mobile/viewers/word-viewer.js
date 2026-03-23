@@ -4,6 +4,13 @@ import { t } from '/locales/index.js';
 
 const JSZIP_URL = '/assets/libs/jszip.min.js';
 
+// DOC binary toggle properties (MS-DOC §2.6.1) — use XOR semantics
+// when applied from child over parent style or charRun over style.
+// Includes vertAlign (iss) which LibreOffice treats as toggle.
+const _DOC_TOGGLE_CHAR_PROPS = new Set([
+  'bold', 'italic', 'strike', 'outline', 'shadow', 'smallCaps', 'allCaps', 'vanish', 'vertAlign'
+]);
+
 function toRoman(n) {
   const vals = [1000,900,500,400,100,90,50,40,10,9,5,4,1];
   const syms = ['M','CM','D','CD','C','XC','L','XL','X','IX','V','IV','I'];
@@ -346,12 +353,13 @@ function parseSprms(data, offset, length) {
     if (pos + opSize > end) break;
 
     // Toggle semantics (MS-DOC §2.4.6.3):
-    // 0x00=inherit style, 0x01=on, 0x80=inherit style, 0x81=negate style default
-    // Only set prop for 0x01 (on) and 0x80/0x81; skip 0x00 to allow style inheritance
+    // Toggle boolean properties (MS-DOC §2.6.1):
+    // 0x00=off, 0x01=on, 0x80=off (negate style), 0x81=on (negate style)
+    // We always store the value so toggle/merge logic works correctly.
+    // LibreOffice DOC files use 0x00 as absolute "off" in CHPXs.
     const setToggle = (prop, v) => {
       if (v === 1 || v === 0x81) props[prop] = true;
-      else if (v === 0x80) props[prop] = false;
-      // 0x00 = inherit from style → don't set (let style fallback work)
+      else props[prop] = false; // 0x00 or 0x80 = off
     };
 
     switch (sprm) {
@@ -421,12 +429,14 @@ function parseSprms(data, offset, length) {
       case 0x2A48: props.istdChar = data[pos] | (data[pos + 1] << 8); break; // character style index (2 bytes)
       case 0x6A03: props.picLocation = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24); break; // sprmCPicLocation
       case 0x0806: props.fData = data[pos] === 1; break; // sprmCFData — marks picture char
-      case 0x484B: { // sprmCHpsPos - vertical position (superscript/subscript, half-points)
+      case 0x484B: { // sprmCHpsPos - text raise/lower position (half-points)
         let hpsPos = data[pos] | (data[pos + 1] << 8);
         if (hpsPos > 0x7FFF) hpsPos -= 0x10000; // signed
-        if (hpsPos > 0) props.vertAlign = 'super';
-        else if (hpsPos < 0) props.vertAlign = 'sub';
-        // Also store exact position for CSS rendering
+        // Set vertAlign for toggle compatibility (CHPX iss toggles against this),
+        // but mark as position-based so rendering uses position offset, not
+        // font-size reduction like true super/subscript (sprmCIss).
+        if (hpsPos > 0) { props.vertAlign = 'super'; props._vertAlignIsPosition = true; }
+        else if (hpsPos < 0) { props.vertAlign = 'sub'; props._vertAlignIsPosition = true; }
         if (hpsPos !== 0) props.position = hpsPos / 2; // half-points → pt
         break;
       }
@@ -1551,24 +1561,57 @@ function renderDocBinary(buffer) {
     }
   } catch { /* skip */ }
 
+  // Toggle properties — see _DOC_TOGGLE_CHAR_PROPS at module level
+
   // Style resolver: merge base style props with direct props
   function resolveStyle(istd) {
     const visited = new Set();
     const merged = {};
     const mergedChar = {};
     let cur = istd;
+    let isFirst = true;
     while (cur >= 0 && styles.has(cur) && !visited.has(cur)) {
       visited.add(cur);
       const s = styles.get(cur);
       for (const [k, v] of Object.entries(s.props)) {
+        // outlineLvl defines heading semantics — only inherit from the
+        // immediate style, never from the basedOn chain (e.g. "Text Body"
+        // based on "Heading 1" should NOT become a heading).
+        if (k === 'outlineLvl' && !isFirst) continue;
         if (merged[k] === undefined) merged[k] = v;
       }
       if (s.charProps) {
         for (const [k, v] of Object.entries(s.charProps)) {
-          if (mergedChar[k] === undefined) mergedChar[k] = v;
+          if (mergedChar[k] === undefined) {
+            mergedChar[k] = v;
+          } else if (_DOC_TOGGLE_CHAR_PROPS.has(k) && !isFirst) {
+            // Toggle: child XOR parent → if both truthy, result is off
+            if (v && mergedChar[k]) {
+              delete mergedChar[k];
+            }
+          }
         }
       }
       cur = s.basedOn;
+      isFirst = false;
+    }
+    // If chain didn't reach Normal (istd=0), add it as fallback.
+    // All paragraph styles ultimately inherit from Normal per MS-DOC spec.
+    if (!visited.has(0) && styles.has(0) && istd !== 0) {
+      const normal = styles.get(0);
+      for (const [k, v] of Object.entries(normal.props)) {
+        if (k === 'outlineLvl') continue;
+        if (merged[k] === undefined) merged[k] = v;
+      }
+      if (normal.charProps) {
+        for (const [k, v] of Object.entries(normal.charProps)) {
+          if (mergedChar[k] === undefined) {
+            mergedChar[k] = v;
+          } else if (_DOC_TOGGLE_CHAR_PROPS.has(k)) {
+            if (v && mergedChar[k]) delete mergedChar[k];
+          }
+        }
+      }
     }
     merged._charProps = mergedChar;
     return merged;
@@ -2163,8 +2206,22 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts, dataStream, oleChar
     }
 
     if (run && run.props) {
-      // Merge style charProps as fallback (direct props take precedence)
-      const p = styleCharProps ? Object.assign({}, styleCharProps, run.props) : run.props;
+      // Merge style charProps with DOC toggle semantics for boolean props.
+      // When a charRun has a toggle property that matches the resolved style
+      // default, the result is OFF (XOR behaviour per MS-DOC §2.6.1).
+      let p;
+      if (styleCharProps) {
+        p = Object.assign({}, styleCharProps);
+        for (const [k, v] of Object.entries(run.props)) {
+          if (_DOC_TOGGLE_CHAR_PROPS.has(k) && p[k] && v) {
+            delete p[k]; // XOR: both truthy → toggled off
+          } else {
+            p[k] = v;
+          }
+        }
+      } else {
+        p = run.props;
+      }
       // Skip hidden text
       if (p.vanish) { pos = runEnd; continue; }
 
@@ -2193,7 +2250,7 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts, dataStream, oleChar
       if (p.fontIdx !== undefined && fonts[p.fontIdx]) css.push(`font-family:'${fonts[p.fontIdx]}',sans-serif`);
       if (p.smallCaps && !p.allCaps) css.push('font-variant:small-caps');
       if (p.allCaps) css.push('text-transform:uppercase');
-      if (p.vertAlign) css.push(`vertical-align:${p.vertAlign};font-size:0.75em`);
+      if (p.vertAlign && !p._vertAlignIsPosition) css.push(`vertical-align:${p.vertAlign};font-size:0.75em`);
       // Text effects
       if (p.outline) css.push('-webkit-text-stroke:1px currentColor;color:transparent');
       if (p.shadow) css.push('text-shadow:1px 1px 2px rgba(0,0,0,0.3)');
@@ -2204,7 +2261,7 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts, dataStream, oleChar
       // Character border
       if (p.charBorder) css.push(`border:${p.charBorder};padding:0 1pt`);
       // Text position (raise/lower)
-      if (p.position && !p.vertAlign) css.push(`position:relative;top:${-p.position}pt`);
+      if (p.position && (!p.vertAlign || p._vertAlignIsPosition)) css.push(`position:relative;top:${-p.position}pt`);
 
       if (css.length) {
         parts.push(`<span style="${css.join(';')}">${escaped}</span>`);
