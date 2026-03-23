@@ -360,6 +360,8 @@ function parseSprms(data, offset, length) {
         break;
       }
       case 0x2A48: props.istdChar = data[pos]; break; // character style index
+      case 0x6A03: props.picLocation = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24); break; // sprmCPicLocation
+      case 0x0806: props.fData = toggleVal(data[pos]); break; // sprmCFData — marks picture char
       case 0x484B: { // sprmCHpsPos - vertical position (superscript/subscript)
         const hpsPos = data[pos] | (data[pos + 1] << 8);
         if (hpsPos > 0 && hpsPos < 0x8000) props.vertAlign = 'super';
@@ -412,6 +414,8 @@ function parseSprms(data, offset, length) {
         break;
       }
       case 0x2423: props.outlineLvl = data[pos]; break; // sprmPOutLvl (heading level)
+      case 0x260A: props.ilvl = data[pos]; break; // sprmPIlvl — list level (0-8)
+      case 0x460F: props.ilfo = data[pos] | (data[pos + 1] << 8); break; // sprmPIlfo — list format override index
       case 0x442D: { // sprmPShd80 - paragraph shading (legacy SHD80, 2 bytes)
         const shdVal = data[pos] | (data[pos + 1] << 8);
         const icoBack = shdVal & 0x1F;
@@ -661,7 +665,11 @@ function parseParaFormatting(wordDoc, tableStream, fc, lcb, pieces) {
         grpSize = page[papxByteOff + 1] * 2;
         grpStart = papxByteOff + 2;
       } else { continue; }
-      if (grpSize < 2 || grpStart + grpSize > 512) continue;
+      // Cap at page boundary (byte 511 = crun, not data)
+      const maxSize = 511 - grpStart;
+      if (maxSize < 2) continue;
+      if (grpSize > maxSize) grpSize = maxSize;
+      if (grpSize < 2) continue;
       // GrpPrlAndIstd: first 2 bytes = istd (style index), rest = grpprl (sprms)
       const istd = page[grpStart] | (page[grpStart + 1] << 8);
       const props = parseSprms(page, grpStart + 2, grpSize - 2);
@@ -755,6 +763,88 @@ function parseStyleSheet(tableStream, fc, lcb) {
   }
 
   return styles;
+}
+
+// ── Extract inline picture from Data stream at given offset ──
+// Returns an <img> HTML string or '' if extraction fails.
+// PICF structure: 4-byte lcb + 2-byte cbHeader, then OfficeArt data at cbHeader offset.
+// OfficeArt inline BLIP containers: look for known BLIP signatures.
+function extractDocImage(dataStream, offset) {
+  if (!dataStream || offset < 0 || offset + 68 > dataStream.length) return '';
+  const dv = new DataView(dataStream.buffer, dataStream.byteOffset + offset, Math.min(dataStream.length - offset, dataStream.length));
+  const lcb = dv.getUint32(0, true);     // total size of PICF + picture data
+  const cbHeader = dv.getUint16(2, true); // size of PICF header (typically 0x44 = 68)
+  if (lcb < cbHeader || offset + lcb > dataStream.length) return '';
+
+  // Picture dimensions from PICF (twips)
+  const dxaGoal = dv.getUint16(24, true); // original width in twips
+  const dyaGoal = dv.getUint16(26, true); // original height in twips
+  // Scale factors (1/1000 of 100%)
+  const mx = dv.getUint16(28, true);
+  const my = dv.getUint16(30, true);
+  const wPt = Math.round(dxaGoal * (mx / 1000) / 20);
+  const hPt = Math.round(dyaGoal * (my / 1000) / 20);
+  const style = wPt && hPt ? `max-width:100%;width:${wPt}pt;height:auto` : 'max-width:100%;height:auto';
+
+  // Skip PICF header → OfficeArt data begins
+  let artOff = offset + cbHeader;
+  if (artOff >= offset + lcb) return '';
+  const artEnd = offset + lcb;
+
+  // Scan for OfficeArt BLIP record header
+  // BLIP records start with recVer|recInstance (2 bytes) + recType (2 bytes) + recLen (4 bytes)
+  // Known BLIP types: 0xF01A-0xF01F (EMF, WMF, PICT, JPEG, PNG, DIB)
+  // Each BLIP has a fixed-size header (16-byte UID + optional tag), then raw image data.
+  while (artOff + 8 < artEnd) {
+    const rheader = new DataView(dataStream.buffer, dataStream.byteOffset + artOff, 8);
+    const recVerInst = rheader.getUint16(0, true);
+    const recType = rheader.getUint16(2, true);
+    const recLen = rheader.getUint32(4, true);
+    artOff += 8;
+
+    // BLIP types
+    if (recType >= 0xF018 && recType <= 0xF117 && recLen > 0 && artOff + recLen <= artEnd) {
+      // Determine image format and header size
+      let imgOff = artOff;
+      let mime = '';
+      if (recType === 0xF01D || recType === 0xF02D) {
+        // PNG: 16-byte UID + 1-byte tag = 17
+        imgOff += 17; mime = 'image/png';
+      } else if (recType === 0xF01E || recType === 0xF02E || recType === 0xF01F || recType === 0xF02F) {
+        // JPEG/JFIF: 16-byte UID + 1-byte tag = 17
+        imgOff += 17; mime = 'image/jpeg';
+      } else if (recType === 0xF01A || recType === 0xF02A) {
+        // EMF: 16-byte UID + 34 bytes metafile header
+        imgOff += 50; mime = 'image/x-emf'; // browsers can't display EMF
+      } else if (recType === 0xF01B || recType === 0xF02B) {
+        // WMF: similar header
+        imgOff += 50; mime = 'image/x-wmf';
+      } else {
+        // Unknown BLIP type, skip
+        artOff += recLen;
+        continue;
+      }
+      // Check for dual-UID BLIP (recInstance bit indicates 2 UIDs = +16 bytes)
+      const recInst = (recVerInst >> 4) & 0xFFF;
+      if (recInst === 0x46B || recInst === 0x6E3 || recInst === 0x6E1 || recInst === 0x6E5 || recInst === 0x7A8) {
+        imgOff += 16; // second UID
+      }
+      const imgLen = recLen - (imgOff - artOff);
+      if (imgLen <= 0 || imgOff + imgLen > artEnd) { artOff += recLen; continue; }
+
+      // Skip non-renderable formats (EMF/WMF)
+      if (mime.includes('x-emf') || mime.includes('x-wmf')) {
+        // Try to find a PNG/JPEG fallback later in the stream
+        artOff += recLen;
+        continue;
+      }
+      const blob = new Blob([dataStream.slice(imgOff, imgOff + imgLen)], { type: mime });
+      const url = URL.createObjectURL(blob);
+      return `<img src="${url}" style="${style}" alt="" class="word-img">`;
+    }
+    artOff += recLen;
+  }
+  return '';
 }
 
 // ── Build formatted HTML from .doc binary ──
