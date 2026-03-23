@@ -649,17 +649,22 @@ function parseParaFormatting(wordDoc, tableStream, fc, lcb, pieces) {
       if (papxWordOff === 0) continue;
       const papxByteOff = papxWordOff * 2;
       if (papxByteOff >= 511) continue;
-      // PapxInFkp: cb is byte count when non-zero; when zero, next byte * 2 is byte count
-      let cb = page[papxByteOff];
-      let grpStart = papxByteOff + 1;
-      if (cb === 0 && grpStart < 511) {
-        cb = page[grpStart] * 2;
-        grpStart += 1;
-      }
-      if (cb < 2 || grpStart + cb > 512) continue;
-      // First 2 bytes are istd (style index), then grpprl (sprms)
+      // PapxInFkp (MS-DOC §2.9.182):
+      //   cb (1 byte): if non-zero, GrpPrlAndIstd is (2*cb - 1) bytes
+      //   if cb == 0:  next byte cb', GrpPrlAndIstd is (2*cb') bytes
+      const cbRaw = page[papxByteOff];
+      let grpSize, grpStart;
+      if (cbRaw !== 0) {
+        grpSize = 2 * cbRaw - 1;
+        grpStart = papxByteOff + 1;
+      } else if (papxByteOff + 1 < 511) {
+        grpSize = page[papxByteOff + 1] * 2;
+        grpStart = papxByteOff + 2;
+      } else { continue; }
+      if (grpSize < 2 || grpStart + grpSize > 512) continue;
+      // GrpPrlAndIstd: first 2 bytes = istd (style index), rest = grpprl (sprms)
       const istd = page[grpStart] | (page[grpStart + 1] << 8);
-      const props = parseSprms(page, grpStart + 2, cb - 2);
+      const props = parseSprms(page, grpStart + 2, grpSize - 2);
       props._istd = istd;
 
       const cpS = fcToCp(fcStart, pieces);
@@ -786,29 +791,16 @@ function renderDocBinary(buffer) {
 
   // Parse character and paragraph formatting (non-fatal if these fail)
   let charRuns = [], paraRuns = [];
-  let _dbgChpxErr = null, _dbgPapxErr = null;
   try {
     // FibRgFcLcb97 index 12 = PlcfBteChpx
     const chpxPair = fib.fibPair(12);
     charRuns = parseCharFormatting(wordDoc, tableStream, chpxPair.fc, chpxPair.lcb, pieces);
-  } catch (e) { _dbgChpxErr = e; }
+  } catch { /* proceed without character formatting */ }
   try {
     // FibRgFcLcb97 index 13 = PlcfBtePapx
     const papxPair = fib.fibPair(13);
     paraRuns = parseParaFormatting(wordDoc, tableStream, papxPair.fc, papxPair.lcb, pieces);
-  } catch (e) { _dbgPapxErr = e; }
-
-  // ── Temporary diagnostic — remove after debugging ──
-  const _dbgInTableCount = paraRuns.filter(r => r.props.inTable).length;
-  const _dbgRowEndCount = paraRuns.filter(r => r.props.tableRowEnd).length;
-  const _dbgCb2Count = paraRuns.filter(r => Object.keys(r.props).length <= 1).length;
-  const _dbgSampleIstds = paraRuns.slice(0, 10).map(r => r.props._istd).join(',');
-  const _dbgInfo = `[DBG] charRuns:${charRuns.length} paraRuns:${paraRuns.length} ` +
-    `inTable:${_dbgInTableCount} rowEnd:${_dbgRowEndCount} cb2Only:${_dbgCb2Count} ` +
-    `chpxErr:${_dbgChpxErr?.message || 'none'} papxErr:${_dbgPapxErr?.message || 'none'} ` +
-    `istds:[${_dbgSampleIstds}]`;
-
-  // Style merging disabled until STSH FIB index is verified
+  } catch { /* proceed without paragraph formatting */ }
 
   // DOP page margins disabled — FIB index 31 needs verification
   let pageMargins = null;
@@ -984,7 +976,7 @@ function renderDocBinary(buffer) {
   }
   if (inTable) html.push('</table></div>');
 
-  return { html: html.join(''), pageMargins, _dbgInfo };
+  return { html: html.join(''), pageMargins };
 }
 
 // Special chars to strip from display (field codes, picture placeholders, cell marks)
@@ -1758,8 +1750,7 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
       // Show format notice for .doc
       const notice = document.createElement('div');
       notice.className = 'word-format-notice';
-      const dbg = typeof docResult === 'object' && docResult._dbgInfo ? docResult._dbgInfo : '';
-      notice.textContent = (t('viewer.wordDocNotice') || '.doc 格式預覽可能與原始排版略有差異，下載可查看完整格式。') + (dbg ? '\n' + dbg : '');
+      notice.textContent = t('viewer.wordDocNotice') || '.doc 格式預覽可能與原始排版略有差異，下載可查看完整格式。';
       docContainer.appendChild(notice);
     }
     const page = document.createElement('div');
