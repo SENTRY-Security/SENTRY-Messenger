@@ -141,32 +141,54 @@ function resolveFont(rawFont) {
 // ── Color ──
 function parseColor(el) {
   if (!el) return null;
+  // Helper: extract alpha from a color element's children
+  const getAlpha = (colorEl) => {
+    const alphaEl = qn(colorEl, NS_A, 'alpha');
+    return alphaEl ? Number(alphaEl.getAttribute('val')) / 100000 : 1;
+  };
+  // Helper: apply alpha to hex color → rgba string
+  const applyAlpha = (hex, alpha) => {
+    if (alpha >= 0.995) return hex;
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return `rgba(${r},${g},${b},${alpha.toFixed(2)})`;
+  };
+
   const srgb = dn(el, NS_A, 'srgbClr');
   if (srgb) {
     const color = srgb.getAttribute('val');
+    const alpha = getAlpha(srgb);
     const lumMod = qn(srgb, NS_A, 'lumMod');
     const lumOff = qn(srgb, NS_A, 'lumOff');
+    let hex;
     if (lumMod || lumOff) {
-      return adjustLuminance('#' + color, lumMod ? Number(lumMod.getAttribute('val')) / 100000 : 1, lumOff ? Number(lumOff.getAttribute('val')) / 100000 : 0);
+      hex = adjustLuminance('#' + color, lumMod ? Number(lumMod.getAttribute('val')) / 100000 : 1, lumOff ? Number(lumOff.getAttribute('val')) / 100000 : 0);
+    } else {
+      hex = '#' + color;
     }
-    return '#' + color;
+    return applyAlpha(hex, alpha);
   }
   const scheme = dn(el, NS_A, 'schemeClr');
   if (scheme) {
     const base = themeColors[scheme.getAttribute('val')] || null;
     if (!base) return null;
+    const alpha = getAlpha(scheme);
     const lumMod = qn(scheme, NS_A, 'lumMod');
     const lumOff = qn(scheme, NS_A, 'lumOff');
     const tintEl = qn(scheme, NS_A, 'tint');
     const shadeEl = qn(scheme, NS_A, 'shade');
+    let hex;
     if (lumMod || lumOff || tintEl || shadeEl) {
       let mod = lumMod ? Number(lumMod.getAttribute('val')) / 100000 : 1;
       let off = lumOff ? Number(lumOff.getAttribute('val')) / 100000 : 0;
       if (tintEl) { const tv = Number(tintEl.getAttribute('val')) / 100000; mod *= tv; off += (1 - tv); }
       if (shadeEl) mod *= Number(shadeEl.getAttribute('val')) / 100000;
-      return adjustLuminance(base, mod, off);
+      hex = adjustLuminance(base, mod, off);
+    } else {
+      hex = base;
     }
-    return base;
+    return applyAlpha(hex, alpha);
   }
   return null;
 }
@@ -376,19 +398,23 @@ function parseTable(tblEl) {
       // Cell fill: use direct child lookup (qn) to avoid picking up border fills from lnB/lnT/lnL/lnR
       const directSolid = tcPr ? qn(tcPr, NS_A, 'solidFill') : null;
       const fill = directSolid ? parseColor(directSolid) : null;
-      // Border colors
-      const borderColor = tcPr ? (() => {
-        for (const side of ['lnB', 'lnT', 'lnL', 'lnR']) {
+      // Per-side border colors and widths
+      const borders = {};
+      if (tcPr) {
+        for (const [side, key] of [['lnB','b'],['lnT','t'],['lnL','l'],['lnR','r']]) {
           const ln = qn(tcPr, NS_A, side);
-          if (ln) { const c = parseFill(ln); if (c) return c; }
+          if (ln) {
+            const c = parseFill(ln);
+            const w = ln.getAttribute('w');
+            borders[key] = { color: c || '#cbd5e1', width: w ? emuToPx(w) : 1 };
+          }
         }
-        return null;
-      })() : null;
+      }
       const gridSpan = tc.getAttribute('gridSpan');
       const rowSpan = tc.getAttribute('rowSpan');
       const hMerge = tc.getAttribute('hMerge') === '1';
       const vMerge = tc.getAttribute('vMerge') === '1';
-      cells.push({ paragraphs, fill, borderColor, gridSpan: gridSpan ? parseInt(gridSpan) : 1, rowSpan: rowSpan ? parseInt(rowSpan) : 1, hMerge, vMerge });
+      cells.push({ paragraphs, fill, borders, gridSpan: gridSpan ? parseInt(gridSpan) : 1, rowSpan: rowSpan ? parseInt(rowSpan) : 1, hMerge, vMerge });
     }
     rows.push(cells);
   }
@@ -519,7 +545,7 @@ function parseShape(spEl, relMap, phStyles) {
   // Auto-fit modes
   const autoFit = bodyPr ? !!dn(bodyPr, NS_A, 'spAutoFit') : false;
   const normAutofit = bodyPr ? dn(bodyPr, NS_A, 'normAutofit') : null;
-  const fontScale = normAutofit ? (Number(normAutofit.getAttribute('fontScale') || '100000') / 1000) : 100;
+  const fontScale = normAutofit ? (Number(normAutofit.getAttribute('fontScale') || '100000') / 100000) * 100 : 100;
   const lIns = bodyPr?.getAttribute('lIns'); const rIns = bodyPr?.getAttribute('rIns');
   const tIns = bodyPr?.getAttribute('tIns'); const bIns = bodyPr?.getAttribute('bIns');
   const margin = {
@@ -1158,7 +1184,9 @@ function drawTextShape(ctx, shape, sx, sy, sw, sh, scale, relMap, slideBgColor) 
 
       for (const seg of line) {
         ctx.font = seg.font;
-        ctx.fillStyle = seg.color || '#000';
+        // Hyperlinks: blue + underline
+        const isLink = !!seg.hlinkRid;
+        ctx.fillStyle = isLink ? '#0563C1' : (seg.color || '#000');
 
         let segY = baselineY;
         if (seg.baseline && seg.baseline > 0) segY = baselineY - ptToPx(maxFs) * scale * 0.3;
@@ -1167,19 +1195,20 @@ function drawTextShape(ctx, shape, sx, sy, sw, sh, scale, relMap, slideBgColor) 
         ctx.fillText(seg.text, drawX, segY);
 
         const tw = ctx.measureText(seg.text).width;
-        if (seg.underline) {
+        const ulOffset = Math.max(2, ptToPx(effectiveFs) * scale * 0.12);
+        if (seg.underline || isLink) {
           ctx.beginPath();
-          ctx.strokeStyle = seg.color || '#000';
+          ctx.strokeStyle = isLink ? '#0563C1' : (seg.color || '#000');
           ctx.lineWidth = Math.max(1, scale);
-          ctx.moveTo(drawX, segY + 2 * scale);
-          ctx.lineTo(drawX + tw, segY + 2 * scale);
+          ctx.moveTo(drawX, segY + ulOffset);
+          ctx.lineTo(drawX + tw, segY + ulOffset);
           ctx.stroke();
         }
         if (seg.strike) {
           ctx.beginPath();
           ctx.strokeStyle = seg.color || '#000';
           ctx.lineWidth = Math.max(1, scale);
-          const strikeY = segY - ptToPx(maxFs) * scale * 0.3;
+          const strikeY = segY - ptToPx(effectiveFs) * scale * 0.35;
           ctx.moveTo(drawX, strikeY);
           ctx.lineTo(drawX + tw, strikeY);
           ctx.stroke();
@@ -1406,10 +1435,18 @@ function drawTable(ctx, shape, sx, sy, sw, sh, scale) {
         ctx.fillStyle = cell.fill;
         ctx.fillRect(cx, cy, cw, ch);
       }
-      // Cell border
-      ctx.strokeStyle = cell.borderColor || '#cbd5e1';
-      ctx.lineWidth = scale;
-      ctx.strokeRect(cx, cy, cw, ch);
+      // Cell borders (per-side)
+      const bdr = cell.borders || {};
+      const drawBorder = (x1, y1, x2, y2, side) => {
+        const b = bdr[side];
+        ctx.strokeStyle = b ? b.color : '#cbd5e1';
+        ctx.lineWidth = b ? Math.max(b.width * scale, scale) : scale;
+        ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+      };
+      drawBorder(cx, cy, cx + cw, cy, 't');
+      drawBorder(cx, cy + ch, cx + cw, cy + ch, 'b');
+      drawBorder(cx, cy, cx, cy + ch, 'l');
+      drawBorder(cx + cw, cy, cx + cw, cy + ch, 'r');
 
       // Cell text — mirror drawTextShape logic with bullet, bold/italic/underline inheritance
       ctx.save();
