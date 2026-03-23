@@ -739,15 +739,49 @@ function parseStyleSheet(tableStream, fc, lcb) {
         }
       }
 
-      // Determine basic props from sti (built-in style identifier)
+      // Parse GrpUpx — UPX groups after the style name
+      // GrpUpx starts after the name string (nameLen chars * 2 + 2 for length + possible null terminator)
+      const cupx = cbSTDBaseInFile >= 5 ? (view.getUint8(stdStart + 4) & 0x0F) : 0;
+      let upxOff = nameOffset + 2; // after nameLen word
+      if (nameOffset + 2 <= stdStart + cbStd) {
+        const nl = view.getUint16(nameOffset, true);
+        upxOff = nameOffset + 2 + (nl + 1) * 2; // name chars + null terminator, each 2 bytes
+        // Align to 2-byte boundary
+        if ((upxOff - (stdStart)) % 2 !== 0) upxOff++;
+      }
+
       const styleProps = {};
-      // sti 0 = Normal, sti 1 = Heading 1, sti 2 = Heading 2, ..., sti 9 = Heading 9
-      if (sti >= 1 && sti <= 9) {
+      const charProps = {};
+      // Parse UPX entries
+      // For paragraph styles (sgc=1): UPX[0] = UpxPapx, UPX[1] = UpxChpx
+      // For character styles (sgc=2): UPX[0] = UpxChpx
+      // For table styles (sgc=3): UPX[0] = UpxTapx, UPX[1] = UpxPapx, UPX[2] = UpxChpx
+      for (let u = 0; u < cupx && upxOff + 2 <= stdStart + cbStd; u++) {
+        const cbUpx = view.getUint16(upxOff, true);
+        const upxData = upxOff + 2;
+        if (cbUpx > 0 && upxData + cbUpx <= stdStart + cbStd) {
+          if (sgc === 1 && u === 0 && cbUpx >= 2) {
+            // UpxPapx: first 2 bytes = istd, rest = grpprl
+            const upxProps = parseSprms(new Uint8Array(tableStream.buffer, tableStream.byteOffset + fc + upxData + 2, cbUpx - 2), 0, cbUpx - 2);
+            Object.assign(styleProps, upxProps);
+          } else if (sgc === 1 && u === 1) {
+            // UpxChpx: grpprl only
+            const upxProps = parseSprms(new Uint8Array(tableStream.buffer, tableStream.byteOffset + fc + upxData, cbUpx), 0, cbUpx);
+            Object.assign(charProps, upxProps);
+          } else if (sgc === 2 && u === 0) {
+            // Character style: UpxChpx
+            const upxProps = parseSprms(new Uint8Array(tableStream.buffer, tableStream.byteOffset + fc + upxData, cbUpx), 0, cbUpx);
+            Object.assign(charProps, upxProps);
+          }
+        }
+        // Advance past this UPX (align to 2-byte boundary)
+        upxOff += 2 + cbUpx;
+        if (upxOff % 2 !== 0) upxOff++;
+      }
+
+      // Fallback: built-in heading detection from sti
+      if (sti >= 1 && sti <= 9 && !styleProps.outlineLvl) {
         styleProps.outlineLvl = sti - 1;
-        styleProps.bold = true;
-        // Default heading sizes
-        const headingSizes = [null, 28, 24, 22, 20, 18, 16, 14, 13, 12];
-        if (headingSizes[sti]) styleProps.fontSize = headingSizes[sti];
       }
 
       styles.set(istd, {
@@ -756,6 +790,7 @@ function parseStyleSheet(tableStream, fc, lcb) {
         basedOn: istdBase === 0x0FFF ? -1 : istdBase,
         sti,
         props: styleProps,
+        charProps,
       });
     } catch { /* skip malformed style */ }
 
@@ -877,8 +912,11 @@ function renderDocBinary(buffer) {
   try { fonts = parseFontTable(tableStream, ftPair.fc, ftPair.lcb); } catch { /* use empty */ }
 
   // Parse STSH (Style Sheet) for style-based formatting (FIB index 1)
-  // TODO: re-enable after verifying FIB index is correct
   let styles = new Map();
+  try {
+    const stshPair = fib.fibPair(1);
+    styles = parseStyleSheet(tableStream, stshPair.fc, stshPair.lcb);
+  } catch { /* use empty */ }
 
   // Parse character and paragraph formatting (non-fatal if these fail)
   let charRuns = [], paraRuns = [];
@@ -893,8 +931,40 @@ function renderDocBinary(buffer) {
     paraRuns = parseParaFormatting(wordDoc, tableStream, papxPair.fc, papxPair.lcb, pieces);
   } catch { /* proceed without paragraph formatting */ }
 
-  // DOP page margins disabled — FIB index 31 needs verification
+  // DOP page margins (FIB index 31 = fcDop/lcbDop)
   let pageMargins = null;
+  try {
+    const dopPair = fib.fibPair(31);
+    if (dopPair.lcb >= 28 && dopPair.fc + dopPair.lcb <= tableStream.length) {
+      const dopView = new DataView(tableStream.buffer, tableStream.byteOffset + dopPair.fc, dopPair.lcb);
+      // DOP: dxaLeft (bytes 6-7), dxaRight (bytes 10-11), dyaTop (bytes 2-3), dyaBottom (bytes 4-5)
+      // These are in twips (1/20 pt)
+      const dyaTop = dopView.getUint16(2, true) / 20;
+      const dyaBottom = dopView.getUint16(4, true) / 20;
+      const dxaLeft = dopView.getUint16(6, true) / 20;
+      const dxaRight = dopView.getUint16(10, true) / 20;
+      if (dxaLeft > 0 || dxaRight > 0 || dyaTop > 0 || dyaBottom > 0) {
+        pageMargins = { top: dyaTop, bottom: dyaBottom, left: dxaLeft, right: dxaRight };
+      }
+    }
+  } catch { /* use defaults */ }
+
+  // Style resolver: merge base style props with direct props
+  function resolveStyle(istd) {
+    const visited = new Set();
+    const merged = {};
+    let cur = istd;
+    while (cur >= 0 && styles.has(cur) && !visited.has(cur)) {
+      visited.add(cur);
+      const s = styles.get(cur);
+      // Apply props (lower priority — don't overwrite direct/child props)
+      for (const [k, v] of Object.entries(s.props)) {
+        if (merged[k] === undefined) merged[k] = v;
+      }
+      cur = s.basedOn;
+    }
+    return merged;
+  }
 
   // Build paragraphs: split text by \r (paragraph mark in Word binary)
   const html = [];
@@ -913,6 +983,17 @@ function renderDocBinary(buffer) {
     let paraProps = {};
     for (const pr of paraRuns) {
       if (pr.cpStart <= cpStart && pr.cpEnd > cpStart) { paraProps = pr.props; break; }
+    }
+
+    // Merge style-based paragraph properties (style provides defaults, direct overrides)
+    if (paraProps._istd !== undefined && styles.size > 0) {
+      const styleP = resolveStyle(paraProps._istd);
+      // Style props as defaults — don't overwrite direct props
+      // But skip table membership props (inTable/tableRowEnd per MS-DOC spec)
+      for (const [k, v] of Object.entries(styleP)) {
+        if (k === 'inTable' || k === 'tableRowEnd' || k === '_istd') continue;
+        if (paraProps[k] === undefined) paraProps[k] = v;
+      }
     }
 
     // ── Table handling ──
@@ -1077,8 +1158,9 @@ function renderDocBinary(buffer) {
   return { html: html.join(''), pageMargins };
 }
 
-// Special chars to strip from display (field codes, picture placeholders, cell marks)
-const SPECIAL_CHAR_RE = /[\x01\x07\x08\x13\x14\x15]/g;
+// Special chars to strip from display (picture placeholders, cell marks)
+// Field codes (\x13..\x14..\x15) are handled inline in renderFormattedRun
+const SPECIAL_CHAR_RE = /[\x01\x07\x08]/g;
 
 // Render text with character formatting applied.
 // `text` is raw paragraph text (including special chars), `cpOffset` is the CP of text[0].
@@ -1101,6 +1183,16 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts, dataStream) {
         if (imgHtml) { parts.push(imgHtml); pos++; continue; }
       }
       pos++; continue; // no image found, skip placeholder
+    }
+    if (ch === '\x13') {
+      // Field begin — skip until \x14 (field separator) or \x15 (field end)
+      pos++;
+      while (pos < text.length && text[pos] !== '\x14' && text[pos] !== '\x15') pos++;
+      if (pos < text.length && text[pos] === '\x14') pos++; // skip separator, show result
+      continue;
+    }
+    if (ch === '\x14' || ch === '\x15') {
+      pos++; continue; // skip separator/end markers
     }
     if (SPECIAL_CHAR_RE.test(ch)) {
       SPECIAL_CHAR_RE.lastIndex = 0;
