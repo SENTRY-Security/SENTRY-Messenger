@@ -1234,61 +1234,106 @@ function renderDocBinary(buffer) {
 
     if (paraProps.inTable) {
       // ── PAPX-based table ──
-      // Split cells by \x07 and detect rows by \x07\x07 (same as fallback)
-      const segments = paraText.split('\x07');
-      let rowCells = [];
-      let cellCp = cpStart;
+      // Word .doc tables: each cell is one or more paragraphs with inTable=true.
+      // Cell end = paragraph ending with \x07. Row end = tableRowEnd paragraph.
+      // Single-paragraph tables: all cells in one paragraph separated by \x07.
 
-      if (!inTable) { html.push('<div class="word-tbl-wrap"><table class="word-tbl word-tbl-bordered">'); inTable = true; }
+      if (!inTable) {
+        // Find the first tableRowEnd to get cellWidths for table width calculation
+        const firstRowEnd = paraRuns.find(r => r.props.tableRowEnd && r.cpStart >= cpStart);
+        const firstCw = firstRowEnd?.props?.cellWidths || paraProps.cellWidths;
+        const tblWidth = firstCw ? firstCw.reduce((s, w) => s + w, 0) : 0;
+        const fixedClass = tblWidth > 0 ? ' word-tbl-fixed' : '';
+        const tblStyle = tblWidth > 0 ? ` style="width:${tblWidth}pt"` : '';
+        html.push(`<div class="word-tbl-wrap"><table class="word-tbl word-tbl-bordered${fixedClass}"${tblStyle}>`);
+        inTable = true;
+      }
 
-      // Find cellWidths/cellShds from tableRowEnd paraRuns for this table region
-      const rowEndRuns = paraRuns.filter(r => r.props.tableRowEnd && r.cpStart >= cpStart && r.cpStart <= cpEnd + 500);
-      let rowIdx = 0;
-
-      for (let si = 0; si < segments.length; si++) {
-        const seg = segments[si];
-        if (seg) {
-          rowCells.push({ text: seg, cpStart: cellCp });
-        } else if (rowCells.length > 0) {
-          // Empty segment = row boundary (\x07\x07)
-          // Get cellWidths from paraProps or from the corresponding tableRowEnd paraRun
-          const rowEndProps = rowEndRuns[rowIdx]?.props || {};
-          const cw = paraProps.cellWidths || rowEndProps.cellWidths;
-          const cs2 = paraProps.cellShds || rowEndProps.cellShds;
-          const maxCols = cw?.length || rowCells.length;
-          rowIdx++;
+      if (paraProps.tableRowEnd) {
+        // Row-end paragraph — flush accumulated tableRow cells as a <tr>
+        const cw = paraProps.cellWidths;
+        const cs2 = paraProps.cellShds;
+        if (tableRow.length > 0) {
           html.push('<tr>');
-          for (let ci = 0; ci < rowCells.length; ci++) {
-            const cell = rowCells[ci];
+          for (let ci = 0; ci < tableRow.length; ci++) {
+            const cell = tableRow[ci];
             const tdStyle = [];
             if (cw && ci < cw.length) tdStyle.push(`width:${cw[ci]}pt`);
             if (cs2 && ci < cs2.length && cs2[ci]) tdStyle.push(`background-color:${cs2[ci]}`);
-            const isLast = ci === rowCells.length - 1;
-            const cs = isLast && rowCells.length < maxCols ? ` colspan="${maxCols - ci}"` : '';
             const sa = tdStyle.length ? ` style="${tdStyle.join(';')}"` : '';
-            html.push(`<td class="word-tc"${sa}${cs}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream, oleChartHtml, artImages)}</td>`);
+            html.push(`<td class="word-tc"${sa}>${cell.html}</td>`);
           }
           html.push('</tr>');
-          rowCells = [];
         }
-        cellCp += seg.length + 1;
-      }
-      // Flush remaining cells as a row
-      if (rowCells.length > 0) {
-        const rowEndProps = rowEndRuns[rowIdx]?.props || {};
-        const cw = paraProps.cellWidths || rowEndProps.cellWidths;
-        html.push('<tr>');
-        for (let ci = 0; ci < rowCells.length; ci++) {
-          const cell = rowCells[ci];
-          const tdStyle = [];
-          if (cw && ci < cw.length) tdStyle.push(`width:${cw[ci]}pt`);
-          const sa = tdStyle.length ? ` style="${tdStyle.join(';')}"` : '';
-          html.push(`<td class="word-tc"${sa}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream, oleChartHtml, artImages)}</td>`);
+        tableRow = [];
+      } else {
+        // Cell content paragraph — accumulate
+        const cellMarkCount = (paraText.match(/\x07/g) || []).length;
+        if (cellMarkCount > 1) {
+          // Single-paragraph with multiple cells (old format)
+          const segments = paraText.split('\x07');
+          let cellCp = cpStart;
+          // Find ALL rowEndRuns within this paragraph's CP range
+          const rowEndRuns = paraRuns.filter(r => r.props.tableRowEnd && r.cpStart >= cpStart && r.cpStart <= cpEnd + 200);
+          let rowEndIdx = 0;
+          const rowCells = [];
+          for (let si = 0; si < segments.length; si++) {
+            const seg = segments[si];
+            if (seg) rowCells.push({ text: seg, cpStart: cellCp });
+            else if (rowCells.length > 0) {
+              // Row boundary — flush with matching rowEnd's cellWidths
+              const reProps = rowEndRuns[rowEndIdx]?.props || {};
+              const cw = paraProps.cellWidths || reProps.cellWidths;
+              const cs2 = paraProps.cellShds || reProps.cellShds;
+              rowEndIdx++;
+              html.push('<tr>');
+              for (let ci = 0; ci < rowCells.length; ci++) {
+                const cell = rowCells[ci];
+                const tdStyle = [];
+                if (cw && ci < cw.length) tdStyle.push(`width:${cw[ci]}pt`);
+                if (cs2 && ci < cs2.length && cs2[ci]) tdStyle.push(`background-color:${cs2[ci]}`);
+                const sa = tdStyle.length ? ` style="${tdStyle.join(';')}"` : '';
+                html.push(`<td class="word-tc"${sa}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream, oleChartHtml, artImages)}</td>`);
+              }
+              html.push('</tr>');
+              rowCells.length = 0;
+            }
+            cellCp += seg.length + 1;
+          }
+          if (rowCells.length > 0) {
+            const reProps = rowEndRuns[rowEndIdx]?.props || {};
+            const cw = paraProps.cellWidths || reProps.cellWidths;
+            html.push('<tr>');
+            for (let ci = 0; ci < rowCells.length; ci++) {
+              const cell = rowCells[ci];
+              const tdStyle = [];
+              if (cw && ci < cw.length) tdStyle.push(`width:${cw[ci]}pt`);
+              const sa = tdStyle.length ? ` style="${tdStyle.join(';')}"` : '';
+              html.push(`<td class="word-tc"${sa}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts, dataStream, oleChartHtml, artImages)}</td>`);
+            }
+            html.push('</tr>');
+          }
+        } else if (cellMarkCount === 1) {
+          // Single cell end (\x07) — this paragraph is one cell in a multi-paragraph table
+          const cellText = paraText.replace(/\x07$/, '');
+          const cellHtml = renderFormattedRun(cellText, cpStart, charRuns, fonts, dataStream, oleChartHtml, artImages);
+          if (tableRow.length > 0 && !tableRow[tableRow.length - 1].closed) {
+            tableRow[tableRow.length - 1].html += '<br>' + cellHtml;
+            tableRow[tableRow.length - 1].closed = true;
+          } else {
+            tableRow.push({ html: cellHtml, closed: true });
+          }
+        } else {
+          // No \x07 — content continuation within a cell
+          const cellHtml = renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream, oleChartHtml, artImages);
+          if (tableRow.length > 0 && !tableRow[tableRow.length - 1].closed) {
+            tableRow[tableRow.length - 1].html += '<br>' + cellHtml;
+          } else {
+            tableRow.push({ html: cellHtml, closed: false });
+          }
         }
-        html.push('</tr>');
       }
-      tableRow = [];
-    } else if (hasCellMark) {
+    } else if (hasCellMark && !paraProps.inTable) {
       // ── Fallback: detect table from \x07 cell marks ──
       // In Word binary, each cell ends with \x07, and each row ends with an
       // extra \x07 (row-end mark). So consecutive \x07\x07 = row boundary.
@@ -1329,15 +1374,27 @@ function renderDocBinary(buffer) {
     } else {
       // ── Non-table paragraph ──
       if (inTable) {
-        // Table continuation: if next paragraph resumes table, keep table open
-        const nextPara = pi + 1 < paragraphs.length ? paragraphs[pi + 1] : '';
-        const nextHasCell = nextPara.indexOf('\x07') !== -1;
-        const visTxt = paraText.replace(/[\x01\x07\x08\x13\x14\x15]/g, '').trim();
-        if (nextHasCell && visTxt) {
-          // Add as full-width continuation row within the table
-          html.push(`<tr><td class="word-tc" colspan="99">${renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream, oleChartHtml, artImages)}</td></tr>`);
-          cp = cpEnd + 1;
-          continue; // skip normal paragraph rendering
+        // Flush any remaining tableRow cells
+        if (tableRow.length > 0) {
+          html.push('<tr>');
+          for (const cell of tableRow) html.push(`<td class="word-tc">${cell.html}</td>`);
+          html.push('</tr>');
+          tableRow = [];
+        }
+        // Check if next paragraph continues the table
+        const nextParaProps = (() => {
+          const nextCp = cpEnd + 1;
+          for (const pr of paraRuns) { if (pr.cpStart <= nextCp && pr.cpEnd > nextCp) return pr.props; }
+          return {};
+        })();
+        if (nextParaProps.inTable) {
+          // Non-table paragraph between table rows — add as full-width row
+          const visTxt = paraText.replace(/[\x01\x07\x08\x13\x14\x15]/g, '').trim();
+          if (visTxt) {
+            html.push(`<tr><td class="word-tc" colspan="99">${renderFormattedRun(paraText, cpStart, charRuns, fonts, dataStream, oleChartHtml, artImages)}</td></tr>`);
+            cp = cpEnd + 1;
+            continue;
+          }
         }
         html.push('</table></div>'); inTable = false; tableRow = [];
       }

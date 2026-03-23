@@ -1035,12 +1035,14 @@
   word-wrap: break-word;
   overflow-wrap: break-word;
 }
-/* Mobile: tighter padding */
+/* Mobile: tighter padding + scale down for narrow screens */
 @media (max-width: 600px) {
   .word-page {
     margin: 8px auto;
-    padding: 20px 14px;
+    padding: 16px 10px;
+    font-size: 10pt;
   }
+  .word-tbl { font-size: 9pt; }
 }
 
 .word-p { margin: 0 0 4pt 0; }
@@ -1088,6 +1090,12 @@ h6.word-h { font-size: 9pt; }
   border-collapse: collapse;
   width: 100%;
   font-size: inherit;
+}
+/* Tables with explicit pt widths use fixed layout for accurate cell sizing */
+.word-tbl-fixed {
+  table-layout: fixed;
+  width: auto;
+  max-width: 100%;
 }
 .word-tbl-bordered .word-tc {
   border: 1px solid #94a3b8;
