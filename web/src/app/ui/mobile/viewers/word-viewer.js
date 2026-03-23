@@ -1174,9 +1174,8 @@ function renderDocBinary(buffer) {
   return { html: html.join(''), pageMargins };
 }
 
-// Special chars to strip from display (picture placeholders, cell marks)
-// Field codes (\x13..\x14..\x15) are handled inline in renderFormattedRun
-const SPECIAL_CHAR_RE = /[\x01\x07\x08]/g;
+// Special chars to strip from display (picture placeholders, cell marks, field markers)
+const SPECIAL_CHAR_RE = /[\x01\x07\x08\x13\x14\x15]/g;
 
 // Render text with character formatting applied.
 // `text` is raw paragraph text (including special chars), `cpOffset` is the CP of text[0].
@@ -1199,16 +1198,6 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts, dataStream) {
         if (imgHtml) { parts.push(imgHtml); pos++; continue; }
       }
       pos++; continue; // no image found, skip placeholder
-    }
-    if (ch === '\x13') {
-      // Field begin — skip until \x14 (field separator) or \x15 (field end)
-      pos++;
-      while (pos < text.length && text[pos] !== '\x14' && text[pos] !== '\x15') pos++;
-      if (pos < text.length && text[pos] === '\x14') pos++; // skip separator, show result
-      continue;
-    }
-    if (ch === '\x14' || ch === '\x15') {
-      pos++; continue; // skip separator/end markers
     }
     if (SPECIAL_CHAR_RE.test(ch)) {
       SPECIAL_CHAR_RE.lastIndex = 0;
