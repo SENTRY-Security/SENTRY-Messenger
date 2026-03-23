@@ -270,9 +270,9 @@ function runPropsToStyle(props) {
   const parts = [];
   if (props.bold) parts.push('font-weight:bold');
   if (props.italic) parts.push('font-style:italic');
-  if (props.underline) parts.push('text-decoration:underline');
-  if (props.strike) parts.push('text-decoration:line-through');
   if (props.underline && props.strike) parts.push('text-decoration:underline line-through');
+  else if (props.underline) parts.push('text-decoration:underline');
+  else if (props.strike) parts.push('text-decoration:line-through');
   if (props.fontSize) parts.push(`font-size:${props.fontSize}pt`);
   if (props.color) parts.push(`color:${props.color}`);
   if (props.font) parts.push(`font-family:"${props.font}",sans-serif`);
