@@ -410,6 +410,134 @@ function parseSprms(data, offset, length) {
         break;
       }
       case 0x2423: props.outlineLvl = data[pos]; break; // sprmPOutLvl (heading level)
+      case 0x442D: { // sprmPShd80 - paragraph shading (legacy SHD80, 2 bytes)
+        const shdVal = data[pos] | (data[pos + 1] << 8);
+        const icoBack = shdVal & 0x1F;
+        const icoMap80 = [null, '#000000', '#0000ff', '#00ffff', '#00ff00', '#ff00ff',
+          '#ff0000', '#ffff00', '#ffffff', '#00008b', '#008b8b', '#006400',
+          '#8b008b', '#8b0000', '#808000', '#808080', '#c0c0c0'];
+        if (icoBack > 0 && icoBack < icoMap80.length) props.paraBg = icoMap80[icoBack];
+        break;
+      }
+      case 0xC63D: { // sprmPBrcTop80 - paragraph top border (4 bytes: BRC80)
+        if (opSize >= 4) {
+          const bWidth = data[pos]; // border width in 1/8 pt
+          const bType = data[pos + 1];
+          const bColor = data[pos + 2]; // ICO index
+          if (bWidth > 0) props.borderTop = Math.max(1, Math.round(bWidth / 8)) + 'px solid';
+        }
+        break;
+      }
+      case 0xC63E: { // sprmPBrcLeft80
+        if (opSize >= 4) {
+          const bWidth = data[pos];
+          if (bWidth > 0) props.borderLeft = Math.max(1, Math.round(bWidth / 8)) + 'px solid';
+        }
+        break;
+      }
+      case 0xC63F: { // sprmPBrcBottom80
+        if (opSize >= 4) {
+          const bWidth = data[pos];
+          if (bWidth > 0) props.borderBottom = Math.max(1, Math.round(bWidth / 8)) + 'px solid';
+        }
+        break;
+      }
+      case 0xC640: { // sprmPBrcRight80
+        if (opSize >= 4) {
+          const bWidth = data[pos];
+          if (bWidth > 0) props.borderRight = Math.max(1, Math.round(bWidth / 8)) + 'px solid';
+        }
+        break;
+      }
+
+      // ── Table (TAP) properties ──
+      case 0xD608: { // sprmTDefTable - defines cell boundaries + TC properties
+        // Variable-length: spra=6 means first byte is the operand size
+        // But the operand was already read. Parse from `pos` which points to data start.
+        // Structure: 2 bytes = number of cells (itcMac)
+        // Then (itcMac+1) * 2 bytes = cell boundary positions (dxa, twips from left margin)
+        // Then itcMac * 20 bytes = TC structures (cell properties)
+        if (opSize < 4) break;
+        const itcMac = data[pos] | (data[pos + 1] << 8);
+        if (itcMac <= 0 || itcMac > 64) break; // sanity
+        const boundaryBytes = (itcMac + 1) * 2;
+        if (2 + boundaryBytes > opSize) break;
+        const cellBoundaries = [];
+        for (let c = 0; c <= itcMac; c++) {
+          let bnd = data[pos + 2 + c * 2] | (data[pos + 3 + c * 2] << 8);
+          if (bnd > 0x7FFF) bnd -= 0x10000; // signed
+          cellBoundaries.push(bnd);
+        }
+        // Calculate cell widths from boundary differences (twips → pt)
+        const cellWidths = [];
+        for (let c = 0; c < itcMac; c++) {
+          cellWidths.push(Math.max(0, (cellBoundaries[c + 1] - cellBoundaries[c]) / 20));
+        }
+        props.cellWidths = cellWidths;
+        props.cellCount = itcMac;
+        // Parse TC structures (20 bytes each) for borders/shading
+        const tcBase = pos + 2 + boundaryBytes;
+        if (2 + boundaryBytes + itcMac * 20 <= opSize) {
+          const cellTCs = [];
+          for (let c = 0; c < itcMac; c++) {
+            const tcOff = tcBase + c * 20;
+            const tcFlags = data[tcOff] | (data[tcOff + 1] << 8);
+            const fVertMerge = !!(tcFlags & 0x0020);
+            const fVertRestart = !!(tcFlags & 0x0040);
+            cellTCs.push({ fVertMerge, fVertRestart });
+          }
+          props.cellTCs = cellTCs;
+        }
+        break;
+      }
+      case 0xD612: { // sprmTDefTableShd - cell shading for the row
+        // Array of SHD structures (10 bytes each) for each cell
+        if (opSize < 2) break;
+        const nCells = Math.floor(opSize / 10);
+        const cellShds = [];
+        for (let c = 0; c < nCells; c++) {
+          const shdOff = pos + c * 10;
+          // SHD80 structure: foreground color (COLORREF) + background color (COLORREF) + pattern
+          // Simplified: read background COLORREF (bytes 4-6)
+          const r = data[shdOff + 4], g = data[shdOff + 5], b = data[shdOff + 6];
+          if (r === 0xFF && g === 0xFF && b === 0xFF) cellShds.push(null);
+          else cellShds.push('#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join(''));
+        }
+        props.cellShds = cellShds;
+        break;
+      }
+      case 0xD613: { // sprmTDefTableShd2nd/sprmTCellShd - alternate cell shading format
+        if (opSize < 2) break;
+        const nCells2 = Math.floor(opSize / 10);
+        const cellShds2 = [];
+        for (let c = 0; c < nCells2; c++) {
+          const shdOff = pos + c * 10;
+          const r = data[shdOff + 4], g = data[shdOff + 5], b = data[shdOff + 6];
+          if (r === 0xFF && g === 0xFF && b === 0xFF) cellShds2.push(null);
+          else cellShds2.push('#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join(''));
+        }
+        if (!props.cellShds) props.cellShds = cellShds2;
+        break;
+      }
+      case 0x5400: { // sprmTJc - table row justification
+        const tJc = data[pos] | (data[pos + 1] << 8);
+        props.tableAlign = ['left', 'center', 'right'][tJc] || 'left';
+        break;
+      }
+      case 0x9407: { // sprmTDyaRowHeight - row height
+        let rowH = data[pos] | (data[pos + 1] << 8);
+        if (rowH > 0x7FFF) rowH -= 0x10000; // signed: negative = exact, positive = at-least
+        props.rowHeight = Math.abs(rowH) / 20;
+        props.rowHeightExact = rowH < 0;
+        break;
+      }
+      case 0xD605: { // sprmTTableBorders - table border definition (older format)
+        // 6 borders × 8 bytes = 48 bytes (top, left, bottom, right, insideH, insideV)
+        if (opSize >= 48) {
+          props.tableBorders = true; // just flag that borders exist
+        }
+        break;
+      }
     }
     pos += opSize;
   }
@@ -584,6 +712,29 @@ function renderDocBinary(buffer) {
     paraRuns = parseParaFormatting(wordDoc, tableStream, papxPair.fc, papxPair.lcb, pieces);
   } catch { /* proceed without paragraph formatting */ }
 
+  // Parse DOP (Document Properties) for page margins (FIB index 31)
+  let pageMargins = null;
+  try {
+    const dopPair = fib.fibPair(31);
+    if (dopPair.lcb >= 28 && dopPair.fc + dopPair.lcb <= tableStream.length) {
+      const dopView = new DataView(tableStream.buffer, tableStream.byteOffset + dopPair.fc, dopPair.lcb);
+      // DOP offsets: dxaLeft(28), dxaRight(30), dyaTop(16), dyaBottom(18)
+      // Offsets may vary by version. Standard Word 97 DOP layout:
+      const dyaTop = dopView.getInt16(16, true);   // top margin (twips, signed)
+      const dyaBottom = dopView.getInt16(18, true); // bottom margin
+      if (dopPair.lcb >= 32) {
+        const dxaLeft = dopView.getUint16(28, true);  // left margin
+        const dxaRight = dopView.getUint16(30, true);  // right margin
+        pageMargins = {
+          top: Math.max(0, dyaTop / 20),
+          bottom: Math.max(0, dyaBottom / 20),
+          left: Math.max(0, dxaLeft / 20),
+          right: Math.max(0, dxaRight / 20),
+        };
+      }
+    }
+  } catch { /* proceed without page margins */ }
+
   // Build paragraphs: split text by \r (paragraph mark in Word binary)
   const html = [];
   let inTable = false;
@@ -617,11 +768,42 @@ function renderDocBinary(buffer) {
       }
       if (paraProps.tableRowEnd) {
         if (!inTable) { html.push('<div class="word-tbl-wrap"><table class="word-tbl word-tbl-bordered">'); inTable = true; }
-        html.push('<tr>');
+
+        // Row style from TAP properties
+        const rowStyle = [];
+        if (paraProps.rowHeight) {
+          rowStyle.push(`height:${paraProps.rowHeight}pt`);
+        }
+        html.push(`<tr${rowStyle.length ? ` style="${rowStyle.join(';')}"` : ''}>`);
+
         // Last cell is the row-end marker itself, skip it
         const dataCells = tableRow.slice(0, -1);
-        for (const cell of (dataCells.length ? dataCells : tableRow)) {
-          html.push(`<td class="word-tc">${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts)}</td>`);
+        const cells2 = dataCells.length ? dataCells : tableRow;
+        for (let ci = 0; ci < cells2.length; ci++) {
+          const cell = cells2[ci];
+          const tdStyle = [];
+          // Apply cell width from sprmTDefTable
+          if (paraProps.cellWidths && ci < paraProps.cellWidths.length) {
+            tdStyle.push(`width:${paraProps.cellWidths[ci]}pt`);
+          }
+          // Apply cell shading
+          if (paraProps.cellShds && ci < paraProps.cellShds.length && paraProps.cellShds[ci]) {
+            tdStyle.push(`background-color:${paraProps.cellShds[ci]}`);
+          }
+          // Vertical merge
+          let skipCell = false;
+          if (paraProps.cellTCs && ci < paraProps.cellTCs.length) {
+            const tc = paraProps.cellTCs[ci];
+            if (tc.fVertMerge && !tc.fVertRestart) {
+              skipCell = true; // continuation of vertical merge — hide cell
+            }
+          }
+          if (skipCell) {
+            html.push('<td class="word-tc word-tc-merged" style="display:none"></td>');
+          } else {
+            const styleAttr2 = tdStyle.length ? ` style="${tdStyle.join(';')}"` : '';
+            html.push(`<td class="word-tc"${styleAttr2}>${renderFormattedRun(cell.text, cell.cpStart, charRuns, fonts)}</td>`);
+          }
         }
         html.push('</tr>');
         tableRow = [];
@@ -643,6 +825,11 @@ function renderDocBinary(buffer) {
       }
       if (paraProps.lineHeight) styleParts.push(`line-height:${paraProps.lineHeight}`);
       if (paraProps.pageBreakBefore) styleParts.push('page-break-before:always');
+      if (paraProps.paraBg) styleParts.push(`background-color:${paraProps.paraBg};padding:2pt 4pt`);
+      if (paraProps.borderTop) styleParts.push(`border-top:${paraProps.borderTop}`);
+      if (paraProps.borderBottom) styleParts.push(`border-bottom:${paraProps.borderBottom}`);
+      if (paraProps.borderLeft) styleParts.push(`border-left:${paraProps.borderLeft}`);
+      if (paraProps.borderRight) styleParts.push(`border-right:${paraProps.borderRight}`);
       const styleAttr = styleParts.length ? ` style="${styleParts.join(';')}"` : '';
 
       // Check if paragraph has visible text (strip special chars for check only)
@@ -680,7 +867,7 @@ function renderDocBinary(buffer) {
   }
   if (inTable) html.push('</table></div>');
 
-  return html.join('');
+  return { html: html.join(''), pageMargins };
 }
 
 // Special chars to strip from display (field codes, picture placeholders, cell marks)
@@ -720,10 +907,16 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts) {
     }
     if (runEnd <= pos) runEnd = pos + 1;
 
-    // Extract chunk, stripping special chars for display
+    // Extract chunk, stripping special chars for display (but keep tabs)
     const rawChunk = text.slice(pos, runEnd);
     const chunk = rawChunk.replace(SPECIAL_CHAR_RE, '');
     if (!chunk) { pos = runEnd; continue; }
+    // If chunk is only tabs, render them
+    if (/^\t+$/.test(chunk)) {
+      for (let t = 0; t < chunk.length; t++) parts.push('<span class="word-tab">\t</span>');
+      pos = runEnd;
+      continue;
+    }
 
     if (run && run.props) {
       const p = run.props;
@@ -732,7 +925,7 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts) {
 
       let displayText = chunk;
       if (p.allCaps) displayText = displayText.toUpperCase();
-      const escaped = escapeHtml(displayText);
+      const escaped = escapeHtml(displayText).replace(/\t/g, '<span class="word-tab">\t</span>');
 
       const css = [];
       if (p.bold) css.push('font-weight:bold');
@@ -758,7 +951,7 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts) {
         parts.push(escaped);
       }
     } else {
-      parts.push(escapeHtml(chunk));
+      parts.push(escapeHtml(chunk).replace(/\t/g, '<span class="word-tab">\t</span>'));
     }
     pos = runEnd;
   }
@@ -1429,7 +1622,9 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
     } else if (isOle2) {
       // Old .doc (OLE2 binary) — formatted rendering
       isDocFormat = true;
-      resultHtml = renderDocBinary(arrayBuffer);
+      const docResult = renderDocBinary(arrayBuffer);
+      resultHtml = typeof docResult === 'string' ? docResult : docResult.html;
+      var docPageMargins = typeof docResult === 'object' ? docResult.pageMargins : null;
     } else {
       throw new Error('NOT_DOCX');
     }
@@ -1441,11 +1636,18 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
       // Show format notice for .doc
       const notice = document.createElement('div');
       notice.className = 'word-format-notice';
-      notice.textContent = t('viewer.wordDocNotice') || '.doc 格式僅支援文字預覽，下載可查看完整格式。';
+      notice.textContent = t('viewer.wordDocNotice') || '.doc 格式預覽可能與原始排版略有差異，下載可查看完整格式。';
       docContainer.appendChild(notice);
     }
     const page = document.createElement('div');
     page.className = 'word-page';
+    // Apply page margins from DOP if available
+    if (docPageMargins) {
+      page.style.paddingTop = docPageMargins.top + 'pt';
+      page.style.paddingBottom = docPageMargins.bottom + 'pt';
+      page.style.paddingLeft = docPageMargins.left + 'pt';
+      page.style.paddingRight = docPageMargins.right + 'pt';
+    }
     page.innerHTML = resultHtml;
     docContainer.appendChild(page);
     stageEl.appendChild(docContainer);
