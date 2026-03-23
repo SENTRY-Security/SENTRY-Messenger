@@ -354,6 +354,25 @@ export class MessageRenderer {
         this.scrollEl = scrollEl || null;
         this.callbacks = callbacks;
         this.shimmerIds = new Set();
+        this._previewLoadedSet = new WeakSet(); // track which containers have been loaded
+        this._previewObserver = new IntersectionObserver((entries) => {
+            for (const entry of entries) {
+                const el = entry.target;
+                if (entry.isIntersecting) {
+                    // Enter viewport → load preview if not loaded yet
+                    if (!this._previewLoadedSet.has(el) && el._lazyMedia) {
+                        this._previewLoadedSet.add(el);
+                        this._loadFilePreview(el, el._lazyMedia);
+                    }
+                } else {
+                    // Leave viewport → release heavy previews to free memory
+                    if (this._previewLoadedSet.has(el) && el._lazyMedia && el._lazyType === 'heavy') {
+                        this._previewLoadedSet.delete(el);
+                        this._releaseFilePreview(el);
+                    }
+                }
+            }
+        }, { rootMargin: '200px 0px' }); // start loading 200px before entering viewport
     }
 
     /**
@@ -473,6 +492,59 @@ export class MessageRenderer {
         }
     }
 
+    /** Show a spinner placeholder in the preview container */
+    _showPreviewSpinner(container) {
+        const holder = document.createElement('div');
+        holder.className = 'message-file-preview-generic';
+        holder.innerHTML = '<div class="loading-spinner" style="width:28px;height:28px;border-width:3px"></div>';
+        container.appendChild(holder);
+    }
+
+    /** Actually load and render the file preview (called when entering viewport) */
+    _loadFilePreview(container, media) {
+        const type = (media?.contentType || '').toLowerCase();
+        const nameLower = (media?.name || '').toLowerCase();
+
+        // Clear spinner
+        container.innerHTML = '';
+
+        if (type === 'application/pdf' || nameLower.endsWith('.pdf')) {
+            const pdf = document.createElement('canvas');
+            pdf.className = 'message-file-preview-pdf';
+            pdf.setAttribute('aria-label', media?.name || t('viewer.pdfPreview'));
+            pdf.dataset.previewState = 'loading';
+            container.appendChild(pdf);
+            container.appendChild(this._fileTypeBadge('PDF', '#dc2626'));
+            renderPdfThumbnail(media, pdf);
+        } else if (isPptxMime(type) || isPptxFilename(media?.name)) {
+            const pptxCanvas = document.createElement('canvas');
+            pptxCanvas.className = 'message-file-preview-pdf';
+            pptxCanvas.setAttribute('aria-label', media?.name || 'PPTX preview');
+            pptxCanvas.dataset.previewState = 'loading';
+            container.appendChild(pptxCanvas);
+            container.appendChild(this._fileTypeBadge('PPTX', '#ea580c'));
+            this._renderPptxThumbnail(media, pptxCanvas, container);
+        } else if (isWordMime(type) || isWordFilename(media?.name)) {
+            const wordDiv = document.createElement('div');
+            wordDiv.className = 'message-file-preview-generic';
+            wordDiv.innerHTML = '<svg class="icon file-type-icon" style="color:#2563eb"><use href="#i-file-text"/></svg>';
+            container.appendChild(wordDiv);
+            this._renderWordThumbnail(media, wordDiv, container);
+        } else if (isExcelMime(type) || isExcelFilename(media?.name)) {
+            const xlsDiv = document.createElement('div');
+            xlsDiv.className = 'message-file-preview-generic';
+            xlsDiv.innerHTML = '<svg class="icon file-type-icon" style="color:#16a34a"><use href="#i-file-spreadsheet"/></svg>';
+            container.appendChild(xlsDiv);
+            this._renderExcelThumbnail(media, xlsDiv, container);
+        }
+    }
+
+    /** Release heavy preview content to free memory (called when leaving viewport) */
+    _releaseFilePreview(container) {
+        container.innerHTML = '';
+        this._showPreviewSpinner(container);
+    }
+
     _fileTypeBadge(label, color) {
         const badge = document.createElement('div');
         badge.style.cssText = `position:absolute;bottom:4px;right:4px;background:${color};color:#fff;font-size:9px;font-weight:600;padding:2px 5px;border-radius:4px;line-height:1.2;pointer-events:none;letter-spacing:0.5px;opacity:0.9;z-index:1;`;
@@ -508,8 +580,6 @@ export class MessageRenderer {
             this._attachMediaLoadScrollGuard(img);
             setPreviewSource(img, media);
         } else if (type.startsWith('video/')) {
-            // For videos, prefer showing a still thumbnail image (JPEG preview)
-            // instead of a <video> element to avoid keeping video blobs in memory.
             const hasPreview = media?.previewUrl || media?.preview?.localUrl ||
                 (media?.preview?.objectKey && media?.preview?.envelope);
             if (hasPreview) {
@@ -521,40 +591,20 @@ export class MessageRenderer {
                 this._attachMediaLoadScrollGuard(img);
                 setPreviewSource(img, media);
             } else {
-                // No preview thumbnail available — show generic video icon
                 const generic = document.createElement('div');
                 generic.className = 'message-file-preview-generic';
                 generic.innerHTML = '<svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
                 container.appendChild(generic);
             }
-        } else if (type === 'application/pdf' || nameLower.endsWith('.pdf')) {
-            const pdf = document.createElement('canvas');
-            pdf.className = 'message-file-preview-pdf';
-            pdf.setAttribute('aria-label', media?.name || t('viewer.pdfPreview'));
-            pdf.dataset.previewState = 'loading';
-            container.appendChild(pdf);
-            container.appendChild(this._fileTypeBadge('PDF', '#dc2626'));
-            renderPdfThumbnail(media, pdf);
-        } else if (isPptxMime(type) || isPptxFilename(media?.name)) {
-            const pptxCanvas = document.createElement('canvas');
-            pptxCanvas.className = 'message-file-preview-pdf';
-            pptxCanvas.setAttribute('aria-label', media?.name || 'PPTX preview');
-            pptxCanvas.dataset.previewState = 'loading';
-            container.appendChild(pptxCanvas);
-            container.appendChild(this._fileTypeBadge('PPTX', '#ea580c'));
-            this._renderPptxThumbnail(media, pptxCanvas, container);
-        } else if (isWordMime(type) || isWordFilename(media?.name)) {
-            const wordDiv = document.createElement('div');
-            wordDiv.className = 'message-file-preview-generic';
-            wordDiv.innerHTML = '<svg class="icon file-type-icon" style="color:#2563eb"><use href="#i-file-text"/></svg>';
-            container.appendChild(wordDiv);
-            this._renderWordThumbnail(media, wordDiv, container);
-        } else if (isExcelMime(type) || isExcelFilename(media?.name)) {
-            const xlsDiv = document.createElement('div');
-            xlsDiv.className = 'message-file-preview-generic';
-            xlsDiv.innerHTML = '<svg class="icon file-type-icon" style="color:#16a34a"><use href="#i-file-spreadsheet"/></svg>';
-            container.appendChild(xlsDiv);
-            this._renderExcelThumbnail(media, xlsDiv, container);
+        } else if (type === 'application/pdf' || nameLower.endsWith('.pdf') ||
+                   isPptxMime(type) || isPptxFilename(media?.name) ||
+                   isWordMime(type) || isWordFilename(media?.name) ||
+                   isExcelMime(type) || isExcelFilename(media?.name)) {
+            // Heavy file previews — lazy load via IntersectionObserver
+            this._showPreviewSpinner(container);
+            container._lazyMedia = media;
+            container._lazyType = 'heavy';
+            this._previewObserver.observe(container);
         } else {
             const generic = document.createElement('div');
             generic.className = 'message-file-preview-generic';
@@ -873,7 +923,9 @@ export class MessageRenderer {
         const { activePeerDigest, activePeerDeviceId, conversationId } = state;
         this.shimmerIds = shimmerIds || new Set();
 
-        // Clear list
+        // Clear list — disconnect observer to release references to old elements
+        this._previewObserver.disconnect();
+        this._previewLoadedSet = new WeakSet();
         const prevCount = this.listEl.childElementCount;
         this.listEl.innerHTML = '';
 
