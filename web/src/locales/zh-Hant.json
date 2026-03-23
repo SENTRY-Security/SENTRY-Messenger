@@ -865,7 +865,7 @@
     "wordLoadFailed": "Word 載入失敗：{{error}}",
     "wordOldFormat": "無法辨識的檔案格式，請下載後使用其他應用程式開啟。",
     "wordEncrypted": "此檔案已加密，無法線上預覽。請下載後使用其他應用程式開啟。",
-    "wordDocNotice": ".doc 格式僅支援文字預覽，下載可查看完整格式。",
+    "wordDocNotice": ".doc 格式預覽可能與原始排版略有差異，下載可查看完整格式。",
     "downloadZip": "下載壓縮檔",
     "zipFiles": "個檔案",
     "zipLoadFailed": "壓縮檔載入失敗：{{error}}",

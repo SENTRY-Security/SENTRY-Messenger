@@ -865,7 +865,7 @@
     "wordLoadFailed": "Word load failed: {{error}}",
     "wordOldFormat": "Unrecognized file format. Please download and open with another app.",
     "wordEncrypted": "This file is encrypted and cannot be previewed online. Please download and open with another app.",
-    "wordDocNotice": "The .doc format only supports text preview. Download to view full formatting.",
+    "wordDocNotice": "The .doc preview may differ slightly from the original layout. Download to view full formatting.",
     "downloadZip": "Download archive",
     "zipFiles": "files",
     "zipLoadFailed": "Archive load failed: {{error}}",

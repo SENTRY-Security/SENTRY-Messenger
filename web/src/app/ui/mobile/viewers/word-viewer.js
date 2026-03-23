@@ -207,6 +207,9 @@ function parseFIB(wordDoc) {
 }
 
 // ── Parse piece table → text + CP↔FC mapping ──
+// PCD stores fc.fc (30-bit). For compressed text, byte offset = fc.fc / 2.
+// FKP pages store byte offsets in WordDocument stream directly.
+// We store both fcRaw (for debugging) and fcByteOff (for FKP matching).
 function parsePieceTable(wordDoc, tableStream, fcClx, lcbClx) {
   const tsView = new DataView(tableStream.buffer, tableStream.byteOffset, tableStream.byteLength);
   let clxOff = fcClx;
@@ -232,20 +235,26 @@ function parsePieceTable(wordDoc, tableStream, fcClx, lcbClx) {
     if (charCount <= 0) continue;
     const pcdOff = pcdBase + i * 8;
     if (pcdOff + 8 > tableStream.length) break;
-    const fcRaw = tsView.getUint32(pcdOff + 2, true);
-    const fCompressed = !!(fcRaw & 0x40000000);
-    const fcValue = fcRaw & 0x3FFFFFFF;
-    const fcStart = fCompressed ? fcValue / 2 : fcValue;
+    const fcField = tsView.getUint32(pcdOff + 2, true);
+    const fCompressed = !!(fcField & 0x40000000);
+    const fcValue = fcField & 0x3FFFFFFF;
+    // Byte offset in WordDocument where this piece's text lives
+    const fcByteOff = fCompressed ? fcValue / 2 : fcValue;
 
-    pieces.push({ cpStart: cps[i], cpEnd: cps[i + 1], fcStart, fCompressed });
+    pieces.push({
+      cpStart: cps[i], cpEnd: cps[i + 1],
+      fcByteOff,   // actual byte offset (matches FKP FC values)
+      fcRaw: fcValue, // raw 30-bit PCD value (for fallback matching)
+      fCompressed,
+    });
     try {
       if (fCompressed) {
-        if (fcStart + charCount <= wordDoc.length) {
-          textChunks.push(new TextDecoder('windows-1252').decode(wordDoc.slice(fcStart, fcStart + charCount)));
+        if (fcByteOff + charCount <= wordDoc.length) {
+          textChunks.push(new TextDecoder('windows-1252').decode(wordDoc.slice(fcByteOff, fcByteOff + charCount)));
         }
       } else {
-        if (fcStart + charCount * 2 <= wordDoc.length) {
-          textChunks.push(new TextDecoder('utf-16le').decode(wordDoc.slice(fcStart, fcStart + charCount * 2)));
+        if (fcByteOff + charCount * 2 <= wordDoc.length) {
+          textChunks.push(new TextDecoder('utf-16le').decode(wordDoc.slice(fcByteOff, fcByteOff + charCount * 2)));
         }
       }
     } catch { textChunks.push(''); }
@@ -253,22 +262,38 @@ function parsePieceTable(wordDoc, tableStream, fcClx, lcbClx) {
   return { text: textChunks.join(''), pieces };
 }
 
-// ── Convert FC (file character position) to CP (character position) ──
+// ── Convert FC (byte offset in WordDocument) to CP (character position) ──
+// FKP pages store byte offsets. For compressed pieces, 1 byte/char;
+// for uncompressed, 2 bytes/char.
 function fcToCp(fc, pieces) {
   for (const p of pieces) {
-    let fcEnd;
+    const cpLen = p.cpEnd - p.cpStart;
     if (p.fCompressed) {
-      fcEnd = p.fcStart + (p.cpEnd - p.cpStart);
-      if (fc >= p.fcStart && fc < fcEnd) return p.cpStart + (fc - p.fcStart);
+      // Each char is 1 byte: FC range = [fcByteOff, fcByteOff + cpLen)
+      const fcEnd = p.fcByteOff + cpLen;
+      if (fc >= p.fcByteOff && fc < fcEnd) return p.cpStart + (fc - p.fcByteOff);
     } else {
-      fcEnd = p.fcStart + (p.cpEnd - p.cpStart) * 2;
-      if (fc >= p.fcStart && fc < fcEnd) return p.cpStart + Math.floor((fc - p.fcStart) / 2);
+      // Each char is 2 bytes: FC range = [fcByteOff, fcByteOff + cpLen*2)
+      const fcEnd = p.fcByteOff + cpLen * 2;
+      if (fc >= p.fcByteOff && fc < fcEnd) return p.cpStart + Math.floor((fc - p.fcByteOff) / 2);
+    }
+  }
+  // Fallback: try matching with raw PCD fc values (some Word versions use these in FKPs)
+  for (const p of pieces) {
+    const cpLen = p.cpEnd - p.cpStart;
+    if (p.fCompressed) {
+      const fcEnd = p.fcRaw + cpLen;
+      if (fc >= p.fcRaw && fc < fcEnd) return p.cpStart + (fc - p.fcRaw);
+    } else {
+      const fcEnd = p.fcRaw + cpLen * 2;
+      if (fc >= p.fcRaw && fc < fcEnd) return p.cpStart + Math.floor((fc - p.fcRaw) / 2);
     }
   }
   return -1;
 }
 
 // ── Parse Sprm (Single Property Modifier) operations ──
+// Toggle byte: 0=off, 1=on, 0x80=use style default, 0x81=negate style default
 function parseSprms(data, offset, length) {
   const props = {};
   let pos = offset;
@@ -288,36 +313,84 @@ function parseSprms(data, offset, length) {
     }
     if (pos + opSize > end) break;
 
+    const toggleVal = (v) => v === 1 || v === 0x81; // on or negate-default (treat as on)
+
     switch (sprm) {
-      // Character properties
-      case 0x0835: props.bold = !!data[pos]; break;
-      case 0x0836: props.italic = !!data[pos]; break;
-      case 0x0837: props.strike = !!data[pos]; break;
-      case 0x2A3E: props.underline = data[pos] !== 0; break;
-      case 0x4A43: props.fontSize = (data[pos] | (data[pos + 1] << 8)) / 2; break;
-      case 0x6870: { // Text color (COLORREF: 0x00BBGGRR)
+      // ── Character properties (sgc=2, CHP) ──
+      case 0x0835: props.bold = toggleVal(data[pos]); break;
+      case 0x0836: props.italic = toggleVal(data[pos]); break;
+      case 0x0837: props.strike = toggleVal(data[pos]); break;
+      case 0x083A: props.smallCaps = toggleVal(data[pos]); break;
+      case 0x083B: props.allCaps = toggleVal(data[pos]); break;
+      case 0x0839: props.vanish = toggleVal(data[pos]); break; // hidden text
+      case 0x2A3E: props.underline = data[pos] !== 0; break; // sprmCKul
+      case 0x4A43: props.fontSize = (data[pos] | (data[pos + 1] << 8)) / 2; break; // sprmCHps (half-points)
+      case 0x6870: { // sprmCCv - text color (COLORREF: 0x00BBGGRR)
         const r = data[pos], g = data[pos + 1], b = data[pos + 2];
-        if (r || g || b) props.color = '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+        // Include black (0,0,0) explicitly — it's a valid intentional color
+        props.color = '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
         break;
       }
-      case 0x4A4F: case 0x4A50: case 0x4A51: // Font index
+      case 0x6877: { // sprmCCvUl - underline color
+        const r = data[pos], g = data[pos + 1], b = data[pos + 2];
+        props.ulColor = '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+        break;
+      }
+      case 0x4A4F: case 0x4A50: case 0x4A51: // sprmCRgFtc0/1/2 - font index
         if (props.fontIdx === undefined) props.fontIdx = data[pos] | (data[pos + 1] << 8);
         break;
-      // Paragraph properties
-      case 0x2403: case 0x2461: { // Justification
+      case 0x4845: { // sprmCIco - legacy color index (Word 97)
+        const icoMap = [null, '#000000', '#0000ff', '#00ffff', '#00ff00', '#ff00ff',
+          '#ff0000', '#ffff00', '#ffffff', '#00008b', '#008b8b', '#006400',
+          '#8b008b', '#8b0000', '#808000', '#808080', '#c0c0c0'];
+        const ico = data[pos];
+        if (ico > 0 && ico < icoMap.length) props.color = icoMap[ico];
+        break;
+      }
+      case 0x2A48: props.istdChar = data[pos]; break; // character style index
+      case 0x484B: { // sprmCHpsPos - vertical position (superscript/subscript)
+        const hpsPos = data[pos] | (data[pos + 1] << 8);
+        if (hpsPos > 0 && hpsPos < 0x8000) props.vertAlign = 'super';
+        else if (hpsPos >= 0x8000) props.vertAlign = 'sub';
+        break;
+      }
+
+      // ── Paragraph properties (sgc=1, PAP) ──
+      case 0x2403: case 0x2461: { // sprmPJc80 / sprmPJc
         const jc = data[pos];
         props.align = ['left', 'center', 'right', 'justify'][jc] || 'left';
         break;
       }
-      case 0x2407: props.inTable = !!data[pos]; break;
-      case 0x2416: props.tableRowEnd = !!data[pos]; break;
-      case 0x460B: props.spaceBefore = (data[pos] | (data[pos + 1] << 8)) / 20; break;
-      case 0x460C: props.spaceAfter = (data[pos] | (data[pos + 1] << 8)) / 20; break;
-      case 0x840E: case 0x845E: { // Left indent (twips)
+      case 0x2407: props.inTable = toggleVal(data[pos]); break; // sprmPFInTable
+      case 0x2416: props.tableRowEnd = toggleVal(data[pos]); break; // sprmPFTtp
+      case 0x460B: props.spaceBefore = (data[pos] | (data[pos + 1] << 8)) / 20; break; // sprmPDyaBefore
+      case 0x460C: props.spaceAfter = (data[pos] | (data[pos + 1] << 8)) / 20; break; // sprmPDyaAfter
+      case 0x840E: case 0x845E: { // sprmPDxaLeft / sprmPDxaLeft80
         const val = data[pos] | (data[pos + 1] << 8);
-        props.indentLeft = val / 20;
+        props.indentLeft = (val > 0x7FFF ? val - 0x10000 : val) / 20;
         break;
       }
+      case 0x8411: case 0x8460: { // sprmPDxaRight / sprmPDxaRight80
+        const val = data[pos] | (data[pos + 1] << 8);
+        props.indentRight = (val > 0x7FFF ? val - 0x10000 : val) / 20;
+        break;
+      }
+      case 0x840F: case 0x845F: { // sprmPDxaLeft1 / sprmPDxaLeft180 (first line indent)
+        const val = data[pos] | (data[pos + 1] << 8);
+        props.firstLine = (val > 0x7FFF ? val - 0x10000 : val) / 20;
+        break;
+      }
+      case 0x6412: { // sprmPDyaLine - line spacing
+        const dyaLine = data[pos] | (data[pos + 1] << 8);
+        const fMultLinespace = data[pos + 2] | (data[pos + 3] << 8);
+        if (fMultLinespace) {
+          props.lineHeight = (dyaLine / 240).toFixed(2);
+        } else if (dyaLine > 0) {
+          props.lineHeight = (dyaLine / 20) + 'pt';
+        }
+        break;
+      }
+      case 0x2423: props.outlineLvl = data[pos]; break; // sprmPOutLvl (heading level)
     }
     pos += opSize;
   }
@@ -450,65 +523,84 @@ function renderDocBinary(buffer) {
   const wordDoc = ole2.getStream('WordDocument');
   if (!wordDoc) throw new Error('WordDocument stream not found');
 
-  const fib = parseFIB(wordDoc);
+  let fib;
+  try { fib = parseFIB(wordDoc); } catch { return fallbackRender(wordDoc); }
   const tableStream = ole2.getStream(fib.tableName);
 
   // Parse piece table for text + FC mapping
   const clx = fib.fibPair(66);
   if (!clx.lcb || !tableStream) return fallbackRender(wordDoc);
-  const ptResult = parsePieceTable(wordDoc, tableStream, clx.fc, clx.lcb);
+  let ptResult;
+  try { ptResult = parsePieceTable(wordDoc, tableStream, clx.fc, clx.lcb); } catch { /* fall through */ }
   if (!ptResult || !ptResult.text) return fallbackRender(wordDoc);
 
   const { text, pieces } = ptResult;
 
   // Parse font table
   const ftPair = fib.fibPair(39);
-  const fonts = parseFontTable(tableStream, ftPair.fc, ftPair.lcb);
+  let fonts = [];
+  try { fonts = parseFontTable(tableStream, ftPair.fc, ftPair.lcb); } catch { /* use empty */ }
 
-  // Parse character and paragraph formatting
-  const chpxPair = fib.fibPair(10);
-  const papxPair = fib.fibPair(11);
-  const charRuns = parseCharFormatting(wordDoc, tableStream, chpxPair.fc, chpxPair.lcb, pieces);
-  const paraRuns = parseParaFormatting(wordDoc, tableStream, papxPair.fc, papxPair.lcb, pieces);
+  // Parse character and paragraph formatting (non-fatal if these fail)
+  let charRuns = [], paraRuns = [];
+  try {
+    const chpxPair = fib.fibPair(10);
+    charRuns = parseCharFormatting(wordDoc, tableStream, chpxPair.fc, chpxPair.lcb, pieces);
+  } catch { /* proceed without character formatting */ }
+  try {
+    const papxPair = fib.fibPair(11);
+    paraRuns = parseParaFormatting(wordDoc, tableStream, papxPair.fc, papxPair.lcb, pieces);
+  } catch { /* proceed without paragraph formatting */ }
 
-  // Build paragraphs: split text by \r (paragraph mark) and \x07 (cell mark)
+  // Build paragraphs: split text by \r (paragraph mark in Word binary)
   const html = [];
   let inTable = false;
   let tableRow = [];
+  let tableCellCpStart = 0;
   let cp = 0;
 
   const paragraphs = text.split('\r');
-  for (const paraText of paragraphs) {
+  for (let pi = 0; pi < paragraphs.length; pi++) {
+    const paraText = paragraphs[pi];
     const paraLen = paraText.length;
     const cpStart = cp;
     const cpEnd = cp + paraLen;
 
-    // Get paragraph props
+    // Find paragraph props covering this CP range
     let paraProps = {};
     for (const pr of paraRuns) {
       if (pr.cpStart <= cpStart && pr.cpEnd > cpStart) { paraProps = pr.props; break; }
     }
 
-    // Check table state
+    // ── Table handling ──
     if (paraProps.inTable) {
-      // Split cells by \x07
+      // Split cells by \x07 (cell mark)
       const cells = paraText.split('\x07');
-      for (const cellText of cells) {
-        if (cellText || cells.length > 1) tableRow.push(cellText);
+      let cellCp = cpStart;
+      for (let ci = 0; ci < cells.length; ci++) {
+        const cellText = cells[ci];
+        if (cellText || ci < cells.length - 1) {
+          tableRow.push({ text: cellText, cpStart: cellCp });
+        }
+        cellCp += cellText.length + 1; // +1 for \x07
       }
       if (paraProps.tableRowEnd) {
         if (!inTable) { html.push('<div class="word-tbl-wrap"><table class="word-tbl word-tbl-bordered">'); inTable = true; }
         html.push('<tr>');
-        for (const cell of tableRow) {
-          html.push(`<td class="word-tc">${renderFormattedRun(cell, cpStart, charRuns, fonts)}</td>`);
+        // Last cell is the row-end marker itself, skip it
+        const dataCells = tableRow.slice(0, -1);
+        for (const cell of (dataCells.length ? dataCells : tableRow)) {
+          const cleanCell = cell.text.replace(/[\x01\x08\x13\x14\x15]/g, '');
+          html.push(`<td class="word-tc">${renderFormattedRun(cleanCell, cell.cpStart, charRuns, fonts)}</td>`);
         }
         html.push('</tr>');
         tableRow = [];
       }
     } else {
+      // ── Close open table ──
       if (inTable) { html.push('</table></div>'); inTable = false; tableRow = []; }
 
-      // Clean special chars
+      // Clean special chars (field codes, picture placeholders, etc.)
       const cleanText = paraText.replace(/[\x01\x08\x13\x14\x15\x07]/g, '');
 
       // Build paragraph style
@@ -516,26 +608,45 @@ function renderDocBinary(buffer) {
       if (paraProps.align && paraProps.align !== 'left') styleParts.push(`text-align:${paraProps.align}`);
       if (paraProps.spaceBefore) styleParts.push(`margin-top:${paraProps.spaceBefore}pt`);
       if (paraProps.spaceAfter) styleParts.push(`margin-bottom:${paraProps.spaceAfter}pt`);
-      if (paraProps.indentLeft) styleParts.push(`padding-left:${paraProps.indentLeft}pt`);
+      if (paraProps.indentLeft && paraProps.indentLeft > 0) styleParts.push(`padding-left:${paraProps.indentLeft}pt`);
+      if (paraProps.indentRight && paraProps.indentRight > 0) styleParts.push(`padding-right:${paraProps.indentRight}pt`);
+      if (paraProps.firstLine) {
+        if (paraProps.firstLine > 0) styleParts.push(`text-indent:${paraProps.firstLine}pt`);
+        else styleParts.push(`text-indent:${paraProps.firstLine}pt;padding-left:${(paraProps.indentLeft || 0) - paraProps.firstLine}pt`);
+      }
+      if (paraProps.lineHeight) {
+        const lh = paraProps.lineHeight;
+        styleParts.push(`line-height:${lh.toString().endsWith('pt') ? lh : lh}`);
+      }
       const styleAttr = styleParts.length ? ` style="${styleParts.join(';')}"` : '';
 
       if (!cleanText.trim()) {
         html.push(`<p class="word-p word-empty"${styleAttr}>&nbsp;</p>`);
       } else {
         const content = renderFormattedRun(cleanText, cpStart, charRuns, fonts);
-        // Detect if this looks like a heading (large font)
-        const firstCharRun = charRuns.find(r => r.cpStart <= cpStart && r.cpEnd > cpStart);
-        const fs = firstCharRun?.props?.fontSize;
-        if (fs && fs >= 18 && cleanText.trim().length < 200) {
-          const level = fs >= 28 ? 1 : fs >= 22 ? 2 : 3;
-          html.push(`<h${level} class="word-h"${styleAttr}>${content}</h${level}>`);
+
+        // Detect heading: use outlineLvl (0-8) from paragraph Sprm, or fall back to font size
+        let headingLevel = 0;
+        if (paraProps.outlineLvl !== undefined && paraProps.outlineLvl <= 8) {
+          headingLevel = paraProps.outlineLvl + 1; // outlineLvl 0 = Heading 1
+        } else {
+          // Heuristic: large bold text that's short = heading
+          const firstCharRun = charRuns.find(r => r.cpStart <= cpStart && r.cpEnd > cpStart);
+          const fs = firstCharRun?.props?.fontSize;
+          if (fs && fs >= 18 && cleanText.trim().length < 200) {
+            headingLevel = fs >= 28 ? 1 : fs >= 22 ? 2 : 3;
+          }
+        }
+
+        if (headingLevel >= 1 && headingLevel <= 6) {
+          html.push(`<h${headingLevel} class="word-h"${styleAttr}>${content}</h${headingLevel}>`);
         } else {
           html.push(`<p class="word-p"${styleAttr}>${content}</p>`);
         }
       }
     }
 
-    cp = cpEnd + 1; // +1 for the \r
+    cp = cpEnd + 1; // +1 for the \r separator
   }
   if (inTable) html.push('</table></div>');
 
@@ -569,19 +680,35 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts) {
     if (runEnd <= pos) runEnd = pos + 1;
 
     const chunk = text.slice(pos, runEnd);
-    const escaped = escapeHtml(chunk);
 
     if (run && run.props) {
       const p = run.props;
+      // Skip hidden text
+      if (p.vanish) { pos = runEnd; continue; }
+
+      // Apply text transforms before escaping
+      let displayText = chunk;
+      if (p.allCaps) displayText = displayText.toUpperCase();
+      else if (p.smallCaps) displayText = displayText.toUpperCase(); // approximate small-caps
+      const escaped = escapeHtml(displayText);
+
       const css = [];
       if (p.bold) css.push('font-weight:bold');
       if (p.italic) css.push('font-style:italic');
-      if (p.underline && p.strike) css.push('text-decoration:underline line-through');
-      else if (p.underline) css.push('text-decoration:underline');
-      else if (p.strike) css.push('text-decoration:line-through');
+      // Text decoration: combine underline + strikethrough
+      const decoParts = [];
+      if (p.underline) decoParts.push('underline');
+      if (p.strike) decoParts.push('line-through');
+      if (decoParts.length) {
+        let deco = `text-decoration:${decoParts.join(' ')}`;
+        if (p.ulColor) deco += `;text-decoration-color:${p.ulColor}`;
+        css.push(deco);
+      }
       if (p.fontSize) css.push(`font-size:${p.fontSize}pt`);
       if (p.color) css.push(`color:${p.color}`);
       if (p.fontIdx !== undefined && fonts[p.fontIdx]) css.push(`font-family:"${fonts[p.fontIdx]}",sans-serif`);
+      if (p.smallCaps && !p.allCaps) css.push('font-variant:small-caps');
+      if (p.vertAlign) css.push(`vertical-align:${p.vertAlign};font-size:0.75em`);
 
       if (css.length) {
         parts.push(`<span style="${css.join(';')}">${escaped}</span>`);
@@ -589,7 +716,7 @@ function renderFormattedRun(text, cpOffset, charRuns, fonts) {
         parts.push(escaped);
       }
     } else {
-      parts.push(escaped);
+      parts.push(escapeHtml(chunk));
     }
     pos = runEnd;
   }

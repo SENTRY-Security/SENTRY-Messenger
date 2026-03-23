@@ -862,7 +862,7 @@
     "wordLoadFailed": "Tải Word thất bại: {{error}}",
     "wordOldFormat": "Không nhận dạng được định dạng tệp. Vui lòng tải xuống và mở bằng ứng dụng khác.",
     "wordEncrypted": "Tệp này đã được mã hóa, không thể xem trước trực tuyến. Vui lòng tải xuống và mở bằng ứng dụng khác.",
-    "wordDocNotice": "Định dạng .doc chỉ hỗ trợ xem trước văn bản. Tải xuống để xem đầy đủ định dạng.",
+    "wordDocNotice": "Bản xem trước .doc có thể khác đôi chút so với bố cục gốc. Tải xuống để xem đầy đủ định dạng.",
     "downloadZip": "Tải tệp nén",
     "zipFiles": "tệp",
     "zipLoadFailed": "Tải tệp nén thất bại: {{error}}",
