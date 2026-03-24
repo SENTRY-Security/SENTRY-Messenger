@@ -13,63 +13,54 @@
  *
  * 一切協定邏輯必須「單一路徑」且「強一致性」，任何 fallback 視為安全漏洞。
  */
-let naclInstance = null;
 
-async function loadNaclScript() {
-  if (typeof window === 'undefined') return null;
-  if (window.nacl) return window.nacl;
-  const tryLoad = (src) => new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = src;
-    script.onload = () => resolve(window.nacl || null);
-    script.onerror = (err) => reject(err || new Error(`nacl load failed: ${src}`));
-    document.head.appendChild(script);
-  });
-  await tryLoad('/libs/nacl-fast.min.js');
-  return window.nacl || null;
+// Backed by libsodium-wrappers-sumo (audited by multiple security firms).
+// Replaces the previous TweetNaCl (nacl-fast.min.js) backend.
+import _sodium from 'libsodium-wrappers-sumo';
+
+let sodiumReady = false;
+
+async function ensureSodium() {
+  if (sodiumReady) return _sodium;
+  await _sodium.ready;
+  sodiumReady = true;
+  return _sodium;
 }
 
 export async function ensureNacl() {
-  if (naclInstance) return naclInstance;
-  if (typeof window !== 'undefined') {
-    naclInstance = window.nacl || await loadNaclScript();
-    if (!naclInstance) throw new Error('nacl not available in browser');
-    return naclInstance;
-  }
-  const mod = await import('tweetnacl');
-  naclInstance = mod.default || mod;
-  return naclInstance;
+  return ensureSodium();
 }
 
 export async function loadNacl() {
-  await ensureNacl();
+  await ensureSodium();
 }
 
 export async function genEd25519Keypair() {
-  const nacl = await ensureNacl();
-  const kp = nacl.sign.keyPair();
-  return { publicKey: kp.publicKey, secretKey: kp.secretKey };
+  const sodium = await ensureSodium();
+  const kp = sodium.crypto_sign_keypair();
+  // Return 64-byte secretKey (seed‖publicKey) matching TweetNaCl format
+  return { publicKey: kp.publicKey, secretKey: kp.privateKey };
 }
 
 export async function genX25519Keypair() {
-  const nacl = await ensureNacl();
-  const kp = nacl.box.keyPair();
-  return { publicKey: kp.publicKey, secretKey: kp.secretKey };
+  const sodium = await ensureSodium();
+  const kp = sodium.crypto_box_keypair();
+  return { publicKey: kp.publicKey, secretKey: kp.privateKey };
 }
 
 export async function signDetached(messageU8, secretKeyU8) {
-  const nacl = await ensureNacl();
-  return nacl.sign.detached(messageU8, secretKeyU8);
+  const sodium = await ensureSodium();
+  return sodium.crypto_sign_detached(messageU8, secretKeyU8);
 }
 
 export async function verifyDetached(messageU8, signatureU8, publicKeyU8) {
-  const nacl = await ensureNacl();
-  return nacl.sign.detached.verify(messageU8, signatureU8, publicKeyU8);
+  const sodium = await ensureSodium();
+  return sodium.crypto_sign_verify_detached(signatureU8, messageU8, publicKeyU8);
 }
 
 export async function scalarMult(secretKey32, publicKey32) {
-  const nacl = await ensureNacl();
-  return nacl.scalarMult(secretKey32, publicKey32);
+  const sodium = await ensureSodium();
+  return sodium.crypto_scalarmult(secretKey32, publicKey32);
 }
 
 export function b64(u8) {

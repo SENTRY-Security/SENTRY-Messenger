@@ -67,8 +67,7 @@ const result = await build({
   plugins: [absolutePathPlugin],
   external: [
     'https://esm.sh/*',
-    'https://cdn.jsdelivr.net/*',
-    'tweetnacl'                    // Node-only dynamic import, browser uses window.nacl
+    'https://cdn.jsdelivr.net/*'
   ],
   logLevel: 'info',
   metafile: true
