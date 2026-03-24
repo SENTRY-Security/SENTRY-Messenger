@@ -78,7 +78,7 @@
 | M-2 | **Chunk 加密無 AAD** | `chunked-upload.js` | Chunk index 未綁定加密，理論上可替換 |
 | M-3 | **AEAD envelope 無 AAD** | `aead.js` | 除 DR 訊息外，其他加密操作不使用 AAD |
 | ~~M-4~~ | ~~**Debug 日誌輸出金鑰雜湊**~~ | 多處 | ✅ 已修復：移除所有金鑰雜湊/狀態/計數器日誌、debug flags 全部預設 false、移除 webdriver 自動啟用、vault 日誌僅安全欄位、敏感 ID 截斷 |
-| M-5 | **社交圖譜部分暴露**（部分緩解） | `conversation_acl` D1 表 | `conversation_acl` 仍明文暴露對話關係。**已緩解**：`contacts` 表透過 Zero-Meta 0-A（`0017_contacts_zero_meta.sql`）將 `peer_digest` 改為不可逆 `slot_id`（HMAC 衍生），`peer_digest` 和 `is_blocked` 移入加密 blob，伺服器無法從 contacts 表推知聯絡人關係 |
+| M-5 | **社交圖譜部分暴露**（持續緩解中） | `conversation_acl` D1 表 | `conversation_acl` 仍暴露對話參與者（`account_digest`）。**Phase 0-A**：`contacts` 表 `peer_digest` → HMAC `slot_id`。**Phase 0-B**：`role` → NULL（不再洩漏角色語意）、`receiver_device_id` → NULL（單裝置冗餘）、`contacts.updated_at` 截斷至每日精度 |
 | M-6 | **訊息大小洩漏** | 全系統 | 無 padding 機制，密文大小反映明文大小 |
 | M-7 | **媒體 content_type 在上傳請求中明文** | `sign-put-chunked` API | 伺服器在簽名請求中可見 content_type 和 total_size |
 | M-8 | **Vault wrap_context 明文傳送** | `message-key-vault.js:194` | 伺服器可見 msgType、direction 等 metadata |

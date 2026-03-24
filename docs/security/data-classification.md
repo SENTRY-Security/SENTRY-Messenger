@@ -82,7 +82,7 @@
 |------|------|---------------|------|
 | `wrapped_blob` | C2 | ✗ 密文 | MK 加密的裝置私鑰 blob |
 
-### messages_secure 表
+### messages_secure 表（Zero-Meta Phase 0-B 後）
 
 | 欄位 | 分類 | 伺服器可否讀取 | 說明 |
 |------|------|---------------|------|
@@ -92,7 +92,8 @@
 | `counter` | C4 | ✓ 明文 | 訊息序號 |
 | `envelope` | C1 | ✗ 密文 | DR 加密封包（header + iv + ciphertext） |
 | `ts` | C4 | ✓ 明文 | 時間戳 |
-| `device_id` | C4 | ✓ 明文 | 發送裝置 ID |
+| `sender_device_id` | C4 | ✓ 明文 | 發送裝置 ID |
+| `receiver_device_id` | — | ✗ 一律 NULL | Phase 0-B 後不再寫入（單裝置架構下冗餘） |
 | `header_counter` | C4 | ✓ 明文 | DR header 中的 counter |
 
 ### message_key_vault 表
@@ -103,7 +104,7 @@
 | `header_counter` | C4 | ✓ 明文 | 對應的訊息 counter |
 | `encrypted_key_blob` | C2 | ✗ 密文 | 加密的訊息金鑰 |
 
-### contacts 表（Zero-Meta 0-A 後）
+### contacts 表（Zero-Meta Phase 0-A/0-B 後）
 
 | 欄位 | 分類 | 伺服器可否讀取 | 說明 |
 |------|------|---------------|------|
@@ -112,15 +113,15 @@
 | `peer_digest` | — | ✗ 新格式為 NULL | 舊格式殘留，遷移後自動清除 |
 | `encrypted_blob` | C2 | ✗ 密文 | AES-256-GCM(contact_storage_key) 加密的聯絡人資料 |
 | `is_blocked` | — | ✗ 新格式固定 0 | 實際值在加密 blob 內（伺服器不可見） |
-| `updated_at` | C4 | ✓ 明文 | 更新時間戳 |
+| `updated_at` | C5 | ✓ 每日精度 | Phase 0-B 後截斷至天（`/86400*86400`），伺服器僅見日期不見精確時間 |
 
-### conversation_acl 表
+### conversation_acl 表（Zero-Meta Phase 0-B 後）
 
 | 欄位 | 分類 | 伺服器可否讀取 | 說明 |
 |------|------|---------------|------|
 | `conversation_id` | C4 | ✓ 明文 | 對話 ID |
 | `account_digest` | C4 | ✓ 明文 | 參與者摘要 |
-| `role` | C4 | ✓ 明文 | 角色（owner/member） |
+| `role` | — | ✗ 一律 NULL | Phase 0-B 後不再寫入明文角色 |
 
 ### ephemeral_invites / ephemeral_sessions 表
 

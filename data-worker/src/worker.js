@@ -672,17 +672,17 @@ async function allocateOwnerPrekeyBundle(env, ownerAccountDigest, preferredDevic
   };
 }
 
-async function grantConversationAccess(env, { conversationId, accountDigest, deviceId = null, role = 'member' }) {
+async function grantConversationAccess(env, { conversationId, accountDigest, deviceId = null, role = null }) {
   if (!conversationId || !accountDigest) return;
   await ensureDataTables(env);
   try {
+    // Zero-Meta: role is no longer written to avoid leaking conversation semantics to the server.
     await env.DB.prepare(`
       INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role)
-      VALUES (?1, ?2, ?3, ?4)
+      VALUES (?1, ?2, ?3, NULL)
       ON CONFLICT(conversation_id, account_digest, device_id) DO UPDATE SET
-        role = COALESCE(excluded.role, conversation_acl.role),
         updated_at = strftime('%s','now')
-    `).bind(conversationId, accountDigest, deviceId, role || null).run();
+    `).bind(conversationId, accountDigest, deviceId).run();
   } catch (err) {
     console.warn('conversation_acl_upsert_failed', err?.message || err);
   }
@@ -2451,11 +2451,12 @@ async function handleEphemeralRoutes(req, env) {
     ).bind(conversationId, now).run();
 
     // Create ACL for both parties
+    // Zero-Meta: role written as NULL — conversation semantics managed client-side.
     await env.DB.prepare(
-      `INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role) VALUES (?, ?, ?, 'owner')`
+      `INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role) VALUES (?, ?, ?, NULL)`
     ).bind(conversationId, invite.owner_digest, invite.owner_device_id).run();
     await env.DB.prepare(
-      `INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role) VALUES (?, ?, ?, 'ephemeral')`
+      `INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role) VALUES (?, ?, ?, NULL)`
     ).bind(conversationId, guestDigest, guestDeviceId).run();
 
     // Create ephemeral session
@@ -3074,7 +3075,7 @@ async function handleAtomicSendRoutes(req, env) {
 
     batch.push(env.DB.prepare(`
       INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role)
-      VALUES (?1, ?2, ?3, 'member')
+      VALUES (?1, ?2, ?3, NULL)
       ON CONFLICT(conversation_id, account_digest, device_id) DO UPDATE SET updated_at=strftime('%s','now')
     `).bind(conversationId, accountDigest, senderDeviceId));
 
@@ -3082,7 +3083,7 @@ async function handleAtomicSendRoutes(req, env) {
     if (msgReceiverDigest) {
       batch.push(env.DB.prepare(`
          INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role)
-         VALUES (?1, ?2, ?3, 'member')
+         VALUES (?1, ?2, ?3, NULL)
          ON CONFLICT(conversation_id, account_digest, device_id) DO UPDATE SET updated_at=strftime('%s','now')
        `).bind(conversationId, msgReceiverDigest, msgReceiverDevice || null));
     }
@@ -3094,8 +3095,9 @@ async function handleAtomicSendRoutes(req, env) {
         receiver_account_digest, receiver_device_id, header_json, ciphertext_b64, counter, created_at
       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
     `).bind(
+      // Zero-Meta: receiver_device_id always NULL — single-device architecture, account_digest is sufficient for routing.
       msgId, conversationId, accountDigest, senderDeviceId,
-      msgReceiverDigest, msgReceiverDevice || null, msgHeaderJson, msgCiphertext, msgCounter, msgCreatedAt
+      msgReceiverDigest, null, msgHeaderJson, msgCiphertext, msgCounter, msgCreatedAt
     ));
 
     // 5c. Vault Insert
@@ -3691,12 +3693,12 @@ async function handleMessagesRoutes(req, env) {
     `).bind(conversationId).run();
     await env.DB.prepare(`
       INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role)
-      VALUES (?1, ?2, ?3, 'member')
+      VALUES (?1, ?2, ?3, NULL)
       ON CONFLICT(conversation_id, account_digest, device_id) DO UPDATE SET updated_at=strftime('%s','now')
     `).bind(conversationId, senderAccountDigest, senderDeviceId).run();
     await env.DB.prepare(`
       INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role)
-      VALUES (?1, ?2, ?3, 'member')
+      VALUES (?1, ?2, ?3, NULL)
       ON CONFLICT(conversation_id, account_digest, device_id) DO UPDATE SET updated_at=strftime('%s','now')
     `).bind(conversationId, receiverAccountDigest, receiverDeviceId || null).run();
     const messageId = typeof body?.id === 'string' && body.id.trim().length ? body.id.trim() : null;
@@ -3712,12 +3714,13 @@ async function handleMessagesRoutes(req, env) {
           receiver_account_digest, receiver_device_id, header_json, ciphertext_b64, counter, created_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
       `).bind(
+        // Zero-Meta: receiver_device_id always NULL — single-device architecture.
         messageId,
         conversationId,
         senderAccountDigest,
         senderDeviceId,
         receiverAccountDigest,
-        receiverDeviceId || null,
+        null,
         headerJson,
         ciphertextB64,
         counter,
@@ -6071,16 +6074,17 @@ async function handleContactsRoutes(req, env) {
       const slotId = typeof item.slotId === 'string' ? item.slotId.trim() : (typeof item.slot_id === 'string' ? item.slot_id.trim() : '');
       const blob = typeof item.encryptedBlob === 'string' ? item.encryptedBlob : null;
 
+      // Zero-Meta: updated_at truncated to day precision to reduce timing metadata.
       if (slotId) {
         // New format: slot_id based (peer_digest hidden inside encrypted_blob)
         stmts.push(env.DB.prepare(`
           INSERT INTO contacts (owner_digest, slot_id, peer_digest, encrypted_blob, is_blocked, updated_at)
-          VALUES (?1, ?2, NULL, ?3, 0, strftime('%s','now'))
+          VALUES (?1, ?2, NULL, ?3, 0, CAST(strftime('%s','now') / 86400 * 86400 AS INTEGER))
           ON CONFLICT(owner_digest, slot_id) DO UPDATE SET
             encrypted_blob = COALESCE(excluded.encrypted_blob, contacts.encrypted_blob),
             peer_digest = NULL,
             is_blocked = 0,
-            updated_at = strftime('%s','now')
+            updated_at = CAST(strftime('%s','now') / 86400 * 86400 AS INTEGER)
         `).bind(accountDigest, slotId, blob));
       } else {
         // Legacy format: peer_digest based (transition period)
@@ -6089,11 +6093,11 @@ async function handleContactsRoutes(req, env) {
         const isBlocked = item.isBlocked === true || item.isBlocked === 1 ? 1 : 0;
         stmts.push(env.DB.prepare(`
           INSERT INTO contacts (owner_digest, peer_digest, encrypted_blob, is_blocked, updated_at)
-          VALUES (?1, ?2, ?3, ?4, strftime('%s','now'))
+          VALUES (?1, ?2, ?3, ?4, CAST(strftime('%s','now') / 86400 * 86400 AS INTEGER))
           ON CONFLICT(owner_digest, peer_digest) DO UPDATE SET
             encrypted_blob = COALESCE(excluded.encrypted_blob, contacts.encrypted_blob),
             is_blocked = COALESCE(excluded.is_blocked, contacts.is_blocked),
-            updated_at = strftime('%s','now')
+            updated_at = CAST(strftime('%s','now') / 86400 * 86400 AS INTEGER)
         `).bind(accountDigest, peerDigest, blob, isBlocked));
       }
     }
