@@ -155,16 +155,19 @@ export class BrowserSession extends Container {
 
     // ── Destroy container ────────────────────────────────────────
     if (path === '/api/safe/destroy' && request.method === 'DELETE') {
-      try {
-        await this.stop();
-        await this.ctx.storage.deleteAll();
-        return Response.json({ status: 'destroyed' });
-      } catch (err) {
-        return Response.json({
-          status: 'error',
-          message: err?.message || 'Failed to destroy container',
-        }, { status: 500 });
+      const errors = [];
+      // Stop container — ignore errors (may already be stopped/deleted externally)
+      try { await this.stop(); } catch (err) {
+        errors.push('stop: ' + (err?.message || 'unknown'));
       }
+      // Always clear DO storage regardless of stop result
+      try { await this.ctx.storage.deleteAll(); } catch (err) {
+        errors.push('storage: ' + (err?.message || 'unknown'));
+      }
+      return Response.json({
+        status: 'destroyed',
+        ...(errors.length ? { warnings: errors } : {}),
+      });
     }
 
     // ── Proxy to noVNC ─────────────────────────────────────────

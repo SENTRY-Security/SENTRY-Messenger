@@ -1370,8 +1370,9 @@ function initSafeBrowser() {
     btnDelete.disabled = true;
     dbg('→ DELETE /api/safe/destroy');
     try {
-      await safeBrowser.destroy();
-      dbg('← destroy() done');
+      const result = await safeBrowser.destroy();
+      dbg('← destroy() done: ' + JSON.stringify(result));
+      if (result?.warnings) dbg('⚠ warnings: ' + result.warnings.join(', '));
     } catch (e) {
       dbg('DELETE ERROR: ' + e?.message);
       log({ safeDeleteError: e?.message });

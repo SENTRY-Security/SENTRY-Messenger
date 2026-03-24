@@ -100,15 +100,17 @@ async function apiStop() {
 
 /**
  * Destroy the container and clear all session data.
+ * Returns response JSON so callers can inspect warnings.
  */
 async function apiDestroy() {
   const base = getWorkerUrl();
-  await fetch(base + '/api/safe/destroy', {
+  const res = await fetch(base + '/api/safe/destroy', {
     method: 'DELETE',
     headers: {
       'Authorization': authHeaders()['Authorization'],
     },
-  }).catch(() => {});
+  });
+  return res.json().catch(() => ({}));
 }
 
 /**
@@ -237,12 +239,15 @@ export async function stop() {
 
 /**
  * Destroy the container — stops it and deletes all associated data.
+ * Returns API response so debug panel can log warnings.
  */
 export async function destroy() {
   stopPolling();
   setState('stopped');
   _iframeUrl = null;
-  await apiDestroy();
+  _containerStatus = null;
+  _elapsed = null;
+  return apiDestroy();
 }
 
 /**
