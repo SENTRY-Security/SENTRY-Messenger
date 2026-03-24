@@ -156,8 +156,8 @@ function startPolling(password) {
       _containerStatus = data.status;
       _elapsed = data.elapsed;
 
-      // Build iframeUrl as soon as container is running (ports may not be ready yet)
-      if ((data.status === 'running' || data.status === 'healthy') && !_iframeUrl) {
+      // Only build iframeUrl when container is healthy (ports confirmed ready)
+      if (data.status === 'healthy' && !_iframeUrl) {
         _iframeUrl = buildIframeUrl(password);
       }
 

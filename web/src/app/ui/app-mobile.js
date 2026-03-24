@@ -1220,7 +1220,7 @@ function initSafeBrowser() {
     const isStopped = s === 'stopped' || s === 'stopped_with_code';
     if (btnStart) btnStart.disabled = !isStopped;
     if (btnStop) btnStop.disabled = isStopped;
-    if (btnOpen) btnOpen.disabled = !(s === 'healthy' || s === 'running');
+    if (btnOpen) btnOpen.disabled = s !== 'healthy';
     if (btnDeleteRef) btnDeleteRef.disabled = isStopped;
 
     // Error
@@ -1262,15 +1262,29 @@ function initSafeBrowser() {
     // Hide loading overlay once iframe content loads
     const iframe = body.querySelector('iframe');
     const overlay = body.querySelector('#safeLoadingOverlay');
+    const loadingText = body.querySelector('.safe-loading-text');
     let loadTimer = null;
     if (iframe && overlay) {
       iframe.addEventListener('load', () => {
+        // Check if the loaded page looks like a valid noVNC page
+        // (error responses like JSON 503 also fire 'load')
+        try {
+          const doc = iframe.contentDocument;
+          if (doc && doc.title && !doc.title.includes('noVNC')) {
+            // Might be an error page — check if body is very short (JSON error)
+            const text = (doc.body?.textContent || '').trim();
+            if (text.length < 200 && (text.includes('error') || text.includes('Error') || text.startsWith('{'))) {
+              if (loadingText) loadingText.textContent = t('safe.connectionError') || 'Connection failed. Please retry.';
+              return; // Don't hide overlay — keep error visible
+            }
+          }
+        } catch (_) { /* cross-origin — means noVNC loaded, which is fine */ }
         overlay.classList.add('safe-loading-hidden');
       }, { once: true });
-      // Fallback: hide overlay after 15s regardless
+      // Fallback: hide overlay after 20s regardless
       loadTimer = setTimeout(() => {
         overlay.classList.add('safe-loading-hidden');
-      }, 15000);
+      }, 20000);
     }
 
     const cleanup = () => {
