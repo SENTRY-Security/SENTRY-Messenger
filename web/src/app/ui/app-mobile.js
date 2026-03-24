@@ -1374,6 +1374,72 @@ function initSafeBrowser() {
 
   // Initial state
   updatePanel('stopped', null);
+
+  // ── Debug panel (UAT) ──────────────────────────────────────────
+  const dbgLog = document.getElementById('safe-dbg-log');
+  function dbg(msg) {
+    if (!dbgLog) return;
+    const ts = new Date().toLocaleTimeString();
+    dbgLog.textContent += `[${ts}] ${typeof msg === 'string' ? msg : JSON.stringify(msg, null, 2)}\n`;
+    dbgLog.scrollTop = dbgLog.scrollHeight;
+  }
+
+  const workerUrl = (typeof globalThis !== 'undefined' && typeof globalThis.SAFE_WORKER_URL === 'string' && globalThis.SAFE_WORKER_URL.trim())
+    ? globalThis.SAFE_WORKER_URL.trim().replace(/\/+$/, '')
+    : window.location.origin;
+
+  document.getElementById('safe-dbg-status')?.addEventListener('click', async () => {
+    dbg('→ GET /api/safe/status');
+    try {
+      const token = getAccountToken?.() || '';
+      const res = await fetch(workerUrl + '/api/safe/status', {
+        headers: { 'Authorization': 'Bearer ' + token },
+      });
+      dbg(`← ${res.status} ${res.statusText}`);
+      const data = await res.json().catch(() => res.text());
+      dbg(data);
+    } catch (e) {
+      dbg('ERROR: ' + e.message);
+    }
+  });
+
+  document.getElementById('safe-dbg-start')?.addEventListener('click', async () => {
+    dbg('→ POST /api/safe/start');
+    try {
+      const token = getAccountToken?.() || '';
+      const res = await fetch(workerUrl + '/api/safe/start', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token },
+      });
+      dbg(`← ${res.status} ${res.statusText}`);
+      const data = await res.json().catch(() => res.text());
+      dbg(data);
+    } catch (e) {
+      dbg('ERROR: ' + e.message);
+    }
+  });
+
+  document.getElementById('safe-dbg-url')?.addEventListener('click', () => {
+    const url = safeBrowser.getIframeUrl();
+    dbg('Worker URL: ' + workerUrl);
+    dbg('iframe URL: ' + (url || '(none — not started yet)'));
+    dbg('State: ' + safeBrowser.getState());
+    dbg('Container: ' + (safeBrowser.getContainerStatus() || '(unknown)'));
+  });
+
+  document.getElementById('safe-dbg-open')?.addEventListener('click', () => {
+    const url = safeBrowser.getIframeUrl();
+    if (url) {
+      dbg('Opening in new tab: ' + url);
+      window.open(url, '_blank');
+    } else {
+      dbg('No iframe URL yet. Click "Test Start" first, then "Show URL".');
+    }
+  });
+
+  document.getElementById('safe-dbg-clear')?.addEventListener('click', () => {
+    if (dbgLog) dbgLog.textContent = '';
+  });
 }
 
 // Called when SAFE tab becomes active — no longer auto-starts

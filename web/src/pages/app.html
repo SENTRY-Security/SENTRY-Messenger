@@ -737,6 +737,19 @@
           <svg class="icon icon-xl" style="color:var(--danger);"><use href="#i-circle-alert"/></svg>
           <p id="safe-error-msg" style="color:var(--danger);margin:8px 0;font-size:12px;"></p>
         </div>
+
+        <!-- Debug panel (UAT) -->
+        <div id="safe-debug-panel" class="card" style="padding:12px;margin-top:16px;border:1px dashed var(--muted);">
+          <div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:8px;">DEBUG</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
+            <button id="safe-dbg-status" type="button" style="padding:6px 10px;border-radius:6px;font-size:11px;background:var(--bg-hover);border:1px solid var(--border);cursor:pointer;">Test Status</button>
+            <button id="safe-dbg-start" type="button" style="padding:6px 10px;border-radius:6px;font-size:11px;background:var(--bg-hover);border:1px solid var(--border);cursor:pointer;">Test Start</button>
+            <button id="safe-dbg-url" type="button" style="padding:6px 10px;border-radius:6px;font-size:11px;background:var(--bg-hover);border:1px solid var(--border);cursor:pointer;">Show URL</button>
+            <button id="safe-dbg-open" type="button" style="padding:6px 10px;border-radius:6px;font-size:11px;background:var(--bg-hover);border:1px solid var(--border);cursor:pointer;">Open in Tab</button>
+            <button id="safe-dbg-clear" type="button" style="padding:6px 10px;border-radius:6px;font-size:11px;background:var(--bg-hover);border:1px solid var(--border);cursor:pointer;">Clear</button>
+          </div>
+          <pre id="safe-dbg-log" style="font-size:10px;line-height:1.4;max-height:300px;overflow:auto;background:var(--bg);padding:8px;border-radius:6px;white-space:pre-wrap;word-break:break-all;margin:0;"></pre>
+        </div>
       </div>
     </section>
     <section id="tab-profile" class="tab">
