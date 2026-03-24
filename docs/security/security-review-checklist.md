@@ -30,10 +30,10 @@
 
 ### 1.4 非對稱加密
 
-- [ ] Ed25519 金鑰產生使用 `nacl.sign.keyPair()`（`prekeys.js`）
-- [ ] X25519 金鑰產生使用 `nacl.box.keyPair()`（`prekeys.js`）
-- [ ] Ed25519→X25519 轉換正確（`ed2curve.js`）
-- [ ] X25519 clamping 正確：`d[0] &= 248, d[31] &= 127, d[31] |= 64`（`ed2curve.js:210-212`）
+- [x] Ed25519 金鑰產生使用 `sodium.crypto_sign_keypair()`（libsodium-wrappers-sumo，經審計）（`prekeys.js`）
+- [x] X25519 金鑰產生使用 `sodium.crypto_box_keypair()`（libsodium-wrappers-sumo，經審計）（`prekeys.js`）
+- [x] Ed25519→X25519 轉換使用 `sodium.crypto_sign_ed25519_pk_to_curve25519()` / `crypto_sign_ed25519_sk_to_curve25519()`（libsodium 內建，取代自訂 field arithmetic）
+- [x] X25519 clamping 由 libsodium 內部處理（~~自訂 `ed2curve.js` 手刻 clamping 已移除~~）
 - [ ] SPK 簽章驗證在 X3DH initiator 端執行
 - [x] TOFU：首次 X3DH 儲存 peer Identity Key，後續偵測 key 變更（`contact-secrets.js:checkAndStorePeerIk`）
 - [x] Safety Number：雙方可透過 60 位數字指紋帶外驗證身份（`safety-number.js:computeSafetyNumber`）

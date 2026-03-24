@@ -106,7 +106,7 @@
 
 1. **Double Ratchet 實作** — `shared/crypto/dr.js` — 自訂實作，非使用已審計函式庫
 2. **X3DH 實作** — `shared/crypto/dr.js` — 同上
-3. **Ed25519 ↔ X25519 轉換** — `shared/crypto/ed2curve.js` — 自訂實作
+3. ~~**Ed25519 ↔ X25519 轉換**~~ — ✅ `shared/crypto/ed2curve.js` — 已從自訂 field arithmetic 替換為 `libsodium-wrappers-sumo` 內建 `crypto_sign_ed25519_pk_to_curve25519()`（經審計），不再需要獨立審計
 4. **AEAD 封裝** — `shared/crypto/aead.js` — 自訂封裝層
 5. **Per-chunk 加密** — `features/chunked-upload.js` — 自訂 chunk 加密流程
 6. **Call E2EE** — `features/calls/key-manager.js` — 自訂 InsertableStreams 加密

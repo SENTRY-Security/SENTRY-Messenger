@@ -107,3 +107,4 @@
 - ✅ **L-10**：頭像已確認使用 AES-256-GCM + HKDF(MK, random_salt) 加密上傳，與一般媒體相同加密流程
 - ✅ **L-12**：Debug flags 在生產環境建置時強制關閉
 - ✅ **L-16**：Media chunk AAD 已由 M-4 統一修復（所有 AES-GCM 加入 info tag 作為 additionalData）
+- ✅ **密碼學原語函式庫**：TweetNaCl + 手刻 ed2curve（~230 行 curve25519 有限域算術）已全面替換為 `libsodium-wrappers-sumo`（經 Cure53、Paragon Initiative 等多家安全公司審計）。Ed25519→X25519 轉換改用 libsodium 內建 `crypto_sign_ed25519_pk_to_curve25519()`，`libs/nacl-fast.min.js` 已刪除

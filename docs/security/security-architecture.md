@@ -26,9 +26,9 @@
 │     │   HMAC, SHA-256)        │                                │
 │     └─────────────────────────┘                                │
 │     ┌────────────────────────┐                                 │
-│     │  TweetNaCl.js          │                                 │
-│     │  (Ed25519, X25519,     │                                 │
-│     │   nacl.box)            │                                 │
+│     │  libsodium-wrappers-   │                                 │
+│     │  sumo (Ed25519,        │                                 │
+│     │  X25519, ed2curve)     │                                 │
 │     └────────────────────────┘                                 │
 └───────────────────────┬───────────────────────────────────────┘
                         │ TLS 1.2+
@@ -54,13 +54,12 @@
 
 ### 2.1 密碼學函式庫
 
-| 函式庫 | 用途 | 來源 |
-|--------|------|------|
-| WebCrypto API | AES-GCM, HKDF-SHA256, HMAC-SHA256, SHA-256 | 瀏覽器原生 |
-| TweetNaCl.js | Ed25519 簽章, X25519 DH, nacl.box | `tweetnacl` npm |
-| `@nicolo-ribaudo/cheetah-argon2` | Argon2id KDF | CDN + SRI |
-| `@cloudflare/opaque-ts@0.7.5` | OPAQUE PAKE | CDN + SRI |
-| 自訂 `ed2curve.js` | Ed25519 → X25519 轉換 | `shared/crypto/ed2curve.js` |
+| 函式庫 | 用途 | 來源 | 審計狀態 |
+|--------|------|------|----------|
+| WebCrypto API | AES-GCM, HKDF-SHA256, HMAC-SHA256, SHA-256 | 瀏覽器原生 | N/A（平台 API） |
+| libsodium-wrappers-sumo | Ed25519 簽章, X25519 DH, Ed25519→X25519 轉換 | `libsodium-wrappers-sumo` npm | ✅ 多家安全公司審計（Cure53, Paragon 等） |
+| `@nicolo-ribaudo/cheetah-argon2` | Argon2id KDF | CDN + SRI | — |
+| `@cloudflare/opaque-ts@0.7.5` | OPAQUE PAKE | CDN + SRI | — |
 
 ### 2.2 加密操作矩陣
 
@@ -324,3 +323,4 @@ DR 解密完成
 7. ✅ ~~DR 狀態並發無 mutex~~ — 已有 `enqueueDrSessionOp()` 序列化機制（`dr-session.js:1546`），所有 encrypt/decrypt 操作均透過 queue 串行化
 8. ✅ ~~Invite Dropbox 硬編碼 salt~~ — 已修復：改為每次 `sealInviteEnvelope` 產生 16-byte random salt，存入 `sealed.salt_b64`；解封時讀取，舊 envelope 向下相容 fallback
 9. ✅ ~~Call key 零 salt~~ — 已修復：`deriveMasterKey` 512-bit 輸出拆分為 key (前 256-bit) + subSalt (後 256-bit)，`deriveSubMaterial` 使用 subSalt 取代 `ZERO_SALT`
+10. ✅ ~~TweetNaCl + 自訂 ed2curve~~ — **已替換為 `libsodium-wrappers-sumo`**（經 Cure53、Paragon Initiative 等多家安全公司審計）。`nacl.js` 改為 import libsodium，`ed2curve.js` 從 ~230 行手刻 curve25519 有限域算術改為呼叫 `crypto_sign_ed25519_pk_to_curve25519()` / `crypto_sign_ed25519_sk_to_curve25519()`（libsodium 內建），`libs/nacl-fast.min.js` 已刪除
