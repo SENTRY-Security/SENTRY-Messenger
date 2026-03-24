@@ -1535,6 +1535,18 @@ async function ensureDataTables(env) {
         console.warn('ensureDataTables: reason column add failed (may already exist)', alterErr?.message);
       }
     }
+    // Auto-add slot_id column to contacts (migration 0017 — zero-meta)
+    try {
+      await env.DB.prepare(`SELECT slot_id FROM contacts LIMIT 0`).all();
+    } catch {
+      try {
+        await env.DB.prepare(`ALTER TABLE contacts ADD COLUMN slot_id TEXT`).run();
+        await env.DB.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_owner_slot ON contacts(owner_digest, slot_id) WHERE slot_id IS NOT NULL`).run();
+        console.log('ensureDataTables: added slot_id column to contacts');
+      } catch (alterErr) {
+        console.warn('ensureDataTables: slot_id column add failed (may already exist)', alterErr?.message);
+      }
+    }
     if (missingTables.length || missingColumns.length) {
       const detail = [
         ...missingTables.map((name) => `table:${name}`),
@@ -2719,9 +2731,17 @@ async function handleFriendsRoutes(req, env) {
       const convOwner = entry.convId ? entry.convId.replace('contacts-', '') : null;
       if (convOwner && entry.targetAccountDigest) {
         try {
+          // Delete legacy rows (peer_digest based)
           await env.DB.prepare(
             `DELETE FROM contacts WHERE owner_digest=?1 AND peer_digest=?2`
           ).bind(convOwner, entry.targetAccountDigest).run();
+          // Delete new-format rows (slot_id based) — client provides slotId if available
+          const slotId = typeof body?.slotId === 'string' ? body.slotId.trim() : '';
+          if (slotId) {
+            await env.DB.prepare(
+              `DELETE FROM contacts WHERE owner_digest=?1 AND slot_id=?2`
+            ).bind(convOwner, slotId).run();
+          }
         } catch (err) {
           console.warn('contact_row_delete_failed', err?.message || err);
         }
@@ -6040,19 +6060,45 @@ async function handleContactsRoutes(req, env) {
 
     const stmts = [];
     for (const item of contacts) {
-      const peerDigest = normalizeAccountDigest(item.peerDigest || item.peer_digest);
-      if (!peerDigest) continue;
+      const slotId = typeof item.slotId === 'string' ? item.slotId.trim() : (typeof item.slot_id === 'string' ? item.slot_id.trim() : '');
       const blob = typeof item.encryptedBlob === 'string' ? item.encryptedBlob : null;
-      const isBlocked = item.isBlocked === true || item.isBlocked === 1 ? 1 : 0;
 
-      stmts.push(env.DB.prepare(`
-        INSERT INTO contacts (owner_digest, peer_digest, encrypted_blob, is_blocked, updated_at)
-        VALUES (?1, ?2, ?3, ?4, strftime('%s','now'))
-        ON CONFLICT(owner_digest, peer_digest) DO UPDATE SET
-          encrypted_blob = COALESCE(excluded.encrypted_blob, contacts.encrypted_blob),
-          is_blocked = COALESCE(excluded.is_blocked, contacts.is_blocked),
-          updated_at = strftime('%s','now')
-      `).bind(accountDigest, peerDigest, blob, isBlocked));
+      if (slotId) {
+        // New format: slot_id based (peer_digest hidden inside encrypted_blob)
+        stmts.push(env.DB.prepare(`
+          INSERT INTO contacts (owner_digest, slot_id, peer_digest, encrypted_blob, is_blocked, updated_at)
+          VALUES (?1, ?2, NULL, ?3, 0, strftime('%s','now'))
+          ON CONFLICT(owner_digest, slot_id) DO UPDATE SET
+            encrypted_blob = COALESCE(excluded.encrypted_blob, contacts.encrypted_blob),
+            peer_digest = NULL,
+            is_blocked = 0,
+            updated_at = strftime('%s','now')
+        `).bind(accountDigest, slotId, blob));
+      } else {
+        // Legacy format: peer_digest based (transition period)
+        const peerDigest = normalizeAccountDigest(item.peerDigest || item.peer_digest);
+        if (!peerDigest) continue;
+        const isBlocked = item.isBlocked === true || item.isBlocked === 1 ? 1 : 0;
+        stmts.push(env.DB.prepare(`
+          INSERT INTO contacts (owner_digest, peer_digest, encrypted_blob, is_blocked, updated_at)
+          VALUES (?1, ?2, ?3, ?4, strftime('%s','now'))
+          ON CONFLICT(owner_digest, peer_digest) DO UPDATE SET
+            encrypted_blob = COALESCE(excluded.encrypted_blob, contacts.encrypted_blob),
+            is_blocked = COALESCE(excluded.is_blocked, contacts.is_blocked),
+            updated_at = strftime('%s','now')
+        `).bind(accountDigest, peerDigest, blob, isBlocked));
+      }
+    }
+
+    // If client sends migrated_slots, delete the old legacy rows that have been migrated
+    const migratedSlots = Array.isArray(body.migratedPeerDigests || body.migrated_peer_digests)
+      ? (body.migratedPeerDigests || body.migrated_peer_digests) : [];
+    for (const pd of migratedSlots) {
+      const peerDigest = normalizeAccountDigest(pd);
+      if (!peerDigest) continue;
+      stmts.push(env.DB.prepare(
+        `DELETE FROM contacts WHERE owner_digest=?1 AND peer_digest=?2 AND slot_id IS NULL`
+      ).bind(accountDigest, peerDigest));
     }
 
     if (stmts.length) {
@@ -6081,13 +6127,14 @@ async function handleContactsRoutes(req, env) {
 
     try {
       const rows = await env.DB.prepare(`
-        SELECT peer_digest, encrypted_blob, is_blocked, updated_at
+        SELECT slot_id, peer_digest, encrypted_blob, is_blocked, updated_at
           FROM contacts
          WHERE owner_digest = ?1
       `).bind(accountDigest).all();
 
       const contacts = (rows?.results || []).map(r => ({
-        peer_digest: r.peer_digest,
+        slot_id: r.slot_id || null,
+        peer_digest: r.peer_digest || null,
         encrypted_blob: r.encrypted_blob || null,
         is_blocked: r.is_blocked === 1,
         updated_at: Number(r.updated_at) || 0

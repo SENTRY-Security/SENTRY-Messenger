@@ -787,6 +787,27 @@ async function deriveContactStorageKey(mkRaw) {
 
 const CONTACT_BLOB_AAD = new TextEncoder().encode('contact-storage-v1');
 
+// Derive a per-peer opaque slot ID: HMAC-SHA256(slotKey, peer_digest).
+// slotKey is derived from MK via HKDF with a distinct info string, so it is
+// independent of the storageKey used for encryption.
+async function deriveContactSlotKey(mkRaw) {
+  if (!mkRaw) return null;
+  const keyMaterial = await crypto.subtle.importKey('raw', mkRaw, 'HKDF', false, ['deriveKey']);
+  return await crypto.subtle.deriveKey(
+    { name: 'HKDF', salt: new Uint8Array(0), info: new TextEncoder().encode('contact-slot-v1'), hash: 'SHA-256' },
+    keyMaterial,
+    { name: 'HMAC', hash: 'SHA-256', length: 256 },
+    false,
+    ['sign']
+  );
+}
+
+async function deriveContactSlotId(slotKey, peerDigest) {
+  if (!slotKey || !peerDigest) return null;
+  const sig = await crypto.subtle.sign('HMAC', slotKey, new TextEncoder().encode(peerDigest.toUpperCase()));
+  return bytesToBase64Url(new Uint8Array(sig));
+}
+
 async function encryptContactBlob(storageKey, data) {
   if (!storageKey || !data) return null;
   const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -857,15 +878,20 @@ export async function uplinkContactToD1(contactEntry, { isBlocked = false } = {}
   const peerDigest = contactEntry.peerAccountDigest;
   if (!peerDigest) return;
 
-  // Prepare Blob Data
+  const slotKey = await deriveContactSlotKey(mk);
+  const slotId = await deriveContactSlotId(slotKey, peerDigest);
+
+  // Prepare Blob Data — peer_digest and isBlocked are now inside the encrypted blob
   const data = {
+    peerDigest: peerDigest.toUpperCase(),
+    isBlocked: isBlocked ? true : false,
     nickname: contactEntry.nickname,
-    avatar: contactEntry.avatar, // Currently reusing URL/Base64. Future: R2 Ref.
+    avatar: contactEntry.avatar,
     note: contactEntry.note || null,
     addedAt: contactEntry.addedAt,
-    profileUpdatedAt: contactEntry.profileUpdatedAt, // [Fix] Persist profile timestamp
+    profileUpdatedAt: contactEntry.profileUpdatedAt,
     profileVersion: contactEntry.profileVersion ?? null,
-    conversation: contactEntry.conversation // CRITICAL: Include session keys
+    conversation: contactEntry.conversation
   };
 
   const encryptedBlob = await encryptContactBlob(storageKey, data);
@@ -875,10 +901,11 @@ export async function uplinkContactToD1(contactEntry, { isBlocked = false } = {}
     await fetchJSON('/api/v1/contacts/uplink', {
       accountToken,
       contacts: [{
-        peerDigest,
-        encryptedBlob,
-        isBlocked
-      }]
+        slotId,
+        encryptedBlob
+      }],
+      // Tell server to delete the old legacy row for this peer
+      migratedPeerDigests: [peerDigest]
     }, { 'X-Device-Id': ensureDeviceId() });
   } catch (err) {
     console.warn('[contacts] uplink failed', err);
@@ -896,8 +923,7 @@ export async function downlinkContactsFromD1() {
   }, { 'X-Device-Id': ensureDeviceId() });
 
   if (!r.ok) {
-    if (r.status === 404) return []; // No snapshot yet? Or endpoint error.
-    if (r.status === 404) return []; // No snapshot yet? Or endpoint error.
+    if (r.status === 404) return [];
     const msg = data?.message || data?.error || r.statusText;
     console.warn(`[contacts] D1 download failed status=${r.status}`, data);
     throw new Error('downlink failed: ' + msg);
@@ -905,32 +931,102 @@ export async function downlinkContactsFromD1() {
 
   const contacts = data?.contacts || [];
   const entries = [];
+  const legacyRowsToMigrate = []; // legacy rows that need re-upload in new format
 
   for (const row of contacts) {
     try {
-      // Support both snake_case (from Worker) and camelCase
       const encryptedBlob = row.encryptedBlob || row.encrypted_blob;
       if (!encryptedBlob) continue;
       const decrypted = await decryptContactBlob(storageKey, encryptedBlob);
       if (!decrypted) continue;
 
-      // Reconstruct Entry
+      const slotId = row.slotId || row.slot_id;
+      const legacyPeerDigest = row.peerDigest || row.peer_digest;
+
+      // Determine peerAccountDigest: new format stores it inside blob, legacy in row
+      const peerAccountDigest = decrypted.peerDigest || legacyPeerDigest;
+      const isBlocked = decrypted.isBlocked ?? row.isBlocked ?? row.is_blocked ?? false;
+
       const entry = {
-        peerAccountDigest: row.peerDigest || row.peer_digest,
+        peerAccountDigest,
         nickname: decrypted.nickname,
         avatar: decrypted.avatar,
         addedAt: decrypted.addedAt,
-        profileUpdatedAt: decrypted.profileUpdatedAt, // [Fix] Restore profile timestamp
+        profileUpdatedAt: decrypted.profileUpdatedAt,
         profileVersion: decrypted.profileVersion ?? null,
-        isBlocked: row.isBlocked ?? row.is_blocked ?? false,
+        isBlocked,
         conversation: decrypted.conversation || null
       };
       entries.push(entry);
+
+      // If this is a legacy row (has peer_digest, no slot_id), queue for migration
+      if (legacyPeerDigest && !slotId) {
+        legacyRowsToMigrate.push(entry);
+      }
     } catch (err) {
       console.warn('[contacts] decrypt row failed', err);
     }
   }
+
+  // Background: migrate legacy rows to new slot_id format
+  if (legacyRowsToMigrate.length > 0) {
+    _migrateLegacyContacts(mk, legacyRowsToMigrate).catch(err => {
+      console.warn('[contacts] legacy migration failed', err);
+    });
+  }
+
   return entries;
+}
+
+async function _migrateLegacyContacts(mkRaw, legacyEntries) {
+  const accountToken = getAccountToken();
+  if (!accountToken || !mkRaw) return;
+  const storageKey = await deriveContactStorageKey(mkRaw);
+  const slotKey = await deriveContactSlotKey(mkRaw);
+  if (!storageKey || !slotKey) return;
+
+  const newContacts = [];
+  const migratedPeerDigests = [];
+
+  for (const entry of legacyEntries) {
+    const peerDigest = entry.peerAccountDigest;
+    if (!peerDigest) continue;
+
+    const slotId = await deriveContactSlotId(slotKey, peerDigest);
+    if (!slotId) continue;
+
+    // Re-encrypt with peer_digest and isBlocked inside the blob
+    const data = {
+      peerDigest: peerDigest.toUpperCase(),
+      isBlocked: entry.isBlocked ? true : false,
+      nickname: entry.nickname,
+      avatar: entry.avatar,
+      note: entry.note || null,
+      addedAt: entry.addedAt,
+      profileUpdatedAt: entry.profileUpdatedAt,
+      profileVersion: entry.profileVersion ?? null,
+      conversation: entry.conversation
+    };
+
+    const encryptedBlob = await encryptContactBlob(storageKey, data);
+    if (!encryptedBlob) continue;
+
+    newContacts.push({ slotId, encryptedBlob });
+    migratedPeerDigests.push(peerDigest);
+  }
+
+  if (!newContacts.length) return;
+
+  try {
+    await fetchJSON('/api/v1/contacts/uplink', {
+      accountToken,
+      contacts: newContacts,
+      migratedPeerDigests
+    }, { 'X-Device-Id': ensureDeviceId() });
+    console.log(`[contacts] migrated ${newContacts.length} legacy rows to slot_id format`);
+  } catch (err) {
+    console.warn('[contacts] migration uplink failed', err);
+  }
 }
 
 export async function backupAllContactsToD1() {
