@@ -9190,13 +9190,13 @@ async function handlePushRoutes(req, env) {
     try {
       await env.DB.prepare(
         `INSERT INTO push_subscriptions (account_digest, device_id, endpoint, keys_p256dh, keys_auth, user_agent, preview_public_key, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%s','now'))
+         VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, strftime('%s','now'))
          ON CONFLICT(endpoint) DO UPDATE SET
            account_digest=excluded.account_digest,
            device_id=excluded.device_id,
            keys_p256dh=excluded.keys_p256dh,
            keys_auth=excluded.keys_auth,
-           user_agent=excluded.user_agent,
+           user_agent=NULL,
            preview_public_key=excluded.preview_public_key`
       ).bind(
         accountDigest,
@@ -9204,7 +9204,7 @@ async function handlePushRoutes(req, env) {
         sub.endpoint,
         sub.keys.p256dh,
         sub.keys.auth,
-        body?.userAgent || body?.user_agent || null,
+        // Zero-Meta: user_agent no longer stored — client derives display label locally
         body?.previewPublicKey || null
       ).run();
       return json({ ok: true });
@@ -9299,13 +9299,13 @@ async function handlePushRoutes(req, env) {
       await ensureDataTables(env);
       await env.DB.prepare(
         `INSERT INTO push_subscriptions (account_digest, device_id, endpoint, keys_p256dh, keys_auth, user_agent, preview_public_key, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%s','now'))
+         VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, strftime('%s','now'))
          ON CONFLICT(endpoint) DO UPDATE SET
            account_digest=excluded.account_digest,
            device_id=excluded.device_id,
            keys_p256dh=excluded.keys_p256dh,
            keys_auth=excluded.keys_auth,
-           user_agent=excluded.user_agent,
+           user_agent=NULL,
            preview_public_key=excluded.preview_public_key`
       ).bind(
         accountDigest,
@@ -9313,7 +9313,7 @@ async function handlePushRoutes(req, env) {
         sub.endpoint,
         sub.keys.p256dh,
         sub.keys.auth,
-        body?.userAgent || null,
+        // Zero-Meta: user_agent no longer stored
         body?.previewPublicKey || null
       ).run();
       // Notify the PIN-generating device via WebSocket so it can close the modal
@@ -9321,7 +9321,6 @@ async function handlePushRoutes(req, env) {
         await notifyAccountDO(env, accountDigest, {
           type: 'push-device-paired',
           deviceId: deviceId || null,
-          userAgent: body?.userAgent || null,
           ts: Date.now()
         });
       } catch (notifyErr) {
@@ -9347,7 +9346,7 @@ async function handlePushRoutes(req, env) {
     }
     try {
       const rows = await env.DB.prepare(
-        `SELECT device_id, endpoint, user_agent, created_at, preview_public_key FROM push_subscriptions WHERE account_digest = ?1 ORDER BY created_at DESC`
+        `SELECT device_id, endpoint, created_at, preview_public_key FROM push_subscriptions WHERE account_digest = ?1 ORDER BY created_at DESC`
       ).bind(accountDigest).all();
       return json({ ok: true, items: rows?.results || [] });
     } catch (err) {

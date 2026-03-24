@@ -102,9 +102,7 @@ export async function subscribePush() {
     body: JSON.stringify({
       accountDigest,
       deviceId,
-      subscription: subJSON,
-      // Zero-Meta: send short parsed label instead of full User-Agent fingerprint
-      userAgent: parseUA(navigator.userAgent)
+      subscription: subJSON
     })
   });
 
@@ -183,8 +181,8 @@ export async function listPushDevices() {
     deviceId: item.device_id,
     endpoint: item.endpoint,
     createdAt: item.created_at,
-    userAgent: item.user_agent || '',
-    displayName: parseUA(item.user_agent),
+    // Zero-Meta: server no longer stores user_agent; derive display label locally
+    displayName: parseUA(navigator.userAgent),
     isThisDevice: item.endpoint === localEndpoint,
     previewPublicKey: item.preview_public_key || null
   }));

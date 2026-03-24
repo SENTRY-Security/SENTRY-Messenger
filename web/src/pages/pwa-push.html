@@ -594,27 +594,6 @@
           }
         }
 
-        // Zero-Meta: derive short device label instead of sending full User-Agent
-        function shortDeviceLabel() {
-          var ua = navigator.userAgent || '';
-          if (/iPhone|iPad/.test(ua)) return /CriOS/.test(ua) ? 'iPhone Chrome' : 'iPhone Safari';
-          if (/Android/.test(ua)) return /Firefox/.test(ua) ? 'Android Firefox' : 'Android Chrome';
-          if (/Macintosh/.test(ua)) {
-            if (/Edg/.test(ua)) return 'Mac Edge';
-            if (/Chrome/.test(ua)) return 'Mac Chrome';
-            if (/Firefox/.test(ua)) return 'Mac Firefox';
-            return 'Mac Safari';
-          }
-          if (/Windows/.test(ua)) {
-            if (/Edg/.test(ua)) return 'Windows Edge';
-            if (/Chrome/.test(ua)) return 'Windows Chrome';
-            if (/Firefox/.test(ua)) return 'Windows Firefox';
-            return 'Windows';
-          }
-          if (/Linux/.test(ua)) return /Chrome/.test(ua) ? 'Linux Chrome' : (/Firefox/.test(ua) ? 'Linux Firefox' : 'Linux');
-          return 'Unknown';
-        }
-
         // Check push subscription status
         async function checkStatus() {
           if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
@@ -744,7 +723,6 @@
               body: JSON.stringify({
                 pin: pin,
                 subscription: subJSON,
-                userAgent: shortDeviceLabel(),
                 previewPublicKey: previewKeypair ? previewKeypair.publicKeyB64 : null
               })
             });
