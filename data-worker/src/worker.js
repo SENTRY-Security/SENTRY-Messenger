@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { toU8Strict } from './u8-strict.js';
 import { createJwt, verifyJwt } from './jwt.js';
+import { jwtVerify, importSPKI, errors as joseErrors } from 'jose';
 import { createWebPush } from './web-push.js';
 import { getOpaqueConfig, OpaqueID, OpaqueServer, KE1, KE3, RegistrationRequest, RegistrationRecord, ExpectedAuthResult } from '@cloudflare/opaque-ts';
 
@@ -6866,71 +6867,62 @@ function buildCallNetworkConfigEdge(env) {
   return cfg;
 }
 
-// ── JWT RS256 verification via Web Crypto (edge-direct) ──────────────────
+// ── JWT RS256 verification via jose (edge-direct) ──────────────────
+//
+// Uses panva/jose — audited library with:
+//   - Strict algorithm whitelist (RS256 only)
+//   - exp / nbf / iat validation with clock tolerance
+//   - Constant-time signature verification
+//   - Protection against algorithm confusion attacks
 
-function pemToArrayBuffer(pem) {
-  let raw = pem;
-  if (raw.includes('\\n')) raw = raw.replace(/\\n/g, '\n');
-  if (!raw.includes('-----BEGIN')) {
-    const chunks = raw.replace(/\s+/g, '').match(/.{1,64}/g) || [];
-    raw = ['-----BEGIN PUBLIC KEY-----', ...chunks, '-----END PUBLIC KEY-----'].join('\n');
-  }
-  const b64 = raw.replace(/-----[^-]+-----/g, '').replace(/\s/g, '');
-  const binary = atob(b64);
-  const buf = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
-  return buf.buffer;
-}
+// Cache imported public key to avoid re-parsing PEM on every call
+let _cachedRS256Key = null;
+let _cachedRS256Pem = null;
 
-function base64UrlDecode(str) {
-  let s = str.replace(/-/g, '+').replace(/_/g, '/');
-  while (s.length % 4) s += '=';
-  const binary = atob(s);
-  const buf = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
-  return buf.buffer;
-}
-
-async function verifyJwtRS256(token, publicKeyPem) {
+async function getRS256PublicKey(publicKeyPem) {
   if (!publicKeyPem) {
     const err = new Error('PUBLIC KEY missing');
     err.status = 500;
     throw err;
   }
-  const parts = token.split('.');
-  if (parts.length !== 3) {
-    const err = new Error('invalid JWT format');
-    err.status = 400;
-    err.code = 'InvalidVoucher';
-    throw err;
+  // Normalize escaped newlines from env vars
+  let pem = publicKeyPem;
+  if (pem.includes('\\n')) pem = pem.replace(/\\n/g, '\n');
+  if (!pem.includes('-----BEGIN')) {
+    const chunks = pem.replace(/\s+/g, '').match(/.{1,64}/g) || [];
+    pem = ['-----BEGIN PUBLIC KEY-----', ...chunks, '-----END PUBLIC KEY-----'].join('\n');
   }
-  const [headerB64, payloadB64, signatureB64] = parts;
-  let header, payload;
+  if (_cachedRS256Pem === pem && _cachedRS256Key) return _cachedRS256Key;
+  _cachedRS256Key = await importSPKI(pem, 'RS256');
+  _cachedRS256Pem = pem;
+  return _cachedRS256Key;
+}
+
+async function verifyJwtRS256(token, publicKeyPem) {
+  const key = await getRS256PublicKey(publicKeyPem);
   try {
-    header = JSON.parse(atob(headerB64.replace(/-/g, '+').replace(/_/g, '/')));
-    payload = JSON.parse(atob(payloadB64.replace(/-/g, '+').replace(/_/g, '/')));
-  } catch {
-    const err = new Error('invalid JWT encoding');
-    err.status = 400;
-    err.code = 'InvalidVoucher';
-    throw err;
+    const { payload, protectedHeader } = await jwtVerify(token, key, {
+      algorithms: ['RS256'],     // Strict: only RS256 accepted (prevents alg confusion)
+      clockTolerance: 30         // 30 seconds tolerance for voucher tokens
+    });
+    // Extract the raw signature segment for downstream storage/dedup
+    const signatureB64 = token.split('.')[2] || null;
+    return { payload, header: protectedHeader, signatureB64 };
+  } catch (err) {
+    if (err instanceof joseErrors.JWTExpired) {
+      const e = new Error('voucher token expired');
+      e.status = 400; e.code = 'VoucherExpired';
+      throw e;
+    }
+    if (err instanceof joseErrors.JWSSignatureVerificationFailed) {
+      const e = new Error('invalid JWT signature');
+      e.status = 400; e.code = 'InvalidVoucher';
+      throw e;
+    }
+    const e = new Error(err?.message || 'JWT verification failed');
+    e.status = 400; e.code = 'InvalidVoucher';
+    throw e;
   }
-  const keyData = pemToArrayBuffer(publicKeyPem);
-  const key = await crypto.subtle.importKey(
-    'spki', keyData,
-    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
-    false, ['verify']
-  );
-  const data = new TextEncoder().encode(`${headerB64}.${payloadB64}`);
-  const signature = base64UrlDecode(signatureB64);
-  const valid = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, signature, data);
-  if (!valid) {
-    const err = new Error('invalid JWT signature');
-    err.status = 400;
-    err.code = 'InvalidVoucher';
-    throw err;
-  }
-  return { payload, header, signatureB64 };
 }
 
 // ── S3v4 presigned URL generation (edge-direct, no AWS SDK) ──────────────
@@ -7134,25 +7126,7 @@ function generateNanoId(len = 32) {
   return id;
 }
 
-// ── WS Token (JWT HS256) ──────────────────────────────────────────
-const WS_JWT_HEADER_B64 = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))
-  .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-
-async function hmacSha256Sign(secret, data) {
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
-  );
-  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(data));
-  return btoa(String.fromCharCode(...new Uint8Array(sig)))
-    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function base64url(str) {
-  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-// JWT creation — delegates to shared jwt.js module (H-1 fix)
+// ── WS Token (JWT HS256 via jose) ─────────────────────────────────
 async function createWsToken(env, { accountDigest, ttlSec = 300 }) {
   return createJwt(env.WS_TOKEN_SECRET, { accountDigest, ttlSec });
 }
