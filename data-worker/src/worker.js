@@ -4,7 +4,7 @@ import { createJwt, verifyJwt } from './jwt.js';
 import { jwtVerify, importSPKI, errors as joseErrors } from 'jose';
 import { createWebPush } from './web-push.js';
 import {
-  APP_CATALOG, listRecipes, startInstance, getInstance,
+  listRecipes, startInstance, getInstance,
   listInstances, stopInstance, saveInstance, waitForInstance,
   extractStreamInfo,
 } from './genymotion.js';
@@ -9327,11 +9327,6 @@ async function handlePublicRoutes(req, env) {
   }
 
   // ── App-as-a-Service (Genymotion Cloud) ─────────────────────────
-
-  // GET /api/v1/apps/catalog — list available apps
-  if (path === '/api/v1/apps/catalog' && method === 'GET') {
-    return json({ apps: APP_CATALOG });
-  }
 
   // POST /api/v1/apps/instance/start — start or reuse Android instance
   if (path === '/api/v1/apps/instance/start' && method === 'POST') {

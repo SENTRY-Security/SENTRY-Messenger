@@ -10,7 +10,6 @@ console.info('[App] Version: 2026-01-14T10:55:00Z (Round 11 Fix + Debug)');
 import { AUDIO_PERMISSION_KEY } from './login-ui.js';
 import * as safeBrowser from '../features/safe-browser.js';
 import * as appsLauncher from '../features/apps-launcher.js';
-import { getAppCatalog } from '../api/apps.js';
 import { APP_CATALOG_LOCAL } from '../features/apps-launcher.js';
 import { DEBUG } from './mobile/debug-flags.js';
 import { flushOutbox } from '../features/queue/outbox.js';
@@ -1174,16 +1173,8 @@ function initAppsTab() {
     }
   };
 
-  // Render local catalog immediately, then try upgrading from API
+  // Catalog is static — render directly from local definition
   appsLauncher.renderAppsGrid(container, { catalog: APP_CATALOG_LOCAL, onAppTap });
-
-  getAppCatalog()
-    .then(data => {
-      if (data?.apps && Object.keys(data.apps).length > 0) {
-        appsLauncher.renderAppsGrid(container, { catalog: data.apps, onAppTap });
-      }
-    })
-    .catch(() => { /* already rendered local catalog */ });
 }
 
 // SAFE tab – shown only when sentryLab is enabled
