@@ -2418,7 +2418,16 @@ initInviteReconciler({ handleContactInitEvent, replayDeliveryIntent });
     btnCaf.addEventListener('click', (e) => {
       e.stopPropagation();
       const visible = cafMenu.style.display !== 'none';
-      cafMenu.style.display = visible ? 'none' : 'flex';
+      if (visible) {
+        cafMenu.style.display = 'none';
+      } else {
+        const rect = btnCaf.getBoundingClientRect();
+        cafMenu.style.top = (rect.bottom + 8) + 'px';
+        cafMenu.style.right = (window.innerWidth - rect.right) + 'px';
+        cafMenu.style.left = 'auto';
+        cafMenu.style.bottom = 'auto';
+        cafMenu.style.display = 'flex';
+      }
     });
     document.addEventListener('click', (e) => {
       if (cafMenu.style.display === 'none') return;

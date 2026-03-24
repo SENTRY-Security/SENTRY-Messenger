@@ -425,11 +425,23 @@ export function setupShareController(options) {
   const pairingBackdrop = pairingCodeModal ? pairingCodeModal.querySelector('[data-pairing-close]') : null;
   const pairingInputs = pairingDigits ? Array.from(pairingDigits.querySelectorAll('input')) : [];
 
-  // ─── Add Friend Menu ───
+  // ─── Add Friend Menu (fixed positioning to escape overflow containers) ───
   function toggleAddFriendMenu() {
     if (!addFriendMenu) return;
     const visible = addFriendMenu.style.display !== 'none';
-    addFriendMenu.style.display = visible ? 'none' : 'flex';
+    if (visible) {
+      addFriendMenu.style.display = 'none';
+    } else {
+      if (btnShareModal) {
+        const rect = btnShareModal.getBoundingClientRect();
+        // Profile page: menu opens upward from button
+        addFriendMenu.style.bottom = (window.innerHeight - rect.top + 8) + 'px';
+        addFriendMenu.style.right = (window.innerWidth - rect.right) + 'px';
+        addFriendMenu.style.top = 'auto';
+        addFriendMenu.style.left = 'auto';
+      }
+      addFriendMenu.style.display = 'flex';
+    }
   }
   function hideAddFriendMenu() {
     if (addFriendMenu) addFriendMenu.style.display = 'none';
