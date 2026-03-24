@@ -537,7 +537,7 @@ export async function unlockAndInit({ password, onProgress, onMkReady, preBundle
       report('generate-bundle', 'start');
       const deviceId = getDeviceId() || crypto.randomUUID();
       setDeviceId(deviceId);
-      try { console.log('[login-flow] deviceId:set:init', deviceId); } catch { }
+      try { console.log('[login-flow] deviceId:set:init', deviceId?.slice(0, 8) + '…'); } catch { }
       // Use pre-generated bundle if available (generated during idle time)
       let devicePriv, bundlePub;
       const preBundleResult = preBundle ? await preBundle : null;
@@ -584,7 +584,7 @@ export async function unlockAndInit({ password, onProgress, onMkReady, preBundle
       devicePriv.device_id = deviceId;
       devicePriv.deviceId = deviceId;
       setDeviceId(deviceId);
-      try { console.log('[login-flow] deviceId:set:replenish', deviceId); } catch { }
+      try { console.log('[login-flow] deviceId:set:replenish', deviceId?.slice(0, 8) + '…'); } catch { }
       // Generate OPKs first, then batch SPK + OPKs into a single publish call
       report('generate-bundle', 'start');
       const { opks, opkPrivMap, next } = await generateOpksFrom(devicePriv.next_opk_id || 1, 20);

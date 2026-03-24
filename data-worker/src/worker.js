@@ -4233,7 +4233,14 @@ function logMessageKeyVault(kind, payload) {
   if (kind === 'put') messageKeyVaultPutLogCount += 1;
   if (kind === 'get') messageKeyVaultGetLogCount += 1;
   try {
-    console.log(kind === 'put' ? 'messageKeyVaultPut' : 'messageKeyVaultGet', payload);
+    // Only log non-sensitive fields (truncated identifiers, status)
+    const safe = {
+      kind,
+      acct: payload?.accountDigestSuffix4 || null,
+      conv: payload?.conversationIdPrefix8 || null,
+      status: payload?.status || payload?.upsert || null
+    };
+    console.log('messageKeyVault', safe);
   } catch {
     /* ignore logging errors */
   }

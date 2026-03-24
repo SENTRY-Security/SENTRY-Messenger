@@ -320,7 +320,7 @@ DR 解密完成
 3. ✅ ~~AEAD 無 AAD~~ — 已修復：所有 AES-GCM 操作加入 info tag / 用途標識作為 `additionalData`，新資料使用 v2 格式，解密時依版本向下相容 v1 legacy
 4. ⚠️ **IV 重用風險**：12-byte random IV 依賴隨機不重複（HKDF salt 分散風險，但無明確追蹤）
 5. ⚠️ **Manifest 無獨立簽章**：manifest 加密但無額外的完整性驗證（依賴 GCM 的 authentication tag）
-6. ✅ ~~Debug 日誌輸出金鑰雜湊~~ — 已修復：移除 `dr.js` 中所有 `hashPrefix()` 相關的 console 輸出（x3dh-initiate、x3dh-respond、drRatchet、encrypt、decrypt 路徑）
+6. ✅ ~~Debug 日誌輸出金鑰雜湊~~ — **已全面修復**：Phase 1 移除 `dr.js` 中 `hashPrefix()` 輸出。Phase 2 全面清理：`debug-flags.js` 所有開關預設 false、`dr-session.js` 移除金鑰狀態/計數器值日誌、移除 `navigator.webdriver` 自動啟用、`worker.js` vault 日誌僅輸出安全欄位、`contacts.js` 移除敏感資料明文日誌、`login-flow.js` deviceId 截斷
 7. ✅ ~~DR 狀態並發無 mutex~~ — 已有 `enqueueDrSessionOp()` 序列化機制（`dr-session.js:1546`），所有 encrypt/decrypt 操作均透過 queue 串行化
 8. ✅ ~~Invite Dropbox 硬編碼 salt~~ — 已修復：改為每次 `sealInviteEnvelope` 產生 16-byte random salt，存入 `sealed.salt_b64`；解封時讀取，舊 envelope 向下相容 fallback
 9. ✅ ~~Call key 零 salt~~ — 已修復：`deriveMasterKey` 512-bit 輸出拆分為 key (前 256-bit) + subSalt (後 256-bit)，`deriveSubMaterial` 使用 subSalt 取代 `ZERO_SALT`

@@ -203,7 +203,7 @@
 - [x] ~~CORS 設定待確認~~ — ✅ 已修復：Pages Function 改用 `CORS_ALLOWED_ORIGINS` 白名單（`[[path]].ts`）；Data Worker 啟用 `CORS_ORIGINS` 環境變數（`wrangler.toml`）；明確列舉 allow-headers 取代 `*`
 - [x] ~~HTTP API rate limiting 待確認~~ — ✅ 已修復：與 M-1 共同處理，`RateLimiter` DO 全域 IP 限流覆蓋所有端點
 - [ ] TLS 1.2+ 強制（Cloudflare 處理）
-- [x] ~~Debug 日誌是否在生產環境停用~~ — ✅ 已修復：`debug-flags.js` 透過 `__PRODUCTION__` build flag 在生產環境強制關閉所有 debug switches（`build.mjs`、`deploy.yml`）
+- [x] ~~Debug 日誌是否在生產環境停用~~ — ✅ 已修復（強化）：`debug-flags.js` 所有開關預設 `false`（不再依賴 `__PRODUCTION__` 判斷），`dr-session.js` 移除金鑰狀態/計數器敏感日誌，移除 `navigator.webdriver` 自動啟用，`worker.js` vault 日誌僅安全欄位，`entry-fetch.js` FETCH_LOG_ENABLED 預設 false
 
 ## 10. 部署與 CI/CD 安全
 

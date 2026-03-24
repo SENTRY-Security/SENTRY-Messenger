@@ -52,7 +52,8 @@ import { t } from '/locales/index.js';
 import { decryptContactPayload, normalizeContactShareEnvelope } from '../contact-share.js';
 
 // Re-export constants if needed or just use them locally
-const FETCH_LOG_ENABLED = true; // Could be config
+/* global __PRODUCTION__ */
+const FETCH_LOG_ENABLED = typeof __PRODUCTION__ !== 'undefined' && __PRODUCTION__ ? false : false;
 const PENDING_VAULT_PUT_QUEUE_LIMIT = 50;
 const PENDING_VAULT_PUT_RETRY_INTERVAL_MS = 60_000;
 

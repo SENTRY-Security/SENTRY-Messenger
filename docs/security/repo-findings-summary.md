@@ -77,7 +77,7 @@
 | M-1 | **無 IK/SPK 定期輪替** | `prekeys.js` | 長期使用同一金鑰增加洩漏影響範圍 |
 | M-2 | **Chunk 加密無 AAD** | `chunked-upload.js` | Chunk index 未綁定加密，理論上可替換 |
 | M-3 | **AEAD envelope 無 AAD** | `aead.js` | 除 DR 訊息外，其他加密操作不使用 AAD |
-| M-4 | **Debug 日誌輸出金鑰雜湊** | `dr.js:213-235, 305-330` | 生產環境可能洩漏金鑰資訊 |
+| ~~M-4~~ | ~~**Debug 日誌輸出金鑰雜湊**~~ | 多處 | ✅ 已修復：移除所有金鑰雜湊/狀態/計數器日誌、debug flags 全部預設 false、移除 webdriver 自動啟用、vault 日誌僅安全欄位、敏感 ID 截斷 |
 | M-5 | **社交圖譜部分暴露**（部分緩解） | `conversation_acl` D1 表 | `conversation_acl` 仍明文暴露對話關係。**已緩解**：`contacts` 表透過 Zero-Meta 0-A（`0017_contacts_zero_meta.sql`）將 `peer_digest` 改為不可逆 `slot_id`（HMAC 衍生），`peer_digest` 和 `is_blocked` 移入加密 blob，伺服器無法從 contacts 表推知聯絡人關係 |
 | M-6 | **訊息大小洩漏** | 全系統 | 無 padding 機制，密文大小反映明文大小 |
 | M-7 | **媒體 content_type 在上傳請求中明文** | `sign-put-chunked` API | 伺服器在簽名請求中可見 content_type 和 total_size |
@@ -115,7 +115,7 @@
 | D-4 | **缺少 CSP/HSTS headers** | `web/src/_headers` | 僅設 Cache-Control，無 CSP、HSTS、X-Frame-Options |
 | D-5 | **CORS 設定不安全** | `web/functions/[[path]].ts:209-226` | `allow-origin: *` + `allow-credentials: true` 且 allow-headers 為 `*` |
 | D-6 | **Source maps 在生產環境啟用** | `web/build.mjs:53` | `sourcemap: true` 暴露原始碼 |
-| D-7 | **Debug flags 預設啟用** | `web/src/app/ui/mobile/debug-flags.js` | `replay: true`, `drVerbose: true`, `conversationReset: true` |
+| ~~D-7~~ | ~~**Debug flags 預設啟用**~~ | `web/src/app/ui/mobile/debug-flags.js` | ✅ 已修復：所有 debug 開關預設為 `false`，不再使用 `!_PROD && true` 模式 |
 | D-8 | **Build manifest 公開可存取** | `web/build.mjs:346` | `build-manifest.json` 含 git commit、branch、完整檔案列表 |
 | D-9 | **API proxy 無 rate limiting** | `web/functions/[[path]].ts:156-217` | 所有 `/api/*` 直接 proxy，無速率限制 |
 | D-10 | **Wipe script 無安全護欄** | `scripts/wipe-all.sh` | 使用 `--yes` 無確認，無備份，刪除所有 D1 和 R2 資料 |

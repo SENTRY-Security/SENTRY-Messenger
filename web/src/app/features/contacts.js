@@ -608,7 +608,7 @@ export async function saveContact(contact) {
   const mk = getMkRaw();
   const convIds = contactConvIds();
   if (!mk || !convIds.length) {
-    console.warn('[contacts]', { contactSaveEarlyReturn: 'missing-mk-or-conv', hasMk: !!mk, convCount: convIds.length });
+    console.warn('[contacts] contactSaveEarlyReturn: missing-mk-or-conv');
     throw new Error('Not unlocked: MK/account missing');
   }
   const deviceId = ensureDeviceId();
@@ -681,14 +681,9 @@ export async function saveContact(contact) {
   // DEBUG: Check for Self-Identity Corruption
   try {
     const selfDigest = (getAccountDigest() || '').toUpperCase();
-    // Logic: If I am saving a Peer, but the Nickname matches ME, log a warning.
-    // Since I don't know "My Nickname" easily here without importing Profile, I'll log everything.
-    console.log('[contacts] DEBUG_SAVE_CONTACT', {
-      peerAccountDigest,
-      nickname: normalizedNickname,
-      selfDigest,
-      isSelf: peerAccountDigest === selfDigest
-    });
+    if (peerAccountDigest === selfDigest) {
+      console.warn('[contacts] self-save detected');
+    }
   } catch { }
 
   try {
