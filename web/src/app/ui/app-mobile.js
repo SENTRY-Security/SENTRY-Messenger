@@ -1239,6 +1239,7 @@ function initSafeBrowser() {
     _safeModalCleanup?.();
 
     modalEl.classList.add('safe-modal');
+    window.__setLandscapeAllowed?.(true);
     document.getElementById('modalTitle').textContent = '';
     body.innerHTML = `
       <div class="safe-viewer">
@@ -1334,6 +1335,7 @@ function initSafeBrowser() {
       if (loadTimer) clearTimeout(loadTimer);
       modalEl.removeEventListener('touchmove', preventScroll);
       if (iframe) iframe.src = 'about:blank';
+      window.__setLandscapeAllowed?.(false);
       modalEl.classList.remove('safe-modal');
       modalEl.style.display = 'none';
       modalEl.setAttribute('aria-hidden', 'true');

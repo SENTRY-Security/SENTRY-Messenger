@@ -1088,8 +1088,9 @@
         const looksMobileUA = /iPhone|iPad|Android|Mobile/i.test(ua);
         return shortEdge <= 1024 && (touch > 0 || looksMobileUA);
       };
+      let landscapeAllowed = false;
       function update() {
-        if (!isMobileLike()) {
+        if (!isMobileLike() || landscapeAllowed) {
           docEl.classList.remove('orientation-block');
           if (overlay) overlay.setAttribute('aria-hidden', 'true');
           return;
@@ -1103,6 +1104,16 @@
           if (overlay) overlay.setAttribute('aria-hidden', 'false');
         }
       }
+      window.__setLandscapeAllowed = function (allowed) {
+        landscapeAllowed = !!allowed;
+        update();
+        if (!isMobileLike() || !screen.orientation?.lock) return;
+        if (allowed) {
+          screen.orientation.unlock?.();
+        } else {
+          screen.orientation.lock('portrait').catch(() => { });
+        }
+      };
       if (mq.addEventListener) mq.addEventListener('change', update); else mq.addListener(update);
       window.addEventListener('orientationchange', update);
       window.addEventListener('resize', update);

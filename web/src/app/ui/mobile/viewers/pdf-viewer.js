@@ -69,6 +69,7 @@ export async function renderPdfViewer({ url, name, modalApi }) {
   if (!modalEl || !body || !modalTitle) return false;
   cleanupPdfViewer();
   modalEl.classList.add('pdf-modal');
+  window.__setLandscapeAllowed?.(true);
   modalTitle.textContent = '';
   body.innerHTML = `
     <div class="pdf-viewer">
@@ -102,6 +103,7 @@ export async function renderPdfViewer({ url, name, modalApi }) {
       evictPage(p);
     }
     try { pdfDoc?.cleanup?.(); pdfDoc?.destroy?.(); } catch {}
+    window.__setLandscapeAllowed?.(false);
     modalEl.classList.remove('pdf-modal');
   };
 
