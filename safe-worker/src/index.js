@@ -123,6 +123,13 @@ export class BrowserSession extends Container {
     console.error('[SAFE] Container error:', this.ctx.id.toString(), error);
   }
 
+  // Restore envVars from DO storage (needed after DO memory eviction)
+  async _ensureEnvVars() {
+    if (this.envVars?.VNC_PW) return;
+    const pw = await this.ctx.storage.get('vnc_pw');
+    if (pw) this.envVars = { VNC_PW: pw };
+  }
+
   // ── Request handler ──────────────────────────────────────────
   //
   // Routes:
@@ -233,6 +240,9 @@ export class BrowserSession extends Container {
     // Rewrite /api/safe/browser/** → /** on port 6901
     // This handles both HTTP (static assets) and WebSocket (VNC stream)
     if (path.startsWith('/api/safe/browser')) {
+      // Restore envVars before any potential container start
+      await this._ensureEnvVars();
+
       const state = await this.getState();
       if (state.status !== 'running' && state.status !== 'healthy') {
         // Auto-start if sleeping
@@ -251,15 +261,8 @@ export class BrowserSession extends Container {
       const containerUrl = new URL(request.url);
       containerUrl.pathname = containerPath;
 
-      // Create a new request with the rewritten URL
-      const proxyRequest = new Request(containerUrl.toString(), {
-        method: request.method,
-        headers: request.headers,
-        body: request.body,
-      });
-
-      // Container.fetch() auto-proxies HTTP and WebSocket to defaultPort (6901)
-      return super.fetch(proxyRequest);
+      // Pass the original request to preserve WebSocket upgrade headers
+      return super.fetch(new Request(containerUrl.toString(), request));
     }
 
     return Response.json({ error: 'Not found' }, { status: 404 });

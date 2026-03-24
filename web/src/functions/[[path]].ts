@@ -484,7 +484,7 @@ function corsHeaders(req?: Request): Record<string, string> {
   return {
     'access-control-allow-origin': allowed ? origin : CORS_ALLOWED_ORIGINS[0],
     'access-control-allow-credentials': 'true',
-    'access-control-allow-methods': 'GET, POST, OPTIONS',
+    'access-control-allow-methods': 'GET, POST, DELETE, OPTIONS',
     'access-control-allow-headers': 'Content-Type, X-Account-Token, X-Account-Digest, X-Device-Id, Authorization',
     'access-control-max-age': '86400',
   };

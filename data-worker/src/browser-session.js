@@ -34,6 +34,13 @@ export class BrowserSession extends Container {
     console.error('[SAFE] Container error:', this.ctx.id.toString(), error);
   }
 
+  // Restore envVars from DO storage (needed after DO memory eviction)
+  async _ensureEnvVars() {
+    if (this.envVars?.VNC_PW) return;
+    const pw = await this.ctx.storage.get('vnc_pw');
+    if (pw) this.envVars = { VNC_PW: pw };
+  }
+
   // ── Request handler ──────────────────────────────────────────
   //
   // Routes:
@@ -142,6 +149,9 @@ export class BrowserSession extends Container {
 
     // ── Proxy to noVNC ─────────────────────────────────────────
     if (path.startsWith('/api/safe/browser')) {
+      // Restore envVars before any potential container start
+      await this._ensureEnvVars();
+
       const state = await this.getState();
       if (state.status !== 'running' && state.status !== 'healthy') {
         try {
@@ -159,13 +169,8 @@ export class BrowserSession extends Container {
       const containerUrl = new URL(request.url);
       containerUrl.pathname = containerPath;
 
-      const proxyRequest = new Request(containerUrl.toString(), {
-        method: request.method,
-        headers: request.headers,
-        body: request.body,
-      });
-
-      return super.fetch(proxyRequest);
+      // Pass the original request to preserve WebSocket upgrade headers
+      return super.fetch(new Request(containerUrl.toString(), request));
     }
 
     return Response.json({ error: 'Not found' }, { status: 404 });

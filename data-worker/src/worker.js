@@ -6848,7 +6848,7 @@ function buildCORSHeaders(req, env) {
   const allowed = !allowList.length || !origin || allowList.includes(origin);
   return {
     'Access-Control-Allow-Origin': allowed ? (origin || '*') : '',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, X-Account-Token, X-Account-Digest, X-Device-Id, Authorization',
     'Access-Control-Max-Age': '86400'
   };
