@@ -1548,6 +1548,20 @@ async function ensureDataTables(env) {
         console.warn('ensureDataTables: slot_id column add failed (may already exist)', alterErr?.message);
       }
     }
+    // Auto-create performance indexes (migration 0018 — schema audit)
+    try {
+      await env.DB.batch([
+        env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_device_signed_prekeys_lookup ON device_signed_prekeys(account_digest, device_id, spk_id DESC)`),
+        env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_messages_secure_counter_lookup ON messages_secure(conversation_id, sender_account_digest, sender_device_id, counter DESC)`),
+        env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_call_events_created_at ON call_events(created_at)`),
+        env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ephemeral_invites_cleanup ON ephemeral_invites(expires_at) WHERE consumed_at IS NULL`),
+        env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ephemeral_sessions_guest_active ON ephemeral_sessions(guest_digest, expires_at) WHERE deleted_at IS NULL`),
+        env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_devices_account_updated ON devices(account_digest, updated_at DESC, created_at DESC)`)
+      ]);
+      console.log('ensureDataTables: ensured 0018 audit indexes');
+    } catch (e) {
+      console.warn('ensureDataTables: 0018 audit indexes failed (may already exist)', e?.message);
+    }
     if (missingTables.length || missingColumns.length) {
       const detail = [
         ...missingTables.map((name) => `table:${name}`),

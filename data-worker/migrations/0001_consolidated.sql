@@ -1,19 +1,44 @@
--- SENTRY Messenger Consolidated Schema (v1)
--- Consolidated from migrations 0001-0031
+-- SENTRY Messenger Consolidated Schema (v2)
+-- Consolidated from migrations 0001-0018
+-- Reflects the current production schema after all migrations have been applied.
+--
+-- Changes from v1:
+--   - Removed uid_plain from accounts (0016)
+--   - Removed caller_uid/callee_uid from call_sessions (0016)
+--   - Removed redundant indexes on message_key_vault (0016)
+--   - Added brand, brand_name, brand_logo, account_token_hash to accounts (0008, 0009, 0012)
+--   - Added pairing_code, prekey_bundle_json to invite_dropbox (0007)
+--   - Added slot_id to contacts (0017)
+--   - Added reason to contact_secret_backups (0014)
+--   - Added pending_key_exchange_json to ephemeral_sessions (0011)
+--   - Added preview_public_key to push_subscriptions (0015 fallback)
+--   - Dropped legacy group tables (0013), replaced with business_conversations
+--   - Added all missing tables from 0002 (contact_secret_backups, opaque_records, etc.)
+--   - Added ephemeral tables (0010), push_subscriptions (0015)
+--   - Added business conversation tables (0013)
+--   - Added deletion/audit tables (0004)
+--   - Added performance indexes (0018)
 
+-- ============================================================
 -- 1. Accounts
+-- ============================================================
 CREATE TABLE IF NOT EXISTS accounts (
   account_digest TEXT PRIMARY KEY,
   account_token TEXT NOT NULL,
+  account_token_hash TEXT,              -- 0012: secure token lookup
   uid_digest TEXT NOT NULL UNIQUE,
-  uid_plain TEXT,
   last_ctr INTEGER NOT NULL DEFAULT 0,
   wrapped_mk_json TEXT,
+  brand TEXT,                           -- 0008: multi-brand support
+  brand_name TEXT,                      -- 0009: white-label display name
+  brand_logo TEXT,                      -- 0009: white-label logo URL
   created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
   updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
 
+-- ============================================================
 -- 2. Device Backup (encrypted private keys)
+-- ============================================================
 CREATE TABLE IF NOT EXISTS device_backup (
   account_digest   TEXT PRIMARY KEY,
   wrapped_dev_json TEXT NOT NULL,
@@ -29,7 +54,9 @@ CREATE TRIGGER IF NOT EXISTS trg_device_backup_updated
     UPDATE device_backup SET updated_at = strftime('%s','now') WHERE account_digest = OLD.account_digest;
   END;
 
+-- ============================================================
 -- 3. Devices
+-- ============================================================
 CREATE TABLE IF NOT EXISTS devices (
   account_digest TEXT NOT NULL,
   device_id TEXT NOT NULL,
@@ -43,8 +70,11 @@ CREATE TABLE IF NOT EXISTS devices (
 
 CREATE INDEX IF NOT EXISTS idx_devices_account_status ON devices (account_digest, status);
 CREATE INDEX IF NOT EXISTS idx_devices_account_seen ON devices (account_digest, status, last_seen_at);
+CREATE INDEX IF NOT EXISTS idx_devices_account_updated ON devices (account_digest, updated_at DESC, created_at DESC);  -- 0018
 
+-- ============================================================
 -- 4. Device Signed Prekeys (Signal X3DH)
+-- ============================================================
 CREATE TABLE IF NOT EXISTS device_signed_prekeys (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   account_digest TEXT NOT NULL,
@@ -52,13 +82,17 @@ CREATE TABLE IF NOT EXISTS device_signed_prekeys (
   spk_id INTEGER NOT NULL,
   spk_pub TEXT NOT NULL,
   spk_sig TEXT NOT NULL,
-  ik_pub TEXT, -- Added in 0015
+  ik_pub TEXT,
   created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
   UNIQUE (account_digest, device_id, spk_id),
   FOREIGN KEY (account_digest, device_id) REFERENCES devices(account_digest, device_id) ON DELETE CASCADE
 );
 
--- 5. Device OTP Keys (Signal One-Time Prekeys)
+CREATE INDEX IF NOT EXISTS idx_device_signed_prekeys_lookup ON device_signed_prekeys (account_digest, device_id, spk_id DESC);  -- 0018
+
+-- ============================================================
+-- 5. Device One-Time Prekeys (Signal OPKs)
+-- ============================================================
 CREATE TABLE IF NOT EXISTS device_opks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   account_digest TEXT NOT NULL,
@@ -73,14 +107,18 @@ CREATE TABLE IF NOT EXISTS device_opks (
 
 CREATE INDEX IF NOT EXISTS idx_device_opks_fetch ON device_opks (account_digest, device_id, consumed_at, opk_id);
 
+-- ============================================================
 -- 6. Conversations
+-- ============================================================
 CREATE TABLE IF NOT EXISTS conversations (
   id TEXT PRIMARY KEY,
   token_b64 TEXT,
   created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
 
+-- ============================================================
 -- 7. Conversation ACL (Participants)
+-- ============================================================
 CREATE TABLE IF NOT EXISTS conversation_acl (
   conversation_id TEXT NOT NULL,
   account_digest TEXT NOT NULL,
@@ -108,7 +146,9 @@ CREATE TRIGGER IF NOT EXISTS trg_conversation_acl_updated
        );
   END;
 
--- 8. Secure Messages (Metadata for Fetching)
+-- ============================================================
+-- 8. Secure Messages (E2EE ciphertext storage)
+-- ============================================================
 CREATE TABLE IF NOT EXISTS messages_secure (
   id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL,
@@ -124,8 +164,11 @@ CREATE TABLE IF NOT EXISTS messages_secure (
 
 CREATE INDEX IF NOT EXISTS idx_messages_secure_conv_ts ON messages_secure (conversation_id, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_secure_sender_counter ON messages_secure (sender_account_digest, sender_device_id, counter);
+CREATE INDEX IF NOT EXISTS idx_messages_secure_counter_lookup ON messages_secure (conversation_id, sender_account_digest, sender_device_id, counter DESC);  -- 0018
 
+-- ============================================================
 -- 9. Attachments
+-- ============================================================
 CREATE TABLE IF NOT EXISTS attachments (
   object_key TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL,
@@ -141,60 +184,9 @@ CREATE TABLE IF NOT EXISTS attachments (
 CREATE INDEX IF NOT EXISTS idx_attachments_conv ON attachments (conversation_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_attachments_msg ON attachments (message_id);
 
--- 10. Groups
-CREATE TABLE IF NOT EXISTS groups (
-  group_id TEXT PRIMARY KEY,
-  conversation_id TEXT NOT NULL,
-  creator_account_digest TEXT NOT NULL,
-  name TEXT,
-  avatar_json TEXT,
-  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-  FOREIGN KEY (creator_account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_groups_conversation_id ON groups(conversation_id);
-CREATE INDEX IF NOT EXISTS idx_groups_creator ON groups(creator_account_digest);
-
--- 11. Group Members
-CREATE TABLE IF NOT EXISTS group_members (
-  group_id TEXT NOT NULL,
-  account_digest TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'member' CHECK(role IN ('owner','admin','member')),
-  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','left','kicked','removed')),
-  inviter_account_digest TEXT,
-  joined_at INTEGER,
-  muted_until INTEGER,
-  last_read_ts INTEGER,
-  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-  PRIMARY KEY (group_id, account_digest),
-  FOREIGN KEY (group_id) REFERENCES groups(group_id) ON DELETE CASCADE,
-  FOREIGN KEY (account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_group_members_group ON group_members(group_id);
-CREATE INDEX IF NOT EXISTS idx_group_members_account ON group_members(account_digest);
-CREATE INDEX IF NOT EXISTS idx_group_members_status ON group_members(group_id, status);
-
--- 12. Group Invites
-CREATE TABLE IF NOT EXISTS group_invites (
-  invite_id TEXT PRIMARY KEY,
-  group_id TEXT NOT NULL,
-  issuer_account_digest TEXT,
-  secret TEXT NOT NULL,
-  expires_at INTEGER NOT NULL,
-  used_at INTEGER,
-  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-  FOREIGN KEY (group_id) REFERENCES groups(group_id) ON DELETE CASCADE,
-  FOREIGN KEY (issuer_account_digest) REFERENCES accounts(account_digest) ON DELETE SET NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_group_invites_group ON group_invites(group_id);
-CREATE INDEX IF NOT EXISTS idx_group_invites_expires ON group_invites(expires_at);
-
--- 13. Message Key Vault (E2EE Replay Keys)
+-- ============================================================
+-- 10. Message Key Vault (E2EE Replay Keys)
+-- ============================================================
 CREATE TABLE IF NOT EXISTS message_key_vault (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   account_digest TEXT NOT NULL,
@@ -207,21 +199,19 @@ CREATE TABLE IF NOT EXISTS message_key_vault (
   header_counter INTEGER,
   wrapped_mk_json TEXT NOT NULL,
   wrap_context_json TEXT NOT NULL,
-  dr_state_snapshot TEXT, -- Added in 0031
+  dr_state_snapshot TEXT,
   created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
   UNIQUE(account_digest, conversation_id, message_id, sender_device_id)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_message_key_vault_unique
-  ON message_key_vault (account_digest, conversation_id, message_id, sender_device_id);
-
-CREATE INDEX IF NOT EXISTS idx_message_key_vault_lookup
-  ON message_key_vault (account_digest, conversation_id, message_id, sender_device_id);
-
+-- Note: redundant idx_message_key_vault_unique and idx_message_key_vault_lookup
+-- were dropped in 0016. The UNIQUE constraint provides an implicit index.
 CREATE INDEX IF NOT EXISTS idx_message_key_vault_sender_lookup
   ON message_key_vault (account_digest, conversation_id, sender_device_id);
 
--- 14. Invite Dropbox (Offline Contact Init)
+-- ============================================================
+-- 11. Invite Dropbox (Offline Contact Init)
+-- ============================================================
 CREATE TABLE IF NOT EXISTS invite_dropbox (
   invite_id TEXT PRIMARY KEY,
   owner_account_digest TEXT NOT NULL,
@@ -234,33 +224,42 @@ CREATE TABLE IF NOT EXISTS invite_dropbox (
   delivered_at INTEGER,
   consumed_at INTEGER,
   ciphertext_json TEXT,
+  pairing_code TEXT,                    -- 0007: NFC/QR pairing
+  prekey_bundle_json TEXT,              -- 0007: prekey bundle for pairing
   created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')), -- Added in 0028
+  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
   FOREIGN KEY (owner_account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_invite_dropbox_expires ON invite_dropbox(expires_at);
 CREATE INDEX IF NOT EXISTS idx_invite_dropbox_status ON invite_dropbox(status);
 CREATE INDEX IF NOT EXISTS idx_invite_dropbox_owner ON invite_dropbox(owner_account_digest);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_invite_dropbox_pairing_code
+  ON invite_dropbox(pairing_code) WHERE pairing_code IS NOT NULL AND status = 'CREATED';
 
--- 15. Contacts (Encrypted Metadata)
+-- ============================================================
+-- 12. Contacts (Encrypted Metadata)
+-- ============================================================
 CREATE TABLE IF NOT EXISTS contacts (
   owner_digest TEXT NOT NULL,
   peer_digest TEXT NOT NULL,
   encrypted_blob TEXT,
   is_blocked INTEGER DEFAULT 0,
+  slot_id TEXT,                         -- 0017: zero-meta opaque slot
   updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
   PRIMARY KEY (owner_digest, peer_digest)
 );
 
 CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_digest);
 CREATE INDEX IF NOT EXISTS idx_contacts_updated ON contacts(owner_digest, updated_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_owner_slot
+  ON contacts(owner_digest, slot_id) WHERE slot_id IS NOT NULL;
 
--- 16. Call Sessions
+-- ============================================================
+-- 13. Call Sessions
+-- ============================================================
 CREATE TABLE IF NOT EXISTS call_sessions (
   call_id TEXT PRIMARY KEY,
-  caller_uid TEXT NOT NULL,
-  callee_uid TEXT NOT NULL,
   caller_account_digest TEXT,
   callee_account_digest TEXT,
   status TEXT NOT NULL,
@@ -280,7 +279,9 @@ CREATE TABLE IF NOT EXISTS call_sessions (
 CREATE INDEX IF NOT EXISTS idx_call_sessions_status ON call_sessions(status);
 CREATE INDEX IF NOT EXISTS idx_call_sessions_expires ON call_sessions(expires_at);
 
--- 17. Call Events
+-- ============================================================
+-- 14. Call Events
+-- ============================================================
 CREATE TABLE IF NOT EXISTS call_events (
   event_id TEXT PRIMARY KEY,
   call_id TEXT NOT NULL,
@@ -294,3 +295,284 @@ CREATE TABLE IF NOT EXISTS call_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_call_events_call_created ON call_events(call_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_call_events_created_at ON call_events(created_at);  -- 0018
+
+-- ============================================================
+-- 15. Contact Secret Backups (0002)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS contact_secret_backups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_digest TEXT NOT NULL,
+  version INTEGER,
+  payload_json TEXT,
+  snapshot_version INTEGER,
+  entries INTEGER,
+  checksum TEXT,
+  bytes INTEGER,
+  device_label TEXT,
+  device_id TEXT,
+  reason TEXT NOT NULL DEFAULT 'auto',  -- 0014
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_contact_secret_backups_account ON contact_secret_backups(account_digest, updated_at DESC);
+
+-- ============================================================
+-- 16. OPAQUE Records (0002)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS opaque_records (
+  account_digest TEXT PRIMARY KEY,
+  record_b64 TEXT NOT NULL,
+  client_identity TEXT,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+-- ============================================================
+-- 17. Subscriptions (0002)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS subscriptions (
+  digest TEXT PRIMARY KEY,
+  expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+-- ============================================================
+-- 18. Tokens (0002)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS tokens (
+  token_id TEXT PRIMARY KEY,
+  digest TEXT NOT NULL,
+  issued_at INTEGER,
+  extend_days INTEGER,
+  nonce TEXT,
+  key_id TEXT,
+  signature_b64 TEXT,
+  status TEXT,
+  used_at INTEGER,
+  used_by_digest TEXT,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+-- ============================================================
+-- 19. Extend Logs (0002)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS extend_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  token_id TEXT,
+  digest TEXT,
+  extend_days INTEGER,
+  expires_at_after INTEGER,
+  used_at INTEGER,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+-- ============================================================
+-- 20. Media Objects (0002)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS media_objects (
+  obj_key TEXT PRIMARY KEY,
+  conv_id TEXT,
+  sender_id TEXT,
+  size_bytes INTEGER,
+  content_type TEXT,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_media_objects_conv ON media_objects(conv_id);
+
+-- ============================================================
+-- 21. Deletion Cursors (0002, 0005)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS deletion_cursors (
+  conversation_id TEXT NOT NULL,
+  account_digest TEXT NOT NULL,
+  min_counter INTEGER NOT NULL,
+  min_ts REAL NOT NULL DEFAULT 0,       -- 0005: timestamp-based filtering
+  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  PRIMARY KEY (conversation_id, account_digest)
+);
+
+-- ============================================================
+-- 22. Conversation Deletion Log (0004)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS conversation_deletion_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_digest TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  encrypted_checkpoint TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_deletion_log_lookup
+  ON conversation_deletion_log (owner_digest, conversation_id, id ASC);
+
+-- ============================================================
+-- 23. Legacy Prekey Tables (0002 — required by worker checks)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS prekey_users (
+  account_digest TEXT PRIMARY KEY,
+  updated_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS prekey_opk (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_digest TEXT,
+  key_id INTEGER,
+  public_key TEXT
+);
+
+-- ============================================================
+-- 24. Ephemeral Invites (0010)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS ephemeral_invites (
+  token TEXT PRIMARY KEY,
+  owner_digest TEXT NOT NULL,
+  owner_device_id TEXT NOT NULL,
+  prekey_bundle_json TEXT NOT NULL,
+  consumed_at INTEGER,
+  expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  FOREIGN KEY (owner_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_ephemeral_invites_owner ON ephemeral_invites(owner_digest);
+CREATE INDEX IF NOT EXISTS idx_ephemeral_invites_expires ON ephemeral_invites(expires_at);
+CREATE INDEX IF NOT EXISTS idx_ephemeral_invites_cleanup ON ephemeral_invites(expires_at) WHERE consumed_at IS NULL;  -- 0018
+
+-- ============================================================
+-- 25. Ephemeral Sessions (0010, 0011)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS ephemeral_sessions (
+  session_id TEXT PRIMARY KEY,
+  invite_token TEXT NOT NULL,
+  owner_digest TEXT NOT NULL,
+  owner_device_id TEXT NOT NULL,
+  guest_digest TEXT NOT NULL,
+  guest_device_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  extended_count INTEGER NOT NULL DEFAULT 0,
+  pending_key_exchange_json TEXT,        -- 0011: HTTP fallback storage
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  deleted_at INTEGER,
+  FOREIGN KEY (owner_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE,
+  FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_ephemeral_sessions_owner ON ephemeral_sessions(owner_digest, deleted_at);
+CREATE INDEX IF NOT EXISTS idx_ephemeral_sessions_guest ON ephemeral_sessions(guest_digest);
+CREATE INDEX IF NOT EXISTS idx_ephemeral_sessions_conv ON ephemeral_sessions(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_ephemeral_sessions_expires ON ephemeral_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_ephemeral_sessions_guest_active ON ephemeral_sessions(guest_digest, expires_at) WHERE deleted_at IS NULL;  -- 0018
+
+-- ============================================================
+-- 26. Push Subscriptions (0015)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_digest TEXT NOT NULL,
+  device_id TEXT,
+  endpoint TEXT NOT NULL UNIQUE,
+  keys_p256dh TEXT NOT NULL,
+  keys_auth TEXT NOT NULL,
+  user_agent TEXT,
+  preview_public_key TEXT,              -- E2E push preview key
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_push_subs_account ON push_subscriptions(account_digest);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_push_subs_endpoint ON push_subscriptions(endpoint);
+
+-- ============================================================
+-- 27. Business Conversations (0013 — replaces legacy groups)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS business_conversations (
+  conversation_id TEXT PRIMARY KEY,
+  owner_account_digest TEXT NOT NULL,
+  encrypted_meta_blob TEXT,
+  encrypted_policy_blob TEXT,
+  key_epoch INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'active'
+    CHECK(status IN ('active', 'dissolved')),
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_biz_conv_owner ON business_conversations(owner_account_digest);
+CREATE INDEX IF NOT EXISTS idx_biz_conv_status ON business_conversations(status);
+
+-- ============================================================
+-- 28. Business Conversation Members (0013)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS business_conversation_members (
+  conversation_id TEXT NOT NULL,
+  account_digest TEXT NOT NULL,
+  encrypted_role_blob TEXT,
+  status TEXT NOT NULL DEFAULT 'active'
+    CHECK(status IN ('active', 'left', 'removed')),
+  confirmed_epoch INTEGER NOT NULL DEFAULT 0,
+  inviter_account_digest TEXT,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  PRIMARY KEY (conversation_id, account_digest),
+  FOREIGN KEY (conversation_id)
+    REFERENCES business_conversations(conversation_id) ON DELETE CASCADE,
+  FOREIGN KEY (account_digest)
+    REFERENCES accounts(account_digest) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_biz_conv_members_account ON business_conversation_members(account_digest);
+CREATE INDEX IF NOT EXISTS idx_biz_conv_members_status ON business_conversation_members(conversation_id, status);
+CREATE INDEX IF NOT EXISTS idx_biz_conv_members_epoch ON business_conversation_members(conversation_id, confirmed_epoch);
+
+-- ============================================================
+-- 29. Business Conversation Tombstones (0013)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS business_conversation_tombstones (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  tombstone_type TEXT NOT NULL
+    CHECK(tombstone_type IN (
+      'member_joined',
+      'member_left',
+      'member_removed',
+      'ownership_transferred',
+      'policy_changed',
+      'friend_added',
+      'conversation_dissolved'
+    )),
+  encrypted_payload_blob TEXT NOT NULL,
+  actor_account_digest TEXT,
+  key_epoch INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+  FOREIGN KEY (conversation_id)
+    REFERENCES business_conversations(conversation_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_biz_conv_tombstones_conv ON business_conversation_tombstones(conversation_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_biz_conv_tombstones_type ON business_conversation_tombstones(conversation_id, tombstone_type);
+
+-- ============================================================
+-- Triggers for Business Conversations (0013)
+-- ============================================================
+CREATE TRIGGER IF NOT EXISTS trg_biz_conv_updated
+  AFTER UPDATE ON business_conversations
+  FOR EACH ROW
+  BEGIN
+    UPDATE business_conversations
+       SET updated_at = strftime('%s','now')
+     WHERE conversation_id = OLD.conversation_id;
+  END;
+
+CREATE TRIGGER IF NOT EXISTS trg_biz_conv_members_updated
+  AFTER UPDATE ON business_conversation_members
+  FOR EACH ROW
+  BEGIN
+    UPDATE business_conversation_members
+       SET updated_at = strftime('%s','now')
+     WHERE conversation_id = OLD.conversation_id
+       AND account_digest = OLD.account_digest;
+  END;
