@@ -4,6 +4,16 @@ on:
   push:
     branches-ignore:
       - main
+  workflow_dispatch:
+    inputs:
+      set_secrets:
+        description: 'Also set worker secrets'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 jobs:
   # ── Detect which projects have changes ──────────────────────────────
@@ -98,6 +108,7 @@ jobs:
           CI: true
 
       - name: Set Worker Secrets (UAT)
+        if: github.event.inputs.set_secrets == 'true'
         working-directory: data-worker
         run: |
           echo "Setting Worker secrets (UAT)..."
