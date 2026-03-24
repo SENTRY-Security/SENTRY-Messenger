@@ -220,8 +220,26 @@ export class BrowserSession extends Container {
       const containerUrl = new URL(request.url);
       containerUrl.pathname = containerPath;
 
-      // Pass the original request to preserve WebSocket upgrade headers
-      return super.fetch(new Request(containerUrl.toString(), request));
+      // Check if this is a WebSocket upgrade request
+      const upgradeHeader = request.headers.get('Upgrade');
+      if (upgradeHeader && upgradeHeader.toLowerCase() === 'websocket') {
+        // WebSocket: must pass through the original request for upgrade handshake
+        return super.fetch(new Request(containerUrl.toString(), request));
+      }
+
+      // HTTP: build a clean request to avoid inheriting signal/body issues
+      // from the original request chain (worker → DO → container)
+      const proxyHeaders = new Headers();
+      // Forward only headers the container's web server needs
+      for (const name of ['accept', 'accept-encoding', 'accept-language',
+                          'if-modified-since', 'if-none-match', 'range']) {
+        const val = request.headers.get(name);
+        if (val) proxyHeaders.set(name, val);
+      }
+      return super.fetch(new Request(containerUrl.toString(), {
+        method: request.method,
+        headers: proxyHeaders,
+      }));
     }
 
     return Response.json({ error: 'Not found' }, { status: 404 });
