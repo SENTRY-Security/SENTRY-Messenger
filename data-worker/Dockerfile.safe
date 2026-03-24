@@ -26,10 +26,13 @@ RUN apk add --no-cache \
     xterm \
     && mkdir -p /opt/noVNC/utils
 
-# Install noVNC + websockify
-ADD https://github.com/novnc/noVNC/archive/refs/tags/v1.5.0.tar.gz /tmp/novnc.tar.gz
-ADD https://github.com/novnc/websockify/archive/refs/tags/v0.12.0.tar.gz /tmp/websockify.tar.gz
-RUN tar -xzf /tmp/novnc.tar.gz -C /opt/noVNC --strip-components=1 \
+# Install noVNC + websockify (curl with retry to avoid transient GitHub 502s)
+RUN apk add --no-cache curl \
+    && curl -fsSL --retry 4 --retry-delay 2 -o /tmp/novnc.tar.gz \
+        https://github.com/novnc/noVNC/archive/refs/tags/v1.5.0.tar.gz \
+    && curl -fsSL --retry 4 --retry-delay 2 -o /tmp/websockify.tar.gz \
+        https://github.com/novnc/websockify/archive/refs/tags/v0.12.0.tar.gz \
+    && tar -xzf /tmp/novnc.tar.gz -C /opt/noVNC --strip-components=1 \
     && mkdir -p /opt/noVNC/utils/websockify \
     && tar -xzf /tmp/websockify.tar.gz -C /opt/noVNC/utils/websockify --strip-components=1 \
     && rm /tmp/novnc.tar.gz /tmp/websockify.tar.gz \
