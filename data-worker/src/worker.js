@@ -1384,7 +1384,9 @@ async function ensureDataTables(env) {
     'extend_logs',
     'business_conversations',
     'business_conversation_members',
-    'business_conversation_tombstones'
+    'business_conversation_tombstones',
+    'deletion_cursors',
+    'conversation_deletion_log'
   ];
   try {
     const tableRows = await env.DB.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all();
@@ -1513,6 +1515,145 @@ async function ensureDataTables(env) {
         await env.DB.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_push_subs_endpoint ON push_subscriptions(endpoint)`).run();
         console.log('ensureDataTables: created push_subscriptions table (migration 0015 fallback)');
       } catch (e) { console.warn('ensureDataTables: push_subscriptions create failed', e?.message); }
+    }
+    // Auto-create missing tables from migration 0002 (fallback for environments without full migration history)
+    if (!tableNames.has('contact_secret_backups')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS contact_secret_backups (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, account_digest TEXT NOT NULL, version INTEGER,
+          payload_json TEXT, snapshot_version INTEGER, entries INTEGER, checksum TEXT, bytes INTEGER,
+          device_label TEXT, device_id TEXT, reason TEXT NOT NULL DEFAULT 'auto',
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_contact_secret_backups_account ON contact_secret_backups(account_digest, updated_at DESC)`).run();
+        console.log('ensureDataTables: created contact_secret_backups table');
+      } catch (e) { console.warn('ensureDataTables: contact_secret_backups create failed', e?.message); }
+    }
+    if (!tableNames.has('opaque_records')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS opaque_records (
+          account_digest TEXT PRIMARY KEY, record_b64 TEXT NOT NULL, client_identity TEXT,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))`).run();
+        console.log('ensureDataTables: created opaque_records table');
+      } catch (e) { console.warn('ensureDataTables: opaque_records create failed', e?.message); }
+    }
+    if (!tableNames.has('subscriptions')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS subscriptions (
+          digest TEXT PRIMARY KEY, expires_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))`).run();
+        console.log('ensureDataTables: created subscriptions table');
+      } catch (e) { console.warn('ensureDataTables: subscriptions create failed', e?.message); }
+    }
+    if (!tableNames.has('tokens')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS tokens (
+          token_id TEXT PRIMARY KEY, digest TEXT NOT NULL, issued_at INTEGER, extend_days INTEGER,
+          nonce TEXT, key_id TEXT, signature_b64 TEXT, status TEXT, used_at INTEGER,
+          used_by_digest TEXT, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))`).run();
+        console.log('ensureDataTables: created tokens table');
+      } catch (e) { console.warn('ensureDataTables: tokens create failed', e?.message); }
+    }
+    if (!tableNames.has('extend_logs')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS extend_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, token_id TEXT, digest TEXT, extend_days INTEGER,
+          expires_at_after INTEGER, used_at INTEGER,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))`).run();
+        console.log('ensureDataTables: created extend_logs table');
+      } catch (e) { console.warn('ensureDataTables: extend_logs create failed', e?.message); }
+    }
+    if (!tableNames.has('media_objects')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS media_objects (
+          obj_key TEXT PRIMARY KEY, conv_id TEXT, sender_id TEXT, size_bytes INTEGER,
+          content_type TEXT, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_media_objects_conv ON media_objects(conv_id)`).run();
+        console.log('ensureDataTables: created media_objects table');
+      } catch (e) { console.warn('ensureDataTables: media_objects create failed', e?.message); }
+    }
+    if (!tableNames.has('deletion_cursors')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS deletion_cursors (
+          conversation_id TEXT NOT NULL, account_digest TEXT NOT NULL, min_counter INTEGER NOT NULL,
+          min_ts REAL NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          PRIMARY KEY (conversation_id, account_digest))`).run();
+        console.log('ensureDataTables: created deletion_cursors table');
+      } catch (e) { console.warn('ensureDataTables: deletion_cursors create failed', e?.message); }
+    }
+    if (!tableNames.has('conversation_deletion_log')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS conversation_deletion_log (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, owner_digest TEXT NOT NULL,
+          conversation_id TEXT NOT NULL, encrypted_checkpoint TEXT NOT NULL,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_conversation_deletion_log_lookup ON conversation_deletion_log(owner_digest, conversation_id, id ASC)`).run();
+        console.log('ensureDataTables: created conversation_deletion_log table');
+      } catch (e) { console.warn('ensureDataTables: conversation_deletion_log create failed', e?.message); }
+    }
+    // Auto-create business conversation tables (migration 0013 fallback)
+    if (!tableNames.has('business_conversations')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS business_conversations (
+          conversation_id TEXT PRIMARY KEY, owner_account_digest TEXT NOT NULL,
+          encrypted_meta_blob TEXT, encrypted_policy_blob TEXT,
+          key_epoch INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'dissolved')),
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_biz_conv_owner ON business_conversations(owner_account_digest)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_biz_conv_status ON business_conversations(status)`).run();
+        console.log('ensureDataTables: created business_conversations table');
+      } catch (e) { console.warn('ensureDataTables: business_conversations create failed', e?.message); }
+    }
+    if (!tableNames.has('business_conversation_members')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS business_conversation_members (
+          conversation_id TEXT NOT NULL, account_digest TEXT NOT NULL,
+          encrypted_role_blob TEXT,
+          status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'left', 'removed')),
+          confirmed_epoch INTEGER NOT NULL DEFAULT 0, inviter_account_digest TEXT,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          PRIMARY KEY (conversation_id, account_digest),
+          FOREIGN KEY (conversation_id) REFERENCES business_conversations(conversation_id) ON DELETE CASCADE,
+          FOREIGN KEY (account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_biz_conv_members_account ON business_conversation_members(account_digest)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_biz_conv_members_status ON business_conversation_members(conversation_id, status)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_biz_conv_members_epoch ON business_conversation_members(conversation_id, confirmed_epoch)`).run();
+        console.log('ensureDataTables: created business_conversation_members table');
+      } catch (e) { console.warn('ensureDataTables: business_conversation_members create failed', e?.message); }
+    }
+    if (!tableNames.has('business_conversation_tombstones')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS business_conversation_tombstones (
+          id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL,
+          tombstone_type TEXT NOT NULL CHECK(tombstone_type IN (
+            'member_joined','member_left','member_removed','ownership_transferred',
+            'policy_changed','friend_added','conversation_dissolved')),
+          encrypted_payload_blob TEXT NOT NULL, actor_account_digest TEXT,
+          key_epoch INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          FOREIGN KEY (conversation_id) REFERENCES business_conversations(conversation_id) ON DELETE CASCADE)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_biz_conv_tombstones_conv ON business_conversation_tombstones(conversation_id, created_at DESC)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_biz_conv_tombstones_type ON business_conversation_tombstones(conversation_id, tombstone_type)`).run();
+        console.log('ensureDataTables: created business_conversation_tombstones table');
+      } catch (e) { console.warn('ensureDataTables: business_conversation_tombstones create failed', e?.message); }
+    }
+    if (!tableNames.has('prekey_users')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS prekey_users (account_digest TEXT PRIMARY KEY, updated_at INTEGER)`).run();
+        console.log('ensureDataTables: created prekey_users table');
+      } catch (e) { console.warn('ensureDataTables: prekey_users create failed', e?.message); }
+    }
+    if (!tableNames.has('prekey_opk')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS prekey_opk (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, account_digest TEXT, key_id INTEGER, public_key TEXT)`).run();
+        console.log('ensureDataTables: created prekey_opk table');
+      } catch (e) { console.warn('ensureDataTables: prekey_opk create failed', e?.message); }
     }
     // Auto-add preview_public_key column to push_subscriptions (E2E push preview)
     try {
