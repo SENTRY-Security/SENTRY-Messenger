@@ -1086,7 +1086,8 @@
     "contacts": "聯絡人",
     "messages": "訊息",
     "encryptedCloud": "加密雲端",
-    "myFiles": "我的檔案"
+    "myFiles": "我的檔案",
+    "apps": "應用程式"
   },
   "misc": {
     "ok": "確定",

@@ -1086,7 +1086,8 @@
     "contacts": "Contacts",
     "messages": "Messages",
     "encryptedCloud": "Encrypted Cloud",
-    "myFiles": "My Files"
+    "myFiles": "My Files",
+    "apps": "Apps"
   },
   "misc": {
     "ok": "OK",

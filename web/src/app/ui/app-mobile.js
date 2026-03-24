@@ -11,6 +11,7 @@ import { AUDIO_PERMISSION_KEY } from './login-ui.js';
 import * as safeBrowser from '../features/safe-browser.js';
 import * as appsLauncher from '../features/apps-launcher.js';
 import { getAppCatalog } from '../api/apps.js';
+import { APP_CATALOG_LOCAL } from '../features/apps-launcher.js';
 import { DEBUG } from './mobile/debug-flags.js';
 import { flushOutbox } from '../features/queue/outbox.js';
 import { setMessagesWsSender } from '../features/messages-support/ws-sender-adapter.js';
@@ -1157,15 +1158,13 @@ function initAppsTab() {
   const container = document.getElementById('appsContainer');
   if (!container) return;
 
-  // Fetch catalog and render grid
-  getAppCatalog().then(({ apps }) => {
+  // Fetch catalog from API, fall back to local catalog if unreachable
+  const renderGrid = (catalog) => {
     appsLauncher.renderAppsGrid(container, {
-      catalog: apps,
+      catalog,
       onAppTap: async (slug, app) => {
-        // Show loading state
         const cells = container.querySelectorAll('.apps-grid-cell');
         cells.forEach(c => { c.disabled = true; c.style.opacity = '0.5'; });
-
         try {
           const streamInfo = await appsLauncher.ensureInstanceReady();
           appsLauncher.openAppModal({ app, streamInfo, modalApi: mc });
@@ -1179,9 +1178,11 @@ function initAppsTab() {
         }
       },
     });
-  }).catch(err => {
-    container.innerHTML = `<div style="text-align:center;color:var(--muted);padding:32px;">${t('apps.loadFailed') || 'Failed to load apps'}</div>`;
-  });
+  };
+
+  getAppCatalog()
+    .then(data => renderGrid(data?.apps || APP_CATALOG_LOCAL))
+    .catch(() => renderGrid(APP_CATALOG_LOCAL));
 }
 
 // SAFE tab – shown only when sentryLab is enabled

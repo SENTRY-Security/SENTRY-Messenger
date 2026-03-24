@@ -18,6 +18,18 @@ const APP_ICONS = {
   messenger: '<svg viewBox="0 0 48 48"><defs><linearGradient id="ms" x1="12" y1="38" x2="36" y2="10" gradientUnits="userSpaceOnUse"><stop stop-color="#00C6FF"/><stop offset="1" stop-color="#A020F0"/></linearGradient></defs><rect width="48" height="48" rx="12" fill="url(#ms)"/><path d="M24 10C16.28 10 10 15.73 10 22.78c0 3.93 1.96 7.44 5.03 9.74V38l4.93-2.71c1.31.37 2.7.56 4.14.56 7.72 0 14-5.73 14-12.78S31.72 10 24 10Zm1.4 17.22-3.57-3.81-6.96 3.81 7.65-8.13 3.66 3.81 6.88-3.81-7.66 8.13Z" fill="#fff"/></svg>',
 };
 
+// ── Local catalog (used as fallback when API is unreachable) ─────
+export const APP_CATALOG_LOCAL = {
+  whatsapp:  { package: 'com.whatsapp',             label: 'WhatsApp',  icon: 'whatsapp' },
+  telegram:  { package: 'org.telegram.messenger',   label: 'Telegram',  icon: 'telegram' },
+  signal:    { package: 'org.thoughtcrime.securesms', label: 'Signal',  icon: 'signal' },
+  line:      { package: 'jp.naver.line.android',     label: 'LINE',     icon: 'line' },
+  wechat:    { package: 'com.tencent.mm',            label: 'WeChat',   icon: 'wechat' },
+  instagram: { package: 'com.instagram.android',     label: 'Instagram', icon: 'instagram' },
+  facebook:  { package: 'com.facebook.katana',       label: 'Facebook', icon: 'facebook' },
+  messenger: { package: 'com.facebook.orca',         label: 'Messenger', icon: 'messenger' },
+};
+
 // ── State ────────────────────────────────────────────────────────
 let _pollTimer = null;
 let _currentState = 'none'; // none | starting | online | error
