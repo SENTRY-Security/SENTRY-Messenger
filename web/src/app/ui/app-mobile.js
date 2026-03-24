@@ -1260,6 +1260,13 @@ function initSafeBrowser() {
     modalEl.setAttribute('aria-hidden', 'false');
     document.body.classList.add('modal-open');
 
+    // Prevent background scroll on iOS (touchmove on modal itself)
+    const preventScroll = (e) => {
+      // Allow scrolling inside the iframe but nowhere else
+      if (!e.target.closest('iframe')) e.preventDefault();
+    };
+    modalEl.addEventListener('touchmove', preventScroll, { passive: false });
+
     // Hide loading overlay once iframe content loads
     const iframe = body.querySelector('iframe');
     const overlay = body.querySelector('#safeLoadingOverlay');
@@ -1271,25 +1278,38 @@ function initSafeBrowser() {
         // (error responses like JSON 503 also fire 'load')
         try {
           const doc = iframe.contentDocument;
-          if (doc && doc.title && !doc.title.includes('noVNC')) {
-            // Might be an error page — check if body is very short (JSON error)
-            const text = (doc.body?.textContent || '').trim();
-            if (text.length < 200 && (text.includes('error') || text.includes('Error') || text.startsWith('{'))) {
-              if (loadingText) loadingText.textContent = t('safe.connectionError') || 'Connection failed. Please retry.';
-              return; // Don't hide overlay — keep error visible
-            }
+          const bodyText = (doc?.body?.textContent || '').trim();
+          const title = doc?.title || '';
+          dbg('[iframe load] title=' + JSON.stringify(title) + ' bodyLen=' + bodyText.length);
+          if (bodyText.length < 200 && (bodyText.includes('error') || bodyText.includes('Error') || bodyText.startsWith('{'))) {
+            dbg('[iframe load] error page detected: ' + bodyText.slice(0, 200));
+            if (loadingText) loadingText.textContent = t('safe.connectionError') || 'Connection failed. Please retry.';
+            return; // Don't hide overlay — keep error visible
           }
-        } catch (_) { /* cross-origin — means noVNC loaded, which is fine */ }
+          if (bodyText.length === 0) {
+            dbg('[iframe load] empty body — possible blank response');
+          }
+        } catch (_) {
+          dbg('[iframe load] cross-origin — noVNC loaded OK');
+        }
         overlay.classList.add('safe-loading-hidden');
       }, { once: true });
+
+      iframe.addEventListener('error', () => {
+        dbg('[iframe error] failed to load src');
+        if (loadingText) loadingText.textContent = t('safe.connectionError') || 'Connection failed. Please retry.';
+      }, { once: true });
+
       // Fallback: hide overlay after 20s regardless
       loadTimer = setTimeout(() => {
+        dbg('[iframe timeout] 20s fallback — hiding overlay');
         overlay.classList.add('safe-loading-hidden');
       }, 20000);
     }
 
     const cleanup = () => {
       if (loadTimer) clearTimeout(loadTimer);
+      modalEl.removeEventListener('touchmove', preventScroll);
       if (iframe) iframe.src = 'about:blank';
       modalEl.classList.remove('safe-modal');
       modalEl.style.display = 'none';

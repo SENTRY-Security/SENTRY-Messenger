@@ -368,6 +368,7 @@ main.content.security-locked {
 
 body.modal-open {
   overflow: hidden;
+  overscroll-behavior: none;
 }
 
 .security-modal .modal-panel,
