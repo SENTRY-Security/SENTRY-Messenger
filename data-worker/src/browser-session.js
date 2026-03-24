@@ -170,6 +170,34 @@ export class BrowserSession extends Container {
       });
     }
 
+    // ── Debug: test proxy to container ─────────────────────────
+    if (path === '/api/safe/debug-proxy' && request.method === 'GET') {
+      const state = await this.getState();
+      if (state.status !== 'running' && state.status !== 'healthy') {
+        return Response.json({ error: 'Container not running', state: state.status }, { status: 503 });
+      }
+      try {
+        // Try to fetch the root page from the container's noVNC server
+        const proxyReq = new Request(new URL('/', request.url).toString(), { method: 'GET' });
+        const resp = await super.fetch(proxyReq);
+        const text = await resp.text();
+        return Response.json({
+          proxyStatus: resp.status,
+          proxyHeaders: Object.fromEntries(resp.headers.entries()),
+          bodyLength: text.length,
+          bodyPreview: text.slice(0, 500),
+          containerState: state.status,
+        });
+      } catch (err) {
+        return Response.json({
+          error: 'Proxy fetch failed',
+          message: err?.message || String(err),
+          stack: err?.stack?.slice(0, 500),
+          containerState: state.status,
+        }, { status: 500 });
+      }
+    }
+
     // ── Proxy to noVNC ─────────────────────────────────────────
     if (path.startsWith('/api/safe/browser')) {
       // Restore envVars before any potential container start

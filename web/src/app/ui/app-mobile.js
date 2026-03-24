@@ -1469,6 +1469,22 @@ function initSafeBrowser() {
   document.getElementById('safe-dbg-clear')?.addEventListener('click', () => {
     if (dbgLog) dbgLog.textContent = '';
   });
+
+  // Debug: test container proxy directly
+  document.getElementById('safe-dbg-proxy')?.addEventListener('click', async () => {
+    dbg('→ GET /api/safe/debug-proxy');
+    try {
+      const token = getAccountToken?.() || '';
+      const res = await fetch(workerUrl + '/api/safe/debug-proxy', {
+        headers: { 'Authorization': 'Bearer ' + token },
+      });
+      dbg(`← ${res.status}`);
+      const data = await res.json().catch(() => res.text());
+      dbg(data);
+    } catch (e) {
+      dbg('ERROR: ' + e.message);
+    }
+  });
 }
 
 // Called when SAFE tab becomes active — no longer auto-starts
