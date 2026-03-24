@@ -25,6 +25,10 @@ VAPID_SUBJECT = "mailto:admin@sentry.red"
 # VAPID_PRIVATE_KEY → set via: wrangler secret put VAPID_PRIVATE_KEY
 # Comma-separated origins allowed for CORS (M-11 fix)
 CORS_ORIGINS = "https://message.sentry.red"
+# Genymotion Cloud — App-as-a-Service
+# GENYMOTION_API_KEY → set via: wrangler secret put GENYMOTION_API_KEY
+# Recipe UUID for the golden Android image with pre-installed apps
+GENYMOTION_RECIPE_UUID = ""
 
 [[d1_databases]]
 binding = "DB"
@@ -72,6 +76,8 @@ name = "message-data-uat"
 OPAQUE_SERVER_ID = "uat-api.message.sentry.red"
 ENABLE_DEBUG_ENDPOINTS = "true"
 CORS_ORIGINS = "https://uat-message.sentry.red"
+# GENYMOTION_API_KEY → set via: wrangler secret put GENYMOTION_API_KEY --env uat
+GENYMOTION_RECIPE_UUID = ""
 NTAG424_KDF = "HKDF"
 NTAG424_SALT = "sentry.red"
 NTAG424_INFO = "ntag424-slot-0"

@@ -3,6 +3,11 @@ import { toU8Strict } from './u8-strict.js';
 import { createJwt, verifyJwt } from './jwt.js';
 import { jwtVerify, importSPKI, errors as joseErrors } from 'jose';
 import { createWebPush } from './web-push.js';
+import {
+  APP_CATALOG, listRecipes, startInstance, getInstance,
+  listInstances, stopInstance, saveInstance, waitForInstance,
+  extractStreamInfo,
+} from './genymotion.js';
 import { getOpaqueConfig, OpaqueID, OpaqueServer, KE1, KE3, RegistrationRequest, RegistrationRecord, ExpectedAuthResult } from '@cloudflare/opaque-ts';
 
 // Re-export Durable Object classes so Cloudflare runtime can find them
@@ -9319,6 +9324,149 @@ async function handlePublicRoutes(req, env) {
       } catch {}
     }
     return json(result);
+  }
+
+  // ── App-as-a-Service (Genymotion Cloud) ─────────────────────────
+
+  // GET /api/v1/apps/catalog — list available apps
+  if (path === '/api/v1/apps/catalog' && method === 'GET') {
+    return json({ apps: APP_CATALOG });
+  }
+
+  // POST /api/v1/apps/instance/start — start or reuse Android instance
+  if (path === '/api/v1/apps/instance/start' && method === 'POST') {
+    const apiKey = env.GENYMOTION_API_KEY;
+    if (!apiKey) return json({ error: 'NotConfigured', message: 'Genymotion not configured' }, { status: 503 });
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    await ensureDataTables(env);
+
+    // Check for existing instance
+    const existing = await env.DB.prepare(
+      `SELECT instance_uuid, state FROM genymotion_instances WHERE account_digest = ?1`
+    ).bind(auth.accountDigest).first();
+
+    if (existing?.instance_uuid) {
+      try {
+        const data = await getInstance(apiKey, existing.instance_uuid);
+        const info = extractStreamInfo(data);
+        if (info.state === 'ONLINE') {
+          await env.DB.prepare(
+            `UPDATE genymotion_instances SET state = 'online', last_active_at = strftime('%s','now') WHERE account_digest = ?1`
+          ).bind(auth.accountDigest).run();
+          return json({ status: 'online', ...info });
+        }
+        if (info.state === 'STARTING' || info.state === 'CREATING') {
+          return json({ status: 'starting', instanceUuid: existing.instance_uuid });
+        }
+        // Instance is in a terminal state — clean up and create new one
+      } catch {
+        // Instance not found or API error — clean up
+      }
+      await env.DB.prepare(
+        `DELETE FROM genymotion_instances WHERE account_digest = ?1`
+      ).bind(auth.accountDigest).run();
+    }
+
+    // Start new instance from configured recipe
+    const recipeUuid = body?.recipe_uuid || env.GENYMOTION_RECIPE_UUID || '';
+    if (!recipeUuid) return json({ error: 'NotConfigured', message: 'No recipe configured (set GENYMOTION_RECIPE_UUID)' }, { status: 503 });
+
+    const result = await startInstance(apiKey, recipeUuid, {
+      name: `sentry-${auth.accountDigest.slice(0, 8)}`,
+    });
+    const instanceUuid = result?.instance?.uuid || result?.uuid;
+    if (!instanceUuid) return json({ error: 'StartFailed', message: 'No instance UUID returned', detail: result }, { status: 502 });
+
+    await env.DB.prepare(
+      `INSERT INTO genymotion_instances (account_digest, instance_uuid, recipe_uuid, state)
+       VALUES (?1, ?2, ?3, 'starting')
+       ON CONFLICT(account_digest) DO UPDATE SET instance_uuid = ?2, recipe_uuid = ?3, state = 'starting', last_active_at = strftime('%s','now')`
+    ).bind(auth.accountDigest, instanceUuid, recipeUuid).run();
+
+    return json({ status: 'starting', instanceUuid });
+  }
+
+  // GET /api/v1/apps/instance/status — poll instance status + get stream info
+  if (path === '/api/v1/apps/instance/status' && method === 'GET') {
+    const apiKey = env.GENYMOTION_API_KEY;
+    if (!apiKey) return json({ error: 'NotConfigured' }, { status: 503 });
+    const auth = await resolvePublicAuth(req, env, {});
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    await ensureDataTables(env);
+
+    const row = await env.DB.prepare(
+      `SELECT instance_uuid, state FROM genymotion_instances WHERE account_digest = ?1`
+    ).bind(auth.accountDigest).first();
+    if (!row) return json({ status: 'none' });
+
+    try {
+      const data = await getInstance(apiKey, row.instance_uuid);
+      const info = extractStreamInfo(data);
+      const newState = (info.state || 'unknown').toLowerCase();
+
+      if (newState !== row.state) {
+        await env.DB.prepare(
+          `UPDATE genymotion_instances SET state = ?2, last_active_at = strftime('%s','now') WHERE account_digest = ?1`
+        ).bind(auth.accountDigest, newState).run();
+      }
+      return json({ status: newState, ...info });
+    } catch (err) {
+      return json({ status: 'error', message: err?.message || 'Failed to query instance' }, { status: 502 });
+    }
+  }
+
+  // POST /api/v1/apps/instance/stop — stop and destroy instance
+  if (path === '/api/v1/apps/instance/stop' && method === 'POST') {
+    const apiKey = env.GENYMOTION_API_KEY;
+    if (!apiKey) return json({ error: 'NotConfigured' }, { status: 503 });
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    await ensureDataTables(env);
+
+    const row = await env.DB.prepare(
+      `SELECT instance_uuid FROM genymotion_instances WHERE account_digest = ?1`
+    ).bind(auth.accountDigest).first();
+    if (!row) return json({ status: 'none' });
+
+    try {
+      await stopInstance(apiKey, row.instance_uuid);
+    } catch {
+      // Ignore — may already be stopped
+    }
+    await env.DB.prepare(
+      `DELETE FROM genymotion_instances WHERE account_digest = ?1`
+    ).bind(auth.accountDigest).run();
+
+    return json({ status: 'stopped' });
+  }
+
+  // POST /api/v1/apps/instance/save — snapshot instance state
+  if (path === '/api/v1/apps/instance/save' && method === 'POST') {
+    const apiKey = env.GENYMOTION_API_KEY;
+    if (!apiKey) return json({ error: 'NotConfigured' }, { status: 503 });
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    await ensureDataTables(env);
+
+    const row = await env.DB.prepare(
+      `SELECT instance_uuid FROM genymotion_instances WHERE account_digest = ?1`
+    ).bind(auth.accountDigest).first();
+    if (!row) return json({ error: 'NoInstance', message: 'No active instance' }, { status: 404 });
+
+    const suffix = auth.accountDigest.slice(0, 8);
+    const ts = Date.now();
+    const result = await saveInstance(apiKey, row.instance_uuid, {
+      recipeName: `sentry-user-${suffix}-${ts}`,
+      osImageName: `sentry-snap-${suffix}-${ts}`,
+    });
+
+    // After save, instance is stopped — remove from mapping
+    await env.DB.prepare(
+      `DELETE FROM genymotion_instances WHERE account_digest = ?1`
+    ).bind(auth.accountDigest).run();
+
+    return json({ status: 'saved', detail: result });
   }
 
   return null;
