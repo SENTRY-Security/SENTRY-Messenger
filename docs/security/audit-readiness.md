@@ -41,7 +41,7 @@
 |------|------|------|--------|----------|
 | Call Key Manager | `features/calls/key-manager.js` | ~452 | 🟡 | 自訂金鑰衍生和 epoch 管理 |
 | Call Media Session | `features/calls/media-session.js` | ~1100 | 🟡 | WebRTC 設定、ICE candidate 處理 |
-| WebSocket Auth | `data-worker/src/account-ws.js` | ~50KB | 🟡 | 自訂 JWT 驗證、stale session 防護 |
+| WebSocket Auth | `data-worker/src/account-ws.js` | ~50KB | 🟢 | JWT 驗證已遷移至 `jose` 套件（經審計），stale session 防護 |
 | Server API | `data-worker/src/worker.js` | Large | 🟡 | 所有 API endpoint 的輸入驗證和授權 |
 
 ### 2.4 低優先 — 輔助模組
@@ -120,7 +120,7 @@
 **重點關注**：
 - OPAQUE 與 opaque-ts 的整合是否正確
 - Vault 的加密金鑰衍生方式
-- JWT 自訂驗證的正確性
+- ~~JWT 自訂驗證的正確性~~ ✅ 已遷移至 jose 套件
 - Session 管理的競態條件
 
 ### 4.3 第三階段：媒體與通話
@@ -142,7 +142,7 @@
 | 阻礙 | 影響 | 建議 |
 |------|------|------|
 | 無正式協議規格 | 審計者需從程式碼推導協議意圖 | 撰寫獨立協議規格文件 |
-| 自訂 JWT 驗證 | 增加審計面 | 考慮使用標準 JWT 函式庫 |
+| ~~自訂 JWT 驗證~~ | ~~增加審計面~~ | ✅ 已遷移至 `jose` 套件（panva/jose，經安全審計、零依賴、Web Crypto 原生） |
 | Debug 日誌含金鑰雜湊 | 生產環境潛在洩漏 | 增加環境變數控制 |
 | Send-side ratchet 停用原因不明 | 審計者需理解設計意圖 | 文件化決策理由 |
 | Vault 設計減弱前向保密 | 需明確說明取捨 | 文件化設計決策 |

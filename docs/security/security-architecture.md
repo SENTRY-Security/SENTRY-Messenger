@@ -74,6 +74,8 @@
 | Call Frame 加密 | AES-GCM | HKDF(conv_token, direction) | Counter-based | 無 | `key-manager.js` |
 | Vault Key Wrapping | AES-256-GCM | HKDF(MK, 'message-key/v1') | 12 bytes random | 無 | `message-key-vault.js` |
 | Contact Secrets | AES-256-GCM | HKDF(MK, 'contact-secrets/backup/v1') | 12 bytes random | 無 | `aead.js` |
+| Contact Blob 加密 | AES-256-GCM | HKDF(MK, 'contact-storage-v1') | 12 bytes random | `contact-storage-v1` | `contacts.js` |
+| Contact Slot ID | HMAC-SHA256 | HKDF(MK, 'contact-slot-v1') | — | — | `contacts.js` |
 
 ### 2.3 HKDF Info Tag 白名單
 
@@ -231,13 +233,17 @@ Conversation Token (from contact secrets)
 
 ### 7.1 認證流程
 
+JWT 簽發與驗證使用 `jose` 套件（panva/jose，經安全審計）：
+- 簽發：`jose.SignJWT` + HS256
+- 驗證：`jose.jwtVerify` + 嚴格 `algorithms: ['HS256']` + `clockTolerance: 5` + `requiredClaims: ['accountDigest', 'exp']`
+
 ```
 Client                          Worker                      Durable Object
 ──────                          ──────                      ──────────────
   │── GET /api/v1/ws/token ───▶│                              │
-  │◀── { jwt } ────────────────│                              │
+  │◀── { jwt } ────────────────│  (jose.SignJWT HS256)        │
   │                             │                              │
-  │── WebSocket upgrade ───────▶│── verify JWT ──────────────▶│
+  │── WebSocket upgrade ───────▶│── jose.jwtVerify ──────────▶│
   │   (jwt in query/header)     │   set x-account-digest      │
   │                             │   set x-device-id            │
   │                             │   set x-session-ts           │
@@ -245,7 +251,7 @@ Client                          Worker                      Durable Object
   │◀══ WS connected ══════════════════════════════════════════│
   │                             │                              │
   │── { type: 'auth', token } ═══════════════════════════════▶│
-  │                             │                   verify JWT │
+  │                             │          jose.jwtVerify JWT  │
   │                             │        store authenticated=true
   │◀══ { type: 'auth-ok' } ══════════════════════════════════│
 ```
@@ -310,7 +316,7 @@ DR 解密完成
 ## 10. 架構弱點
 
 1. ⚠️ **Send-side ratchet 停用**：`dr.js:357-364` 中 send-side ratchet 更新被註解，`myRatchetPriv`/`myRatchetPub` 不在發送時輪替
-2. ✅ ~~自訂 JWT 驗證~~ — 已重構：抽取共用 `jwt.js` 模組統一 sign/verify 邏輯，`account-ws.js` 和 `worker.js` 均使用同一實作
+2. ✅ ~~自訂 JWT 驗證~~ — **已遷移至 `jose` 套件**（panva/jose，經安全審計、零依賴、Web Crypto 原生）。HS256（WS token）使用 `jose.SignJWT`/`jwtVerify`（constant-time 簽章驗證 + 嚴格 `algorithms: ['HS256']`）。RS256（Voucher token）使用 `jose.importSPKI`+`jwtVerify`（嚴格 `algorithms: ['RS256']` 防止 alg confusion + `exp` 驗證 + 30 秒 clockTolerance）。worker.js 中重複的手工 JWT helper（`WS_JWT_HEADER_B64`, `hmacSha256Sign`, `base64url`, `pemToArrayBuffer`, `base64UrlDecode`）已全部移除
 3. ✅ ~~AEAD 無 AAD~~ — 已修復：所有 AES-GCM 操作加入 info tag / 用途標識作為 `additionalData`，新資料使用 v2 格式，解密時依版本向下相容 v1 legacy
 4. ⚠️ **IV 重用風險**：12-byte random IV 依賴隨機不重複（HKDF salt 分散風險，但無明確追蹤）
 5. ⚠️ **Manifest 無獨立簽章**：manifest 加密但無額外的完整性驗證（依賴 GCM 的 authentication tag）

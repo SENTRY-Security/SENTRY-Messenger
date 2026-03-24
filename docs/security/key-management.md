@@ -155,7 +155,19 @@
 | **儲存格式** | `iv_b64:ct_b64` |
 | **程式碼** | `features/contact-backup.js:762-778` |
 
-### 11. Group Shared Key
+### 11. Contact Slot Key
+
+| 屬性 | 值 |
+|------|-----|
+| **用途** | 計算聯絡人的不可逆 slot_id，隱藏 peer_digest 不讓伺服器知道聯絡人關係 |
+| **演算法** | HMAC-SHA256 |
+| **產生** | HKDF-SHA256(MK, 'contact-slot-v1') → 256-bit HMAC key |
+| **slot_id 計算** | `HMAC-SHA256(slot_key, peer_digest.toUpperCase())` → base64url |
+| **儲存** | 僅客戶端記憶體（每次使用時從 MK 即時衍生，不持久化） |
+| **特性** | 確定性（同一 MK + 同一 peer → 同一 slot_id）；不可逆（伺服器無法從 slot_id 反推 peer_digest） |
+| **程式碼** | `features/contacts.js`（`deriveContactSlotKey`, `deriveContactSlotId`） |
+
+### 12. Group Shared Key
 
 | 屬性 | 值 |
 |------|-----|
@@ -215,6 +227,7 @@
 | Message keys | 暫存 | ✗ | ✗ | ✓ (vault, encrypted) | ✗ |
 | Call keys | ✓ | ✗ | ✗ | ✗ | ✗ |
 | Media keys | 暫存 | ✗ | ✗ | ✗ (in encrypted manifest) | ✗ |
+| Contact slot key | ✓ (即時衍生) | ✗ | ✗ | ✗ | ✗ |
 
 ## 裝置更換影響
 

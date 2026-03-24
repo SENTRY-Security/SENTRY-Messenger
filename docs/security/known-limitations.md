@@ -113,3 +113,4 @@
 7. **Message Key Vault 加密** — `features/message-key-vault.js` — 加密方式需審計
 8. **OPAQUE 整合** — `features/opaque.js` — 與 opaque-ts 的整合邏輯
 9. **Invite Dropbox 加密** — `app/crypto/invite-dropbox.js` — 邀請加密機制
+10. ~~**JWT 驗證**~~ — ✅ 已遷移至 `jose` 套件（經安全審計），不再需要獨立審計

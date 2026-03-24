@@ -111,6 +111,9 @@
 | Call signaling | WebSocket relay | offer/answer/ICE candidates |
 | Ephemeral session metadata | D1 | session_id, expires_at, guest_digest |
 
+| `contacts.slot_id` | C5 | ✓ 不可逆 hash | HMAC(slot_key, peer_digest)，伺服器無法反推 peer_digest |
+| `contacts.encrypted_blob` | C2 | ✗ 密文 | 聯絡人資料含 peer_digest, is_blocked, 暱稱等 |
+
 ### 伺服器不可見（設計意圖）
 
 | 資料 | 保護機制 | 程式碼位置 |

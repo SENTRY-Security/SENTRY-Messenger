@@ -104,10 +104,11 @@
 
 ### 4.1 認證
 
-- [ ] JWT 驗證正確（`account-ws.js:141-180`）
-  - [ ] HMAC-SHA256 簽章驗證
-  - [ ] 過期時間檢查
-  - [ ] Header 格式驗證
+- [x] ~~JWT 驗證正確~~ — ✅ 已遷移至 `jose` 套件（panva/jose，經安全審計）
+  - [x] ~~HMAC-SHA256 簽章驗證~~ — ✅ `jose.jwtVerify` 內部使用 `crypto.subtle.verify` 做 constant-time 比較
+  - [x] ~~過期時間檢查~~ — ✅ jose 自動驗證 `exp`，配置 `clockTolerance: 5`（HS256）/ `30`（RS256）
+  - [x] ~~Header 格式驗證~~ — ✅ 嚴格 `algorithms` 白名單（`['HS256']` / `['RS256']`）防止 alg confusion
+  - [x] ~~RS256 voucher token exp 驗證~~ — ✅ 由 jose 自動處理（原 `verifyJwtRS256` 完全未驗證 `exp`，已修復）
 - [ ] WebSocket 二次認證（`account-ws.js:232+`）
 - [ ] Stale session 拒絕（`account-ws.js:571-591`）
 - [ ] NFC SDM CMAC 驗證（`worker.js`）

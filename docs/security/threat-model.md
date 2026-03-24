@@ -25,7 +25,7 @@ SENTRY Messenger 是一個端對端加密即時通訊系統，目標為：
 | Double Ratchet State | 最高機密 | 當前鏈金鑰、根金鑰、ratchet 金鑰 |
 | 使用者密碼 | 最高機密 | 用於 OPAQUE 認證和 MK 衍生 |
 | Message Keys | 高機密 | 個別訊息的對稱加密金鑰（Key Vault 儲存） |
-| 聯絡人關係 | 機密 | 誰與誰有聯絡 |
+| 聯絡人關係 | 機密（已緩解） | 誰與誰有聯絡。`contacts` 表已透過 Zero-Meta 0-A 隱藏 `peer_digest`（改用 HMAC slot_id） |
 | 訊息 Metadata | 敏感 | 時間戳、大小、傳送/接收狀態 |
 | 帳號識別 | 敏感 | account_digest、device_id |
 

@@ -17,7 +17,7 @@
 
 | # | 項目 | 來源 | 狀態 | 說明 |
 |---|------|------|------|------|
-| ~~H-1~~ | ~~自訂 JWT 驗證（未使用標準函式庫）~~ | `security-architecture.md` §10 | ✅ 已修復 | 抽取共用 `jwt.js` 模組，`account-ws.js` 和 `worker.js` 統一使用同一 sign/verify 實作 |
+| ~~H-1~~ | ~~自訂 JWT 驗證（未使用標準函式庫）~~ | `security-architecture.md` §10 | ✅ 已修復（H-2 升級） | Phase 1：抽取共用 `jwt.js` 模組。**Phase 2（H-2 升級）**：全面遷移至 `jose` 套件（panva/jose，經審計、零依賴、Web Crypto 原生）。HS256（WS token）使用 `SignJWT` / `jwtVerify`（constant-time 驗證 + 嚴格 `algorithms: ['HS256']`）。RS256（Voucher token）使用 `importSPKI` + `jwtVerify`（嚴格 `algorithms: ['RS256']` + `exp` 驗證 + 30 秒 clockTolerance）。同步修復：P0 `verifyJwtRS256` 未驗證 `exp`、P0 未檢查 `alg`（演算法混淆風險）、P1 簽章字串比對非 constant-time。移除 worker.js 中所有重複的手工 JWT helper。 |
 | ~~H-2~~ | ~~Debug 日誌輸出金鑰雜湊~~ | `security-architecture.md` §10 | ✅ 已修復 | 移除 `dr.js` 中所有 `hashPrefix()` 相關的 console 輸出（x3dh、ratchet、encrypt、decrypt 全路徑） |
 | ~~H-3~~ | ~~Debug 頁面 / SDM 模擬器生產環境可存取~~ | `security-assumptions-and-out-of-scope.md` §6 | ✅ 已修復 | 三層防護：(1) `ENABLE_DEBUG_PAGES` 環境變數 → 生產回傳 404 (2) IP 白名單 (3) `__PRODUCTION__` build flag 關閉 debug switches |
 | ~~H-4~~ | ~~Error messages 洩漏內部狀態~~ | `security-review-checklist.md` §4.3 | ✅ 已修復 | 移除 `Replay` 回應的 `lastCtr` 和 `CounterTooLow` 回應的 `maxCounter`/`details` 欄位 |
@@ -46,7 +46,7 @@
 |---|------|------|------|
 | L-1 | JavaScript GC 不保證立即清除金鑰 | `security-review-checklist.md` §3.3 | 記憶體中金鑰可能在 GC 週期內殘留 |
 | ~~L-2~~ | ~~`localStorage` contactSecrets-v2 登出時是否清除~~ | `security-review-checklist.md` §3.3 | ✅ 已確認/修復：`secureLogout()` 已有 `localStorage.clear()`；`app-ui.js` 的 `onLogout()` 修正為清除所有非 SIM localStorage key（原僅清除 `env_v1:*`） |
-| L-3 | 社交圖譜可見 | `security-review-checklist.md` §7 | `conversation_acl` 明文儲存，伺服器可見社交關係 |
+| L-3 | 社交圖譜可見（部分緩解） | `security-review-checklist.md` §7 | `conversation_acl` 明文儲存，伺服器可見社交關係。**部分緩解**：`contacts` 表已實作 Zero-Meta Phase 0-A — `peer_digest` 改為 HMAC 衍生的不可逆 `slot_id`，`peer_digest` + `is_blocked` 移入加密 blob，舊資料登入時自動遷移（`0017_contacts_zero_meta.sql`、`contacts.js`） |
 | L-4 | 通訊時間可見 | `security-review-checklist.md` §7 | Timestamp 明文，伺服器可見通訊時間 |
 | L-5 | 訊息大小可推知 | `security-review-checklist.md` §7 | 無 padding 機制，訊息密文大小可推知明文長度 |
 | L-6 | 在線狀態可推知 | `security-review-checklist.md` §7 | WebSocket/presence 機制暴露使用者在線狀態 |
@@ -70,10 +70,10 @@
 | 嚴重程度 | 總數 | 已修復 | 降級 | 待處理 |
 |----------|------|--------|------|--------|
 | 🔴 Critical | 4 | 2 | 1 (→Low) | 1 |
-| 🟠 High | 5 | 4 | 1 (→Low) | 0 |
+| 🟠 High | 5 | 5 | 1 (→Low) | 0 |
 | 🟡 Medium | 12 | 9 | 3 (→Low) | 0 |
 | 🟢 Low | 13+5 | 4 | — | 14 |
-| **總計** | **36** | **19** | **5** | **14** |
+| **總計** | **36** | **20** | **5** | **13** |
 
 ## 已通過項目（已修復/確認安全）
 
@@ -91,7 +91,7 @@
 - ✅ DR 狀態並發已有 `enqueueDrSessionOp()` 序列化機制
 - ✅ **C-1**：Account token hash 儲存（Phase 1：雙模式驗證 + 自動回填）
 - ✅ **C-2**：Debug endpoints 透過 `ENABLE_DEBUG_ENDPOINTS` 環境變數控制，生產環境回傳 404
-- ✅ **H-1**：JWT 驗證統一為共用 `jwt.js` 模組（`account-ws.js`、`worker.js`）
+- ✅ **H-1**：JWT 驗證全面遷移至 `jose` 套件 — HS256 使用 `SignJWT`/`jwtVerify`（constant-time + 嚴格 alg 白名單），RS256 使用 `importSPKI`+`jwtVerify`（含 `exp` 驗證 + alg confusion 防護）。移除所有手工 JWT helper
 - ✅ **H-2**：移除 `dr.js` 中所有金鑰雜湊 debug 日誌輸出
 - ✅ **H-3**：Debug 頁面三層防護（env gate + IP 白名單 + `__PRODUCTION__` build flag）
 - ✅ **H-4**：移除錯誤回應中的內部狀態欄位（`lastCtr`、`maxCounter`）

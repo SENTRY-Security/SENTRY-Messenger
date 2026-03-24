@@ -61,7 +61,7 @@
 |------|------|------|------|
 | H-1 | **Send-side ratchet 停用** | `dr.js:357-364` | 發送方 ephemeral key 不在每次發送時輪替，降低前向保密粒度 |
 | H-2 | ~~**無 Prekey Bundle 帶外驗證**~~ | X3DH 流程 | ✅ 已實作：TOFU identity key tracking + Safety Number 帶外驗證機制（`contact-secrets.js:checkAndStorePeerIk`, `safety-number.js`） |
-| H-3 | **自訂 JWT 驗證** | `account-ws.js:141-180` | 自訂實作增加驗證邏輯出錯的風險 |
+| ~~H-3~~ | ~~**自訂 JWT 驗證**~~ | `jwt.js`, `worker.js` | ✅ 已遷移至 `jose` 套件（panva/jose，經安全審計）— HS256 使用 `jwtVerify`（constant-time + `algorithms: ['HS256']`），RS256 使用 `importSPKI`+`jwtVerify`（`algorithms: ['RS256']` + `exp` 驗證 + clockTolerance）。修復 P0 `verifyJwtRS256` 未驗證 `exp`、P0 alg confusion、P1 非 constant-time 簽章比對 |
 | H-4 | **Vault 降低前向保密** | `message-key-vault.js` | Message key 持久化，MK 洩漏可解密歷史訊息 |
 | H-5 | **自訂 ed2curve 轉換** | `ed2curve.js` | 自訂 field arithmetic，需確認正確性 |
 | H-6 | ~~**DR 狀態並發競態條件**~~ | `dr-session.js` | ✅ 已有 mutex：`enqueueDrSessionOp()` 序列化所有 encrypt/decrypt 操作（`dr-session.js:1546`），收發端均使用（`state-live.js:380`） |
@@ -78,7 +78,7 @@
 | M-2 | **Chunk 加密無 AAD** | `chunked-upload.js` | Chunk index 未綁定加密，理論上可替換 |
 | M-3 | **AEAD envelope 無 AAD** | `aead.js` | 除 DR 訊息外，其他加密操作不使用 AAD |
 | M-4 | **Debug 日誌輸出金鑰雜湊** | `dr.js:213-235, 305-330` | 生產環境可能洩漏金鑰資訊 |
-| M-5 | **社交圖譜完全暴露** | `conversation_acl` D1 表 | 伺服器可建立完整社交圖譜 |
+| M-5 | **社交圖譜部分暴露**（部分緩解） | `conversation_acl` D1 表 | `conversation_acl` 仍明文暴露對話關係。**已緩解**：`contacts` 表透過 Zero-Meta 0-A（`0017_contacts_zero_meta.sql`）將 `peer_digest` 改為不可逆 `slot_id`（HMAC 衍生），`peer_digest` 和 `is_blocked` 移入加密 blob，伺服器無法從 contacts 表推知聯絡人關係 |
 | M-6 | **訊息大小洩漏** | 全系統 | 無 padding 機制，密文大小反映明文大小 |
 | M-7 | **媒體 content_type 在上傳請求中明文** | `sign-put-chunked` API | 伺服器在簽名請求中可見 content_type 和 total_size |
 | M-8 | **Vault wrap_context 明文傳送** | `message-key-vault.js:194` | 伺服器可見 msgType、direction 等 metadata |
@@ -157,10 +157,11 @@
 **安全設計品質**：良好。系統遵循密碼學最佳實踐，使用標準演算法，金鑰管理架構合理。
 
 **主要風險**：
-1. 自訂密碼學實作需要第三方審計
+1. 自訂密碼學實作需要第三方審計（DR、X3DH、ed2curve 等核心模組）
 2. Send-side ratchet 停用降低前向保密
 3. Vault 設計是有意的安全取捨（歷史回放 vs 前向保密）
 4. ~~無帶外金鑰驗證~~ ✅ 已實作 TOFU + Safety Number（殘餘風險：首次連線仍信任伺服器）
+5. ~~自訂 JWT 驗證~~ ✅ 已遷移至 jose 套件（經安全審計）
 
 **建議優先行動**：
 

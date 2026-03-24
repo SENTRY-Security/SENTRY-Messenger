@@ -26,6 +26,7 @@
 | 邀請關係 | `invite_dropbox` 表 | 伺服器知道誰邀請了誰 |
 | 邀請狀態 | `invite_dropbox.status` | 伺服器知道邀請是否被接受 |
 | 帳號建立時間 | `accounts.created_at` | 伺服器知道帳號年齡 |
+| ~~聯絡人關係~~ | ~~`contacts.peer_digest`~~ | ✅ **已緩解（Zero-Meta 0-A）**：`contacts` 表改用 HMAC 衍生的不可逆 `slot_id` 取代 `peer_digest`。`peer_digest` 和 `is_blocked` 移入加密 blob 內。伺服器無法從 `slot_id` 反推 `peer_digest`，無法建立聯絡人社交圖譜。舊資料於登入時自動遷移。（`0017_contacts_zero_meta.sql`、`contacts.js`） |
 
 ### 1.3 媒體 Metadata
 
@@ -126,12 +127,12 @@
 | 訊息大小洩漏 | ⚠️ 無 padding 機制 | ✗ 未實作 |
 | 時間模式 | ⚠️ 無 timing obfuscation | ✗ 未實作 |
 | Cover traffic | ⚠️ 無噪音流量 | ✗ 未實作 |
-| 社交圖譜 | ⚠️ ACL 表為明文 | ✗ 無緩解 |
+| 社交圖譜 | ⚠️ ACL 表為明文 | 部分緩解：`contacts` 表已隱藏 `peer_digest`（Zero-Meta 0-A） |
 | 通話 IP | TURN relay 選項 | 部分實作 |
 
 ## 5. 尚未解決的風險
 
-1. **社交圖譜完全暴露**：`conversation_acl` 表明確記錄所有對話關係，伺服器可建立完整社交圖譜
+1. **社交圖譜部分暴露**：`conversation_acl` 表仍明確記錄對話關係。`contacts` 表已透過 Zero-Meta 0-A 緩解（`slot_id` 取代 `peer_digest`），但 `conversation_acl` 仍為明文
 2. **通訊模式分析**：訊息 timestamp 和 counter 允許伺服器分析通訊頻率、活躍時段
 3. **媒體使用推測**：R2 中的 chunk 數量和大小可推測是否傳送了圖片/影片/大檔案
 4. **WebRTC IP 洩漏**：P2P 通話可能暴露使用者真實 IP（若未強制使用 TURN relay）
