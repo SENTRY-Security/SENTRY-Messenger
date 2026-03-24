@@ -1158,31 +1158,32 @@ function initAppsTab() {
   const container = document.getElementById('appsContainer');
   if (!container) return;
 
-  // Fetch catalog from API, fall back to local catalog if unreachable
-  const renderGrid = (catalog) => {
-    appsLauncher.renderAppsGrid(container, {
-      catalog,
-      onAppTap: async (slug, app) => {
-        const cells = container.querySelectorAll('.apps-grid-cell');
-        cells.forEach(c => { c.disabled = true; c.style.opacity = '0.5'; });
-        try {
-          const streamInfo = await appsLauncher.ensureInstanceReady();
-          appsLauncher.openAppModal({ app, streamInfo, modalApi: mc });
-        } catch (err) {
-          mc.showAlertModal({
-            title: t('apps.error') || 'Error',
-            message: err?.message || 'Failed to start app',
-          });
-        } finally {
-          cells.forEach(c => { c.disabled = false; c.style.opacity = ''; });
-        }
-      },
-    });
+  const onAppTap = async (slug, app) => {
+    const cells = container.querySelectorAll('.apps-grid-cell');
+    cells.forEach(c => { c.disabled = true; c.style.opacity = '0.5'; });
+    try {
+      const streamInfo = await appsLauncher.ensureInstanceReady();
+      appsLauncher.openAppModal({ app, streamInfo, modalApi: mc });
+    } catch (err) {
+      mc.showAlertModal({
+        title: t('apps.error') || 'Error',
+        message: err?.message || 'Failed to start app',
+      });
+    } finally {
+      cells.forEach(c => { c.disabled = false; c.style.opacity = ''; });
+    }
   };
 
+  // Render local catalog immediately, then try upgrading from API
+  appsLauncher.renderAppsGrid(container, { catalog: APP_CATALOG_LOCAL, onAppTap });
+
   getAppCatalog()
-    .then(data => renderGrid(data?.apps || APP_CATALOG_LOCAL))
-    .catch(() => renderGrid(APP_CATALOG_LOCAL));
+    .then(data => {
+      if (data?.apps && Object.keys(data.apps).length > 0) {
+        appsLauncher.renderAppsGrid(container, { catalog: data.apps, onAppTap });
+      }
+    })
+    .catch(() => { /* already rendered local catalog */ });
 }
 
 // SAFE tab – shown only when sentryLab is enabled
