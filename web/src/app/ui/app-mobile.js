@@ -1267,8 +1267,31 @@ function initSafeBrowser() {
     };
     modalEl.addEventListener('touchmove', preventScroll, { passive: false });
 
-    // Hide loading overlay once iframe content loads
+    // Diagnostic: fetch iframe URL directly to check if the proxy responds
     const iframe = body.querySelector('iframe');
+    const iframeSrc = iframe?.src;
+    if (iframeSrc) {
+      dbg('[diag] fetching iframe URL: ' + iframeSrc.replace(/password=[^&]+/, 'password=***'));
+      fetch(iframeSrc, { mode: 'no-cors' }).then(res => {
+        dbg('[diag] fetch status=' + res.status + ' type=' + res.type + ' ok=' + res.ok);
+      }).catch(err => {
+        dbg('[diag] fetch FAILED: ' + err.message);
+      });
+      // Also try same-origin fetch (without no-cors) for more info
+      fetch(iframeSrc).then(async res => {
+        const ct = res.headers.get('content-type') || '';
+        const len = res.headers.get('content-length') || '?';
+        dbg('[diag-cors] status=' + res.status + ' type=' + ct + ' len=' + len);
+        if (res.status !== 200) {
+          const txt = await res.text().catch(() => '');
+          dbg('[diag-cors] body: ' + txt.slice(0, 300));
+        }
+      }).catch(err => {
+        dbg('[diag-cors] FAILED: ' + err.message);
+      });
+    }
+
+    // Hide loading overlay once iframe content loads
     const overlay = body.querySelector('#safeLoadingOverlay');
     const loadingText = body.querySelector('.safe-loading-text');
     let loadTimer = null;
@@ -1464,6 +1487,14 @@ function initSafeBrowser() {
     } else {
       dbg('No iframe URL yet. Click "Test Start" first, then "Show URL".');
     }
+  });
+
+  document.getElementById('safe-dbg-copy')?.addEventListener('click', () => {
+    const text = dbgLog?.textContent || '';
+    navigator.clipboard.writeText(text).then(
+      () => { const btn = document.getElementById('safe-dbg-copy'); if (btn) { btn.textContent = '✅ Copied'; setTimeout(() => btn.textContent = '📋 Copy', 1500); } },
+      () => { /* fallback: select text */ if (dbgLog) { const range = document.createRange(); range.selectNodeContents(dbgLog); const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range); } }
+    );
   });
 
   document.getElementById('safe-dbg-clear')?.addEventListener('click', () => {
