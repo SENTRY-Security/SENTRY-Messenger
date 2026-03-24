@@ -1221,7 +1221,8 @@ function initSafeBrowser() {
     if (btnStart) btnStart.disabled = !isStopped;
     if (btnStop) btnStop.disabled = isStopped;
     if (btnOpen) btnOpen.disabled = !(s === 'healthy' || s === 'running');
-    if (btnDeleteRef) btnDeleteRef.disabled = isStopped;
+    // Delete is always available except during transient states (starting/stopping)
+    if (btnDeleteRef) btnDeleteRef.disabled = (s === 'starting' || s === 'stopping');
 
     // Error
     if (errorEl) errorEl.style.display = 'none';
@@ -1361,11 +1362,18 @@ function initSafeBrowser() {
 
   const btnDelete = document.getElementById('safe-btn-delete');
   btnDelete?.addEventListener('click', async () => {
-    if (!confirm(t('safe.deleteEnvConfirm'))) return;
+    dbg('Delete clicked, disabled=' + btnDelete.disabled);
+    if (!confirm(t('safe.deleteEnvConfirm') || 'Delete this environment?')) {
+      dbg('Delete cancelled by user');
+      return;
+    }
     btnDelete.disabled = true;
+    dbg('→ DELETE /api/safe/destroy');
     try {
       await safeBrowser.destroy();
+      dbg('← destroy() done');
     } catch (e) {
+      dbg('DELETE ERROR: ' + e?.message);
       log({ safeDeleteError: e?.message });
     } finally {
       btnDelete.disabled = false;
