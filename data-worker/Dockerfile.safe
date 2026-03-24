@@ -8,7 +8,7 @@
 
 FROM alpine:3.21
 
-# Install Chromium, VNC server, noVNC, and minimal dependencies
+# Install Chromium, VNC server, noVNC, window manager, and minimal dependencies
 RUN apk add --no-cache \
     chromium \
     xvfb \
@@ -22,6 +22,8 @@ RUN apk add --no-cache \
     dbus \
     mesa-gl \
     mesa-dri-gallium \
+    openbox \
+    xterm \
     && mkdir -p /opt/noVNC/utils
 
 # Install noVNC + websockify
@@ -36,7 +38,17 @@ RUN tar -xzf /tmp/novnc.tar.gz -C /opt/noVNC --strip-components=1 \
 # Create non-root user for Chromium sandbox
 RUN adduser -D -h /home/user -s /bin/bash user \
     && mkdir -p /home/user/.config/chromium /tmp/.X11-unix \
+    && mkdir -p /home/user/.config/openbox \
     && chown -R user:user /home/user /tmp/.X11-unix
+
+# Openbox autostart: launch Chromium with auto-restart
+COPY openbox-autostart.sh /home/user/.config/openbox/autostart
+RUN chmod +x /home/user/.config/openbox/autostart \
+    && chown user:user /home/user/.config/openbox/autostart
+
+# Openbox menu: right-click to relaunch Chromium or open terminal
+COPY openbox-menu.xml /home/user/.config/openbox/menu.xml
+RUN chown user:user /home/user/.config/openbox/menu.xml
 
 # Startup script
 COPY entrypoint.sh /entrypoint.sh

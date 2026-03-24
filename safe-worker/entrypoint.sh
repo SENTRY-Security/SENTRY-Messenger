@@ -1,5 +1,5 @@
 #!/bin/bash
-# SAFE Browser entrypoint — starts Xvfb + Chromium + x11vnc + noVNC
+# SAFE Browser entrypoint — starts Xvfb + Openbox + Chromium + x11vnc + noVNC
 # NOTE: no "set -e" — individual failures must not kill the container.
 # The critical process is novnc_proxy (port 6901); it runs in foreground
 # so the container stays alive as long as noVNC is up.
@@ -11,18 +11,10 @@ sleep 1
 # D-Bus (needed by Chromium)
 dbus-daemon --session --fork 2>/dev/null || true
 
-# Chromium in kiosk mode (non-critical — desktop stays usable if it crashes)
-chromium-browser \
-  --no-sandbox \
-  --disable-gpu \
-  --disable-dev-shm-usage \
-  --disable-software-rasterizer \
-  --no-first-run \
-  --start-maximized \
-  --window-size=1280,720 \
-  --user-data-dir=/home/user/.config/chromium \
-  "about:blank" &
-sleep 2
+# Window manager — provides a desktop even if Chromium crashes.
+# Openbox autostart handles launching Chromium with auto-restart.
+openbox-session &
+sleep 1
 
 # VNC server (password from env)
 mkdir -p /home/user/.vnc
