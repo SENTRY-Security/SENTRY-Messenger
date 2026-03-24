@@ -46,7 +46,7 @@
 |---|------|------|------|
 | L-1 | JavaScript GC 不保證立即清除金鑰 | `security-review-checklist.md` §3.3 | 記憶體中金鑰可能在 GC 週期內殘留 |
 | ~~L-2~~ | ~~`localStorage` contactSecrets-v2 登出時是否清除~~ | `security-review-checklist.md` §3.3 | ✅ 已確認/修復：`secureLogout()` 已有 `localStorage.clear()`；`app-ui.js` 的 `onLogout()` 修正為清除所有非 SIM localStorage key（原僅清除 `env_v1:*`） |
-| L-3 | 社交圖譜可見（持續緩解中） | `security-review-checklist.md` §7 | `conversation_acl` 明文儲存，伺服器可見對話參與者。**Phase 0-A**：`contacts` 表 `peer_digest` → HMAC `slot_id`。**Phase 0-B**：`role` 不再寫入明文（NULL）、`receiver_device_id` 停止寫入、`contacts.updated_at` 截斷至每日精度 |
+| L-3 | 社交圖譜可見（持續緩解中） | `security-review-checklist.md` §7 | `conversation_acl` 明文儲存，伺服器可見對話參與者。**Phase 0-A**：`contacts` 表 `peer_digest` → HMAC `slot_id`。**Phase 0-B**：`role` 不再寫入明文（NULL）、`receiver_device_id` 停止寫入、`contacts.updated_at` 截斷至每日精度。**Phase 0-C**：`push_subscriptions.user_agent` 改為短標籤，移除裝置指紋 |
 | L-4 | 通訊時間可見 | `security-review-checklist.md` §7 | Timestamp 明文，伺服器可見通訊時間 |
 | L-5 | 訊息大小可推知 | `security-review-checklist.md` §7 | 無 padding 機制，訊息密文大小可推知明文長度 |
 | L-6 | 在線狀態可推知 | `security-review-checklist.md` §7 | WebSocket/presence 機制暴露使用者在線狀態 |

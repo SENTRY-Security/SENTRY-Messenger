@@ -103,7 +103,8 @@ export async function subscribePush() {
       accountDigest,
       deviceId,
       subscription: subJSON,
-      userAgent: navigator.userAgent
+      // Zero-Meta: send short parsed label instead of full User-Agent fingerprint
+      userAgent: parseUA(navigator.userAgent)
     })
   });
 

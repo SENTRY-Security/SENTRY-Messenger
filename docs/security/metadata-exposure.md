@@ -24,6 +24,7 @@
 |----------|----------|------|
 | 對話參與者 | `conversation_acl` | 伺服器知道誰與誰建立了對話 |
 | ~~群組角色~~ | ~~`conversation_acl.role`~~ | ✅ **已緩解（Zero-Meta Phase 0-B）**：`role` 欄位不再寫入明文（一律 `NULL`），對話角色語意由客戶端在加密資料中管理。伺服器無法區分 owner / member / ephemeral |
+| ~~推播裝置指紋~~ | ~~`push_subscriptions.user_agent`~~ | ✅ **已緩解（Zero-Meta Phase 0-C）**：不再儲存完整 User-Agent 字串，改為客戶端預先解析的簡短裝置標籤（如 "Mac Chrome"），移除瀏覽器版本、OS 版本等指紋資訊 |
 | 邀請關係 | `invite_dropbox` 表 | 伺服器知道誰邀請了誰 |
 | 邀請狀態 | `invite_dropbox.status` | 伺服器知道邀請是否被接受 |
 | 帳號建立時間 | `accounts.created_at` | 伺服器知道帳號年齡 |
