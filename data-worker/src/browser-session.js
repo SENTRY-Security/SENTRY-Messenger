@@ -58,10 +58,12 @@ export class BrowserSession extends Container {
       const state = await this.getState();
       const startedAt = await this.ctx.storage.get('started_at');
       const elapsed = startedAt ? Math.round((Date.now() - startedAt) / 1000) : null;
+      const lastError = await this.ctx.storage.get('last_error');
       return Response.json({
         status: state.status,
         port: this.defaultPort,
         elapsed,
+        ...(lastError ? { last_error: lastError } : {}),
       });
     }
 
@@ -80,6 +82,7 @@ export class BrowserSession extends Container {
 
         // Check current state — return actual status
         const currentState = await this.getState();
+        console.log('[SAFE] /start — currentState:', JSON.stringify(currentState));
         if (currentState.status === 'healthy') {
           return Response.json({
             status: 'healthy',
@@ -109,14 +112,17 @@ export class BrowserSession extends Container {
           try { await this.stop(); } catch (_) { /* ignore */ }
         }
 
-        // Record start time for elapsed tracking
+        // Record start time and clear previous errors
         await this.ctx.storage.put('started_at', Date.now());
+        await this.ctx.storage.delete('last_error');
 
         // Start container in background — don't block the response.
         // Frontend will poll /api/safe/status every 3s to track progress.
         this.ctx.waitUntil(
-          this.startAndWaitForPorts().catch(err => {
-            console.error('[SAFE] Background start failed:', err?.message);
+          this.startAndWaitForPorts().catch(async (err) => {
+            const msg = err?.message || 'Unknown start error';
+            console.error('[SAFE] Background start failed:', msg);
+            await this.ctx.storage.put('last_error', msg);
           })
         );
 
@@ -124,6 +130,7 @@ export class BrowserSession extends Container {
           status: 'starting',
           password: vncPassword,
           browserPath: '/api/safe/browser/',
+          containerState: currentState.status,
         });
       } catch (err) {
         return Response.json({
