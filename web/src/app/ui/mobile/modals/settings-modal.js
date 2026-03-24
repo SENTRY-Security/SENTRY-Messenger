@@ -192,7 +192,7 @@ export function createSettingsModule({ deps }) {
   async function persistPatch(partial) {
     const previous = getEffective();
     const next = { ...previous, ...partial };
-    const trackedKeys = ['autoLogoutOnBackground', 'autoLogoutRedirectMode', 'autoLogoutCustomUrl', 'language', 'sentryLab'];
+    const trackedKeys = ['autoLogoutOnBackground', 'autoLogoutRedirectMode', 'autoLogoutCustomUrl', 'language', 'sentryLab', 'sentryLabApps', 'sentryLabSafe'];
     const noChange = trackedKeys.every((key) => previous[key] === next[key]);
     if (noChange) return previous;
     sessionStore.settingsState = next;
