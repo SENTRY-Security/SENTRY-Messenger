@@ -1220,7 +1220,7 @@ function initSafeBrowser() {
     const isStopped = s === 'stopped' || s === 'stopped_with_code';
     if (btnStart) btnStart.disabled = !isStopped;
     if (btnStop) btnStop.disabled = isStopped;
-    if (btnOpen) btnOpen.disabled = s !== 'healthy';
+    if (btnOpen) btnOpen.disabled = !(s === 'healthy' || s === 'running');
     if (btnDeleteRef) btnDeleteRef.disabled = isStopped;
 
     // Error

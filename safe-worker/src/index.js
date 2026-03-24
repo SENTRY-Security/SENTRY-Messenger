@@ -243,10 +243,8 @@ export class BrowserSession extends Container {
       // Restore envVars before any potential container start
       await this._ensureEnvVars();
 
-      // Ensure container is healthy (ports ready) before proxying.
-      // 'running' means container started but noVNC may not be listening yet.
       const state = await this.getState();
-      if (state.status !== 'healthy') {
+      if (state.status !== 'running' && state.status !== 'healthy') {
         try {
           await this.startAndWaitForPorts();
         } catch (err) {
