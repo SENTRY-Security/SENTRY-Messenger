@@ -9,6 +9,8 @@ import { log, logCapped, logForensicsEvent, setLogSink } from '../core/log.js';
 console.info('[App] Version: 2026-01-14T10:55:00Z (Round 11 Fix + Debug)');
 import { AUDIO_PERMISSION_KEY } from './login-ui.js';
 import * as safeBrowser from '../features/safe-browser.js';
+import * as appsLauncher from '../features/apps-launcher.js';
+import { getAppCatalog } from '../api/apps.js';
 import { DEBUG } from './mobile/debug-flags.js';
 import { flushOutbox } from '../features/queue/outbox.js';
 import { setMessagesWsSender } from '../features/messages-support/ws-sender-adapter.js';
@@ -1132,6 +1134,56 @@ function flushContactSecretsLocal(reason = 'manual') {
 const tabs = ['contacts', 'messages', 'drive', 'profile'];
 let currentTab = 'drive';
 
+// Apps tab – shown only when sentryLab is enabled
+let _appsInitialized = false;
+function setAppsTabVisible(visible) {
+  const btn = document.getElementById('nav-apps');
+  if (btn) btn.style.display = visible ? '' : 'none';
+  if (visible && !tabs.includes('apps')) {
+    tabs.push('apps');
+    btn?.addEventListener('click', () => switchTab('apps'));
+    initAppsTab();
+  } else if (!visible && tabs.includes('apps')) {
+    tabs.splice(tabs.indexOf('apps'), 1);
+    if (currentTab === 'apps') switchTab('drive');
+    appsLauncher.cleanup();
+  }
+}
+
+function initAppsTab() {
+  if (_appsInitialized) return;
+  _appsInitialized = true;
+
+  const container = document.getElementById('appsContainer');
+  if (!container) return;
+
+  // Fetch catalog and render grid
+  getAppCatalog().then(({ apps }) => {
+    appsLauncher.renderAppsGrid(container, {
+      catalog: apps,
+      onAppTap: async (slug, app) => {
+        // Show loading state
+        const cells = container.querySelectorAll('.apps-grid-cell');
+        cells.forEach(c => { c.disabled = true; c.style.opacity = '0.5'; });
+
+        try {
+          const streamInfo = await appsLauncher.ensureInstanceReady();
+          appsLauncher.openAppModal({ app, streamInfo, modalApi: mc });
+        } catch (err) {
+          mc.showAlertModal({
+            title: t('apps.error') || 'Error',
+            message: err?.message || 'Failed to start app',
+          });
+        } finally {
+          cells.forEach(c => { c.disabled = false; c.style.opacity = ''; });
+        }
+      },
+    });
+  }).catch(err => {
+    container.innerHTML = `<div style="text-align:center;color:var(--muted);padding:32px;">${t('apps.loadFailed') || 'Failed to load apps'}</div>`;
+  });
+}
+
 // SAFE tab – shown only when sentryLab is enabled
 function setSafeTabVisible(visible) {
   const btn = document.getElementById('nav-safe');
@@ -1822,7 +1874,7 @@ const settingsMod = createSettingsModule({
     getMkRaw, getAccountDigest,
     openChangePasswordModal, openPushModal: () => openPushModal?.(),
     showAlertModal,
-    onLabToggle: (enabled) => setSafeTabVisible(enabled)
+    onLabToggle: (enabled) => { setSafeTabVisible(enabled); setAppsTabVisible(enabled); }
   }
 });
 const getEffectiveSettingsState = () => settingsMod.getEffective();
@@ -1956,7 +2008,7 @@ settingsInitPromise = bootLoadSettings()
     if (!sessionStore.settingsState) sessionStore.settingsState = fallback;
     return sessionStore.settingsState || fallback;
   })
-  .then(() => { setSafeTabVisible(!!getEffectiveSettingsState().sentryLab); });
+  .then(() => { const lab = !!getEffectiveSettingsState().sentryLab; setSafeTabVisible(lab); setAppsTabVisible(lab); });
 settingsMod.initPromise = settingsInitPromise;
 
 // Register Service Worker for push notifications (registration only, no auto-subscribe)

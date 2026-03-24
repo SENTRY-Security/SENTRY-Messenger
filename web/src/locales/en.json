@@ -444,6 +444,18 @@
     "sentryLab": "SENTRY Lab",
     "sentryLabDesc": "Enable experimental features that may be unstable or subject to change."
   },
+  "apps": {
+    "title": "Apps",
+    "subtitle": "Secure cloud applications",
+    "instanceStarting": "Starting Android...",
+    "instanceOnline": "Android ready",
+    "instanceError": "Error",
+    "stopInstance": "Stop",
+    "connecting": "Connecting...",
+    "connectionFailed": "Connection failed",
+    "error": "Error",
+    "loadFailed": "Failed to load apps"
+  },
   "safe": {
     "description": "Secure Application Frontend Environment",
     "brand": "SAFE™",

@@ -680,6 +680,10 @@
         <ul id="driveList" class="list"></ul>
       </div>
     </section>
+    <section id="tab-apps" class="tab" style="display:none">
+      <div id="appsContainer" style="padding:16px;"></div>
+    </section>
+
     <section id="tab-safe" class="tab" style="display:none">
       <div style="padding:16px;">
         <!-- Header -->
@@ -1028,6 +1032,16 @@
           <path class="ni-body" d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" pathLength="1"/>
         </svg>
         <span data-i18n="nav.myFiles"></span>
+      </button>
+      <button id="nav-apps" class="navbtn" style="display:none" data-i18n-aria-label="nav.apps">
+        <span class="nav-badge" data-tab="apps"></span>
+        <svg class="icon nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="7" height="7" rx="1.5" pathLength="1"/>
+          <rect x="14" y="3" width="7" height="7" rx="1.5" pathLength="1"/>
+          <rect x="3" y="14" width="7" height="7" rx="1.5" pathLength="1"/>
+          <rect x="14" y="14" width="7" height="7" rx="1.5" pathLength="1"/>
+        </svg>
+        <span data-i18n="nav.apps">Apps</span>
       </button>
       <button id="nav-safe" class="navbtn" style="display:none" aria-label="SAFE ™">
         <span class="nav-badge" data-tab="safe"></span>
