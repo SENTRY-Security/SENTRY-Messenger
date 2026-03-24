@@ -305,6 +305,28 @@ export function createSettingsModule({ deps }) {
             <input type="checkbox" id="settingsSentryLab" ${current.sentryLab ? 'checked' : ''} />
             <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
           </label>
+        </div>
+        <div id="sentryLabSubItems" style="padding-left:36px;${current.sentryLab ? '' : 'display:none;'}">
+          <div class="settings-item" style="border-top:none;padding-top:4px;padding-bottom:4px;">
+            <div class="settings-text">
+              <strong style="font-size:14px;">${escapeHtml(t('settings.sentryLabApps'))}</strong>
+              <p>${escapeHtml(t('settings.sentryLabAppsDesc'))}</p>
+            </div>
+            <label class="settings-switch">
+              <input type="checkbox" id="settingsSentryLabApps" ${current.sentryLabApps ? 'checked' : ''} />
+              <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
+          <div class="settings-item" style="border-top:none;padding-top:4px;padding-bottom:4px;">
+            <div class="settings-text">
+              <strong style="font-size:14px;">${escapeHtml(t('settings.sentryLabSafe'))}</strong>
+              <p>${escapeHtml(t('settings.sentryLabSafeDesc'))}</p>
+            </div>
+            <label class="settings-switch">
+              <input type="checkbox" id="settingsSentryLabSafe" ${current.sentryLabSafe ? 'checked' : ''} />
+              <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
         </div>` : ''}
         <div class="settings-actions">
           <button type="button" class="secondary" id="settingsClose">${escapeHtml(t('common.close'))}</button>
@@ -427,7 +449,73 @@ export function createSettingsModule({ deps }) {
     }
 
     const sentryLabInput = body.querySelector('#settingsSentryLab');
-    registerToggle(sentryLabInput, 'sentryLab');
+    const sentryLabSubItems = body.querySelector('#sentryLabSubItems');
+    const sentryLabAppsInput = body.querySelector('#settingsSentryLabApps');
+    const sentryLabSafeInput = body.querySelector('#settingsSentryLabSafe');
+
+    // Parent toggle: show/hide sub-items and propagate to tab visibility
+    if (sentryLabInput) {
+      sentryLabInput.addEventListener('change', async () => {
+        const previous = getEffective();
+        const nextValue = !!sentryLabInput.checked;
+        if (previous.sentryLab === nextValue) return;
+        sentryLabInput.disabled = true;
+        try {
+          await persistPatch({ sentryLab: nextValue });
+          if (sentryLabSubItems) sentryLabSubItems.style.display = nextValue ? '' : 'none';
+          if (typeof onLabToggle === 'function') {
+            const s = getEffective();
+            onLabToggle({ apps: nextValue && s.sentryLabApps, safe: nextValue && s.sentryLabSafe });
+          }
+        } catch (err) {
+          log({ settingsAutoSaveError: err?.message || err });
+          if (typeof showAlertModal === 'function') showAlertModal({ title: t('errors.saveFailed'), message: t('errors.saveSettingsFailed') });
+          sentryLabInput.checked = !!previous.sentryLab;
+        } finally { sentryLabInput.disabled = false; }
+      });
+    }
+
+    // Sub-toggle: Apps
+    if (sentryLabAppsInput) {
+      sentryLabAppsInput.addEventListener('change', async () => {
+        const previous = getEffective();
+        const nextValue = !!sentryLabAppsInput.checked;
+        if (previous.sentryLabApps === nextValue) return;
+        sentryLabAppsInput.disabled = true;
+        try {
+          await persistPatch({ sentryLabApps: nextValue });
+          if (typeof onLabToggle === 'function') {
+            const s = getEffective();
+            onLabToggle({ apps: s.sentryLab && nextValue, safe: s.sentryLab && s.sentryLabSafe });
+          }
+        } catch (err) {
+          log({ settingsAutoSaveError: err?.message || err });
+          if (typeof showAlertModal === 'function') showAlertModal({ title: t('errors.saveFailed'), message: t('errors.saveSettingsFailed') });
+          sentryLabAppsInput.checked = !!previous.sentryLabApps;
+        } finally { sentryLabAppsInput.disabled = false; }
+      });
+    }
+
+    // Sub-toggle: SAFE
+    if (sentryLabSafeInput) {
+      sentryLabSafeInput.addEventListener('change', async () => {
+        const previous = getEffective();
+        const nextValue = !!sentryLabSafeInput.checked;
+        if (previous.sentryLabSafe === nextValue) return;
+        sentryLabSafeInput.disabled = true;
+        try {
+          await persistPatch({ sentryLabSafe: nextValue });
+          if (typeof onLabToggle === 'function') {
+            const s = getEffective();
+            onLabToggle({ apps: s.sentryLab && s.sentryLabApps, safe: s.sentryLab && nextValue });
+          }
+        } catch (err) {
+          log({ settingsAutoSaveError: err?.message || err });
+          if (typeof showAlertModal === 'function') showAlertModal({ title: t('errors.saveFailed'), message: t('errors.saveSettingsFailed') });
+          sentryLabSafeInput.checked = !!previous.sentryLabSafe;
+        } finally { sentryLabSafeInput.disabled = false; }
+      });
+    }
   }
 
   return {

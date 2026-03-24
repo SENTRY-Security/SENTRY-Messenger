@@ -1875,7 +1875,7 @@ const settingsMod = createSettingsModule({
     getMkRaw, getAccountDigest,
     openChangePasswordModal, openPushModal: () => openPushModal?.(),
     showAlertModal,
-    onLabToggle: (enabled) => { setSafeTabVisible(enabled); setAppsTabVisible(enabled); }
+    onLabToggle: ({ apps, safe }) => { setAppsTabVisible(!!apps); setSafeTabVisible(!!safe); }
   }
 });
 const getEffectiveSettingsState = () => settingsMod.getEffective();
@@ -2009,7 +2009,7 @@ settingsInitPromise = bootLoadSettings()
     if (!sessionStore.settingsState) sessionStore.settingsState = fallback;
     return sessionStore.settingsState || fallback;
   })
-  .then(() => { const lab = !!getEffectiveSettingsState().sentryLab; setSafeTabVisible(lab); setAppsTabVisible(lab); });
+  .then(() => { const s = getEffectiveSettingsState(); const lab = !!s.sentryLab; setAppsTabVisible(lab && s.sentryLabApps !== false); setSafeTabVisible(lab && s.sentryLabSafe !== false); });
 settingsMod.initPromise = settingsInitPromise;
 
 // Register Service Worker for push notifications (registration only, no auto-subscribe)

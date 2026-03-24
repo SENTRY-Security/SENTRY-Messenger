@@ -439,7 +439,11 @@
     "defaultLogoutPageDesc": "Sử dụng trang đăng xuất mặc định tích hợp sẵn",
     "language": "Ngôn ngữ / Language",
     "sentryLab": "SENTRY Lab",
-    "sentryLabDesc": "Bật các tính năng thử nghiệm, có thể không ổn định hoặc thay đổi bất cứ lúc nào."
+    "sentryLabDesc": "Bật các tính năng thử nghiệm, có thể không ổn định hoặc thay đổi bất cứ lúc nào.",
+    "sentryLabApps": "Ứng dụng",
+    "sentryLabAppsDesc": "Ứng dụng đám mây an toàn (phát Android)",
+    "sentryLabSafe": "SAFE",
+    "sentryLabSafeDesc": "Môi trường giao diện ứng dụng an toàn"
   },
   "safe": {
     "description": "Môi trường giao diện ứng dụng bảo mật",

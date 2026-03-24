@@ -441,7 +441,11 @@
     "defaultLogoutPageDesc": "使用内建的默认退出页面",
     "language": "语言 / Language",
     "sentryLab": "SENTRY Lab",
-    "sentryLabDesc": "启用实验性功能，可能不稳定或随时变更。"
+    "sentryLabDesc": "启用实验性功能，可能不稳定或随时变更。",
+    "sentryLabApps": "应用程序",
+    "sentryLabAppsDesc": "安全云端应用（Android 串流）",
+    "sentryLabSafe": "SAFE",
+    "sentryLabSafeDesc": "安全应用前端环境"
   },
   "safe": {
     "description": "安全应用前端环境",
