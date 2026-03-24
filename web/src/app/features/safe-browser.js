@@ -156,8 +156,9 @@ function startPolling(password) {
       _containerStatus = data.status;
       _elapsed = data.elapsed;
 
-      // Build iframeUrl once container is running (proxy will wait for healthy)
-      if ((data.status === 'running' || data.status === 'healthy') && !_iframeUrl) {
+      // Only build iframeUrl when container is truly healthy (port responding)
+      // "running" alone means the container process is up but noVNC may not be ready
+      if (data.status === 'healthy' && !_iframeUrl) {
         _iframeUrl = buildIframeUrl(password);
       }
 

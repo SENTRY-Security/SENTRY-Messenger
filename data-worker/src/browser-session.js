@@ -87,13 +87,26 @@ export class BrowserSession extends Container {
             browserPath: '/api/safe/browser/',
           });
         }
-        // Already starting — don't restart, just return current status
-        if (currentState.status === 'running') {
+
+        // "running" but not "healthy" — port 6901 not responding.
+        // If it's been running > 60s without becoming healthy, force restart.
+        const startedAt = await this.ctx.storage.get('started_at');
+        const elapsed = startedAt ? (Date.now() - startedAt) / 1000 : 0;
+
+        if (currentState.status === 'running' && elapsed < 120) {
+          // Still within startup window — let it finish
           return Response.json({
             status: 'running',
             password: vncPassword,
             browserPath: '/api/safe/browser/',
           });
+        }
+
+        // Either stopped, or running but stuck (> 120s without healthy).
+        // Force stop first if stuck, then restart fresh.
+        if (currentState.status === 'running') {
+          console.log('[SAFE] Container stuck in running state for', Math.round(elapsed), 's — restarting');
+          try { await this.stop(); } catch (_) { /* ignore */ }
         }
 
         // Record start time for elapsed tracking
