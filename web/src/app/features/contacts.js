@@ -22,7 +22,7 @@ import { decryptContactPayload, encryptContactPayload, isContactShareEnvelope } 
 import { getContactSecret, setContactSecret, clearContactTombstone } from '../core/contact-secrets.js';
 import { log, logCapped } from '../core/log.js';
 import { upsertContactCore, findContactCoreByAccountDigest, resolveContactAvatarUrl, listContactCoreEntries } from '../ui/mobile/contact-core-store.js';
-import { restorePendingInvites, persistPendingInvites, sessionStore } from '../ui/mobile/session-store.js';
+import { restorePendingInvites, persistPendingInvites } from '../ui/mobile/session-store.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';
 
 const CONTACT_INFO_TAG = 'contact/v1';
@@ -490,63 +490,6 @@ export async function loadContacts() {
 
   } catch (err) {
     console.warn('[contacts] D1 download failed', err);
-  }
-
-  // Recovery: if D1 returned 0 contacts, reconstruct from contact-secrets
-  // backup (already hydrated earlier in the login flow).  This covers the
-  // case where D1 uplink previously failed (e.g. NOT-NULL constraint bug)
-  // but the contact-secrets backup succeeded.
-  if (d1Entries.length === 0) {
-    const secretsMap = sessionStore.contactSecrets instanceof Map ? sessionStore.contactSecrets : null;
-    if (secretsMap && secretsMap.size > 0) {
-      console.log('[contacts] D1 empty — recovering from contact-secrets backup:', secretsMap.size, 'entries');
-      const recovered = [];
-      for (const [peerKey, record] of secretsMap.entries()) {
-        if (!peerKey || !peerKey.includes('::')) continue;
-        const [peerDigest, peerDevId] = peerKey.split('::');
-        if (!peerDigest || !peerDevId) continue;
-        if (selfDigest && peerDigest.toUpperCase() === selfDigest) continue;
-
-        const token = record?.conversationToken || null;
-        const convId = record?.conversationId || null;
-        if (!token || !convId) continue;
-
-        const entry = {
-          peerAccountDigest: peerDigest.toUpperCase(),
-          nickname: null,
-          avatar: null,
-          addedAt: Math.floor((Number(record?.updatedAt) || Date.now()) / 1000),
-          profileUpdatedAt: null,
-          profileVersion: null,
-          conversation: {
-            token_b64: token,
-            conversation_id: convId,
-            peerDeviceId: peerDevId,
-            dr_init: record?.conversationDrInit || null
-          },
-          msgId: 'recovered-from-secrets'
-        };
-
-        // Re-inject into core store
-        const corePayload = buildContactCorePayload(entry, peerDevId);
-        if (corePayload) {
-          upsertContactCore(corePayload, 'secrets-recovery');
-          recovered.push(entry);
-        }
-      }
-
-      if (recovered.length > 0) {
-        console.log('[contacts] Recovered', recovered.length, 'contacts from secrets — uploading to D1');
-        // Background: uplink recovered contacts to D1 so next login is clean
-        for (const entry of recovered) {
-          uplinkContactToD1(entry).catch(err =>
-            console.warn('[contacts] recovery uplink failed', err)
-          );
-        }
-        lastContactsHydrateSummary = { ok: true, peerCount: recovered.length, source: 'secrets-recovery' };
-        return recovered;
-      }
-    }
   }
 
   lastContactsHydrateSummary = { ok: true, peerCount: d1Entries.length, source: 'D1' };
