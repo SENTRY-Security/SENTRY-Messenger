@@ -234,7 +234,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_invite_dropbox_pairing_code
 -- ============================================================
 CREATE TABLE IF NOT EXISTS contacts (
   owner_digest TEXT NOT NULL,
-  peer_digest TEXT NOT NULL,
+  peer_digest TEXT NOT NULL DEFAULT '',
   encrypted_blob TEXT,
   is_blocked INTEGER DEFAULT 0,
   slot_id TEXT,
