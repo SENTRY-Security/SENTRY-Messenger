@@ -442,7 +442,23 @@
     "defaultLogoutPageDesc": "使用內建的預設登出頁面",
     "language": "語言 / Language",
     "sentryLab": "SENTRY Lab",
-    "sentryLabDesc": "啟用實驗性功能，可能不穩定或隨時變更。"
+    "sentryLabDesc": "啟用實驗性功能，可能不穩定或隨時變更。",
+    "sentryLabApps": "應用程式",
+    "sentryLabAppsDesc": "安全雲端應用（Android 串流）",
+    "sentryLabSafe": "SAFE",
+    "sentryLabSafeDesc": "安全應用前端環境"
+  },
+  "apps": {
+    "title": "應用程式",
+    "subtitle": "安全雲端應用",
+    "instanceStarting": "正在啟動 Android...",
+    "instanceOnline": "Android 已就緒",
+    "instanceError": "錯誤",
+    "stopInstance": "停止",
+    "connecting": "連線中...",
+    "connectionFailed": "連線失敗",
+    "error": "錯誤",
+    "loadFailed": "無法載入應用程式"
   },
   "safe": {
     "description": "安全應用前端環境",
@@ -1074,7 +1090,8 @@
     "contacts": "聯絡人",
     "messages": "訊息",
     "encryptedCloud": "加密雲端",
-    "myFiles": "我的檔案"
+    "myFiles": "我的檔案",
+    "apps": "應用程式"
   },
   "misc": {
     "ok": "確定",

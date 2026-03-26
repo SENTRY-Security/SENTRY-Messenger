@@ -2214,6 +2214,7 @@ export async function renderPptxViewer({ url, blob, name, modalApi }) {
 
   cleanupPptxViewer();
   modalEl.classList.add('pptx-modal');
+  window.__setLandscapeAllowed?.(true);
   modalTitle.textContent = '';
 
   body.innerHTML = `
@@ -2451,6 +2452,7 @@ export async function renderPptxViewer({ url, blob, name, modalApi }) {
       stageEl.removeEventListener('touchmove', onTouchMove);
       stageEl.removeEventListener('touchend', onTouchEnd);
       resetZoom();
+      window.__setLandscapeAllowed?.(false);
       modalEl.classList.remove('pptx-modal');
       closeModal?.();
       activePptxCleanup = null;
@@ -2471,7 +2473,7 @@ export async function renderPptxViewer({ url, blob, name, modalApi }) {
     closeBtn?.addEventListener('click', doClose, { once: true });
     closeArea?.addEventListener('click', doClose, { once: true });
     const prevCleanup = activePptxCleanup;
-    activePptxCleanup = () => { if (typeof prevCleanup === 'function') prevCleanup(); cleanup(); modalEl.classList.remove('pptx-modal'); closeModal?.(); activePptxCleanup = null; };
+    activePptxCleanup = () => { if (typeof prevCleanup === 'function') prevCleanup(); cleanup(); window.__setLandscapeAllowed?.(false); modalEl.classList.remove('pptx-modal'); closeModal?.(); activePptxCleanup = null; };
     return true;
   }
   return true;

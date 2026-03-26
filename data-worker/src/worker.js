@@ -1,7 +1,13 @@
 import crypto from 'node:crypto';
 import { toU8Strict } from './u8-strict.js';
 import { createJwt, verifyJwt } from './jwt.js';
+import { jwtVerify, importSPKI, errors as joseErrors } from 'jose';
 import { createWebPush } from './web-push.js';
+import {
+  listRecipes, startInstance, getInstance,
+  listInstances, stopInstance, saveInstance, waitForInstance,
+  extractStreamInfo,
+} from './genymotion.js';
 import { getOpaqueConfig, OpaqueID, OpaqueServer, KE1, KE3, RegistrationRequest, RegistrationRecord, ExpectedAuthResult } from '@cloudflare/opaque-ts';
 
 // Re-export Durable Object classes so Cloudflare runtime can find them
@@ -671,17 +677,17 @@ async function allocateOwnerPrekeyBundle(env, ownerAccountDigest, preferredDevic
   };
 }
 
-async function grantConversationAccess(env, { conversationId, accountDigest, deviceId = null, role = 'member' }) {
+async function grantConversationAccess(env, { conversationId, accountDigest, deviceId = null, role = null }) {
   if (!conversationId || !accountDigest) return;
   await ensureDataTables(env);
   try {
+    // Zero-Meta: role is no longer written to avoid leaking conversation semantics to the server.
     await env.DB.prepare(`
       INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role)
-      VALUES (?1, ?2, ?3, ?4)
+      VALUES (?1, ?2, ?3, NULL)
       ON CONFLICT(conversation_id, account_digest, device_id) DO UPDATE SET
-        role = COALESCE(excluded.role, conversation_acl.role),
         updated_at = strftime('%s','now')
-    `).bind(conversationId, accountDigest, deviceId, role || null).run();
+    `).bind(conversationId, accountDigest, deviceId).run();
   } catch (err) {
     console.warn('conversation_acl_upsert_failed', err?.message || err);
   }
@@ -1011,15 +1017,13 @@ async function upsertCallSession(env, payload = {}) {
 
   await env.DB.prepare(`
     INSERT INTO call_sessions (
-      call_id, caller_uid, callee_uid,
+      call_id,
       caller_account_digest, callee_account_digest,
       status, mode,
       capabilities_json, metadata_json, metrics_json,
       created_at, updated_at, connected_at, ended_at, end_reason, expires_at, last_event
-    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
     ON CONFLICT(call_id) DO UPDATE SET
-      caller_uid=excluded.caller_uid,
-      callee_uid=excluded.callee_uid,
       caller_account_digest=excluded.caller_account_digest,
       callee_account_digest=excluded.callee_account_digest,
       status=excluded.status,
@@ -1036,8 +1040,6 @@ async function upsertCallSession(env, payload = {}) {
       created_at=call_sessions.created_at
   `).bind(
     callId,
-    callerDigest,
-    calleeDigest,
     callerDigest,
     calleeDigest,
     status,
@@ -1387,7 +1389,9 @@ async function ensureDataTables(env) {
     'extend_logs',
     'business_conversations',
     'business_conversation_members',
-    'business_conversation_tombstones'
+    'business_conversation_tombstones',
+    'deletion_cursors',
+    'conversation_deletion_log'
   ];
   try {
     const tableRows = await env.DB.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all();
@@ -1517,6 +1521,145 @@ async function ensureDataTables(env) {
         console.log('ensureDataTables: created push_subscriptions table (migration 0015 fallback)');
       } catch (e) { console.warn('ensureDataTables: push_subscriptions create failed', e?.message); }
     }
+    // Auto-create missing tables from migration 0002 (fallback for environments without full migration history)
+    if (!tableNames.has('contact_secret_backups')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS contact_secret_backups (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, account_digest TEXT NOT NULL, version INTEGER,
+          payload_json TEXT, snapshot_version INTEGER, entries INTEGER, checksum TEXT, bytes INTEGER,
+          device_label TEXT, device_id TEXT, reason TEXT NOT NULL DEFAULT 'auto',
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_contact_secret_backups_account ON contact_secret_backups(account_digest, updated_at DESC)`).run();
+        console.log('ensureDataTables: created contact_secret_backups table');
+      } catch (e) { console.warn('ensureDataTables: contact_secret_backups create failed', e?.message); }
+    }
+    if (!tableNames.has('opaque_records')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS opaque_records (
+          account_digest TEXT PRIMARY KEY, record_b64 TEXT NOT NULL, client_identity TEXT,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))`).run();
+        console.log('ensureDataTables: created opaque_records table');
+      } catch (e) { console.warn('ensureDataTables: opaque_records create failed', e?.message); }
+    }
+    if (!tableNames.has('subscriptions')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS subscriptions (
+          digest TEXT PRIMARY KEY, expires_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))`).run();
+        console.log('ensureDataTables: created subscriptions table');
+      } catch (e) { console.warn('ensureDataTables: subscriptions create failed', e?.message); }
+    }
+    if (!tableNames.has('tokens')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS tokens (
+          token_id TEXT PRIMARY KEY, digest TEXT NOT NULL, issued_at INTEGER, extend_days INTEGER,
+          nonce TEXT, key_id TEXT, signature_b64 TEXT, status TEXT, used_at INTEGER,
+          used_by_digest TEXT, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))`).run();
+        console.log('ensureDataTables: created tokens table');
+      } catch (e) { console.warn('ensureDataTables: tokens create failed', e?.message); }
+    }
+    if (!tableNames.has('extend_logs')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS extend_logs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, token_id TEXT, digest TEXT, extend_days INTEGER,
+          expires_at_after INTEGER, used_at INTEGER,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))`).run();
+        console.log('ensureDataTables: created extend_logs table');
+      } catch (e) { console.warn('ensureDataTables: extend_logs create failed', e?.message); }
+    }
+    if (!tableNames.has('media_objects')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS media_objects (
+          obj_key TEXT PRIMARY KEY, conv_id TEXT, sender_id TEXT, size_bytes INTEGER,
+          content_type TEXT, created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_media_objects_conv ON media_objects(conv_id)`).run();
+        console.log('ensureDataTables: created media_objects table');
+      } catch (e) { console.warn('ensureDataTables: media_objects create failed', e?.message); }
+    }
+    if (!tableNames.has('deletion_cursors')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS deletion_cursors (
+          conversation_id TEXT NOT NULL, account_digest TEXT NOT NULL, min_counter INTEGER NOT NULL,
+          min_ts REAL NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          PRIMARY KEY (conversation_id, account_digest))`).run();
+        console.log('ensureDataTables: created deletion_cursors table');
+      } catch (e) { console.warn('ensureDataTables: deletion_cursors create failed', e?.message); }
+    }
+    if (!tableNames.has('conversation_deletion_log')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS conversation_deletion_log (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, owner_digest TEXT NOT NULL,
+          conversation_id TEXT NOT NULL, encrypted_checkpoint TEXT NOT NULL,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_conversation_deletion_log_lookup ON conversation_deletion_log(owner_digest, conversation_id, id ASC)`).run();
+        console.log('ensureDataTables: created conversation_deletion_log table');
+      } catch (e) { console.warn('ensureDataTables: conversation_deletion_log create failed', e?.message); }
+    }
+    // Auto-create business conversation tables (migration 0013 fallback)
+    if (!tableNames.has('business_conversations')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS business_conversations (
+          conversation_id TEXT PRIMARY KEY, owner_account_digest TEXT NOT NULL,
+          encrypted_meta_blob TEXT, encrypted_policy_blob TEXT,
+          key_epoch INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'dissolved')),
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')))`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_biz_conv_owner ON business_conversations(owner_account_digest)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_biz_conv_status ON business_conversations(status)`).run();
+        console.log('ensureDataTables: created business_conversations table');
+      } catch (e) { console.warn('ensureDataTables: business_conversations create failed', e?.message); }
+    }
+    if (!tableNames.has('business_conversation_members')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS business_conversation_members (
+          conversation_id TEXT NOT NULL, account_digest TEXT NOT NULL,
+          encrypted_role_blob TEXT,
+          status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'left', 'removed')),
+          confirmed_epoch INTEGER NOT NULL DEFAULT 0, inviter_account_digest TEXT,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          PRIMARY KEY (conversation_id, account_digest),
+          FOREIGN KEY (conversation_id) REFERENCES business_conversations(conversation_id) ON DELETE CASCADE,
+          FOREIGN KEY (account_digest) REFERENCES accounts(account_digest) ON DELETE CASCADE)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_biz_conv_members_account ON business_conversation_members(account_digest)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_biz_conv_members_status ON business_conversation_members(conversation_id, status)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_biz_conv_members_epoch ON business_conversation_members(conversation_id, confirmed_epoch)`).run();
+        console.log('ensureDataTables: created business_conversation_members table');
+      } catch (e) { console.warn('ensureDataTables: business_conversation_members create failed', e?.message); }
+    }
+    if (!tableNames.has('business_conversation_tombstones')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS business_conversation_tombstones (
+          id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL,
+          tombstone_type TEXT NOT NULL CHECK(tombstone_type IN (
+            'member_joined','member_left','member_removed','ownership_transferred',
+            'policy_changed','friend_added','conversation_dissolved')),
+          encrypted_payload_blob TEXT NOT NULL, actor_account_digest TEXT,
+          key_epoch INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          FOREIGN KEY (conversation_id) REFERENCES business_conversations(conversation_id) ON DELETE CASCADE)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_biz_conv_tombstones_conv ON business_conversation_tombstones(conversation_id, created_at DESC)`).run();
+        await env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_biz_conv_tombstones_type ON business_conversation_tombstones(conversation_id, tombstone_type)`).run();
+        console.log('ensureDataTables: created business_conversation_tombstones table');
+      } catch (e) { console.warn('ensureDataTables: business_conversation_tombstones create failed', e?.message); }
+    }
+    if (!tableNames.has('prekey_users')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS prekey_users (account_digest TEXT PRIMARY KEY, updated_at INTEGER)`).run();
+        console.log('ensureDataTables: created prekey_users table');
+      } catch (e) { console.warn('ensureDataTables: prekey_users create failed', e?.message); }
+    }
+    if (!tableNames.has('prekey_opk')) {
+      try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS prekey_opk (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, account_digest TEXT, key_id INTEGER, public_key TEXT)`).run();
+        console.log('ensureDataTables: created prekey_opk table');
+      } catch (e) { console.warn('ensureDataTables: prekey_opk create failed', e?.message); }
+    }
     // Auto-add preview_public_key column to push_subscriptions (E2E push preview)
     try {
       await env.DB.prepare(`SELECT preview_public_key FROM push_subscriptions LIMIT 0`).all();
@@ -1538,6 +1681,32 @@ async function ensureDataTables(env) {
       } catch (alterErr) {
         console.warn('ensureDataTables: reason column add failed (may already exist)', alterErr?.message);
       }
+    }
+    // Auto-add slot_id column to contacts (migration 0017 — zero-meta)
+    try {
+      await env.DB.prepare(`SELECT slot_id FROM contacts LIMIT 0`).all();
+    } catch {
+      try {
+        await env.DB.prepare(`ALTER TABLE contacts ADD COLUMN slot_id TEXT`).run();
+        await env.DB.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_owner_slot ON contacts(owner_digest, slot_id) WHERE slot_id IS NOT NULL`).run();
+        console.log('ensureDataTables: added slot_id column to contacts');
+      } catch (alterErr) {
+        console.warn('ensureDataTables: slot_id column add failed (may already exist)', alterErr?.message);
+      }
+    }
+    // Auto-create performance indexes (migration 0018 — schema audit)
+    try {
+      await env.DB.batch([
+        env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_device_signed_prekeys_lookup ON device_signed_prekeys(account_digest, device_id, spk_id DESC)`),
+        env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_messages_secure_counter_lookup ON messages_secure(conversation_id, sender_account_digest, sender_device_id, counter DESC)`),
+        env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_call_events_created_at ON call_events(created_at)`),
+        env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ephemeral_invites_cleanup ON ephemeral_invites(expires_at) WHERE consumed_at IS NULL`),
+        env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_ephemeral_sessions_guest_active ON ephemeral_sessions(guest_digest, expires_at) WHERE deleted_at IS NULL`),
+        env.DB.prepare(`CREATE INDEX IF NOT EXISTS idx_devices_account_updated ON devices(account_digest, updated_at DESC, created_at DESC)`)
+      ]);
+      console.log('ensureDataTables: ensured 0018 audit indexes');
+    } catch (e) {
+      console.warn('ensureDataTables: 0018 audit indexes failed (may already exist)', e?.message);
     }
     if (missingTables.length || missingColumns.length) {
       const detail = [
@@ -2442,11 +2611,12 @@ async function handleEphemeralRoutes(req, env) {
     ).bind(conversationId, now).run();
 
     // Create ACL for both parties
+    // Zero-Meta: role written as NULL — conversation semantics managed client-side.
     await env.DB.prepare(
-      `INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role) VALUES (?, ?, ?, 'owner')`
+      `INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role) VALUES (?, ?, ?, NULL)`
     ).bind(conversationId, invite.owner_digest, invite.owner_device_id).run();
     await env.DB.prepare(
-      `INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role) VALUES (?, ?, ?, 'ephemeral')`
+      `INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role) VALUES (?, ?, ?, NULL)`
     ).bind(conversationId, guestDigest, guestDeviceId).run();
 
     // Create ephemeral session
@@ -2723,9 +2893,17 @@ async function handleFriendsRoutes(req, env) {
       const convOwner = entry.convId ? entry.convId.replace('contacts-', '') : null;
       if (convOwner && entry.targetAccountDigest) {
         try {
+          // Delete legacy rows (peer_digest based)
           await env.DB.prepare(
             `DELETE FROM contacts WHERE owner_digest=?1 AND peer_digest=?2`
           ).bind(convOwner, entry.targetAccountDigest).run();
+          // Delete new-format rows (slot_id based) — client provides slotId if available
+          const slotId = typeof body?.slotId === 'string' ? body.slotId.trim() : '';
+          if (slotId) {
+            await env.DB.prepare(
+              `DELETE FROM contacts WHERE owner_digest=?1 AND slot_id=?2`
+            ).bind(convOwner, slotId).run();
+          }
         } catch (err) {
           console.warn('contact_row_delete_failed', err?.message || err);
         }
@@ -3057,7 +3235,7 @@ async function handleAtomicSendRoutes(req, env) {
 
     batch.push(env.DB.prepare(`
       INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role)
-      VALUES (?1, ?2, ?3, 'member')
+      VALUES (?1, ?2, ?3, NULL)
       ON CONFLICT(conversation_id, account_digest, device_id) DO UPDATE SET updated_at=strftime('%s','now')
     `).bind(conversationId, accountDigest, senderDeviceId));
 
@@ -3065,7 +3243,7 @@ async function handleAtomicSendRoutes(req, env) {
     if (msgReceiverDigest) {
       batch.push(env.DB.prepare(`
          INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role)
-         VALUES (?1, ?2, ?3, 'member')
+         VALUES (?1, ?2, ?3, NULL)
          ON CONFLICT(conversation_id, account_digest, device_id) DO UPDATE SET updated_at=strftime('%s','now')
        `).bind(conversationId, msgReceiverDigest, msgReceiverDevice || null));
     }
@@ -3077,8 +3255,9 @@ async function handleAtomicSendRoutes(req, env) {
         receiver_account_digest, receiver_device_id, header_json, ciphertext_b64, counter, created_at
       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
     `).bind(
+      // Zero-Meta: receiver_device_id always NULL — single-device architecture, account_digest is sufficient for routing.
       msgId, conversationId, accountDigest, senderDeviceId,
-      msgReceiverDigest, msgReceiverDevice || null, msgHeaderJson, msgCiphertext, msgCounter, msgCreatedAt
+      msgReceiverDigest, null, msgHeaderJson, msgCiphertext, msgCounter, msgCreatedAt
     ));
 
     // 5c. Vault Insert
@@ -3674,12 +3853,12 @@ async function handleMessagesRoutes(req, env) {
     `).bind(conversationId).run();
     await env.DB.prepare(`
       INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role)
-      VALUES (?1, ?2, ?3, 'member')
+      VALUES (?1, ?2, ?3, NULL)
       ON CONFLICT(conversation_id, account_digest, device_id) DO UPDATE SET updated_at=strftime('%s','now')
     `).bind(conversationId, senderAccountDigest, senderDeviceId).run();
     await env.DB.prepare(`
       INSERT INTO conversation_acl (conversation_id, account_digest, device_id, role)
-      VALUES (?1, ?2, ?3, 'member')
+      VALUES (?1, ?2, ?3, NULL)
       ON CONFLICT(conversation_id, account_digest, device_id) DO UPDATE SET updated_at=strftime('%s','now')
     `).bind(conversationId, receiverAccountDigest, receiverDeviceId || null).run();
     const messageId = typeof body?.id === 'string' && body.id.trim().length ? body.id.trim() : null;
@@ -3695,12 +3874,13 @@ async function handleMessagesRoutes(req, env) {
           receiver_account_digest, receiver_device_id, header_json, ciphertext_b64, counter, created_at
         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
       `).bind(
+        // Zero-Meta: receiver_device_id always NULL — single-device architecture.
         messageId,
         conversationId,
         senderAccountDigest,
         senderDeviceId,
         receiverAccountDigest,
-        receiverDeviceId || null,
+        null,
         headerJson,
         ciphertextB64,
         counter,
@@ -4216,7 +4396,14 @@ function logMessageKeyVault(kind, payload) {
   if (kind === 'put') messageKeyVaultPutLogCount += 1;
   if (kind === 'get') messageKeyVaultGetLogCount += 1;
   try {
-    console.log(kind === 'put' ? 'messageKeyVaultPut' : 'messageKeyVaultGet', payload);
+    // Only log non-sensitive fields (truncated identifiers, status)
+    const safe = {
+      kind,
+      acct: payload?.accountDigestSuffix4 || null,
+      conv: payload?.conversationIdPrefix8 || null,
+      status: payload?.status || payload?.upsert || null
+    };
+    console.log('messageKeyVault', safe);
   } catch {
     /* ignore logging errors */
   }
@@ -6044,19 +6231,46 @@ async function handleContactsRoutes(req, env) {
 
     const stmts = [];
     for (const item of contacts) {
-      const peerDigest = normalizeAccountDigest(item.peerDigest || item.peer_digest);
-      if (!peerDigest) continue;
+      const slotId = typeof item.slotId === 'string' ? item.slotId.trim() : (typeof item.slot_id === 'string' ? item.slot_id.trim() : '');
       const blob = typeof item.encryptedBlob === 'string' ? item.encryptedBlob : null;
-      const isBlocked = item.isBlocked === true || item.isBlocked === 1 ? 1 : 0;
 
-      stmts.push(env.DB.prepare(`
-        INSERT INTO contacts (owner_digest, peer_digest, encrypted_blob, is_blocked, updated_at)
-        VALUES (?1, ?2, ?3, ?4, strftime('%s','now'))
-        ON CONFLICT(owner_digest, peer_digest) DO UPDATE SET
-          encrypted_blob = COALESCE(excluded.encrypted_blob, contacts.encrypted_blob),
-          is_blocked = COALESCE(excluded.is_blocked, contacts.is_blocked),
-          updated_at = strftime('%s','now')
-      `).bind(accountDigest, peerDigest, blob, isBlocked));
+      // Zero-Meta: updated_at truncated to day precision to reduce timing metadata.
+      if (slotId) {
+        // New format: slot_id based (peer_digest hidden inside encrypted_blob)
+        stmts.push(env.DB.prepare(`
+          INSERT INTO contacts (owner_digest, slot_id, peer_digest, encrypted_blob, is_blocked, updated_at)
+          VALUES (?1, ?2, NULL, ?3, 0, CAST(strftime('%s','now') / 86400 * 86400 AS INTEGER))
+          ON CONFLICT(owner_digest, slot_id) DO UPDATE SET
+            encrypted_blob = COALESCE(excluded.encrypted_blob, contacts.encrypted_blob),
+            peer_digest = NULL,
+            is_blocked = 0,
+            updated_at = CAST(strftime('%s','now') / 86400 * 86400 AS INTEGER)
+        `).bind(accountDigest, slotId, blob));
+      } else {
+        // Legacy format: peer_digest based (transition period)
+        const peerDigest = normalizeAccountDigest(item.peerDigest || item.peer_digest);
+        if (!peerDigest) continue;
+        const isBlocked = item.isBlocked === true || item.isBlocked === 1 ? 1 : 0;
+        stmts.push(env.DB.prepare(`
+          INSERT INTO contacts (owner_digest, peer_digest, encrypted_blob, is_blocked, updated_at)
+          VALUES (?1, ?2, ?3, ?4, CAST(strftime('%s','now') / 86400 * 86400 AS INTEGER))
+          ON CONFLICT(owner_digest, peer_digest) DO UPDATE SET
+            encrypted_blob = COALESCE(excluded.encrypted_blob, contacts.encrypted_blob),
+            is_blocked = COALESCE(excluded.is_blocked, contacts.is_blocked),
+            updated_at = CAST(strftime('%s','now') / 86400 * 86400 AS INTEGER)
+        `).bind(accountDigest, peerDigest, blob, isBlocked));
+      }
+    }
+
+    // If client sends migrated_slots, delete the old legacy rows that have been migrated
+    const migratedSlots = Array.isArray(body.migratedPeerDigests || body.migrated_peer_digests)
+      ? (body.migratedPeerDigests || body.migrated_peer_digests) : [];
+    for (const pd of migratedSlots) {
+      const peerDigest = normalizeAccountDigest(pd);
+      if (!peerDigest) continue;
+      stmts.push(env.DB.prepare(
+        `DELETE FROM contacts WHERE owner_digest=?1 AND peer_digest=?2 AND slot_id IS NULL`
+      ).bind(accountDigest, peerDigest));
     }
 
     if (stmts.length) {
@@ -6085,13 +6299,14 @@ async function handleContactsRoutes(req, env) {
 
     try {
       const rows = await env.DB.prepare(`
-        SELECT peer_digest, encrypted_blob, is_blocked, updated_at
+        SELECT slot_id, peer_digest, encrypted_blob, is_blocked, updated_at
           FROM contacts
          WHERE owner_digest = ?1
       `).bind(accountDigest).all();
 
       const contacts = (rows?.results || []).map(r => ({
-        peer_digest: r.peer_digest,
+        slot_id: r.slot_id || null,
+        peer_digest: r.peer_digest || null,
         encrypted_blob: r.encrypted_blob || null,
         is_blocked: r.is_blocked === 1,
         updated_at: Number(r.updated_at) || 0
@@ -6638,7 +6853,7 @@ function buildCORSHeaders(req, env) {
   const allowed = !allowList.length || !origin || allowList.includes(origin);
   return {
     'Access-Control-Allow-Origin': allowed ? (origin || '*') : '',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, X-Account-Token, X-Account-Digest, X-Device-Id, Authorization',
     'Access-Control-Max-Age': '86400'
   };
@@ -6823,71 +7038,62 @@ function buildCallNetworkConfigEdge(env) {
   return cfg;
 }
 
-// ── JWT RS256 verification via Web Crypto (edge-direct) ──────────────────
+// ── JWT RS256 verification via jose (edge-direct) ──────────────────
+//
+// Uses panva/jose — audited library with:
+//   - Strict algorithm whitelist (RS256 only)
+//   - exp / nbf / iat validation with clock tolerance
+//   - Constant-time signature verification
+//   - Protection against algorithm confusion attacks
 
-function pemToArrayBuffer(pem) {
-  let raw = pem;
-  if (raw.includes('\\n')) raw = raw.replace(/\\n/g, '\n');
-  if (!raw.includes('-----BEGIN')) {
-    const chunks = raw.replace(/\s+/g, '').match(/.{1,64}/g) || [];
-    raw = ['-----BEGIN PUBLIC KEY-----', ...chunks, '-----END PUBLIC KEY-----'].join('\n');
-  }
-  const b64 = raw.replace(/-----[^-]+-----/g, '').replace(/\s/g, '');
-  const binary = atob(b64);
-  const buf = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
-  return buf.buffer;
-}
+// Cache imported public key to avoid re-parsing PEM on every call
+let _cachedRS256Key = null;
+let _cachedRS256Pem = null;
 
-function base64UrlDecode(str) {
-  let s = str.replace(/-/g, '+').replace(/_/g, '/');
-  while (s.length % 4) s += '=';
-  const binary = atob(s);
-  const buf = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
-  return buf.buffer;
-}
-
-async function verifyJwtRS256(token, publicKeyPem) {
+async function getRS256PublicKey(publicKeyPem) {
   if (!publicKeyPem) {
     const err = new Error('PUBLIC KEY missing');
     err.status = 500;
     throw err;
   }
-  const parts = token.split('.');
-  if (parts.length !== 3) {
-    const err = new Error('invalid JWT format');
-    err.status = 400;
-    err.code = 'InvalidVoucher';
-    throw err;
+  // Normalize escaped newlines from env vars
+  let pem = publicKeyPem;
+  if (pem.includes('\\n')) pem = pem.replace(/\\n/g, '\n');
+  if (!pem.includes('-----BEGIN')) {
+    const chunks = pem.replace(/\s+/g, '').match(/.{1,64}/g) || [];
+    pem = ['-----BEGIN PUBLIC KEY-----', ...chunks, '-----END PUBLIC KEY-----'].join('\n');
   }
-  const [headerB64, payloadB64, signatureB64] = parts;
-  let header, payload;
+  if (_cachedRS256Pem === pem && _cachedRS256Key) return _cachedRS256Key;
+  _cachedRS256Key = await importSPKI(pem, 'RS256');
+  _cachedRS256Pem = pem;
+  return _cachedRS256Key;
+}
+
+async function verifyJwtRS256(token, publicKeyPem) {
+  const key = await getRS256PublicKey(publicKeyPem);
   try {
-    header = JSON.parse(atob(headerB64.replace(/-/g, '+').replace(/_/g, '/')));
-    payload = JSON.parse(atob(payloadB64.replace(/-/g, '+').replace(/_/g, '/')));
-  } catch {
-    const err = new Error('invalid JWT encoding');
-    err.status = 400;
-    err.code = 'InvalidVoucher';
-    throw err;
+    const { payload, protectedHeader } = await jwtVerify(token, key, {
+      algorithms: ['RS256'],     // Strict: only RS256 accepted (prevents alg confusion)
+      clockTolerance: 30         // 30 seconds tolerance for voucher tokens
+    });
+    // Extract the raw signature segment for downstream storage/dedup
+    const signatureB64 = token.split('.')[2] || null;
+    return { payload, header: protectedHeader, signatureB64 };
+  } catch (err) {
+    if (err instanceof joseErrors.JWTExpired) {
+      const e = new Error('voucher token expired');
+      e.status = 400; e.code = 'VoucherExpired';
+      throw e;
+    }
+    if (err instanceof joseErrors.JWSSignatureVerificationFailed) {
+      const e = new Error('invalid JWT signature');
+      e.status = 400; e.code = 'InvalidVoucher';
+      throw e;
+    }
+    const e = new Error(err?.message || 'JWT verification failed');
+    e.status = 400; e.code = 'InvalidVoucher';
+    throw e;
   }
-  const keyData = pemToArrayBuffer(publicKeyPem);
-  const key = await crypto.subtle.importKey(
-    'spki', keyData,
-    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
-    false, ['verify']
-  );
-  const data = new TextEncoder().encode(`${headerB64}.${payloadB64}`);
-  const signature = base64UrlDecode(signatureB64);
-  const valid = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, signature, data);
-  if (!valid) {
-    const err = new Error('invalid JWT signature');
-    err.status = 400;
-    err.code = 'InvalidVoucher';
-    throw err;
-  }
-  return { payload, header, signatureB64 };
 }
 
 // ── S3v4 presigned URL generation (edge-direct, no AWS SDK) ──────────────
@@ -7091,25 +7297,7 @@ function generateNanoId(len = 32) {
   return id;
 }
 
-// ── WS Token (JWT HS256) ──────────────────────────────────────────
-const WS_JWT_HEADER_B64 = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))
-  .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-
-async function hmacSha256Sign(secret, data) {
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
-  );
-  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(data));
-  return btoa(String.fromCharCode(...new Uint8Array(sig)))
-    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function base64url(str) {
-  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-// JWT creation — delegates to shared jwt.js module (H-1 fix)
+// ── WS Token (JWT HS256 via jose) ─────────────────────────────────
 async function createWsToken(env, { accountDigest, ttlSec = 300 }) {
   return createJwt(env.WS_TOKEN_SECRET, { accountDigest, ttlSec });
 }
@@ -9138,6 +9326,144 @@ async function handlePublicRoutes(req, env) {
     return json(result);
   }
 
+  // ── App-as-a-Service (Genymotion Cloud) ─────────────────────────
+
+  // POST /api/v1/apps/instance/start — start or reuse Android instance
+  if (path === '/api/v1/apps/instance/start' && method === 'POST') {
+    const apiKey = env.GENYMOTION_API_KEY;
+    if (!apiKey) return json({ error: 'NotConfigured', message: 'Genymotion not configured' }, { status: 503 });
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    await ensureDataTables(env);
+
+    // Check for existing instance
+    const existing = await env.DB.prepare(
+      `SELECT instance_uuid, state FROM genymotion_instances WHERE account_digest = ?1`
+    ).bind(auth.accountDigest).first();
+
+    if (existing?.instance_uuid) {
+      try {
+        const data = await getInstance(apiKey, existing.instance_uuid);
+        const info = extractStreamInfo(data);
+        if (info.state === 'ONLINE') {
+          await env.DB.prepare(
+            `UPDATE genymotion_instances SET state = 'online', last_active_at = strftime('%s','now') WHERE account_digest = ?1`
+          ).bind(auth.accountDigest).run();
+          return json({ status: 'online', ...info });
+        }
+        if (info.state === 'STARTING' || info.state === 'CREATING') {
+          return json({ status: 'starting', instanceUuid: existing.instance_uuid });
+        }
+        // Instance is in a terminal state — clean up and create new one
+      } catch {
+        // Instance not found or API error — clean up
+      }
+      await env.DB.prepare(
+        `DELETE FROM genymotion_instances WHERE account_digest = ?1`
+      ).bind(auth.accountDigest).run();
+    }
+
+    // Start new instance from configured recipe
+    const recipeUuid = body?.recipe_uuid || env.GENYMOTION_RECIPE_UUID || '';
+    if (!recipeUuid) return json({ error: 'NotConfigured', message: 'No recipe configured (set GENYMOTION_RECIPE_UUID)' }, { status: 503 });
+
+    const result = await startInstance(apiKey, recipeUuid, {
+      name: `sentry-${auth.accountDigest.slice(0, 8)}`,
+    });
+    const instanceUuid = result?.instance?.uuid || result?.uuid;
+    if (!instanceUuid) return json({ error: 'StartFailed', message: 'No instance UUID returned', detail: result }, { status: 502 });
+
+    await env.DB.prepare(
+      `INSERT INTO genymotion_instances (account_digest, instance_uuid, recipe_uuid, state)
+       VALUES (?1, ?2, ?3, 'starting')
+       ON CONFLICT(account_digest) DO UPDATE SET instance_uuid = ?2, recipe_uuid = ?3, state = 'starting', last_active_at = strftime('%s','now')`
+    ).bind(auth.accountDigest, instanceUuid, recipeUuid).run();
+
+    return json({ status: 'starting', instanceUuid });
+  }
+
+  // GET /api/v1/apps/instance/status — poll instance status + get stream info
+  if (path === '/api/v1/apps/instance/status' && method === 'GET') {
+    const apiKey = env.GENYMOTION_API_KEY;
+    if (!apiKey) return json({ error: 'NotConfigured' }, { status: 503 });
+    const auth = await resolvePublicAuth(req, env, {});
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    await ensureDataTables(env);
+
+    const row = await env.DB.prepare(
+      `SELECT instance_uuid, state FROM genymotion_instances WHERE account_digest = ?1`
+    ).bind(auth.accountDigest).first();
+    if (!row) return json({ status: 'none' });
+
+    try {
+      const data = await getInstance(apiKey, row.instance_uuid);
+      const info = extractStreamInfo(data);
+      const newState = (info.state || 'unknown').toLowerCase();
+
+      if (newState !== row.state) {
+        await env.DB.prepare(
+          `UPDATE genymotion_instances SET state = ?2, last_active_at = strftime('%s','now') WHERE account_digest = ?1`
+        ).bind(auth.accountDigest, newState).run();
+      }
+      return json({ status: newState, ...info });
+    } catch (err) {
+      return json({ status: 'error', message: err?.message || 'Failed to query instance' }, { status: 502 });
+    }
+  }
+
+  // POST /api/v1/apps/instance/stop — stop and destroy instance
+  if (path === '/api/v1/apps/instance/stop' && method === 'POST') {
+    const apiKey = env.GENYMOTION_API_KEY;
+    if (!apiKey) return json({ error: 'NotConfigured' }, { status: 503 });
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    await ensureDataTables(env);
+
+    const row = await env.DB.prepare(
+      `SELECT instance_uuid FROM genymotion_instances WHERE account_digest = ?1`
+    ).bind(auth.accountDigest).first();
+    if (!row) return json({ status: 'none' });
+
+    try {
+      await stopInstance(apiKey, row.instance_uuid);
+    } catch {
+      // Ignore — may already be stopped
+    }
+    await env.DB.prepare(
+      `DELETE FROM genymotion_instances WHERE account_digest = ?1`
+    ).bind(auth.accountDigest).run();
+
+    return json({ status: 'stopped' });
+  }
+
+  // POST /api/v1/apps/instance/save — snapshot instance state
+  if (path === '/api/v1/apps/instance/save' && method === 'POST') {
+    const apiKey = env.GENYMOTION_API_KEY;
+    if (!apiKey) return json({ error: 'NotConfigured' }, { status: 503 });
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    await ensureDataTables(env);
+
+    const row = await env.DB.prepare(
+      `SELECT instance_uuid FROM genymotion_instances WHERE account_digest = ?1`
+    ).bind(auth.accountDigest).first();
+    if (!row) return json({ error: 'NoInstance', message: 'No active instance' }, { status: 404 });
+
+    const suffix = auth.accountDigest.slice(0, 8);
+    const ts = Date.now();
+    const result = await saveInstance(apiKey, row.instance_uuid, {
+      recipeName: `sentry-user-${suffix}-${ts}`,
+      osImageName: `sentry-snap-${suffix}-${ts}`,
+    });
+
+    // After save, instance is stopped — remove from mapping
+    await env.DB.prepare(
+      `DELETE FROM genymotion_instances WHERE account_digest = ?1`
+    ).bind(auth.accountDigest).run();
+
+    return json({ status: 'saved', detail: result });
+  }
+
   return null;
 }
 
@@ -9162,13 +9488,13 @@ async function handlePushRoutes(req, env) {
     try {
       await env.DB.prepare(
         `INSERT INTO push_subscriptions (account_digest, device_id, endpoint, keys_p256dh, keys_auth, user_agent, preview_public_key, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%s','now'))
+         VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, strftime('%s','now'))
          ON CONFLICT(endpoint) DO UPDATE SET
            account_digest=excluded.account_digest,
            device_id=excluded.device_id,
            keys_p256dh=excluded.keys_p256dh,
            keys_auth=excluded.keys_auth,
-           user_agent=excluded.user_agent,
+           user_agent=NULL,
            preview_public_key=excluded.preview_public_key`
       ).bind(
         accountDigest,
@@ -9176,7 +9502,7 @@ async function handlePushRoutes(req, env) {
         sub.endpoint,
         sub.keys.p256dh,
         sub.keys.auth,
-        body?.userAgent || body?.user_agent || null,
+        // Zero-Meta: user_agent no longer stored — client derives display label locally
         body?.previewPublicKey || null
       ).run();
       return json({ ok: true });
@@ -9271,13 +9597,13 @@ async function handlePushRoutes(req, env) {
       await ensureDataTables(env);
       await env.DB.prepare(
         `INSERT INTO push_subscriptions (account_digest, device_id, endpoint, keys_p256dh, keys_auth, user_agent, preview_public_key, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, strftime('%s','now'))
+         VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, strftime('%s','now'))
          ON CONFLICT(endpoint) DO UPDATE SET
            account_digest=excluded.account_digest,
            device_id=excluded.device_id,
            keys_p256dh=excluded.keys_p256dh,
            keys_auth=excluded.keys_auth,
-           user_agent=excluded.user_agent,
+           user_agent=NULL,
            preview_public_key=excluded.preview_public_key`
       ).bind(
         accountDigest,
@@ -9285,7 +9611,7 @@ async function handlePushRoutes(req, env) {
         sub.endpoint,
         sub.keys.p256dh,
         sub.keys.auth,
-        body?.userAgent || null,
+        // Zero-Meta: user_agent no longer stored
         body?.previewPublicKey || null
       ).run();
       // Notify the PIN-generating device via WebSocket so it can close the modal
@@ -9293,7 +9619,6 @@ async function handlePushRoutes(req, env) {
         await notifyAccountDO(env, accountDigest, {
           type: 'push-device-paired',
           deviceId: deviceId || null,
-          userAgent: body?.userAgent || null,
           ts: Date.now()
         });
       } catch (notifyErr) {
@@ -9319,7 +9644,7 @@ async function handlePushRoutes(req, env) {
     }
     try {
       const rows = await env.DB.prepare(
-        `SELECT device_id, endpoint, user_agent, created_at, preview_public_key FROM push_subscriptions WHERE account_digest = ?1 ORDER BY created_at DESC`
+        `SELECT device_id, endpoint, created_at, preview_public_key FROM push_subscriptions WHERE account_digest = ?1 ORDER BY created_at DESC`
       ).bind(accountDigest).all();
       return json({ ok: true, items: rows?.results || [] });
     } catch (err) {

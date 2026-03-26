@@ -442,7 +442,23 @@
     "defaultLogoutPageDesc": "Use the built-in default logout page",
     "language": "Language / 語言",
     "sentryLab": "SENTRY Lab",
-    "sentryLabDesc": "Enable experimental features that may be unstable or subject to change."
+    "sentryLabDesc": "Enable experimental features that may be unstable or subject to change.",
+    "sentryLabApps": "Apps",
+    "sentryLabAppsDesc": "Secure cloud applications (Android streaming)",
+    "sentryLabSafe": "SAFE",
+    "sentryLabSafeDesc": "Secure Application Frontend Environment"
+  },
+  "apps": {
+    "title": "Apps",
+    "subtitle": "Secure cloud applications",
+    "instanceStarting": "Starting Android...",
+    "instanceOnline": "Android ready",
+    "instanceError": "Error",
+    "stopInstance": "Stop",
+    "connecting": "Connecting...",
+    "connectionFailed": "Connection failed",
+    "error": "Error",
+    "loadFailed": "Failed to load apps"
   },
   "safe": {
     "description": "Secure Application Frontend Environment",
@@ -1074,7 +1090,8 @@
     "contacts": "Contacts",
     "messages": "Messages",
     "encryptedCloud": "Encrypted Cloud",
-    "myFiles": "My Files"
+    "myFiles": "My Files",
+    "apps": "Apps"
   },
   "misc": {
     "ok": "OK",

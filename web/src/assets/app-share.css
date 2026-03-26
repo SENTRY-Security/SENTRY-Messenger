@@ -519,9 +519,7 @@ body.media-permission-open {
 }
 
 .add-friend-menu {
-  position: absolute;
-  bottom: calc(100% + 10px);
-  right: 0;
+  position: fixed;
   min-width: 180px;
   background: rgba(15, 23, 42, 0.96);
   border: 1px solid rgba(148, 163, 184, 0.2);
@@ -565,8 +563,7 @@ body.media-permission-open {
 }
 
 .add-friend-menu--below {
-  bottom: auto;
-  top: calc(100% + 10px);
+  /* positioning handled by JS via fixed positioning */
 }
 
 /* ─── Pairing Code Modal ─── */

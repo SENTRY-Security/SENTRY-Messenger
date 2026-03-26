@@ -680,6 +680,10 @@
         <ul id="driveList" class="list"></ul>
       </div>
     </section>
+    <section id="tab-apps" class="tab" style="display:none">
+      <div id="appsContainer" style="padding:16px;"></div>
+    </section>
+
     <section id="tab-safe" class="tab" style="display:none">
       <div style="padding:16px;">
         <!-- Header -->
@@ -736,6 +740,21 @@
         <div id="safe-error" style="display:none;text-align:center;padding:12px;margin-top:8px;">
           <svg class="icon icon-xl" style="color:var(--danger);"><use href="#i-circle-alert"/></svg>
           <p id="safe-error-msg" style="color:var(--danger);margin:8px 0;font-size:12px;"></p>
+        </div>
+
+        <!-- Debug panel (UAT) -->
+        <div id="safe-debug-panel" class="card" style="padding:12px;margin-top:16px;border:1px dashed var(--muted);">
+          <div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:8px;">DEBUG</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
+            <button id="safe-dbg-status" type="button" style="padding:6px 10px;border-radius:6px;font-size:11px;background:var(--bg-hover);border:1px solid var(--border);cursor:pointer;">Test Status</button>
+            <button id="safe-dbg-start" type="button" style="padding:6px 10px;border-radius:6px;font-size:11px;background:var(--bg-hover);border:1px solid var(--border);cursor:pointer;">Test Start</button>
+            <button id="safe-dbg-url" type="button" style="padding:6px 10px;border-radius:6px;font-size:11px;background:var(--bg-hover);border:1px solid var(--border);cursor:pointer;">Show URL</button>
+            <button id="safe-dbg-open" type="button" style="padding:6px 10px;border-radius:6px;font-size:11px;background:var(--bg-hover);border:1px solid var(--border);cursor:pointer;">Open in Tab</button>
+            <button id="safe-dbg-proxy" type="button" style="padding:6px 10px;border-radius:6px;font-size:11px;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;cursor:pointer;font-weight:600;">Test Proxy</button>
+            <button id="safe-dbg-copy" type="button" style="padding:6px 10px;border-radius:6px;font-size:11px;background:var(--bg-hover);border:1px solid var(--border);cursor:pointer;">📋 Copy</button>
+            <button id="safe-dbg-clear" type="button" style="padding:6px 10px;border-radius:6px;font-size:11px;background:var(--bg-hover);border:1px solid var(--border);cursor:pointer;">Clear</button>
+          </div>
+          <pre id="safe-dbg-log" style="font-size:10px;line-height:1.4;max-height:300px;overflow:auto;background:var(--bg);padding:8px;border-radius:6px;white-space:pre-wrap;word-break:break-all;margin:0;"></pre>
         </div>
       </div>
     </section>
@@ -1014,6 +1033,16 @@
         </svg>
         <span data-i18n="nav.myFiles"></span>
       </button>
+      <button id="nav-apps" class="navbtn" style="display:none" data-i18n-aria-label="nav.apps">
+        <span class="nav-badge" data-tab="apps"></span>
+        <svg class="icon nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="7" height="7" rx="1.5" pathLength="1"/>
+          <rect x="14" y="3" width="7" height="7" rx="1.5" pathLength="1"/>
+          <rect x="3" y="14" width="7" height="7" rx="1.5" pathLength="1"/>
+          <rect x="14" y="14" width="7" height="7" rx="1.5" pathLength="1"/>
+        </svg>
+        <span data-i18n="nav.apps">Apps</span>
+      </button>
       <button id="nav-safe" class="navbtn" style="display:none" aria-label="SAFE ™">
         <span class="nav-badge" data-tab="safe"></span>
         <svg class="icon nav-icon nav-icon--globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1073,8 +1102,9 @@
         const looksMobileUA = /iPhone|iPad|Android|Mobile/i.test(ua);
         return shortEdge <= 1024 && (touch > 0 || looksMobileUA);
       };
+      let landscapeAllowed = false;
       function update() {
-        if (!isMobileLike()) {
+        if (!isMobileLike() || landscapeAllowed) {
           docEl.classList.remove('orientation-block');
           if (overlay) overlay.setAttribute('aria-hidden', 'true');
           return;
@@ -1088,6 +1118,16 @@
           if (overlay) overlay.setAttribute('aria-hidden', 'false');
         }
       }
+      window.__setLandscapeAllowed = function (allowed) {
+        landscapeAllowed = !!allowed;
+        update();
+        if (!isMobileLike() || !screen.orientation?.lock) return;
+        if (allowed) {
+          screen.orientation.unlock?.();
+        } else {
+          screen.orientation.lock('portrait').catch(() => { });
+        }
+      };
       if (mq.addEventListener) mq.addEventListener('change', update); else mq.addListener(update);
       window.addEventListener('orientationchange', update);
       window.addEventListener('resize', update);

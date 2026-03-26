@@ -157,7 +157,6 @@ const drConsole = DEBUG.drVerbose === true
 const DR_STATE_DEBUG_ENABLED = (() => {
   try {
     if (typeof window !== 'undefined' && window.__DEBUG_DR_STATE__) return true;
-    if (typeof navigator !== 'undefined' && navigator.webdriver) return true;
   } catch {
     /* ignore */
   }
@@ -501,7 +500,6 @@ function ensureHolderId(holder) {
 }
 
 function isAutomationEnv() {
-  if (typeof navigator !== 'undefined' && navigator.webdriver) return true;
   if (typeof window !== 'undefined' && window.__DEBUG_DR_STATE__) return true;
   return false;
 }
@@ -4042,26 +4040,10 @@ export async function bootstrapDrFromGuestBundle(params = {}) {
   const freshHolder = drState({ peerAccountDigest: peer, peerDeviceId });
   copyDrState(freshHolder, st, { callsiteTag: 'bootstrapDrFromGuestBundle' });
   const holderId = ensureHolderId(freshHolder);
-  drConsole.log('[dr-bootstrap:fingerprint]', {
-    peerAccountDigest: peer,
-    peerDeviceId,
+  drConsole.log('[dr-bootstrap:ready]', {
     holderId,
-    hasRk: freshHolder?.rk instanceof Uint8Array,
-    hasCkS: freshHolder?.ckS instanceof Uint8Array,
-    hasCkR: freshHolder?.ckR instanceof Uint8Array,
-    role: freshHolder?.baseKey?.role || null,
-    lastWriteTag: freshHolder?.__lastWriteTag || null
+    role: freshHolder?.baseKey?.role || null
   });
-  try {
-    drConsole.log('[dr-debug:bootstrap-holder]', {
-      stateKey: `${peer}::${peerDeviceId || 'unknown'}`,
-      holderId,
-      role: freshHolder?.baseKey?.role || null,
-      hasRk: freshHolder?.rk instanceof Uint8Array,
-      hasCkR: freshHolder?.ckR instanceof Uint8Array,
-      hasCkS: freshHolder?.ckS instanceof Uint8Array
-    });
-  } catch { }
   if (!(freshHolder.rk instanceof Uint8Array)) {
     logInvalid('rk', freshHolder?.rk, 'post-copy-not-uint8array');
     throw new Error('dr bootstrap failed to materialize rk');
@@ -4161,30 +4143,17 @@ export async function ensureDrReceiverState(params = {}) {
   const guestLike = relationshipRole === 'guest';
   try {
     drConsole.log('[dr-debug:receiver-entry]', {
-      stateKey,
       holderId: state ? (state.__id || null) : null,
-      role: state?.baseKey?.role || null,
-      hasRk: state?.rk instanceof Uint8Array,
-      hasCkR: state?.ckR instanceof Uint8Array,
-      hasCkS: state?.ckS instanceof Uint8Array
+      role: state?.baseKey?.role || null
     });
   } catch { }
   try {
     drConsole.warn('[dr-log:receiver-keys]', {
       stateKey,
-      secretKey,
       conversationId,
       secretRole: relationshipRole || null,
       holderRole: stateRole || null,
       hasSecret: !!secretInfo?.drState,
-      snapshotHasRk,
-      snapshotHasCkR,
-      snapshotHasCkS,
-      snapshotRole: snapshotRoleRaw || null,
-      hasCkS: !!(state?.ckS && state.ckS.length),
-      hasCkR: !!(state?.ckR && state.ckR.length),
-      holderNs: Number.isFinite(state?.Ns) ? Number(state.Ns) : null,
-      holderNr: Number.isFinite(state?.Nr) ? Number(state.Nr) : null,
       callsite: callsiteTag
     });
   } catch { }

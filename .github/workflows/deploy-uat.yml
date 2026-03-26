@@ -4,6 +4,25 @@ on:
   push:
     branches-ignore:
       - main
+  workflow_dispatch:
+    inputs:
+      deploy_target:
+        description: 'What to deploy'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - 'all'
+          - 'worker'
+          - 'web'
+      set_secrets:
+        description: 'Also set worker secrets'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 jobs:
   # ── Detect which projects have changes ──────────────────────────────
@@ -22,9 +41,28 @@ jobs:
       - name: Detect changed paths
         id: detect
         run: |
+          # For manual triggers, use the deploy_target input directly
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TARGET="${{ github.event.inputs.deploy_target }}"
+            echo "Manual trigger: deploy_target=$TARGET"
+            if [ "$TARGET" = "all" ] || [ "$TARGET" = "worker" ]; then
+              echo "worker=true" >> "$GITHUB_OUTPUT"
+              echo "→ Worker selected"
+            else
+              echo "worker=false" >> "$GITHUB_OUTPUT"
+            fi
+            if [ "$TARGET" = "all" ] || [ "$TARGET" = "web" ]; then
+              echo "web=true" >> "$GITHUB_OUTPUT"
+              echo "→ Web selected"
+            else
+              echo "web=false" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+
+          # For push events, detect changes via git diff
           BASE="${{ github.event.before }}"
           HEAD="${{ github.sha }}"
-          # If base is null (first push), compare against HEAD~1
           if [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
             BASE="HEAD~1"
           fi
@@ -41,7 +79,6 @@ jobs:
             echo "web=true" >> "$GITHUB_OUTPUT"
             echo "→ Web changes detected"
           fi
-
   # ── Data Worker (Cloudflare Worker — UAT) ──────────────────────────
   deploy-worker:
     runs-on: ubuntu-latest
@@ -98,6 +135,7 @@ jobs:
           CI: true
 
       - name: Set Worker Secrets (UAT)
+        if: github.event.inputs.set_secrets == 'true'
         working-directory: data-worker
         run: |
           echo "Setting Worker secrets (UAT)..."

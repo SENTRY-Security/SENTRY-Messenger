@@ -439,7 +439,11 @@
     "defaultLogoutPageDesc": "ใช้หน้าออกจากระบบเริ่มต้นของระบบ",
     "language": "ภาษา / Language",
     "sentryLab": "SENTRY Lab",
-    "sentryLabDesc": "เปิดใช้งานฟีเจอร์ทดลอง อาจไม่เสถียรหรือมีการเปลี่ยนแปลง"
+    "sentryLabDesc": "เปิดใช้งานฟีเจอร์ทดลอง อาจไม่เสถียรหรือมีการเปลี่ยนแปลง",
+    "sentryLabApps": "แอป",
+    "sentryLabAppsDesc": "แอปคลาวด์ที่ปลอดภัย (สตรีม Android)",
+    "sentryLabSafe": "SAFE",
+    "sentryLabSafeDesc": "สภาพแวดล้อมฟรอนต์เอนด์แอปพลิเคชันที่ปลอดภัย"
   },
   "safe": {
     "description": "สภาพแวดล้อมแอปพลิเคชันส่วนหน้าที่ปลอดภัย",

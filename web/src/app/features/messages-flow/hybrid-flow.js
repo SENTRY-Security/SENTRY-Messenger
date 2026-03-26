@@ -27,7 +27,7 @@ import { clearConversationHistory } from '../messages/cache.js';
 import { applyContactShareFromCommit } from '../contacts.js';
 
 const HYBRID_LOG_CAP = 5;
-const DEBUG = { drVerbose: true }; // [FIX] Define DEBUG to prevent ReferenceError
+const DEBUG = { drVerbose: false }; // [FIX] Define DEBUG to prevent ReferenceError
 const DEFAULT_LIMIT = 20;
 
 function logHybridTrace(key, payload) {

@@ -26,9 +26,9 @@
 │     │   HMAC, SHA-256)        │                                │
 │     └─────────────────────────┘                                │
 │     ┌────────────────────────┐                                 │
-│     │  TweetNaCl.js          │                                 │
-│     │  (Ed25519, X25519,     │                                 │
-│     │   nacl.box)            │                                 │
+│     │  libsodium-wrappers-   │                                 │
+│     │  sumo (Ed25519,        │                                 │
+│     │  X25519, ed2curve)     │                                 │
 │     └────────────────────────┘                                 │
 └───────────────────────┬───────────────────────────────────────┘
                         │ TLS 1.2+
@@ -54,13 +54,12 @@
 
 ### 2.1 密碼學函式庫
 
-| 函式庫 | 用途 | 來源 |
-|--------|------|------|
-| WebCrypto API | AES-GCM, HKDF-SHA256, HMAC-SHA256, SHA-256 | 瀏覽器原生 |
-| TweetNaCl.js | Ed25519 簽章, X25519 DH, nacl.box | `tweetnacl` npm |
-| `@nicolo-ribaudo/cheetah-argon2` | Argon2id KDF | CDN + SRI |
-| `@cloudflare/opaque-ts@0.7.5` | OPAQUE PAKE | CDN + SRI |
-| 自訂 `ed2curve.js` | Ed25519 → X25519 轉換 | `shared/crypto/ed2curve.js` |
+| 函式庫 | 用途 | 來源 | 審計狀態 |
+|--------|------|------|----------|
+| WebCrypto API | AES-GCM, HKDF-SHA256, HMAC-SHA256, SHA-256 | 瀏覽器原生 | N/A（平台 API） |
+| libsodium-wrappers-sumo | Ed25519 簽章, X25519 DH, Ed25519→X25519 轉換 | `libsodium-wrappers-sumo` npm | ✅ 多家安全公司審計（Cure53, Paragon 等） |
+| `@nicolo-ribaudo/cheetah-argon2` | Argon2id KDF | CDN + SRI | — |
+| `@cloudflare/opaque-ts@0.7.5` | OPAQUE PAKE | CDN + SRI | — |
 
 ### 2.2 加密操作矩陣
 
@@ -74,6 +73,8 @@
 | Call Frame 加密 | AES-GCM | HKDF(conv_token, direction) | Counter-based | 無 | `key-manager.js` |
 | Vault Key Wrapping | AES-256-GCM | HKDF(MK, 'message-key/v1') | 12 bytes random | 無 | `message-key-vault.js` |
 | Contact Secrets | AES-256-GCM | HKDF(MK, 'contact-secrets/backup/v1') | 12 bytes random | 無 | `aead.js` |
+| Contact Blob 加密 | AES-256-GCM | HKDF(MK, 'contact-storage-v1') | 12 bytes random | `contact-storage-v1` | `contacts.js` |
+| Contact Slot ID | HMAC-SHA256 | HKDF(MK, 'contact-slot-v1') | — | — | `contacts.js` |
 
 ### 2.3 HKDF Info Tag 白名單
 
@@ -231,13 +232,17 @@ Conversation Token (from contact secrets)
 
 ### 7.1 認證流程
 
+JWT 簽發與驗證使用 `jose` 套件（panva/jose，經安全審計）：
+- 簽發：`jose.SignJWT` + HS256
+- 驗證：`jose.jwtVerify` + 嚴格 `algorithms: ['HS256']` + `clockTolerance: 5` + `requiredClaims: ['accountDigest', 'exp']`
+
 ```
 Client                          Worker                      Durable Object
 ──────                          ──────                      ──────────────
   │── GET /api/v1/ws/token ───▶│                              │
-  │◀── { jwt } ────────────────│                              │
+  │◀── { jwt } ────────────────│  (jose.SignJWT HS256)        │
   │                             │                              │
-  │── WebSocket upgrade ───────▶│── verify JWT ──────────────▶│
+  │── WebSocket upgrade ───────▶│── jose.jwtVerify ──────────▶│
   │   (jwt in query/header)     │   set x-account-digest      │
   │                             │   set x-device-id            │
   │                             │   set x-session-ts           │
@@ -245,7 +250,7 @@ Client                          Worker                      Durable Object
   │◀══ WS connected ══════════════════════════════════════════│
   │                             │                              │
   │── { type: 'auth', token } ═══════════════════════════════▶│
-  │                             │                   verify JWT │
+  │                             │          jose.jwtVerify JWT  │
   │                             │        store authenticated=true
   │◀══ { type: 'auth-ok' } ══════════════════════════════════│
 ```
@@ -310,11 +315,12 @@ DR 解密完成
 ## 10. 架構弱點
 
 1. ⚠️ **Send-side ratchet 停用**：`dr.js:357-364` 中 send-side ratchet 更新被註解，`myRatchetPriv`/`myRatchetPub` 不在發送時輪替
-2. ✅ ~~自訂 JWT 驗證~~ — 已重構：抽取共用 `jwt.js` 模組統一 sign/verify 邏輯，`account-ws.js` 和 `worker.js` 均使用同一實作
+2. ✅ ~~自訂 JWT 驗證~~ — **已遷移至 `jose` 套件**（panva/jose，經安全審計、零依賴、Web Crypto 原生）。HS256（WS token）使用 `jose.SignJWT`/`jwtVerify`（constant-time 簽章驗證 + 嚴格 `algorithms: ['HS256']`）。RS256（Voucher token）使用 `jose.importSPKI`+`jwtVerify`（嚴格 `algorithms: ['RS256']` 防止 alg confusion + `exp` 驗證 + 30 秒 clockTolerance）。worker.js 中重複的手工 JWT helper（`WS_JWT_HEADER_B64`, `hmacSha256Sign`, `base64url`, `pemToArrayBuffer`, `base64UrlDecode`）已全部移除
 3. ✅ ~~AEAD 無 AAD~~ — 已修復：所有 AES-GCM 操作加入 info tag / 用途標識作為 `additionalData`，新資料使用 v2 格式，解密時依版本向下相容 v1 legacy
 4. ⚠️ **IV 重用風險**：12-byte random IV 依賴隨機不重複（HKDF salt 分散風險，但無明確追蹤）
 5. ⚠️ **Manifest 無獨立簽章**：manifest 加密但無額外的完整性驗證（依賴 GCM 的 authentication tag）
-6. ✅ ~~Debug 日誌輸出金鑰雜湊~~ — 已修復：移除 `dr.js` 中所有 `hashPrefix()` 相關的 console 輸出（x3dh-initiate、x3dh-respond、drRatchet、encrypt、decrypt 路徑）
+6. ✅ ~~Debug 日誌輸出金鑰雜湊~~ — **已全面修復**：Phase 1 移除 `dr.js` 中 `hashPrefix()` 輸出。Phase 2 全面清理：`debug-flags.js` 所有開關預設 false、`dr-session.js` 移除金鑰狀態/計數器值日誌、移除 `navigator.webdriver` 自動啟用、`worker.js` vault 日誌僅輸出安全欄位、`contacts.js` 移除敏感資料明文日誌、`login-flow.js` deviceId 截斷
 7. ✅ ~~DR 狀態並發無 mutex~~ — 已有 `enqueueDrSessionOp()` 序列化機制（`dr-session.js:1546`），所有 encrypt/decrypt 操作均透過 queue 串行化
 8. ✅ ~~Invite Dropbox 硬編碼 salt~~ — 已修復：改為每次 `sealInviteEnvelope` 產生 16-byte random salt，存入 `sealed.salt_b64`；解封時讀取，舊 envelope 向下相容 fallback
 9. ✅ ~~Call key 零 salt~~ — 已修復：`deriveMasterKey` 512-bit 輸出拆分為 key (前 256-bit) + subSalt (後 256-bit)，`deriveSubMaterial` 使用 subSalt 取代 `ZERO_SALT`
+10. ✅ ~~TweetNaCl + 自訂 ed2curve~~ — **已替換為 `libsodium-wrappers-sumo`**（經 Cure53、Paragon Initiative 等多家安全公司審計）。`nacl.js` 改為 import libsodium，`ed2curve.js` 從 ~230 行手刻 curve25519 有限域算術改為呼叫 `crypto_sign_ed25519_pk_to_curve25519()` / `crypto_sign_ed25519_sk_to_curve25519()`（libsodium 內建），`libs/nacl-fast.min.js` 已刪除

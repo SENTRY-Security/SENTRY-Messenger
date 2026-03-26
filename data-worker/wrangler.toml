@@ -25,6 +25,10 @@ VAPID_SUBJECT = "mailto:admin@sentry.red"
 # VAPID_PRIVATE_KEY → set via: wrangler secret put VAPID_PRIVATE_KEY
 # Comma-separated origins allowed for CORS (M-11 fix)
 CORS_ORIGINS = "https://message.sentry.red"
+# Genymotion Cloud — App-as-a-Service
+# GENYMOTION_API_KEY → set via: wrangler secret put GENYMOTION_API_KEY
+# Recipe UUID for the golden Android image with pre-installed apps
+GENYMOTION_RECIPE_UUID = "5cd0ab93-5425-4e44-a962-0ab8c3360a97"
 
 [[d1_databases]]
 binding = "DB"
@@ -59,12 +63,10 @@ new_sqlite_classes = ["BrowserSession"]
 
 # ── SAFE Browser Container ────────────────────────────────────────
 # Each BrowserSession DO manages one KasmVNC Chromium container instance.
-# TEMPORARILY COMMENTED OUT — Docker not available for local deploy.
-# Re-enable once deploying via CI with Docker support.
-# [[containers]]
-# class_name = "BrowserSession"
-# image = "./Dockerfile.safe"
-# max_instances = 10
+[[containers]]
+class_name = "BrowserSession"
+image = "./Dockerfile.safe"
+max_instances = 10
 
 # ── UAT Environment ─────────────────────────────────────────────
 [env.uat]
@@ -74,6 +76,8 @@ name = "message-data-uat"
 OPAQUE_SERVER_ID = "uat-api.message.sentry.red"
 ENABLE_DEBUG_ENDPOINTS = "true"
 CORS_ORIGINS = "https://uat-message.sentry.red"
+# GENYMOTION_API_KEY → set via: wrangler secret put GENYMOTION_API_KEY --env uat
+GENYMOTION_RECIPE_UUID = "5cd0ab93-5425-4e44-a962-0ab8c3360a97"
 NTAG424_KDF = "HKDF"
 NTAG424_SALT = "sentry.red"
 NTAG424_INFO = "ntag424-slot-0"
@@ -102,7 +106,7 @@ bindings = [
   { name = "BROWSER_SESSION", class_name = "BrowserSession" }
 ]
 
-# [[env.uat.containers]]
-# class_name = "BrowserSession"
-# image = "./Dockerfile.safe"
-# max_instances = 5
+[[env.uat.containers]]
+class_name = "BrowserSession"
+image = "./Dockerfile.safe"
+max_instances = 5

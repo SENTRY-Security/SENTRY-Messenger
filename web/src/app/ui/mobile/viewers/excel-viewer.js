@@ -72,6 +72,7 @@ export async function renderExcelViewer({ url, blob, name, modalApi }) {
 
   cleanupExcelViewer();
   modalEl.classList.add('excel-modal');
+  window.__setLandscapeAllowed?.(true);
   modalTitle.textContent = '';
 
   body.innerHTML = `
@@ -183,6 +184,7 @@ export async function renderExcelViewer({ url, blob, name, modalApi }) {
     const prevCleanup = activeExcelCleanup;
     activeExcelCleanup = () => {
       if (typeof prevCleanup === 'function') prevCleanup();
+      window.__setLandscapeAllowed?.(false);
       modalEl.classList.remove('excel-modal');
       closeModal?.();
       activeExcelCleanup = null;

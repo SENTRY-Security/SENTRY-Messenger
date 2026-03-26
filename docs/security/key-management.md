@@ -37,8 +37,8 @@
 | 屬性 | 值 |
 |------|-----|
 | **用途** | X3DH 長期身份金鑰，用於簽章 SPK |
-| **演算法** | Ed25519（簽章）/ X25519（DH，via ed2curve 轉換） |
-| **產生** | `nacl.sign.keyPair()` |
+| **演算法** | Ed25519（簽章）/ X25519（DH，via libsodium `crypto_sign_ed25519_pk_to_curve25519` 轉換） |
+| **產生** | `sodium.crypto_sign_keypair()`（libsodium-wrappers-sumo） |
 | **儲存** | 私鑰：客戶端記憶體 + MK-wrapped blob on server |
 | **儲存** | 公鑰：D1 `prekey_bundles.ik_pub` |
 | **生命週期** | 裝置建立時產生，理論上永久 |
@@ -51,7 +51,7 @@
 |------|-----|
 | **用途** | X3DH 簽名預金鑰，用於非同步金鑰交換 |
 | **演算法** | X25519（DH） |
-| **產生** | `nacl.box.keyPair()` + IK 簽章 |
+| **產生** | `sodium.crypto_box_keypair()` + IK 簽章（libsodium） |
 | **簽章** | Ed25519 sign(SPK_pub, IK_priv) |
 | **儲存** | 私鑰：客戶端記憶體 + MK-wrapped blob |
 | **儲存** | 公鑰 + 簽章：D1 `prekey_bundles.spk_pub`, `spk_sig` |
@@ -64,7 +64,7 @@
 |------|-----|
 | **用途** | X3DH 一次性預金鑰，每次 session 建立消耗一個 |
 | **演算法** | X25519（DH） |
-| **產生** | `nacl.box.keyPair()`，初始 50 個，用完補充 |
+| **產生** | `sodium.crypto_box_keypair()`（libsodium），初始 50 個，用完補充 |
 | **儲存** | 私鑰：客戶端 MK-wrapped blob（`opk_priv_map`） |
 | **儲存** | 公鑰：D1 `prekey_bundles.opks`（JSON 陣列） |
 | **消耗** | 每次 X3DH session 建立消耗一個 OPK |
@@ -155,7 +155,19 @@
 | **儲存格式** | `iv_b64:ct_b64` |
 | **程式碼** | `features/contact-backup.js:762-778` |
 
-### 11. Group Shared Key
+### 11. Contact Slot Key
+
+| 屬性 | 值 |
+|------|-----|
+| **用途** | 計算聯絡人的不可逆 slot_id，隱藏 peer_digest 不讓伺服器知道聯絡人關係 |
+| **演算法** | HMAC-SHA256 |
+| **產生** | HKDF-SHA256(MK, 'contact-slot-v1') → 256-bit HMAC key |
+| **slot_id 計算** | `HMAC-SHA256(slot_key, peer_digest.toUpperCase())` → base64url |
+| **儲存** | 僅客戶端記憶體（每次使用時從 MK 即時衍生，不持久化） |
+| **特性** | 確定性（同一 MK + 同一 peer → 同一 slot_id）；不可逆（伺服器無法從 slot_id 反推 peer_digest） |
+| **程式碼** | `features/contacts.js`（`deriveContactSlotKey`, `deriveContactSlotId`） |
+
+### 12. Group Shared Key
 
 | 屬性 | 值 |
 |------|-----|
@@ -215,6 +227,7 @@
 | Message keys | 暫存 | ✗ | ✗ | ✓ (vault, encrypted) | ✗ |
 | Call keys | ✓ | ✗ | ✗ | ✗ | ✗ |
 | Media keys | 暫存 | ✗ | ✗ | ✗ (in encrypted manifest) | ✗ |
+| Contact slot key | ✓ (即時衍生) | ✗ | ✗ | ✗ | ✗ |
 
 ## 裝置更換影響
 

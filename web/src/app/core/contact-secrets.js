@@ -627,7 +627,6 @@ function pullLatestSnapshot({ forcePromote = false, reason = 'hydrate', removeSe
 })();
 
 function isAutomationEnv() {
-  if (typeof navigator !== 'undefined' && navigator.webdriver) return true;
   if (typeof window !== 'undefined' && window.__DEBUG_CONTACT_SECRETS__) return true;
   return false;
 }

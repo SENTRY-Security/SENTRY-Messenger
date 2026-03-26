@@ -5,9 +5,9 @@
 const _PROD = typeof __PRODUCTION__ !== 'undefined' && __PRODUCTION__;
 
 export const DEBUG = {
-  replay: !_PROD && true,
+  replay: false,
   forensics: false,
-  drVerbose: !_PROD && true,
+  drVerbose: false,
   profileCounter: false,
   drCounter: false,
   contactsA1: false,
@@ -17,7 +17,7 @@ export const DEBUG = {
   uiNoise: false,
   queueNoise: false,
   avatarBug: false,
-  conversationReset: !_PROD && true,
+  conversationReset: false,
   identityTrace: false
 };
 

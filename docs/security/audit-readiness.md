@@ -10,7 +10,7 @@
 | 程式碼可審計性 | 🟢 良好 | 模組化結構清晰，加密邏輯集中在 `shared/crypto/` |
 | 測試覆蓋度 | 🟡 中等 | ⚠️ 需確認 crypto 模組的單元測試覆蓋率 |
 | 安全政策明確性 | 🟢 良好 | `dr.js` 開頭有明確安全政策宣告（無 fallback、無降級） |
-| 依賴管理 | 🟢 良好 | CDN 載入使用 SRI 驗證（OPAQUE、Argon2id） |
+| 依賴管理 | 🟢 良好 | CDN 載入使用 SRI 驗證（OPAQUE、Argon2id）；密碼學原語已遷移至經審計的 libsodium |
 | 威脅模型 | 🟢 良好 | 本文件集已建立（`threat-model.md`） |
 
 ## 2. 模組級審計準備度
@@ -21,7 +21,7 @@
 |------|------|------|--------|----------|
 | Double Ratchet | `shared/crypto/dr.js` | ~1166 | 🟢 | 自訂實作，需完整審計。特別關注 send-side ratchet 停用（Lines 357-364）和 skipped keys 管理 |
 | AEAD Envelope | `shared/crypto/aead.js` | ~164 | 🟢 | 封裝層，需確認 info tag 白名單完整性 |
-| Ed25519↔X25519 | `shared/crypto/ed2curve.js` | ~230 | 🟡 | 自訂 field arithmetic，需審計正確性和 timing safety |
+| Ed25519↔X25519 | `shared/crypto/ed2curve.js` | ~43 | ✅ | ~~自訂 field arithmetic~~ 已替換為 `libsodium-wrappers-sumo` 內建 `crypto_sign_ed25519_pk_to_curve25519()`（經審計），僅剩薄封裝層 |
 | X3DH Prekeys | `shared/crypto/prekeys.js` | ~115 | 🟢 | 相對簡單，需確認 OPK 消耗邏輯 |
 | Argon2id KDF | `app/crypto/kdf.js` | ~89 | 🟢 | 封裝第三方庫，需確認參數選擇合理性 |
 
@@ -41,7 +41,7 @@
 |------|------|------|--------|----------|
 | Call Key Manager | `features/calls/key-manager.js` | ~452 | 🟡 | 自訂金鑰衍生和 epoch 管理 |
 | Call Media Session | `features/calls/media-session.js` | ~1100 | 🟡 | WebRTC 設定、ICE candidate 處理 |
-| WebSocket Auth | `data-worker/src/account-ws.js` | ~50KB | 🟡 | 自訂 JWT 驗證、stale session 防護 |
+| WebSocket Auth | `data-worker/src/account-ws.js` | ~50KB | 🟢 | JWT 驗證已遷移至 `jose` 套件（經審計），stale session 防護 |
 | Server API | `data-worker/src/worker.js` | Large | 🟡 | 所有 API endpoint 的輸入驗證和授權 |
 
 ### 2.4 低優先 — 輔助模組
@@ -103,11 +103,11 @@
 **重點關注**：
 - Send-side ratchet 停用的影響
 - Skipped keys 記憶體管理
-- Ed2curve 自訂 field arithmetic 正確性
+- ~~Ed2curve 自訂 field arithmetic 正確性~~ ✅ 已替換為 libsodium 內建函式
 - HKDF salt/info 分離是否足夠
 - 12-byte random IV 碰撞機率在實際使用量下是否可接受
 
-**估計規模**：~1,764 行核心加密程式碼
+**估計規模**：~1,577 行核心加密程式碼（ed2curve 從 ~230 行降至 ~43 行封裝層）
 
 ### 4.2 第二階段：協議與流程
 
@@ -120,7 +120,7 @@
 **重點關注**：
 - OPAQUE 與 opaque-ts 的整合是否正確
 - Vault 的加密金鑰衍生方式
-- JWT 自訂驗證的正確性
+- ~~JWT 自訂驗證的正確性~~ ✅ 已遷移至 jose 套件
 - Session 管理的競態條件
 
 ### 4.3 第三階段：媒體與通話
@@ -142,7 +142,8 @@
 | 阻礙 | 影響 | 建議 |
 |------|------|------|
 | 無正式協議規格 | 審計者需從程式碼推導協議意圖 | 撰寫獨立協議規格文件 |
-| 自訂 JWT 驗證 | 增加審計面 | 考慮使用標準 JWT 函式庫 |
+| ~~自訂 JWT 驗證~~ | ~~增加審計面~~ | ✅ 已遷移至 `jose` 套件（panva/jose，經安全審計、零依賴、Web Crypto 原生） |
+| ~~TweetNaCl + 手刻 ed2curve~~ | ~~未審計密碼學原語 + 自訂曲線算術~~ | ✅ 已替換為 `libsodium-wrappers-sumo`（經 Cure53 等多家安全公司審計） |
 | Debug 日誌含金鑰雜湊 | 生產環境潛在洩漏 | 增加環境變數控制 |
 | Send-side ratchet 停用原因不明 | 審計者需理解設計意圖 | 文件化決策理由 |
 | Vault 設計減弱前向保密 | 需明確說明取捨 | 文件化設計決策 |

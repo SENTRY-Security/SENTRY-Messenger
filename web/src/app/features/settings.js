@@ -23,7 +23,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
   autoLogoutCustomUrl: '',
   language: null,   // null = follow browser; 'en' | 'zh-Hant' = forced
   pushNotifications: false,
-  sentryLab: false
+  sentryLab: false,
+  sentryLabApps: true,
+  sentryLabSafe: true
 });
 
 function sanitizeLogoutUrl(input) {
@@ -51,7 +53,9 @@ function normalizeSettings(input = {}) {
     autoLogoutCustomUrl: sanitizedUrl || null,
     language: lang,
     pushNotifications: typeof input.pushNotifications === 'boolean' ? input.pushNotifications : DEFAULT_SETTINGS.pushNotifications,
-    sentryLab: typeof input.sentryLab === 'boolean' ? input.sentryLab : DEFAULT_SETTINGS.sentryLab
+    sentryLab: typeof input.sentryLab === 'boolean' ? input.sentryLab : DEFAULT_SETTINGS.sentryLab,
+    sentryLabApps: typeof input.sentryLabApps === 'boolean' ? input.sentryLabApps : DEFAULT_SETTINGS.sentryLabApps,
+    sentryLabSafe: typeof input.sentryLabSafe === 'boolean' ? input.sentryLabSafe : DEFAULT_SETTINGS.sentryLabSafe
   };
   return normalized;
 }

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_menu xmlns="http://openbox.org/3.4/menu">
+  <menu id="root-menu" label="SAFE Browser">
+    <item label="Chromium Browser">
+      <action name="Execute">
+        <execute>chromium-browser --no-sandbox --disable-gpu --no-first-run about:blank</execute>
+      </action>
+    </item>
+    <item label="Terminal">
+      <action name="Execute">
+        <execute>xterm</execute>
+      </action>
+    </item>
+    <separator/>
+    <item label="Reconfigure">
+      <action name="Reconfigure"/>
+    </item>
+  </menu>
+</openbox_menu>

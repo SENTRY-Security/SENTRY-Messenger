@@ -9,6 +9,8 @@ import { log, logCapped, logForensicsEvent, setLogSink } from '../core/log.js';
 console.info('[App] Version: 2026-01-14T10:55:00Z (Round 11 Fix + Debug)');
 import { AUDIO_PERMISSION_KEY } from './login-ui.js';
 import * as safeBrowser from '../features/safe-browser.js';
+import * as appsLauncher from '../features/apps-launcher.js';
+import { APP_CATALOG_LOCAL } from '../features/apps-launcher.js';
 import { DEBUG } from './mobile/debug-flags.js';
 import { flushOutbox } from '../features/queue/outbox.js';
 import { setMessagesWsSender } from '../features/messages-support/ws-sender-adapter.js';
@@ -1132,6 +1134,49 @@ function flushContactSecretsLocal(reason = 'manual') {
 const tabs = ['contacts', 'messages', 'drive', 'profile'];
 let currentTab = 'drive';
 
+// Apps tab – shown only when sentryLab is enabled
+let _appsInitialized = false;
+function setAppsTabVisible(visible) {
+  const btn = document.getElementById('nav-apps');
+  if (btn) btn.style.display = visible ? '' : 'none';
+  if (visible && !tabs.includes('apps')) {
+    tabs.push('apps');
+    btn?.addEventListener('click', () => switchTab('apps'));
+    initAppsTab();
+  } else if (!visible && tabs.includes('apps')) {
+    tabs.splice(tabs.indexOf('apps'), 1);
+    if (currentTab === 'apps') switchTab('drive');
+    appsLauncher.cleanup();
+  }
+}
+
+function initAppsTab() {
+  if (_appsInitialized) return;
+  _appsInitialized = true;
+
+  const container = document.getElementById('appsContainer');
+  if (!container) return;
+
+  const onAppTap = async (slug, app) => {
+    const cells = container.querySelectorAll('.apps-grid-cell');
+    cells.forEach(c => { c.disabled = true; c.style.opacity = '0.5'; });
+    try {
+      const streamInfo = await appsLauncher.ensureInstanceReady();
+      appsLauncher.openAppModal({ app, streamInfo, modalApi: mc });
+    } catch (err) {
+      mc.showAlertModal({
+        title: t('apps.error') || 'Error',
+        message: err?.message || 'Failed to start app',
+      });
+    } finally {
+      cells.forEach(c => { c.disabled = false; c.style.opacity = ''; });
+    }
+  };
+
+  // Catalog is static — render directly from local definition
+  appsLauncher.renderAppsGrid(container, { catalog: APP_CATALOG_LOCAL, onAppTap });
+}
+
 // SAFE tab – shown only when sentryLab is enabled
 function setSafeTabVisible(visible) {
   const btn = document.getElementById('nav-safe');
@@ -1221,7 +1266,8 @@ function initSafeBrowser() {
     if (btnStart) btnStart.disabled = !isStopped;
     if (btnStop) btnStop.disabled = isStopped;
     if (btnOpen) btnOpen.disabled = !(s === 'healthy' || s === 'running');
-    if (btnDeleteRef) btnDeleteRef.disabled = isStopped;
+    // Delete is always available except during transient states (starting/stopping)
+    if (btnDeleteRef) btnDeleteRef.disabled = (s === 'starting' || s === 'stopping');
 
     // Error
     if (errorEl) errorEl.style.display = 'none';
@@ -1238,6 +1284,7 @@ function initSafeBrowser() {
     _safeModalCleanup?.();
 
     modalEl.classList.add('safe-modal');
+    window.__setLandscapeAllowed?.(true);
     document.getElementById('modalTitle').textContent = '';
     body.innerHTML = `
       <div class="safe-viewer">
@@ -1259,23 +1306,81 @@ function initSafeBrowser() {
     modalEl.setAttribute('aria-hidden', 'false');
     document.body.classList.add('modal-open');
 
-    // Hide loading overlay once iframe content loads
+    // Prevent background scroll on iOS (touchmove on modal itself)
+    const preventScroll = (e) => {
+      // Allow scrolling inside the iframe but nowhere else
+      if (!e.target.closest('iframe')) e.preventDefault();
+    };
+    modalEl.addEventListener('touchmove', preventScroll, { passive: false });
+
+    // Diagnostic: fetch iframe URL directly to check if the proxy responds
     const iframe = body.querySelector('iframe');
+    const iframeSrc = iframe?.src;
+    if (iframeSrc) {
+      dbg('[diag] fetching iframe URL: ' + iframeSrc.replace(/password=[^&]+/, 'password=***'));
+      fetch(iframeSrc, { mode: 'no-cors' }).then(res => {
+        dbg('[diag] fetch status=' + res.status + ' type=' + res.type + ' ok=' + res.ok);
+      }).catch(err => {
+        dbg('[diag] fetch FAILED: ' + err.message);
+      });
+      // Also try same-origin fetch (without no-cors) for more info
+      fetch(iframeSrc).then(async res => {
+        const ct = res.headers.get('content-type') || '';
+        const len = res.headers.get('content-length') || '?';
+        dbg('[diag-cors] status=' + res.status + ' type=' + ct + ' len=' + len);
+        if (res.status !== 200) {
+          const txt = await res.text().catch(() => '');
+          dbg('[diag-cors] body: ' + txt.slice(0, 300));
+        }
+      }).catch(err => {
+        dbg('[diag-cors] FAILED: ' + err.message);
+      });
+    }
+
+    // Hide loading overlay once iframe content loads
     const overlay = body.querySelector('#safeLoadingOverlay');
+    const loadingText = body.querySelector('.safe-loading-text');
     let loadTimer = null;
     if (iframe && overlay) {
       iframe.addEventListener('load', () => {
+        // Check if the loaded page looks like a valid noVNC page
+        // (error responses like JSON 503 also fire 'load')
+        try {
+          const doc = iframe.contentDocument;
+          const bodyText = (doc?.body?.textContent || '').trim();
+          const title = doc?.title || '';
+          dbg('[iframe load] title=' + JSON.stringify(title) + ' bodyLen=' + bodyText.length);
+          if (bodyText.length < 200 && (bodyText.includes('error') || bodyText.includes('Error') || bodyText.startsWith('{'))) {
+            dbg('[iframe load] error page detected: ' + bodyText.slice(0, 200));
+            if (loadingText) loadingText.textContent = t('safe.connectionError') || 'Connection failed. Please retry.';
+            return; // Don't hide overlay — keep error visible
+          }
+          if (bodyText.length === 0) {
+            dbg('[iframe load] empty body — possible blank response');
+          }
+        } catch (_) {
+          dbg('[iframe load] cross-origin — noVNC loaded OK');
+        }
         overlay.classList.add('safe-loading-hidden');
       }, { once: true });
-      // Fallback: hide overlay after 15s regardless
+
+      iframe.addEventListener('error', () => {
+        dbg('[iframe error] failed to load src');
+        if (loadingText) loadingText.textContent = t('safe.connectionError') || 'Connection failed. Please retry.';
+      }, { once: true });
+
+      // Fallback: hide overlay after 20s regardless
       loadTimer = setTimeout(() => {
+        dbg('[iframe timeout] 20s fallback — hiding overlay');
         overlay.classList.add('safe-loading-hidden');
-      }, 15000);
+      }, 20000);
     }
 
     const cleanup = () => {
       if (loadTimer) clearTimeout(loadTimer);
+      modalEl.removeEventListener('touchmove', preventScroll);
       if (iframe) iframe.src = 'about:blank';
+      window.__setLandscapeAllowed?.(false);
       modalEl.classList.remove('safe-modal');
       modalEl.style.display = 'none';
       modalEl.setAttribute('aria-hidden', 'true');
@@ -1347,11 +1452,19 @@ function initSafeBrowser() {
 
   const btnDelete = document.getElementById('safe-btn-delete');
   btnDelete?.addEventListener('click', async () => {
-    if (!confirm(t('safe.deleteEnvConfirm'))) return;
+    dbg('Delete clicked, disabled=' + btnDelete.disabled);
+    if (!confirm(t('safe.deleteEnvConfirm') || 'Delete this environment?')) {
+      dbg('Delete cancelled by user');
+      return;
+    }
     btnDelete.disabled = true;
+    dbg('→ DELETE /api/safe/destroy');
     try {
-      await safeBrowser.destroy();
+      const result = await safeBrowser.destroy();
+      dbg('← destroy() done: ' + JSON.stringify(result));
+      if (result?.warnings) dbg('⚠ warnings: ' + result.warnings.join(', '));
     } catch (e) {
+      dbg('DELETE ERROR: ' + e?.message);
       log({ safeDeleteError: e?.message });
     } finally {
       btnDelete.disabled = false;
@@ -1360,6 +1473,96 @@ function initSafeBrowser() {
 
   // Initial state
   updatePanel('stopped', null);
+
+  // ── Debug panel (UAT) ──────────────────────────────────────────
+  const dbgLog = document.getElementById('safe-dbg-log');
+  function dbg(msg) {
+    if (!dbgLog) return;
+    const ts = new Date().toLocaleTimeString();
+    dbgLog.textContent += `[${ts}] ${typeof msg === 'string' ? msg : JSON.stringify(msg, null, 2)}\n`;
+    dbgLog.scrollTop = dbgLog.scrollHeight;
+  }
+
+  const workerUrl = (typeof globalThis !== 'undefined' && typeof globalThis.SAFE_WORKER_URL === 'string' && globalThis.SAFE_WORKER_URL.trim())
+    ? globalThis.SAFE_WORKER_URL.trim().replace(/\/+$/, '')
+    : window.location.origin;
+
+  document.getElementById('safe-dbg-status')?.addEventListener('click', async () => {
+    dbg('→ GET /api/safe/status');
+    try {
+      const token = getAccountToken?.() || '';
+      const res = await fetch(workerUrl + '/api/safe/status', {
+        headers: { 'Authorization': 'Bearer ' + token },
+      });
+      dbg(`← ${res.status} ${res.statusText}`);
+      const data = await res.json().catch(() => res.text());
+      dbg(data);
+    } catch (e) {
+      dbg('ERROR: ' + e.message);
+    }
+  });
+
+  document.getElementById('safe-dbg-start')?.addEventListener('click', async () => {
+    dbg('→ POST /api/safe/start');
+    try {
+      const token = getAccountToken?.() || '';
+      const res = await fetch(workerUrl + '/api/safe/start', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token },
+      });
+      dbg(`← ${res.status} ${res.statusText}`);
+      const data = await res.json().catch(() => res.text());
+      dbg(data);
+    } catch (e) {
+      dbg('ERROR: ' + e.message);
+    }
+  });
+
+  document.getElementById('safe-dbg-url')?.addEventListener('click', () => {
+    const url = safeBrowser.getIframeUrl();
+    dbg('Worker URL: ' + workerUrl);
+    dbg('iframe URL: ' + (url || '(none — not started yet)'));
+    dbg('State: ' + safeBrowser.getState());
+    dbg('Container: ' + (safeBrowser.getContainerStatus() || '(unknown)'));
+  });
+
+  document.getElementById('safe-dbg-open')?.addEventListener('click', () => {
+    const url = safeBrowser.getIframeUrl();
+    if (url) {
+      dbg('Opening in new tab: ' + url);
+      window.open(url, '_blank');
+    } else {
+      dbg('No iframe URL yet. Click "Test Start" first, then "Show URL".');
+    }
+  });
+
+  document.getElementById('safe-dbg-copy')?.addEventListener('click', () => {
+    const text = dbgLog?.textContent || '';
+    navigator.clipboard.writeText(text).then(
+      () => { const btn = document.getElementById('safe-dbg-copy'); if (btn) { btn.textContent = '✅ Copied'; setTimeout(() => btn.textContent = '📋 Copy', 1500); } },
+      () => { /* fallback: select text */ if (dbgLog) { const range = document.createRange(); range.selectNodeContents(dbgLog); const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range); } }
+    );
+  });
+
+  document.getElementById('safe-dbg-clear')?.addEventListener('click', () => {
+    if (dbgLog) dbgLog.textContent = '';
+  });
+
+  // Debug: test container proxy directly
+  document.getElementById('safe-dbg-proxy')?.addEventListener('click', async () => {
+    dbg('→ GET /api/safe/debug-proxy');
+    try {
+      const token = getAccountToken?.() || '';
+      const res = await fetch(workerUrl + '/api/safe/debug-proxy', {
+        headers: { 'Authorization': 'Bearer ' + token },
+      });
+      dbg(`← ${res.status}`);
+      const data = await res.json().catch(() => res.text());
+      dbg(data);
+    } catch (e) {
+      dbg('ERROR: ' + e.message);
+    }
+  });
 }
 
 // Called when SAFE tab becomes active — no longer auto-starts
@@ -1664,7 +1867,7 @@ const settingsMod = createSettingsModule({
     getMkRaw, getAccountDigest,
     openChangePasswordModal, openPushModal: () => openPushModal?.(),
     showAlertModal,
-    onLabToggle: (enabled) => setSafeTabVisible(enabled)
+    onLabToggle: ({ apps, safe }) => { setAppsTabVisible(!!apps); setSafeTabVisible(!!safe); }
   }
 });
 const getEffectiveSettingsState = () => settingsMod.getEffective();
@@ -1798,7 +2001,7 @@ settingsInitPromise = bootLoadSettings()
     if (!sessionStore.settingsState) sessionStore.settingsState = fallback;
     return sessionStore.settingsState || fallback;
   })
-  .then(() => { setSafeTabVisible(!!getEffectiveSettingsState().sentryLab); });
+  .then(() => { const s = getEffectiveSettingsState(); const lab = !!s.sentryLab; setAppsTabVisible(lab && s.sentryLabApps !== false); setSafeTabVisible(lab && s.sentryLabSafe !== false); });
 settingsMod.initPromise = settingsInitPromise;
 
 // Register Service Worker for push notifications (registration only, no auto-subscribe)
@@ -2418,7 +2621,16 @@ initInviteReconciler({ handleContactInitEvent, replayDeliveryIntent });
     btnCaf.addEventListener('click', (e) => {
       e.stopPropagation();
       const visible = cafMenu.style.display !== 'none';
-      cafMenu.style.display = visible ? 'none' : 'flex';
+      if (visible) {
+        cafMenu.style.display = 'none';
+      } else {
+        const rect = btnCaf.getBoundingClientRect();
+        cafMenu.style.top = (rect.bottom + 8) + 'px';
+        cafMenu.style.right = (window.innerWidth - rect.right) + 'px';
+        cafMenu.style.left = 'auto';
+        cafMenu.style.bottom = 'auto';
+        cafMenu.style.display = 'flex';
+      }
     });
     document.addEventListener('click', (e) => {
       if (cafMenu.style.display === 'none') return;

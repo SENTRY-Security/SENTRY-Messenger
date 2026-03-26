@@ -343,3 +343,4 @@ Caller                     Signaling (WebSocket)              Callee
 4. ⚠️ 媒體 manifest 格式需要正式文件化
 5. ⚠️ Key Vault 加密方式需要正式文件化
 6. ⚠️ 群組訊息加密模型（是否為 N 個 pairwise DR session）需確認
+7. ✅ ~~密碼學原語使用未審計函式庫（TweetNaCl + 手刻 ed2curve）~~ — 已替換為 `libsodium-wrappers-sumo`（經多家安全公司審計），Ed25519→X25519 轉換改用 libsodium 內建函式

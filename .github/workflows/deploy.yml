@@ -41,7 +41,6 @@ jobs:
             echo "web=true" >> "$GITHUB_OUTPUT"
             echo "→ Web changes detected"
           fi
-
   # ── Data Worker (Cloudflare Worker) ─────────────────────────────────
   deploy-worker:
     runs-on: ubuntu-latest

@@ -1,4 +1,4 @@
-# Ephemeral E2EE 修復計畫
+# Ephemeral E2EE 修復計畫 ✔ COMPLETED (2026-03-24)
 
 ## 問題摘要
 

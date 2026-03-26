@@ -17,8 +17,8 @@
 
 | # | 項目 | 來源 | 狀態 | 說明 |
 |---|------|------|------|------|
-| ~~H-1~~ | ~~自訂 JWT 驗證（未使用標準函式庫）~~ | `security-architecture.md` §10 | ✅ 已修復 | 抽取共用 `jwt.js` 模組，`account-ws.js` 和 `worker.js` 統一使用同一 sign/verify 實作 |
-| ~~H-2~~ | ~~Debug 日誌輸出金鑰雜湊~~ | `security-architecture.md` §10 | ✅ 已修復 | 移除 `dr.js` 中所有 `hashPrefix()` 相關的 console 輸出（x3dh、ratchet、encrypt、decrypt 全路徑） |
+| ~~H-1~~ | ~~自訂 JWT 驗證（未使用標準函式庫）~~ | `security-architecture.md` §10 | ✅ 已修復（H-2 升級） | Phase 1：抽取共用 `jwt.js` 模組。**Phase 2（H-2 升級）**：全面遷移至 `jose` 套件（panva/jose，經審計、零依賴、Web Crypto 原生）。HS256（WS token）使用 `SignJWT` / `jwtVerify`（constant-time 驗證 + 嚴格 `algorithms: ['HS256']`）。RS256（Voucher token）使用 `importSPKI` + `jwtVerify`（嚴格 `algorithms: ['RS256']` + `exp` 驗證 + 30 秒 clockTolerance）。同步修復：P0 `verifyJwtRS256` 未驗證 `exp`、P0 未檢查 `alg`（演算法混淆風險）、P1 簽章字串比對非 constant-time。移除 worker.js 中所有重複的手工 JWT helper。 |
+| ~~H-2~~ | ~~Debug 日誌輸出金鑰雜湊~~ | `security-architecture.md` §10 | ✅ 已修復（H-2 強化） | Phase 1：移除 `dr.js` 中所有 `hashPrefix()` 輸出。**Phase 2（H-2 強化）**：全面清理 debug 日誌安全問題 — (1) `debug-flags.js` 所有開關預設 `false`（不再依賴 `!_PROD`）(2) `dr-session.js` 移除金鑰存在狀態（hasRk/hasCkS/hasCkR）和計數器值（Ns/Nr）的日誌輸出 (3) 移除 `navigator.webdriver` 自動啟用詳細日誌（防止 Selenium 環境洩露）(4) `hybrid-flow.js` DEBUG.drVerbose 改為 false (5) `entry-fetch.js` FETCH_LOG_ENABLED 改為 false (6) `worker.js` logMessageKeyVault 僅輸出安全欄位 (7) `contacts.js` 移除 MK 狀態和聯絡人資料明文日誌 (8) `login-flow.js` deviceId 截斷為前 8 字元 (9) `contact-secrets.js` 移除 webdriver 自動啟用 |
 | ~~H-3~~ | ~~Debug 頁面 / SDM 模擬器生產環境可存取~~ | `security-assumptions-and-out-of-scope.md` §6 | ✅ 已修復 | 三層防護：(1) `ENABLE_DEBUG_PAGES` 環境變數 → 生產回傳 404 (2) IP 白名單 (3) `__PRODUCTION__` build flag 關閉 debug switches |
 | ~~H-4~~ | ~~Error messages 洩漏內部狀態~~ | `security-review-checklist.md` §4.3 | ✅ 已修復 | 移除 `Replay` 回應的 `lastCtr` 和 `CounterTooLow` 回應的 `maxCounter`/`details` 欄位 |
 | ~~H-5~~ | ~~MK 洩漏影響所有媒體~~ | `media-and-attachment-security.md` §7.2 | ⬇️ 降級為 Low | E2EE 零知識架構固有限制：媒體需支援跨裝置歷史下載，需持久金鑰；MK 洩漏前提需終端入侵或暴力破解 Argon2id |
@@ -46,7 +46,7 @@
 |---|------|------|------|
 | L-1 | JavaScript GC 不保證立即清除金鑰 | `security-review-checklist.md` §3.3 | 記憶體中金鑰可能在 GC 週期內殘留 |
 | ~~L-2~~ | ~~`localStorage` contactSecrets-v2 登出時是否清除~~ | `security-review-checklist.md` §3.3 | ✅ 已確認/修復：`secureLogout()` 已有 `localStorage.clear()`；`app-ui.js` 的 `onLogout()` 修正為清除所有非 SIM localStorage key（原僅清除 `env_v1:*`） |
-| L-3 | 社交圖譜可見 | `security-review-checklist.md` §7 | `conversation_acl` 明文儲存，伺服器可見社交關係 |
+| L-3 | 社交圖譜可見（持續緩解中） | `security-review-checklist.md` §7 | `conversation_acl` 明文儲存，伺服器可見對話參與者。**Phase 0-A**：`contacts` 表 `peer_digest` → HMAC `slot_id`。**Phase 0-B**：`role` 不再寫入明文（NULL）、`receiver_device_id` 停止寫入、`contacts.updated_at` 截斷至每日精度。**Phase 0-C**：`push_subscriptions.user_agent` 改為短標籤，移除裝置指紋 |
 | L-4 | 通訊時間可見 | `security-review-checklist.md` §7 | Timestamp 明文，伺服器可見通訊時間 |
 | L-5 | 訊息大小可推知 | `security-review-checklist.md` §7 | 無 padding 機制，訊息密文大小可推知明文長度 |
 | L-6 | 在線狀態可推知 | `security-review-checklist.md` §7 | WebSocket/presence 機制暴露使用者在線狀態 |
@@ -70,10 +70,10 @@
 | 嚴重程度 | 總數 | 已修復 | 降級 | 待處理 |
 |----------|------|--------|------|--------|
 | 🔴 Critical | 4 | 2 | 1 (→Low) | 1 |
-| 🟠 High | 5 | 4 | 1 (→Low) | 0 |
+| 🟠 High | 5 | 5 | 1 (→Low) | 0 |
 | 🟡 Medium | 12 | 9 | 3 (→Low) | 0 |
 | 🟢 Low | 13+5 | 4 | — | 14 |
-| **總計** | **36** | **19** | **5** | **14** |
+| **總計** | **36** | **20** | **5** | **13** |
 
 ## 已通過項目（已修復/確認安全）
 
@@ -91,8 +91,8 @@
 - ✅ DR 狀態並發已有 `enqueueDrSessionOp()` 序列化機制
 - ✅ **C-1**：Account token hash 儲存（Phase 1：雙模式驗證 + 自動回填）
 - ✅ **C-2**：Debug endpoints 透過 `ENABLE_DEBUG_ENDPOINTS` 環境變數控制，生產環境回傳 404
-- ✅ **H-1**：JWT 驗證統一為共用 `jwt.js` 模組（`account-ws.js`、`worker.js`）
-- ✅ **H-2**：移除 `dr.js` 中所有金鑰雜湊 debug 日誌輸出
+- ✅ **H-1**：JWT 驗證全面遷移至 `jose` 套件 — HS256 使用 `SignJWT`/`jwtVerify`（constant-time + 嚴格 alg 白名單），RS256 使用 `importSPKI`+`jwtVerify`（含 `exp` 驗證 + alg confusion 防護）。移除所有手工 JWT helper
+- ✅ **H-2**：全面清理 debug 日誌安全問題 — `debug-flags.js` 所有開關預設 false、`dr-session.js` 移除金鑰狀態/計數器日誌、移除 `navigator.webdriver` 自動啟用、`worker.js` vault 日誌僅輸出安全欄位、`contacts.js`/`login-flow.js` 敏感資料截斷/移除
 - ✅ **H-3**：Debug 頁面三層防護（env gate + IP 白名單 + `__PRODUCTION__` build flag）
 - ✅ **H-4**：移除錯誤回應中的內部狀態欄位（`lastCtr`、`maxCounter`）
 - ✅ **M-6**：Invite Dropbox 改用 per-envelope 16-byte random salt（向下相容舊 envelope）
@@ -107,3 +107,4 @@
 - ✅ **L-10**：頭像已確認使用 AES-256-GCM + HKDF(MK, random_salt) 加密上傳，與一般媒體相同加密流程
 - ✅ **L-12**：Debug flags 在生產環境建置時強制關閉
 - ✅ **L-16**：Media chunk AAD 已由 M-4 統一修復（所有 AES-GCM 加入 info tag 作為 additionalData）
+- ✅ **密碼學原語函式庫**：TweetNaCl + 手刻 ed2curve（~230 行 curve25519 有限域算術）已全面替換為 `libsodium-wrappers-sumo`（經 Cure53、Paragon Initiative 等多家安全公司審計）。Ed25519→X25519 轉換改用 libsodium 內建 `crypto_sign_ed25519_pk_to_curve25519()`，`libs/nacl-fast.min.js` 已刪除

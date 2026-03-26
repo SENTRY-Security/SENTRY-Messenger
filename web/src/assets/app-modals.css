@@ -284,6 +284,9 @@
 .modal.safe-modal {
   padding: 0;
   align-items: stretch;
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: none;
 }
 
 .modal.safe-modal .modal-backdrop {
@@ -297,6 +300,7 @@
   border-radius: 0;
   background: #000;
   padding: 0;
+  overflow: hidden;
 }
 
 .modal.safe-modal .modal-head {
@@ -2834,4 +2838,195 @@ h6.word-h { font-size: 9pt; }
 
 .push-tutorial-btn.secondary:active {
   background: rgba(148, 163, 184, 0.2);
+}
+
+/* ── Apps Launcher (App-as-a-Service) ─────────────────────────── */
+
+.apps-header {
+  text-align: center;
+  margin-bottom: 24px;
+  padding-top: 8px;
+}
+
+.apps-title {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.apps-subtitle {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.apps-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px 8px;
+  padding: 0 8px;
+  margin-bottom: 24px;
+}
+
+.apps-grid-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 8px 4px;
+  border-radius: 12px;
+  transition: background 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.apps-grid-cell:active {
+  background: var(--bg-hover);
+}
+
+.apps-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+}
+
+.apps-icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.apps-icon-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--primary);
+  border-radius: 14px;
+}
+
+.apps-label {
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--text);
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 72px;
+}
+
+/* Instance control bar */
+.apps-control-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: var(--bg-hover);
+  border-radius: 10px;
+  margin: 0 8px;
+}
+
+.apps-status-text {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.apps-btn-stop {
+  font-size: 12px;
+  padding: 5px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  background: none;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+/* App viewer modal (WebRTC) */
+.apps-viewer {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  position: relative;
+  background: #000;
+}
+
+.apps-viewer-toolbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: linear-gradient(to bottom, rgba(0,0,0,0.6), transparent);
+  pointer-events: none;
+}
+
+.apps-viewer-toolbar > * {
+  pointer-events: auto;
+}
+
+.apps-viewer-back {
+  background: rgba(0,0,0,0.4);
+  color: #fff;
+  border: none;
+  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.apps-viewer-back svg {
+  width: 16px;
+  height: 16px;
+}
+
+.apps-viewer-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+}
+
+.apps-player-container {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  overflow: hidden;
+}
+
+.apps-viewer-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: #000;
+}
+
+.apps-viewer-loading-text {
+  font-size: 13px;
+  color: rgba(148, 163, 184, 0.7);
+  letter-spacing: 0.5px;
 }

@@ -117,6 +117,7 @@ export function setupModalController({ shareButtonProvider } = {}) {
       }
     }
     document.body.classList.remove('modal-open');
+    window.__setLandscapeAllowed?.(false);
     unlockBodyScroll();
   }
 

@@ -1287,11 +1287,17 @@ export class AccountWebSocket {
   async _notifyEphemeralPeersReconnect() {
     if (!this.accountDigest || !this.env.DB) return;
     try {
-      // Find all active ephemeral sessions where this account is a participant
+      // Find all active ephemeral sessions where this account is a participant.
+      // Use UNION ALL so each branch can use its own index
+      // (idx_ephemeral_sessions_owner for owner, idx_ephemeral_sessions_guest_active for guest).
+      const nowSec = Math.floor(Date.now() / 1000);
       const rows = await this.env.DB.prepare(
         `SELECT conversation_id, owner_digest, guest_digest FROM ephemeral_sessions
-         WHERE (owner_digest = ? OR guest_digest = ?) AND deleted_at IS NULL AND expires_at > ?`
-      ).bind(this.accountDigest, this.accountDigest, Math.floor(Date.now() / 1000)).all();
+          WHERE owner_digest = ?1 AND deleted_at IS NULL AND expires_at > ?2
+         UNION ALL
+         SELECT conversation_id, owner_digest, guest_digest FROM ephemeral_sessions
+          WHERE guest_digest = ?1 AND deleted_at IS NULL AND expires_at > ?2`
+      ).bind(this.accountDigest, nowSec).all();
       if (!rows?.results?.length) return;
 
       for (const row of rows.results) {
@@ -1324,10 +1330,14 @@ export class AccountWebSocket {
   async _notifyEphemeralPeersDisconnect() {
     if (!this.accountDigest || !this.env.DB) return;
     try {
+      const nowSec = Math.floor(Date.now() / 1000);
       const rows = await this.env.DB.prepare(
         `SELECT conversation_id, owner_digest, guest_digest FROM ephemeral_sessions
-         WHERE (owner_digest = ? OR guest_digest = ?) AND deleted_at IS NULL AND expires_at > ?`
-      ).bind(this.accountDigest, this.accountDigest, Math.floor(Date.now() / 1000)).all();
+          WHERE owner_digest = ?1 AND deleted_at IS NULL AND expires_at > ?2
+         UNION ALL
+         SELECT conversation_id, owner_digest, guest_digest FROM ephemeral_sessions
+          WHERE guest_digest = ?1 AND deleted_at IS NULL AND expires_at > ?2`
+      ).bind(this.accountDigest, nowSec).all();
       if (!rows?.results?.length) return;
 
       for (const row of rows.results) {

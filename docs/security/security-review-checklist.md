@@ -30,10 +30,10 @@
 
 ### 1.4 非對稱加密
 
-- [ ] Ed25519 金鑰產生使用 `nacl.sign.keyPair()`（`prekeys.js`）
-- [ ] X25519 金鑰產生使用 `nacl.box.keyPair()`（`prekeys.js`）
-- [ ] Ed25519→X25519 轉換正確（`ed2curve.js`）
-- [ ] X25519 clamping 正確：`d[0] &= 248, d[31] &= 127, d[31] |= 64`（`ed2curve.js:210-212`）
+- [x] Ed25519 金鑰產生使用 `sodium.crypto_sign_keypair()`（libsodium-wrappers-sumo，經審計）（`prekeys.js`）
+- [x] X25519 金鑰產生使用 `sodium.crypto_box_keypair()`（libsodium-wrappers-sumo，經審計）（`prekeys.js`）
+- [x] Ed25519→X25519 轉換使用 `sodium.crypto_sign_ed25519_pk_to_curve25519()` / `crypto_sign_ed25519_sk_to_curve25519()`（libsodium 內建，取代自訂 field arithmetic）
+- [x] X25519 clamping 由 libsodium 內部處理（~~自訂 `ed2curve.js` 手刻 clamping 已移除~~）
 - [ ] SPK 簽章驗證在 X3DH initiator 端執行
 - [x] TOFU：首次 X3DH 儲存 peer Identity Key，後續偵測 key 變更（`contact-secrets.js:checkAndStorePeerIk`）
 - [x] Safety Number：雙方可透過 60 位數字指紋帶外驗證身份（`safety-number.js:computeSafetyNumber`）
@@ -104,10 +104,11 @@
 
 ### 4.1 認證
 
-- [ ] JWT 驗證正確（`account-ws.js:141-180`）
-  - [ ] HMAC-SHA256 簽章驗證
-  - [ ] 過期時間檢查
-  - [ ] Header 格式驗證
+- [x] ~~JWT 驗證正確~~ — ✅ 已遷移至 `jose` 套件（panva/jose，經安全審計）
+  - [x] ~~HMAC-SHA256 簽章驗證~~ — ✅ `jose.jwtVerify` 內部使用 `crypto.subtle.verify` 做 constant-time 比較
+  - [x] ~~過期時間檢查~~ — ✅ jose 自動驗證 `exp`，配置 `clockTolerance: 5`（HS256）/ `30`（RS256）
+  - [x] ~~Header 格式驗證~~ — ✅ 嚴格 `algorithms` 白名單（`['HS256']` / `['RS256']`）防止 alg confusion
+  - [x] ~~RS256 voucher token exp 驗證~~ — ✅ 由 jose 自動處理（原 `verifyJwtRS256` 完全未驗證 `exp`，已修復）
 - [ ] WebSocket 二次認證（`account-ws.js:232+`）
 - [ ] Stale session 拒絕（`account-ws.js:571-591`）
 - [ ] NFC SDM CMAC 驗證（`worker.js`）
@@ -202,7 +203,7 @@
 - [x] ~~CORS 設定待確認~~ — ✅ 已修復：Pages Function 改用 `CORS_ALLOWED_ORIGINS` 白名單（`[[path]].ts`）；Data Worker 啟用 `CORS_ORIGINS` 環境變數（`wrangler.toml`）；明確列舉 allow-headers 取代 `*`
 - [x] ~~HTTP API rate limiting 待確認~~ — ✅ 已修復：與 M-1 共同處理，`RateLimiter` DO 全域 IP 限流覆蓋所有端點
 - [ ] TLS 1.2+ 強制（Cloudflare 處理）
-- [x] ~~Debug 日誌是否在生產環境停用~~ — ✅ 已修復：`debug-flags.js` 透過 `__PRODUCTION__` build flag 在生產環境強制關閉所有 debug switches（`build.mjs`、`deploy.yml`）
+- [x] ~~Debug 日誌是否在生產環境停用~~ — ✅ 已修復（強化）：`debug-flags.js` 所有開關預設 `false`（不再依賴 `__PRODUCTION__` 判斷），`dr-session.js` 移除金鑰狀態/計數器敏感日誌，移除 `navigator.webdriver` 自動啟用，`worker.js` vault 日誌僅安全欄位，`entry-fetch.js` FETCH_LOG_ENABLED 預設 false
 
 ## 10. 部署與 CI/CD 安全
 

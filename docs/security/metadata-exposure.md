@@ -13,7 +13,8 @@
 | `conversation_id` | `messages_secure.conversation_id` | 伺服器知道訊息屬於哪個對話 |
 | 訊息 `counter` | `messages_secure.counter` | 伺服器知道訊息序號 |
 | 訊息 `timestamp` | `messages_secure.ts` | 伺服器知道精確發送時間 |
-| 訊息 `device_id` | `messages_secure.device_id` | 伺服器知道發送裝置 |
+| 訊息 `sender_device_id` | `messages_secure.sender_device_id` | 伺服器知道發送裝置 |
+| ~~接收者 `device_id`~~ | ~~`messages_secure.receiver_device_id`~~ | ✅ **已緩解（Zero-Meta Phase 0-B）**：`receiver_device_id` 一律寫 `NULL`，單裝置架構下 `account_digest` 已足夠路由 |
 | 訊息大小 | `envelope` 欄位大小 | 伺服器可推測訊息長度 |
 | DR header | `header_counter`, `ek_pub` 在 envelope 中 | ⚠️ 待確認：header 是否在密文外 |
 
@@ -22,10 +23,13 @@
 | Metadata | 可見位置 | 影響 |
 |----------|----------|------|
 | 對話參與者 | `conversation_acl` | 伺服器知道誰與誰建立了對話 |
-| 群組成員 | `conversation_acl` (role) | 伺服器知道群組成員和角色 |
+| ~~群組角色~~ | ~~`conversation_acl.role`~~ | ✅ **已緩解（Zero-Meta Phase 0-B）**：`role` 欄位不再寫入明文（一律 `NULL`），對話角色語意由客戶端在加密資料中管理。伺服器無法區分 owner / member / ephemeral |
+| ~~推播裝置指紋~~ | ~~`push_subscriptions.user_agent`~~ | ✅ **已緩解（Zero-Meta Phase 0-C）**：不再儲存完整 User-Agent 字串，改為客戶端預先解析的簡短裝置標籤（如 "Mac Chrome"），移除瀏覽器版本、OS 版本等指紋資訊 |
 | 邀請關係 | `invite_dropbox` 表 | 伺服器知道誰邀請了誰 |
 | 邀請狀態 | `invite_dropbox.status` | 伺服器知道邀請是否被接受 |
 | 帳號建立時間 | `accounts.created_at` | 伺服器知道帳號年齡 |
+| ~~聯絡人關係~~ | ~~`contacts.peer_digest`~~ | ✅ **已緩解（Zero-Meta Phase 0-A）**：`contacts` 表改用 HMAC 衍生的不可逆 `slot_id` 取代 `peer_digest`。`peer_digest` 和 `is_blocked` 移入加密 blob 內。伺服器無法從 `slot_id` 反推 `peer_digest`，無法建立聯絡人社交圖譜。舊資料於登入時自動遷移。（`0017_contacts_zero_meta.sql`、`contacts.js`） |
+| ~~聯絡人更新時間~~ | ~~`contacts.updated_at`~~ | ✅ **已緩解（Zero-Meta Phase 0-B）**：`updated_at` 截斷至每日精度（`/ 86400 * 86400`），伺服器無法推知精確的聯絡人操作時間 |
 
 ### 1.3 媒體 Metadata
 
@@ -82,8 +86,8 @@
 - **通訊頻率**：`messages_secure` 表中的時間戳分佈
 - **通訊量**：每個 conversation 的訊息數量
 - **活躍度**：帳號最後活動時間
-- **社交圖譜**：`conversation_acl` 表的完整關係網
-- **群組結構**：群組大小、角色分佈
+- **社交圖譜**：`conversation_acl` 表的完整關係網（但 `role` 已不再寫入明文）
+- **群組結構**：群組大小（角色已隱藏，Phase 0-B）
 
 ### R2 Object Storage
 
@@ -126,12 +130,12 @@
 | 訊息大小洩漏 | ⚠️ 無 padding 機制 | ✗ 未實作 |
 | 時間模式 | ⚠️ 無 timing obfuscation | ✗ 未實作 |
 | Cover traffic | ⚠️ 無噪音流量 | ✗ 未實作 |
-| 社交圖譜 | ⚠️ ACL 表為明文 | ✗ 無緩解 |
+| 社交圖譜 | ⚠️ ACL 表為明文 | 部分緩解：`contacts` 表已隱藏 `peer_digest`（Phase 0-A）；`role` 已隱藏（Phase 0-B）；`conversation_acl` 仍暴露參與者 |
 | 通話 IP | TURN relay 選項 | 部分實作 |
 
 ## 5. 尚未解決的風險
 
-1. **社交圖譜完全暴露**：`conversation_acl` 表明確記錄所有對話關係，伺服器可建立完整社交圖譜
+1. **社交圖譜部分暴露**：`conversation_acl` 表仍記錄對話參與者（`account_digest`）。`contacts` 表已透過 Phase 0-A 隱藏 `peer_digest`；Phase 0-B 隱藏 `role` 和 `receiver_device_id`。但 `conversation_acl` 的 `account_digest` 仍為明文
 2. **通訊模式分析**：訊息 timestamp 和 counter 允許伺服器分析通訊頻率、活躍時段
 3. **媒體使用推測**：R2 中的 chunk 數量和大小可推測是否傳送了圖片/影片/大檔案
 4. **WebRTC IP 洩漏**：P2P 通話可能暴露使用者真實 IP（若未強制使用 TURN relay）

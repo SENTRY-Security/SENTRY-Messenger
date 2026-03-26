@@ -1455,7 +1455,6 @@ accounts              # 帳號表
 ├── account_digest    # PK — SHA256 帳號摘要
 ├── account_token     # API 認證 token
 ├── uid_digest        # UID hash (SDM 用，UNIQUE)
-├── uid_plain         # UID 明文 (可選)
 ├── last_ctr          # 最後 SDM counter (防重放)
 ├── wrapped_mk_json   # 加密的 Master Key (Argon2id + AES-GCM)
 ├── created_at        # 建立時間
@@ -1600,7 +1599,6 @@ invite_dropbox        # 離線邀請投遞箱
 ```sql
 call_sessions         # 通話 Session
 ├── call_id           # PK
-├── caller_uid, callee_uid          # UID
 ├── caller_account_digest, callee_account_digest  # 帳號摘要
 ├── status, mode      # 狀態與模式
 ├── capabilities_json # 裝置能力

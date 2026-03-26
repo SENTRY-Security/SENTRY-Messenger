@@ -6,7 +6,7 @@
 
 | 項目 | 範圍 |
 |------|------|
-| 客戶端加密模組 | `web/src/shared/crypto/` (dr.js, aead.js, ed2curve.js, prekeys.js) |
+| 客戶端加密模組 | `web/src/shared/crypto/` (dr.js, aead.js, ed2curve.js, prekeys.js, nacl.js) |
 | 客戶端 KDF | `web/src/app/crypto/kdf.js` |
 | 認證流程 | `web/src/app/features/login-flow.js`, `opaque.js` |
 | 訊息金鑰 Vault | `web/src/app/features/message-key-vault.js` |
@@ -34,7 +34,7 @@
 
 | 發現 | 位置 | 說明 |
 |------|------|------|
-| **標準演算法選擇** | 全系統 | AES-256-GCM、HKDF-SHA256、Ed25519、X25519 |
+| **標準演算法選擇** | 全系統 | AES-256-GCM、HKDF-SHA256、Ed25519、X25519（底層使用 libsodium-wrappers-sumo，經審計） |
 | **Per-message 認證** | `dr.js:44-65` | AAD 包含 version、deviceId、counter |
 | **Per-chunk 獨立加密** | `chunked-upload.js` | 每個 chunk 使用獨立 HKDF salt + IV |
 | **方向性通話金鑰** | `key-manager.js` | Caller/Callee 使用不同金鑰，防止雙向重用 |
@@ -61,9 +61,9 @@
 |------|------|------|------|
 | H-1 | **Send-side ratchet 停用** | `dr.js:357-364` | 發送方 ephemeral key 不在每次發送時輪替，降低前向保密粒度 |
 | H-2 | ~~**無 Prekey Bundle 帶外驗證**~~ | X3DH 流程 | ✅ 已實作：TOFU identity key tracking + Safety Number 帶外驗證機制（`contact-secrets.js:checkAndStorePeerIk`, `safety-number.js`） |
-| H-3 | **自訂 JWT 驗證** | `account-ws.js:141-180` | 自訂實作增加驗證邏輯出錯的風險 |
+| ~~H-3~~ | ~~**自訂 JWT 驗證**~~ | `jwt.js`, `worker.js` | ✅ 已遷移至 `jose` 套件（panva/jose，經安全審計）— HS256 使用 `jwtVerify`（constant-time + `algorithms: ['HS256']`），RS256 使用 `importSPKI`+`jwtVerify`（`algorithms: ['RS256']` + `exp` 驗證 + clockTolerance）。修復 P0 `verifyJwtRS256` 未驗證 `exp`、P0 alg confusion、P1 非 constant-time 簽章比對 |
 | H-4 | **Vault 降低前向保密** | `message-key-vault.js` | Message key 持久化，MK 洩漏可解密歷史訊息 |
-| H-5 | **自訂 ed2curve 轉換** | `ed2curve.js` | 自訂 field arithmetic，需確認正確性 |
+| ~~H-5~~ | ~~**自訂 ed2curve 轉換**~~ | `ed2curve.js` | ✅ 已修復：自訂 field arithmetic（~230 行）已替換為 `libsodium-wrappers-sumo` 內建 `crypto_sign_ed25519_pk_to_curve25519()`（經審計），不再需要獨立審計 |
 | H-6 | ~~**DR 狀態並發競態條件**~~ | `dr-session.js` | ✅ 已有 mutex：`enqueueDrSessionOp()` 序列化所有 encrypt/decrypt 操作（`dr-session.js:1546`），收發端均使用（`state-live.js:380`） |
 | H-7 | **NsTotal 非同步 seeding 競態** | `dr-session.js:357-453` | seedTransportCounterFromServer() 可能覆蓋 drEncryptText() 的遞增結果 |
 | H-8 | **Account token 明文儲存** | `worker.js` accounts 表 | `account_token` 未 hash，DB 洩漏即可存取所有帳號 |
@@ -77,8 +77,8 @@
 | M-1 | **無 IK/SPK 定期輪替** | `prekeys.js` | 長期使用同一金鑰增加洩漏影響範圍 |
 | M-2 | **Chunk 加密無 AAD** | `chunked-upload.js` | Chunk index 未綁定加密，理論上可替換 |
 | M-3 | **AEAD envelope 無 AAD** | `aead.js` | 除 DR 訊息外，其他加密操作不使用 AAD |
-| M-4 | **Debug 日誌輸出金鑰雜湊** | `dr.js:213-235, 305-330` | 生產環境可能洩漏金鑰資訊 |
-| M-5 | **社交圖譜完全暴露** | `conversation_acl` D1 表 | 伺服器可建立完整社交圖譜 |
+| ~~M-4~~ | ~~**Debug 日誌輸出金鑰雜湊**~~ | 多處 | ✅ 已修復：移除所有金鑰雜湊/狀態/計數器日誌、debug flags 全部預設 false、移除 webdriver 自動啟用、vault 日誌僅安全欄位、敏感 ID 截斷 |
+| M-5 | **社交圖譜部分暴露**（持續緩解中） | `conversation_acl` D1 表 | `conversation_acl` 仍暴露對話參與者（`account_digest`）。**Phase 0-A**：`contacts` 表 `peer_digest` → HMAC `slot_id`。**Phase 0-B**：`role` → NULL（不再洩漏角色語意）、`receiver_device_id` → NULL（單裝置冗餘）、`contacts.updated_at` 截斷至每日精度 |
 | M-6 | **訊息大小洩漏** | 全系統 | 無 padding 機制，密文大小反映明文大小 |
 | M-7 | **媒體 content_type 在上傳請求中明文** | `sign-put-chunked` API | 伺服器在簽名請求中可見 content_type 和 total_size |
 | M-8 | **Vault wrap_context 明文傳送** | `message-key-vault.js:194` | 伺服器可見 msgType、direction 等 metadata |
@@ -115,7 +115,7 @@
 | D-4 | **缺少 CSP/HSTS headers** | `web/src/_headers` | 僅設 Cache-Control，無 CSP、HSTS、X-Frame-Options |
 | D-5 | **CORS 設定不安全** | `web/functions/[[path]].ts:209-226` | `allow-origin: *` + `allow-credentials: true` 且 allow-headers 為 `*` |
 | D-6 | **Source maps 在生產環境啟用** | `web/build.mjs:53` | `sourcemap: true` 暴露原始碼 |
-| D-7 | **Debug flags 預設啟用** | `web/src/app/ui/mobile/debug-flags.js` | `replay: true`, `drVerbose: true`, `conversationReset: true` |
+| ~~D-7~~ | ~~**Debug flags 預設啟用**~~ | `web/src/app/ui/mobile/debug-flags.js` | ✅ 已修復：所有 debug 開關預設為 `false`，不再使用 `!_PROD && true` 模式 |
 | D-8 | **Build manifest 公開可存取** | `web/build.mjs:346` | `build-manifest.json` 含 git commit、branch、完整檔案列表 |
 | D-9 | **API proxy 無 rate limiting** | `web/functions/[[path]].ts:156-217` | 所有 `/api/*` 直接 proxy，無速率限制 |
 | D-10 | **Wipe script 無安全護欄** | `scripts/wipe-all.sh` | 使用 `--yes` 無確認，無備份，刪除所有 D1 和 R2 資料 |
@@ -142,7 +142,7 @@
 
 | 方面 | Signal Protocol | SENTRY 實作 | 影響 |
 |------|-----------------|-------------|------|
-| 實作 | libsignal（C/Rust） | 自訂 JavaScript | 需獨立審計 |
+| 實作 | libsignal（C/Rust） | 自訂 JavaScript + libsodium（經審計） | 協議邏輯仍需獨立審計，但底層密碼學原語已使用經審計函式庫 |
 | Safety Number | ✓ 提供 | ✓ 已實作（TOFU + 60 位數字指紋） | 帶外驗證可防禦 MITM |
 | SPK 輪替 | 1-7 天 | ✗ 不輪替 | 增加金鑰洩漏影響 |
 | Sealed Sender | ✓ 提供 | ✗ 未實作 | 伺服器可見發送者 |
@@ -157,10 +157,11 @@
 **安全設計品質**：良好。系統遵循密碼學最佳實踐，使用標準演算法，金鑰管理架構合理。
 
 **主要風險**：
-1. 自訂密碼學實作需要第三方審計
+1. 自訂密碼學實作需要第三方審計（DR、X3DH 協議邏輯）；底層原語（Ed25519、X25519、ed2curve 轉換）已遷移至經審計的 libsodium
 2. Send-side ratchet 停用降低前向保密
 3. Vault 設計是有意的安全取捨（歷史回放 vs 前向保密）
 4. ~~無帶外金鑰驗證~~ ✅ 已實作 TOFU + Safety Number（殘餘風險：首次連線仍信任伺服器）
+5. ~~自訂 JWT 驗證~~ ✅ 已遷移至 jose 套件（經安全審計）
 
 **建議優先行動**：
 

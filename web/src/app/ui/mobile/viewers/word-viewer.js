@@ -3480,6 +3480,7 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
 
   cleanupWordViewer();
   modalEl.classList.add('word-modal');
+  window.__setLandscapeAllowed?.(true);
   modalTitle.textContent = '';
 
   body.innerHTML = `
@@ -3678,6 +3679,7 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
 
     activeWordCleanup = () => {
       for (const u of objectUrls) { try { URL.revokeObjectURL(u); } catch {} }
+      window.__setLandscapeAllowed?.(false);
       modalEl.classList.remove('word-modal');
       closeModal?.();
       activeWordCleanup = null;
@@ -3705,6 +3707,7 @@ export async function renderWordViewer({ url, blob, name, modalApi }) {
     setupCloseHandlers();
     activeWordCleanup = () => {
       for (const u of objectUrls) { try { URL.revokeObjectURL(u); } catch {} }
+      window.__setLandscapeAllowed?.(false);
       modalEl.classList.remove('word-modal');
       closeModal?.();
       activeWordCleanup = null;

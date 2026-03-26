@@ -1,93 +1,84 @@
-// ── Shared JWT HS256 utility (Web Crypto API) ────────────────────
+// ── Shared JWT HS256 utility (via jose) ───────────────────────────
 //
 // Single implementation for sign + verify, used by both worker.js
-// and account-ws.js. Eliminates duplicated JWT logic (H-1 fix).
+// and account-ws.js. Backed by panva/jose — audited, constant-time,
+// Web Crypto native. Replaces hand-rolled JWT logic (H-1 → H-2 fix).
 
-const WS_JWT_HEADER_B64 = btoa(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))
-  .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+import { SignJWT, jwtVerify, errors } from 'jose';
 
-function base64url(str) {
-  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-function base64urlDecode(b64url) {
-  const padded = b64url.replace(/-/g, '+').replace(/_/g, '/');
-  const pad = padded.length % 4 === 0 ? '' : '='.repeat(4 - (padded.length % 4));
-  return atob(padded + pad);
-}
-
-async function hmacSha256Sign(secret, data) {
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
-  );
-  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(data));
-  return btoa(String.fromCharCode(...new Uint8Array(sig)))
-    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+/**
+ * Import a string secret as a CryptoKey for HS256.
+ * jose requires a CryptoKey or Uint8Array; we use Uint8Array for simplicity.
+ */
+function secretToUint8Array(secret) {
+  return new TextEncoder().encode(secret);
 }
 
 /**
  * Create a signed JWT (HS256).
- * @param {string} secret - HMAC secret
+ * @param {string} secret - HMAC secret (string, will be encoded as UTF-8)
  * @param {{ accountDigest: string, ttlSec?: number }} opts
- * @returns {{ token: string, payload: object }}
+ * @returns {Promise<{ token: string, payload: object }>}
  */
 export async function createJwt(secret, { accountDigest, ttlSec = 300 }) {
   if (!secret) throw new Error('JWT secret not configured');
   if (!accountDigest) throw new Error('accountDigest required');
+
+  const normalizedDigest = String(accountDigest).toUpperCase();
   const now = Math.floor(Date.now() / 1000);
-  const payload = {
-    accountDigest: String(accountDigest).toUpperCase(),
-    iat: now,
-    exp: now + ttlSec
-  };
-  const bodyB64 = base64url(JSON.stringify(payload));
-  const signature = await hmacSha256Sign(secret, `${WS_JWT_HEADER_B64}.${bodyB64}`);
+
+  const token = await new SignJWT({ accountDigest: normalizedDigest })
+    .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
+    .setIssuedAt(now)
+    .setExpirationTime(now + ttlSec)
+    .sign(secretToUint8Array(secret));
+
   return {
-    token: `${WS_JWT_HEADER_B64}.${bodyB64}.${signature}`,
-    payload
+    token,
+    payload: {
+      accountDigest: normalizedDigest,
+      iat: now,
+      exp: now + ttlSec
+    }
   };
 }
 
 /**
- * Verify a JWT (HS256). Returns a result object.
+ * Verify a JWT (HS256). Returns a result object (never throws for auth errors).
+ * jose internally performs:
+ *   - constant-time signature comparison via Web Crypto verify
+ *   - algorithm whitelist enforcement (only HS256 accepted)
+ *   - exp / nbf validation with configurable clock tolerance
+ *
  * @param {string} token
  * @param {string} secret
- * @returns {{ ok: boolean, reason?: string, payload?: object }}
+ * @returns {Promise<{ ok: boolean, reason?: string, payload?: object }>}
  */
 export async function verifyJwt(token, secret) {
   if (typeof token !== 'string' || !secret) return { ok: false, reason: 'config' };
-  const parts = token.split('.');
-  if (parts.length !== 3) return { ok: false, reason: 'format' };
-  const [headerB64, bodyB64, signature] = parts;
 
-  // Verify header matches expected HS256 JWT header
-  if (headerB64 !== WS_JWT_HEADER_B64) return { ok: false, reason: 'header' };
-
-  // Verify signature using constant-time comparison via Web Crypto verify
-  const expectedSig = await hmacSha256Sign(secret, `${headerB64}.${bodyB64}`);
-  if (signature !== expectedSig) return { ok: false, reason: 'signature' };
-
-  // Decode payload
-  let payload;
   try {
-    payload = JSON.parse(base64urlDecode(bodyB64));
-  } catch { return { ok: false, reason: 'payload' }; }
+    const { payload } = await jwtVerify(token, secretToUint8Array(secret), {
+      algorithms: ['HS256'],       // Strict algorithm whitelist
+      clockTolerance: 5,           // 5 seconds clock skew tolerance
+      requiredClaims: ['accountDigest', 'exp']
+    });
 
-  // Check expiration
-  const now = Math.floor(Date.now() / 1000);
-  if (typeof payload.exp !== 'number' || now >= payload.exp) {
-    return { ok: false, reason: 'expired' };
+    if (!payload.accountDigest) return { ok: false, reason: 'claims' };
+
+    return {
+      ok: true,
+      payload: {
+        accountDigest: String(payload.accountDigest).toUpperCase(),
+        exp: payload.exp,
+        iat: payload.iat || null
+      }
+    };
+  } catch (err) {
+    if (err instanceof errors.JWTExpired) return { ok: false, reason: 'expired' };
+    if (err instanceof errors.JWTClaimValidationFailed) return { ok: false, reason: 'claims' };
+    if (err instanceof errors.JWSSignatureVerificationFailed) return { ok: false, reason: 'signature' };
+    if (err instanceof errors.JWSInvalid) return { ok: false, reason: 'format' };
+    return { ok: false, reason: 'invalid' };
   }
-
-  if (!payload.accountDigest) return { ok: false, reason: 'claims' };
-
-  return {
-    ok: true,
-    payload: {
-      accountDigest: String(payload.accountDigest).toUpperCase(),
-      exp: payload.exp,
-      iat: payload.iat || null
-    }
-  };
 }
