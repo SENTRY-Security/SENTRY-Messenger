@@ -515,7 +515,7 @@ export async function loadContacts() {
           peerAccountDigest: peerDigest.toUpperCase(),
           nickname: null,
           avatar: null,
-          addedAt: Number(record?.updatedAt) || nowTs(),
+          addedAt: Math.floor((Number(record?.updatedAt) || Date.now()) / 1000),
           profileUpdatedAt: null,
           profileVersion: null,
           conversation: {
