@@ -6279,6 +6279,16 @@ async function handleContactsRoutes(req, env) {
       ).bind(accountDigest, peerDigest));
     }
 
+    // Delete slot-based rows by slot_id (used when user deletes a contact)
+    const deleteSlotIds = Array.isArray(body.deleteSlotIds) ? body.deleteSlotIds : [];
+    for (const sid of deleteSlotIds) {
+      const slotId = typeof sid === 'string' ? sid.trim() : '';
+      if (!slotId) continue;
+      stmts.push(env.DB.prepare(
+        `DELETE FROM contacts WHERE owner_digest=?1 AND peer_digest=?2`
+      ).bind(accountDigest, slotId));
+    }
+
     if (stmts.length) {
       try {
         const results = await env.DB.batch(stmts);

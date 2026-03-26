@@ -23,12 +23,13 @@ function withDeviceHeaders() {
   return deviceId ? { 'x-device-id': deviceId } : {};
 }
 
-export async function friendsDeleteContact({ peerAccountDigest, conversationId, targetDeviceId } = {}) {
+export async function friendsDeleteContact({ peerAccountDigest, conversationId, targetDeviceId, slotId } = {}) {
   const digest = getAccountDigest();
   if (!digest) throw new Error('Not unlocked: account missing');
   const payload = withAccount({ peer_account_digest: peerAccountDigest });
   if (conversationId) payload.conversation_id = conversationId;
   if (targetDeviceId) payload.target_device_id = targetDeviceId;
+  if (slotId) payload.slotId = slotId;
   const { r, data } = await fetchJSON('/api/v1/friends/delete', payload, withDeviceHeaders());
   if (!r.ok) {
     const msg = formatErrorMessage(data, 'delete contact failed', r.status);
