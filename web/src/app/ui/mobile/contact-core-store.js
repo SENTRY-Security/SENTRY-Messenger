@@ -1,7 +1,7 @@
 import { normalizeAccountDigest, normalizePeerDeviceId, getMkRaw, normalizePeerIdentity } from '../../core/store.js';
 import { sessionStore } from './session-store.js';
 import { DEBUG } from './debug-flags.js';
-import { updateContactProfile } from '../../core/contact-secrets.js';
+import { updateContactProfile, isContactTombstoned } from '../../core/contact-secrets.js';
 
 const coreMap = new Map();
 
@@ -265,6 +265,13 @@ export function upsertContactCore(fields, sourceTag = 'unknown') {
   const inputSummary = summarizeCoreInputs(fields);
   const payload = normalizeCoreInput({ ...fields, sourceTag });
   const { peerKey, peerAccountDigest, peerDeviceId } = payload;
+  // Guard: never resurrect a contact that the user has deleted.
+  // The tombstone is checked here (the single choke-point) so every caller
+  // — entry-incoming, message-flow-controller, conversation-threads, etc. —
+  // is protected without needing individual guards.
+  if (peerAccountDigest && isContactTombstoned(peerAccountDigest)) {
+    return null;
+  }
   const conversationIdIncoming = payload.conversationId || null;
   const conversationTokenIncoming = payload.conversationToken || null;
   const missingFields = [];
