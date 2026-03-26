@@ -22,7 +22,7 @@ import { decryptContactPayload, encryptContactPayload, isContactShareEnvelope } 
 import { getContactSecret, setContactSecret, clearContactTombstone, isContactTombstoned } from '../core/contact-secrets.js';
 import { log, logCapped } from '../core/log.js';
 import { upsertContactCore, findContactCoreByAccountDigest, resolveContactAvatarUrl, listContactCoreEntries } from '../ui/mobile/contact-core-store.js';
-import { restorePendingInvites, persistPendingInvites } from '../ui/mobile/session-store.js';
+import { restorePendingInvites, persistPendingInvites, sessionStore } from '../ui/mobile/session-store.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';
 
 const CONTACT_INFO_TAG = 'contact/v1';
@@ -461,11 +461,46 @@ export async function loadContacts() {
     const rawEntries = d1Contacts || [];
     console.log('[contacts] D1 Restore:', rawEntries.length);
 
-    d1Entries = rawEntries.map(c => ({
-      ...c,
-      conversation: c.conversation,
-      msgId: 'restored-from-d1'
-    }));
+    // Cross-reference: contact-secrets backup (already hydrated before this
+    // function runs) is the authoritative list of which contacts should exist.
+    // If D1 has a row but the secrets backup does NOT contain that peer, it
+    // means the contact was deleted and the D1 row is stale.  We skip it and
+    // clean up the D1 row in the background.
+    const secretsMap = sessionStore.contactSecrets instanceof Map ? sessionStore.contactSecrets : null;
+
+    for (const c of rawEntries) {
+      const peerDigest = normalizeAccountDigest(c.peerAccountDigest);
+      if (!peerDigest) continue;
+      if (selfDigest && peerDigest === selfDigest) continue;
+
+      // Check if contact-secrets backup has ANY entry for this peer
+      let hasSecret = false;
+      if (secretsMap && secretsMap.size > 0) {
+        for (const k of secretsMap.keys()) {
+          if (k.startsWith(peerDigest + '::') || k === peerDigest) {
+            hasSecret = true;
+            break;
+          }
+        }
+      }
+
+      // If secrets backup has entries but this peer is NOT in it → stale D1 row
+      if (secretsMap && secretsMap.size > 0 && !hasSecret) {
+        console.log('[contacts] D1 stale row detected (not in secrets backup), cleaning:', peerDigest);
+        deleteContactFromD1(peerDigest).catch(err =>
+          console.warn('[contacts] stale D1 cleanup failed', err)
+        );
+        continue;
+      }
+
+      d1Entries.push({
+        ...c,
+        conversation: c.conversation,
+        msgId: 'restored-from-d1'
+      });
+    }
+
+    console.log('[contacts] D1 after filtering:', d1Entries.length);
 
     // Re-inject conversation secrets and core store.
     // Vault backup restore (hydrateContactSecretsFromBackup) has already run
