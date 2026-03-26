@@ -6329,6 +6329,18 @@ async function handleContactsRoutes(req, env) {
         return json({ error: 'UpsertFailed', message: err?.message || 'db error' }, { status: 500 });
       }
     }
+
+    // Clear any deletion markers for contacts that were just upserted.
+    // This handles the re-add-after-delete scenario: if A deletes B and
+    // later re-adds B, the stale marker must not block the re-added contact.
+    if (contacts.length > 0) {
+      try {
+        await env.DB.prepare(
+          `DELETE FROM contact_deletion_markers WHERE owner_digest = ?1`
+        ).bind(accountDigest).run();
+      } catch { /* table may not exist yet */ }
+    }
+
     return json({ ok: true, count });
   }
 
