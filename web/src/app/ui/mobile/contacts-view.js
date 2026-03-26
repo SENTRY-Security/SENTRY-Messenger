@@ -7,6 +7,7 @@ import { deleteContactSecret, getContactSecret, restoreContactSecrets, isContact
 import { triggerContactSecretsBackup } from '../../features/contact-backup.js';
 import { hydrateConversationsFromSecrets } from './session-store.js';
 import { bootstrapDrFromGuestBundle } from '../../features/dr-session.js';
+import { computeContactSlotId, deleteContactFromD1 } from '../../features/contacts.js';
 import { getAccountDigest, ensureDeviceId, normalizePeerIdentity, clearDrState, normalizeAccountDigest, normalizeDeviceId } from '../../core/store.js';
 import { resetSecureConversation } from '../../features/secure-conversation-manager.js';
 import { markConversationTombstone } from '../../features/messages-support/conversation-tombstone-store.js';
@@ -303,6 +304,10 @@ export function initContactsView(options) {
     }
     if (mutated) {
       deleteContactSecret(key);
+      // Delete own D1 row so the contact doesn't reappear after re-login
+      deleteContactFromD1(accountOnly).catch((err) => {
+        log({ contactDeleteD1Error: err?.message || err, peerAccountDigest: key });
+      });
       // Update vault backup so the deleted secret is not restored on re-login
       triggerContactSecretsBackup('contact-deleted', { force: true }).catch((err) => {
         log({ contactDeleteBackupError: err?.message || err, peerAccountDigest: key });
@@ -379,7 +384,9 @@ export function initContactsView(options) {
           const convId = contactEntry?.conversationId || contactEntry?.conversation?.conversation_id || contactEntry?.conversation?.id || null;
           const peerDeviceId = contactEntry?.peerDeviceId || contactEntry?.conversation?.peerDeviceId || null;
           const accountDigestOnly = key.includes('::') ? key.split('::')[0] : key;
-          await friendsDeleteContact({ peerAccountDigest: accountDigestOnly, conversationId: convId || undefined, targetDeviceId: peerDeviceId || undefined });
+          let slotId = null;
+          try { slotId = await computeContactSlotId(accountDigestOnly); } catch {}
+          await friendsDeleteContact({ peerAccountDigest: accountDigestOnly, conversationId: convId || undefined, targetDeviceId: peerDeviceId || undefined, slotId: slotId || undefined });
           deletedContacts.add(accountDigestOnly);
           if (convId) markConversationTombstone(convId);
           clearDrState(

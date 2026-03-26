@@ -19,7 +19,7 @@ import {
 import { ensureDrSession } from './dr-session.js';
 import { normalizeNickname } from './profile.js';
 import { decryptContactPayload, encryptContactPayload, isContactShareEnvelope } from './contact-share.js';
-import { getContactSecret, setContactSecret, clearContactTombstone } from '../core/contact-secrets.js';
+import { getContactSecret, setContactSecret, clearContactTombstone, isContactTombstoned } from '../core/contact-secrets.js';
 import { log, logCapped } from '../core/log.js';
 import { upsertContactCore, findContactCoreByAccountDigest, resolveContactAvatarUrl, listContactCoreEntries } from '../ui/mobile/contact-core-store.js';
 import { restorePendingInvites, persistPendingInvites } from '../ui/mobile/session-store.js';
@@ -240,12 +240,14 @@ export async function applyContactShareFromCommit({
     return { ok: false, reasonCode: 'MISSING_PARAMS' };
   }
   // [FIX] Guard: never process a contact-share where peerAccountDigest is self.
-  // This happens when history replay processes OUTGOING contact-share messages —
-  // the sender (self) gets treated as the peer, overwriting the real contact entry
-  // with self's digest/nickname/avatar ("ghost self" bug).
   const selfDigest = normalizeAccountDigest(getAccountDigest() || null);
   if (selfDigest && digest === selfDigest) {
     return { ok: false, reasonCode: 'SELF_DIGEST_SKIP' };
+  }
+  // [FIX] Guard: reject contact-share for contacts the user has deleted.
+  // Without this, any incoming message from a deleted contact resurrects them.
+  if (isContactTombstoned(digest)) {
+    return { ok: false, reasonCode: 'CONTACT_DELETED_SKIP' };
   }
   let parsed = null;
   try {
@@ -380,8 +382,9 @@ export async function applyContactShareFromCommit({
     if (DEBUG.contactsA1) console.log('[contacts] diff check: no existing entry for', digest);
   }
 
-  // Clear persistent deletion tombstone so re-added contact survives page refresh
-  clearContactTombstone(digest);
+  // Note: clearContactTombstone is NOT called here — tombstone is only cleared
+  // when the user actively re-adds a friend (via contacts:readded event in
+  // share-controller).  Incoming contact-share messages must not clear it.
 
   try {
     upsertContactCore(corePayload, sourceTag);
@@ -902,6 +905,32 @@ export async function uplinkContactToD1(contactEntry, { isBlocked = false } = {}
     }, { 'X-Device-Id': ensureDeviceId() });
   } catch (err) {
     console.warn('[contacts] uplink failed', err);
+  }
+}
+
+export async function computeContactSlotId(peerDigest) {
+  const mk = getMkRaw();
+  if (!mk || !peerDigest) return null;
+  const slotKey = await deriveContactSlotKey(mk);
+  return await deriveContactSlotId(slotKey, peerDigest);
+}
+
+export async function deleteContactFromD1(peerDigest) {
+  const mk = getMkRaw();
+  const accountToken = getAccountToken();
+  if (!mk || !accountToken || !peerDigest) return;
+  const slotKey = await deriveContactSlotKey(mk);
+  const slotId = await deriveContactSlotId(slotKey, peerDigest);
+  if (!slotId) return;
+  try {
+    await fetchJSON('/api/v1/contacts/uplink', {
+      accountToken,
+      contacts: [],
+      migratedPeerDigests: [peerDigest],
+      deleteSlotIds: [slotId]
+    }, { 'X-Device-Id': ensureDeviceId() });
+  } catch (err) {
+    console.warn('[contacts] D1 delete failed', err);
   }
 }
 
