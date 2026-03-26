@@ -22,7 +22,7 @@ import { decryptContactPayload, encryptContactPayload, isContactShareEnvelope } 
 import { getContactSecret, setContactSecret, clearContactTombstone } from '../core/contact-secrets.js';
 import { log, logCapped } from '../core/log.js';
 import { upsertContactCore, findContactCoreByAccountDigest, resolveContactAvatarUrl, listContactCoreEntries } from '../ui/mobile/contact-core-store.js';
-import { restorePendingInvites, persistPendingInvites } from '../ui/mobile/session-store.js';
+import { restorePendingInvites, persistPendingInvites, sessionStore } from '../ui/mobile/session-store.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';
 
 const CONTACT_INFO_TAG = 'contact/v1';
@@ -452,13 +452,13 @@ export async function loadContacts() {
   const DEBUG_CONTACTS_A1 = DEBUG.contactsA1 === true;
 
   // [Store Only] D1/R2 Architecture
+  let d1Entries = [];
   try {
     const d1Contacts = await downlinkContactsFromD1();
-    // Strict Mode: Use D1 results directly (even if empty). No fallback.
     const rawEntries = d1Contacts || [];
     console.log('[contacts] D1 Restore:', rawEntries.length);
 
-    const entries = rawEntries.map(c => ({
+    d1Entries = rawEntries.map(c => ({
       ...c,
       conversation: c.conversation,
       msgId: 'restored-from-d1'
@@ -469,7 +469,7 @@ export async function loadContacts() {
     // and is the primary source of conversationToken.  D1 restore provides
     // per-contact metadata (nickname, avatar) and also carries the token as
     // a secondary write — but only when peerDeviceId is present in the blob.
-    entries.forEach(e => {
+    d1Entries.forEach(e => {
       const peerDevId = e.conversation?.peerDeviceId || null;
 
       if (e.conversation?.token_b64 && peerDevId) {
@@ -488,14 +488,69 @@ export async function loadContacts() {
       if (corePayload) upsertContactCore(corePayload, 'd1-restore');
     });
 
-    lastContactsHydrateSummary = { ok: true, peerCount: entries.length, source: 'D1' };
-    return entries;
-
   } catch (err) {
     console.warn('[contacts] D1 download failed', err);
-    // Strict Mode: If D1 fails, return empty. Do not fall back to legacy message scan.
-    return [];
   }
+
+  // Recovery: if D1 returned 0 contacts, reconstruct from contact-secrets
+  // backup (already hydrated earlier in the login flow).  This covers the
+  // case where D1 uplink previously failed (e.g. NOT-NULL constraint bug)
+  // but the contact-secrets backup succeeded.
+  if (d1Entries.length === 0) {
+    const secretsMap = sessionStore.contactSecrets instanceof Map ? sessionStore.contactSecrets : null;
+    if (secretsMap && secretsMap.size > 0) {
+      console.log('[contacts] D1 empty — recovering from contact-secrets backup:', secretsMap.size, 'entries');
+      const recovered = [];
+      for (const [peerKey, record] of secretsMap.entries()) {
+        if (!peerKey || !peerKey.includes('::')) continue;
+        const [peerDigest, peerDevId] = peerKey.split('::');
+        if (!peerDigest || !peerDevId) continue;
+        if (selfDigest && peerDigest.toUpperCase() === selfDigest) continue;
+
+        const token = record?.conversationToken || null;
+        const convId = record?.conversationId || null;
+        if (!token || !convId) continue;
+
+        const entry = {
+          peerAccountDigest: peerDigest.toUpperCase(),
+          nickname: null,
+          avatar: null,
+          addedAt: Number(record?.updatedAt) || nowTs(),
+          profileUpdatedAt: null,
+          profileVersion: null,
+          conversation: {
+            token_b64: token,
+            conversation_id: convId,
+            peerDeviceId: peerDevId,
+            dr_init: record?.conversationDrInit || null
+          },
+          msgId: 'recovered-from-secrets'
+        };
+
+        // Re-inject into core store
+        const corePayload = buildContactCorePayload(entry, peerDevId);
+        if (corePayload) {
+          upsertContactCore(corePayload, 'secrets-recovery');
+          recovered.push(entry);
+        }
+      }
+
+      if (recovered.length > 0) {
+        console.log('[contacts] Recovered', recovered.length, 'contacts from secrets — uploading to D1');
+        // Background: uplink recovered contacts to D1 so next login is clean
+        for (const entry of recovered) {
+          uplinkContactToD1(entry).catch(err =>
+            console.warn('[contacts] recovery uplink failed', err)
+          );
+        }
+        lastContactsHydrateSummary = { ok: true, peerCount: recovered.length, source: 'secrets-recovery' };
+        return recovered;
+      }
+    }
+  }
+
+  lastContactsHydrateSummary = { ok: true, peerCount: d1Entries.length, source: 'D1' };
+  return d1Entries;
 }
 
 export async function flushPendingContactShares({ mk } = {}) {
