@@ -8379,10 +8379,12 @@ async function handlePublicRoutes(req, env) {
     const peerDigest = normalizeAccountDigest(body?.peer_account_digest || body?.peerAccountDigest);
     if (!peerDigest) return json({ error: 'BadRequest', message: 'peer_account_digest required' }, { status: 400 });
     const conversationId = body?.conversation_id || body?.conversationId || null;
+    const slotId = typeof body?.slotId === 'string' ? body.slotId.trim() : '';
     const intBody = {
       ownerAccountDigest: auth.accountDigest,
       peerAccountDigest: peerDigest,
-      ...(conversationId ? { conversationId } : {})
+      ...(conversationId ? { conversationId } : {}),
+      ...(slotId ? { slotId } : {})
     };
     const result = await handleFriendsRoutes(internalRequest('/d1/friends/contact-delete', 'POST', intBody, baseUrl), env);
     // WS notifications: contact removed
