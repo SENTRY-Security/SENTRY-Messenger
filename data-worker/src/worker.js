@@ -6240,12 +6240,15 @@ async function handleContactsRoutes(req, env) {
         // Use slot_id as peer_digest placeholder — the real peer identity lives
         // inside the encrypted_blob.  This satisfies the NOT NULL + PRIMARY KEY
         // constraints on the existing contacts table without a schema migration.
+        // ON CONFLICT targets the PRIMARY KEY (owner_digest, peer_digest) because
+        // the partial unique index on (owner_digest, slot_id) WHERE slot_id IS NOT NULL
+        // cannot be matched by a bare ON CONFLICT without repeating the WHERE clause.
         stmts.push(env.DB.prepare(`
           INSERT INTO contacts (owner_digest, slot_id, peer_digest, encrypted_blob, is_blocked, updated_at)
           VALUES (?1, ?2, ?2, ?3, 0, CAST(strftime('%s','now') / 86400 * 86400 AS INTEGER))
-          ON CONFLICT(owner_digest, slot_id) DO UPDATE SET
+          ON CONFLICT(owner_digest, peer_digest) DO UPDATE SET
+            slot_id = excluded.slot_id,
             encrypted_blob = COALESCE(excluded.encrypted_blob, contacts.encrypted_blob),
-            peer_digest = excluded.peer_digest,
             is_blocked = 0,
             updated_at = CAST(strftime('%s','now') / 86400 * 86400 AS INTEGER)
         `).bind(accountDigest, slotId, blob));
