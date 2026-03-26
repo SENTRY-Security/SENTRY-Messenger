@@ -279,11 +279,14 @@ export function initContactsView(options) {
     return true;
   }
 
+  // Returns a promise that resolves when D1 + backup cleanup are done.
+  // Callers that need guaranteed persistence should await the result.
   function removeContactState(peerAccountDigest, { notifyPeer = true } = {}) {
     const key = contactKey(peerAccountDigest);
-    if (!key) return false;
+    if (!key) return Promise.resolve(false);
     const accountOnly = key.includes('::') ? key.split('::')[0] : key;
     let mutated = false;
+    let cleanupPromise = Promise.resolve();
     const idx = sessionStore.contactState.findIndex((c) => {
       return contactKey(c) === key;
     });
@@ -304,14 +307,17 @@ export function initContactsView(options) {
     }
     if (mutated) {
       deleteContactSecret(key);
-      // Delete own D1 row so the contact doesn't reappear after re-login
-      deleteContactFromD1(accountOnly).catch((err) => {
+      // Delete own D1 row + update vault backup.  Store the promises so callers
+      // (e.g. WS handler) can await them to guarantee persistence before the
+      // user closes the tab.
+      const _d1Delete = deleteContactFromD1(accountOnly).catch((err) => {
         log({ contactDeleteD1Error: err?.message || err, peerAccountDigest: key });
       });
-      // Update vault backup so the deleted secret is not restored on re-login
-      triggerContactSecretsBackup('contact-deleted', { force: true }).catch((err) => {
+      const _backupSync = triggerContactSecretsBackup('contact-deleted', { force: true }).catch((err) => {
         log({ contactDeleteBackupError: err?.message || err, peerAccountDigest: key });
       });
+      // Attach cleanup promise to the return value
+      cleanupPromise = Promise.all([_d1Delete, _backupSync]);
       // [FIX] Tombstone the old conversation so it is not resurrected on reload.
       // The manual delete path (confirmDeleteContact) already does this, but
       // the WS-triggered path was missing it.
@@ -354,7 +360,8 @@ export function initContactsView(options) {
         log({ contactRemovedEventError: err?.message || err });
       }
     }
-    return mutated;
+    // Return the cleanup promise so callers can await D1 + backup persistence
+    return cleanupPromise.then(() => mutated);
   }
 
   function removeContactLocal(peerAccountDigest) {
@@ -1424,7 +1431,9 @@ export function initContactsView(options) {
     if (!detail || detail.notifyPeer) return;
     const peer = contactKey(detail.peerAccountDigest || detail.peer || detail.peerDigest);
     if (!peer) return;
-    removeContactState(peer, { notifyPeer: false });
+    // Expose the cleanup promise so the WS handler can await it
+    const promise = removeContactState(peer, { notifyPeer: false });
+    if (typeof window !== 'undefined') window.__contactRemovalCleanup = promise;
   });
   // When a previously deleted contact is re-added, clear the deletion guards
   // so the contact can appear in the UI again.

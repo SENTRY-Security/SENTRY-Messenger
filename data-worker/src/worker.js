@@ -2957,33 +2957,6 @@ async function handleFriendsRoutes(req, env) {
       results.push({ convId: 'dm', removed: dmRemoved, conversationIds: Array.from(dmConversationIds) });
     }
 
-    // 3. Record a server-side deletion marker so the peer's next downlink
-    //    can filter out stale D1 rows even if the WS-triggered client-side
-    //    cleanup didn't complete before the peer closed the tab.
-    try {
-      await env.DB.prepare(`
-        CREATE TABLE IF NOT EXISTS contact_deletion_markers (
-          owner_digest TEXT NOT NULL,
-          deleted_peer_digest TEXT NOT NULL,
-          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-          PRIMARY KEY (owner_digest, deleted_peer_digest)
-        )
-      `).run();
-      // Mark deletion for BOTH directions
-      await env.DB.batch([
-        env.DB.prepare(`
-          INSERT INTO contact_deletion_markers (owner_digest, deleted_peer_digest)
-          VALUES (?1, ?2) ON CONFLICT DO NOTHING
-        `).bind(ownerAccountDigest, peerAccountDigest),
-        env.DB.prepare(`
-          INSERT INTO contact_deletion_markers (owner_digest, deleted_peer_digest)
-          VALUES (?1, ?2) ON CONFLICT DO NOTHING
-        `).bind(peerAccountDigest, ownerAccountDigest)
-      ]);
-    } catch (err) {
-      console.warn('contact_deletion_marker_failed', err?.message || err);
-    }
-
     return json({ ok: true, ts: now, results });
   }
 
@@ -6330,17 +6303,6 @@ async function handleContactsRoutes(req, env) {
       }
     }
 
-    // Clear any deletion markers for contacts that were just upserted.
-    // This handles the re-add-after-delete scenario: if A deletes B and
-    // later re-adds B, the stale marker must not block the re-added contact.
-    if (contacts.length > 0) {
-      try {
-        await env.DB.prepare(
-          `DELETE FROM contact_deletion_markers WHERE owner_digest = ?1`
-        ).bind(accountDigest).run();
-      } catch { /* table may not exist yet */ }
-    }
-
     return json({ ok: true, count });
   }
 
@@ -6371,27 +6333,7 @@ async function handleContactsRoutes(req, env) {
         updated_at: Number(r.updated_at) || 0
       }));
 
-      // Check for pending deletion markers — return them so the client
-      // can skip and clean up stale D1 rows even if the WS-triggered
-      // cleanup didn't complete before the user closed the tab.
-      let deletedPeers = [];
-      try {
-        const delRows = await env.DB.prepare(`
-          SELECT deleted_peer_digest FROM contact_deletion_markers
-           WHERE owner_digest = ?1
-        `).bind(accountDigest).all();
-        deletedPeers = (delRows?.results || []).map(r => r.deleted_peer_digest);
-        // Clean up markers after reading (one-shot)
-        if (deletedPeers.length > 0) {
-          await env.DB.prepare(`
-            DELETE FROM contact_deletion_markers WHERE owner_digest = ?1
-          `).bind(accountDigest).run();
-        }
-      } catch {
-        // Table might not exist yet — that's fine
-      }
-
-      return json({ ok: true, contacts, deletedPeers });
+      return json({ ok: true, contacts });
     } catch (err) {
       console.error('contacts_snapshot_failed', err);
       return json({ error: 'SnapshotFailed', message: err?.message }, { status: 500 });
@@ -9270,6 +9212,28 @@ async function handlePublicRoutes(req, env) {
     if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
     const qs = `?accountDigest=${auth.accountDigest}`;
     return handleContactsRoutes(internalRequest(`/d1/contacts/snapshot${qs}`, 'GET', null, baseUrl), env);
+  }
+
+  // POST /api/v1/conversations/verify — check which conversation IDs still have ACL entries
+  if (path === '/api/v1/conversations/verify' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const ids = Array.isArray(body?.conversationIds) ? body.conversationIds : [];
+    if (!ids.length) return json({ ok: true, alive: [] });
+    await ensureDataTables(env);
+    const alive = [];
+    // Batch check: only return IDs where the requesting account has ACL access
+    for (const cid of ids.slice(0, 100)) {
+      const convId = typeof cid === 'string' ? cid.trim() : '';
+      if (!convId) continue;
+      try {
+        const row = await env.DB.prepare(
+          `SELECT 1 FROM conversation_acl WHERE conversation_id=?1 AND account_digest=?2 LIMIT 1`
+        ).bind(convId, auth.accountDigest).first();
+        if (row) alive.push(convId);
+      } catch { /* skip */ }
+    }
+    return json({ ok: true, alive });
   }
 
   // POST /api/v1/contacts/avatar/sign-put — get presigned upload URL for avatar

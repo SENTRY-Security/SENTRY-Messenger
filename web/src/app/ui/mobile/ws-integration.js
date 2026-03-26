@@ -560,22 +560,26 @@ export function createWsIntegration({ deps }) {
     }
     if (type === 'contact-removed') {
       if (!isTargetingThisDevice(msg)) return;
-      // [FIX] Build composite key from peerAccountDigest + senderDeviceId.
-      // The server sends senderDeviceId (the device of the person who deleted us),
-      // which is the peerDeviceId from our perspective. resolveWsPeer only passes
-      // peerAccountDigest without deviceId, causing normalizePeerIdentity to return
-      // key=null and the event was never dispatched.
       const peerDigest = normalizeAccountDigest(msg.peerAccountDigest || msg.fromAccountDigest || '');
       const peerDevId = normalizePeerDeviceId(msg.senderDeviceId || '');
       const peerAccountDigest = peerDigest && peerDevId ? `${peerDigest}::${peerDevId}` : peerDigest;
       if (peerAccountDigest) {
         try {
+          // Dispatch event (sync) then AWAIT the cleanup (D1 delete + backup)
+          // so persistence is guaranteed before the user can close the tab.
           document.dispatchEvent(new CustomEvent('contacts:removed', { detail: { peerAccountDigest, notifyPeer: false } }));
-          // Refresh conversation list so the deleted contact's thread disappears
-          if (typeof window !== 'undefined') window.__refreshContacts?.();
         } catch (err) {
           log({ contactRemovedEventError: err?.message || err, peerAccountDigest });
         }
+        // __contactRemovalCleanup is set by contacts-view to expose the
+        // awaitable cleanup promise from removeContactState.
+        try {
+          const cleanup = window.__contactRemovalCleanup;
+          if (cleanup instanceof Promise) await cleanup;
+        } catch {}
+        try {
+          if (typeof window !== 'undefined') window.__refreshContacts?.();
+        } catch {}
       }
       return;
     }

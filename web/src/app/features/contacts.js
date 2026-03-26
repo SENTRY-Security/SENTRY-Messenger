@@ -461,15 +461,47 @@ export async function loadContacts() {
     const rawEntries = d1Contacts || [];
     console.log('[contacts] D1 Restore:', rawEntries.length);
 
-    // Deletion filtering is handled server-side via contact_deletion_markers.
-    // downlinkContactsFromD1() already skips contacts flagged by the server.
-    d1Entries = rawEntries.map(c => ({
-      ...c,
-      conversation: c.conversation,
-      msgId: 'restored-from-d1'
-    }));
+    // Orphan detection: when a contact is deleted, the server removes the
+    // DM conversation data (conversation_acl, messages).  If a D1 contact
+    // row survives (client-side cleanup didn't finish), we detect it here
+    // by verifying conversation_ids with the server — no metadata stored.
+    const convIds = rawEntries
+      .map(c => c.conversation?.conversation_id)
+      .filter(Boolean);
+    let orphanConvIds = new Set();
+    if (convIds.length > 0) {
+      try {
+        const { r: vr, data: vd } = await fetchJSON('/api/v1/conversations/verify', {
+          accountToken: getAccountToken(),
+          conversationIds: convIds
+        }, { 'X-Device-Id': ensureDeviceId() });
+        if (vr.ok && Array.isArray(vd?.alive)) {
+          const aliveSet = new Set(vd.alive);
+          orphanConvIds = new Set(convIds.filter(id => !aliveSet.has(id)));
+        }
+      } catch (err) {
+        console.warn('[contacts] conversation verify failed', err);
+      }
+    }
 
-    console.log('[contacts] D1 after filtering:', d1Entries.length);
+    for (const c of rawEntries) {
+      const convId = c.conversation?.conversation_id;
+      if (convId && orphanConvIds.has(convId)) {
+        console.log('[contacts] orphan contact detected (conversation deleted):', convId);
+        const peerDigest = normalizeAccountDigest(c.peerAccountDigest);
+        if (peerDigest) {
+          deleteContactFromD1(peerDigest).catch(() => {});
+        }
+        continue;
+      }
+      d1Entries.push({
+        ...c,
+        conversation: c.conversation,
+        msgId: 'restored-from-d1'
+      });
+    }
+
+    console.log('[contacts] D1 after orphan filtering:', d1Entries.length);
 
     // Re-inject conversation secrets and core store.
     // Vault backup restore (hydrateContactSecretsFromBackup) has already run
@@ -959,17 +991,6 @@ export async function downlinkContactsFromD1() {
   const entries = [];
   const legacyRowsToMigrate = []; // legacy rows that need re-upload in new format
 
-  // Server-side deletion markers: peers that were deleted while the client
-  // was offline or before the WS-triggered cleanup could complete.
-  const deletedPeers = new Set(
-    (Array.isArray(data?.deletedPeers) ? data.deletedPeers : [])
-      .map(d => normalizeAccountDigest(d))
-      .filter(Boolean)
-  );
-  if (deletedPeers.size > 0) {
-    console.log('[contacts] server-side deletion markers:', Array.from(deletedPeers));
-  }
-
   for (const row of contacts) {
     try {
       const encryptedBlob = row.encryptedBlob || row.encrypted_blob;
@@ -983,15 +1004,6 @@ export async function downlinkContactsFromD1() {
       // Determine peerAccountDigest: new format stores it inside blob, legacy in row
       const peerAccountDigest = decrypted.peerDigest || legacyPeerDigest;
       const isBlocked = decrypted.isBlocked ?? row.isBlocked ?? row.is_blocked ?? false;
-
-      // Skip contacts that have a server-side deletion marker
-      const normalizedPeer = normalizeAccountDigest(peerAccountDigest);
-      if (normalizedPeer && deletedPeers.has(normalizedPeer)) {
-        console.log('[contacts] skipping deleted peer from D1:', normalizedPeer);
-        // Clean up the stale D1 row in background
-        deleteContactFromD1(normalizedPeer).catch(() => {});
-        continue;
-      }
 
       const entry = {
         peerAccountDigest,
