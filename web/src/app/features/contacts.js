@@ -22,7 +22,7 @@ import { decryptContactPayload, encryptContactPayload, isContactShareEnvelope } 
 import { getContactSecret, setContactSecret, clearContactTombstone, isContactTombstoned } from '../core/contact-secrets.js';
 import { log, logCapped } from '../core/log.js';
 import { upsertContactCore, findContactCoreByAccountDigest, resolveContactAvatarUrl, listContactCoreEntries } from '../ui/mobile/contact-core-store.js';
-import { restorePendingInvites, persistPendingInvites, sessionStore } from '../ui/mobile/session-store.js';
+import { restorePendingInvites, persistPendingInvites } from '../ui/mobile/session-store.js';
 import { DEBUG } from '../ui/mobile/debug-flags.js';
 
 const CONTACT_INFO_TAG = 'contact/v1';
@@ -461,44 +461,13 @@ export async function loadContacts() {
     const rawEntries = d1Contacts || [];
     console.log('[contacts] D1 Restore:', rawEntries.length);
 
-    // Cross-reference: contact-secrets backup (already hydrated before this
-    // function runs) is the authoritative list of which contacts should exist.
-    // If D1 has a row but the secrets backup does NOT contain that peer, it
-    // means the contact was deleted and the D1 row is stale.  We skip it and
-    // clean up the D1 row in the background.
-    const secretsMap = sessionStore.contactSecrets instanceof Map ? sessionStore.contactSecrets : null;
-
-    for (const c of rawEntries) {
-      const peerDigest = normalizeAccountDigest(c.peerAccountDigest);
-      if (!peerDigest) continue;
-      if (selfDigest && peerDigest === selfDigest) continue;
-
-      // Check if contact-secrets backup has ANY entry for this peer
-      let hasSecret = false;
-      if (secretsMap && secretsMap.size > 0) {
-        for (const k of secretsMap.keys()) {
-          if (k.startsWith(peerDigest + '::') || k === peerDigest) {
-            hasSecret = true;
-            break;
-          }
-        }
-      }
-
-      // If secrets backup has entries but this peer is NOT in it → stale D1 row
-      if (secretsMap && secretsMap.size > 0 && !hasSecret) {
-        console.log('[contacts] D1 stale row detected (not in secrets backup), cleaning:', peerDigest);
-        deleteContactFromD1(peerDigest).catch(err =>
-          console.warn('[contacts] stale D1 cleanup failed', err)
-        );
-        continue;
-      }
-
-      d1Entries.push({
-        ...c,
-        conversation: c.conversation,
-        msgId: 'restored-from-d1'
-      });
-    }
+    // Deletion filtering is handled server-side via contact_deletion_markers.
+    // downlinkContactsFromD1() already skips contacts flagged by the server.
+    d1Entries = rawEntries.map(c => ({
+      ...c,
+      conversation: c.conversation,
+      msgId: 'restored-from-d1'
+    }));
 
     console.log('[contacts] D1 after filtering:', d1Entries.length);
 
@@ -990,6 +959,17 @@ export async function downlinkContactsFromD1() {
   const entries = [];
   const legacyRowsToMigrate = []; // legacy rows that need re-upload in new format
 
+  // Server-side deletion markers: peers that were deleted while the client
+  // was offline or before the WS-triggered cleanup could complete.
+  const deletedPeers = new Set(
+    (Array.isArray(data?.deletedPeers) ? data.deletedPeers : [])
+      .map(d => normalizeAccountDigest(d))
+      .filter(Boolean)
+  );
+  if (deletedPeers.size > 0) {
+    console.log('[contacts] server-side deletion markers:', Array.from(deletedPeers));
+  }
+
   for (const row of contacts) {
     try {
       const encryptedBlob = row.encryptedBlob || row.encrypted_blob;
@@ -1003,6 +983,15 @@ export async function downlinkContactsFromD1() {
       // Determine peerAccountDigest: new format stores it inside blob, legacy in row
       const peerAccountDigest = decrypted.peerDigest || legacyPeerDigest;
       const isBlocked = decrypted.isBlocked ?? row.isBlocked ?? row.is_blocked ?? false;
+
+      // Skip contacts that have a server-side deletion marker
+      const normalizedPeer = normalizeAccountDigest(peerAccountDigest);
+      if (normalizedPeer && deletedPeers.has(normalizedPeer)) {
+        console.log('[contacts] skipping deleted peer from D1:', normalizedPeer);
+        // Clean up the stale D1 row in background
+        deleteContactFromD1(normalizedPeer).catch(() => {});
+        continue;
+      }
 
       const entry = {
         peerAccountDigest,

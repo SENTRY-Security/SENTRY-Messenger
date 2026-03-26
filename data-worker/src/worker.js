@@ -2898,11 +2898,15 @@ async function handleFriendsRoutes(req, env) {
             `DELETE FROM contacts WHERE owner_digest=?1 AND peer_digest=?2`
           ).bind(convOwner, entry.targetAccountDigest).run();
           // Delete new-format rows (slot_id based) — client provides slotId if available
-          const slotId = typeof body?.slotId === 'string' ? body.slotId.trim() : '';
-          if (slotId) {
-            await env.DB.prepare(
-              `DELETE FROM contacts WHERE owner_digest=?1 AND slot_id=?2`
-            ).bind(convOwner, slotId).run();
+          // Only use slotId for the owner's own rows (convOwner === ownerAccountDigest)
+          // because the slotId is derived from the owner's MK.
+          if (convOwner === ownerAccountDigest) {
+            const slotId = typeof body?.slotId === 'string' ? body.slotId.trim() : '';
+            if (slotId) {
+              await env.DB.prepare(
+                `DELETE FROM contacts WHERE owner_digest=?1 AND slot_id=?2`
+              ).bind(convOwner, slotId).run();
+            }
           }
         } catch (err) {
           console.warn('contact_row_delete_failed', err?.message || err);
@@ -2951,6 +2955,33 @@ async function handleFriendsRoutes(req, env) {
     }
     if (dmRemoved > 0) {
       results.push({ convId: 'dm', removed: dmRemoved, conversationIds: Array.from(dmConversationIds) });
+    }
+
+    // 3. Record a server-side deletion marker so the peer's next downlink
+    //    can filter out stale D1 rows even if the WS-triggered client-side
+    //    cleanup didn't complete before the peer closed the tab.
+    try {
+      await env.DB.prepare(`
+        CREATE TABLE IF NOT EXISTS contact_deletion_markers (
+          owner_digest TEXT NOT NULL,
+          deleted_peer_digest TEXT NOT NULL,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          PRIMARY KEY (owner_digest, deleted_peer_digest)
+        )
+      `).run();
+      // Mark deletion for BOTH directions
+      await env.DB.batch([
+        env.DB.prepare(`
+          INSERT INTO contact_deletion_markers (owner_digest, deleted_peer_digest)
+          VALUES (?1, ?2) ON CONFLICT DO NOTHING
+        `).bind(ownerAccountDigest, peerAccountDigest),
+        env.DB.prepare(`
+          INSERT INTO contact_deletion_markers (owner_digest, deleted_peer_digest)
+          VALUES (?1, ?2) ON CONFLICT DO NOTHING
+        `).bind(peerAccountDigest, ownerAccountDigest)
+      ]);
+    } catch (err) {
+      console.warn('contact_deletion_marker_failed', err?.message || err);
     }
 
     return json({ ok: true, ts: now, results });
@@ -6328,7 +6359,27 @@ async function handleContactsRoutes(req, env) {
         updated_at: Number(r.updated_at) || 0
       }));
 
-      return json({ ok: true, contacts });
+      // Check for pending deletion markers — return them so the client
+      // can skip and clean up stale D1 rows even if the WS-triggered
+      // cleanup didn't complete before the user closed the tab.
+      let deletedPeers = [];
+      try {
+        const delRows = await env.DB.prepare(`
+          SELECT deleted_peer_digest FROM contact_deletion_markers
+           WHERE owner_digest = ?1
+        `).bind(accountDigest).all();
+        deletedPeers = (delRows?.results || []).map(r => r.deleted_peer_digest);
+        // Clean up markers after reading (one-shot)
+        if (deletedPeers.length > 0) {
+          await env.DB.prepare(`
+            DELETE FROM contact_deletion_markers WHERE owner_digest = ?1
+          `).bind(accountDigest).run();
+        }
+      } catch {
+        // Table might not exist yet — that's fine
+      }
+
+      return json({ ok: true, contacts, deletedPeers });
     } catch (err) {
       console.error('contacts_snapshot_failed', err);
       return json({ error: 'SnapshotFailed', message: err?.message }, { status: 500 });
