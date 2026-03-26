@@ -6237,12 +6237,15 @@ async function handleContactsRoutes(req, env) {
       // Zero-Meta: updated_at truncated to day precision to reduce timing metadata.
       if (slotId) {
         // New format: slot_id based (peer_digest hidden inside encrypted_blob)
+        // Use slot_id as peer_digest placeholder — the real peer identity lives
+        // inside the encrypted_blob.  This satisfies the NOT NULL + PRIMARY KEY
+        // constraints on the existing contacts table without a schema migration.
         stmts.push(env.DB.prepare(`
           INSERT INTO contacts (owner_digest, slot_id, peer_digest, encrypted_blob, is_blocked, updated_at)
-          VALUES (?1, ?2, NULL, ?3, 0, CAST(strftime('%s','now') / 86400 * 86400 AS INTEGER))
+          VALUES (?1, ?2, ?2, ?3, 0, CAST(strftime('%s','now') / 86400 * 86400 AS INTEGER))
           ON CONFLICT(owner_digest, slot_id) DO UPDATE SET
             encrypted_blob = COALESCE(excluded.encrypted_blob, contacts.encrypted_blob),
-            peer_digest = NULL,
+            peer_digest = excluded.peer_digest,
             is_blocked = 0,
             updated_at = CAST(strftime('%s','now') / 86400 * 86400 AS INTEGER)
         `).bind(accountDigest, slotId, blob));
@@ -9178,7 +9181,8 @@ async function handlePublicRoutes(req, env) {
     const auth = await resolvePublicAuth(req, env, { body });
     if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
     const contacts = Array.isArray(body?.contacts) ? body.contacts : [];
-    const intBody = { accountDigest: auth.accountDigest, contacts };
+    const migratedPeerDigests = Array.isArray(body?.migratedPeerDigests) ? body.migratedPeerDigests : [];
+    const intBody = { accountDigest: auth.accountDigest, contacts, migratedPeerDigests };
     return handleContactsRoutes(internalRequest('/d1/contacts/upsert', 'POST', intBody, baseUrl), env);
   }
 
