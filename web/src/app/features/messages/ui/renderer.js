@@ -543,6 +543,24 @@ export class MessageRenderer {
         this._loadFilePreviewFallback(container, media, type, nameLower);
     }
 
+    /** Request backfill: emit event so external code can upload and patch the preview */
+    _requestPreviewBackfill(media, canvas) {
+        if (!media || !canvas || !canvas.width || !canvas.height) return;
+        // Only backfill if the message has enough metadata to identify it
+        const messageId = media._messageId || media.messageId || null;
+        const conversationId = media._conversationId || media.conversationId || null;
+        const messageKeyB64 = media.messageKey_b64 || media.message_key_b64 || null;
+        if (!messageId || !conversationId) return;
+        try {
+            canvas.toBlob((blob) => {
+                if (!blob) return;
+                document.dispatchEvent(new CustomEvent('media:preview-backfill', {
+                    detail: { messageId, conversationId, messageKeyB64, blob, width: canvas.width, height: canvas.height }
+                }));
+            }, 'image/jpeg', 0.82);
+        } catch { /* best-effort */ }
+    }
+
     /** Fallback: render file preview client-side (no pre-generated preview image) */
     _loadFilePreviewFallback(container, media, type, nameLower) {
         container.innerHTML = '';
@@ -554,7 +572,9 @@ export class MessageRenderer {
             pdf.dataset.previewState = 'loading';
             container.appendChild(pdf);
             container.appendChild(this._fileTypeBadge('PDF', '#dc2626'));
-            renderPdfThumbnail(media, pdf);
+            renderPdfThumbnail(media, pdf).then(() => {
+                if (pdf.dataset.previewState === 'ready') this._requestPreviewBackfill(media, pdf);
+            }).catch(() => {});
         } else if (isPptxMime(type) || isPptxFilename(media?.name)) {
             const pptxCanvas = document.createElement('canvas');
             pptxCanvas.className = 'message-file-preview-pdf';
@@ -562,7 +582,9 @@ export class MessageRenderer {
             pptxCanvas.dataset.previewState = 'loading';
             container.appendChild(pptxCanvas);
             container.appendChild(this._fileTypeBadge('PPTX', '#ea580c'));
-            this._renderPptxThumbnail(media, pptxCanvas, container);
+            this._renderPptxThumbnail(media, pptxCanvas, container).then(() => {
+                if (pptxCanvas.dataset.previewState === 'ready') this._requestPreviewBackfill(media, pptxCanvas);
+            }).catch(() => {});
         } else if (isWordMime(type) || isWordFilename(media?.name)) {
             const wordDiv = document.createElement('div');
             wordDiv.className = 'message-file-preview-generic';
