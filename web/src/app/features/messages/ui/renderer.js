@@ -571,6 +571,46 @@ export class MessageRenderer {
         } catch { /* best-effort */ }
     }
 
+    /** Convert an HTML element to a canvas via SVG foreignObject for backfill */
+    _htmlElementToCanvas(el) {
+        if (!el || !el.offsetWidth || !el.offsetHeight) return Promise.resolve(null);
+        const w = el.offsetWidth;
+        const h = el.offsetHeight;
+        const clone = el.cloneNode(true);
+        clone.querySelectorAll?.('script,iframe')?.forEach(n => n.remove());
+        const html = new XMLSerializer().serializeToString(clone);
+        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
+            `<foreignObject width="100%" height="100%">` +
+            `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${w}px;height:${h}px;overflow:hidden;background:#fff;">${html}</div>` +
+            `</foreignObject></svg>`;
+        const svgBlob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+        const url = URL.createObjectURL(svgBlob);
+        return new Promise((resolve) => {
+            const img = new Image();
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext('2d');
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, w, h);
+                ctx.drawImage(img, 0, 0);
+                URL.revokeObjectURL(url);
+                resolve(canvas);
+            };
+            img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+            img.src = url;
+        });
+    }
+
+    /** Request backfill from an HTML element (Word/Excel) by converting to canvas first */
+    _requestPreviewBackfillFromHtml(media, el) {
+        if (!media || !el) return;
+        this._htmlElementToCanvas(el).then(canvas => {
+            if (canvas) this._requestPreviewBackfill(media, canvas);
+        }).catch(() => {});
+    }
+
     /** Fallback: render file preview client-side (no pre-generated preview image) */
     _loadFilePreviewFallback(container, media, type, nameLower) {
         container.innerHTML = '';
@@ -600,13 +640,19 @@ export class MessageRenderer {
             wordDiv.className = 'message-file-preview-generic';
             wordDiv.innerHTML = '<svg class="icon file-type-icon" style="color:#2563eb"><use href="#i-file-text"/></svg>';
             container.appendChild(wordDiv);
-            this._renderWordThumbnail(media, wordDiv, container);
+            this._renderWordThumbnail(media, wordDiv, container).then(() => {
+                const rendered = container.firstElementChild;
+                if (rendered && rendered !== wordDiv) this._requestPreviewBackfillFromHtml(media, rendered);
+            }).catch(() => {});
         } else if (isExcelMime(type) || isExcelFilename(media?.name)) {
             const xlsDiv = document.createElement('div');
             xlsDiv.className = 'message-file-preview-generic';
             xlsDiv.innerHTML = '<svg class="icon file-type-icon" style="color:#16a34a"><use href="#i-file-spreadsheet"/></svg>';
             container.appendChild(xlsDiv);
-            this._renderExcelThumbnail(media, xlsDiv, container);
+            this._renderExcelThumbnail(media, xlsDiv, container).then(() => {
+                const rendered = container.firstElementChild;
+                if (rendered && rendered !== xlsDiv) this._requestPreviewBackfillFromHtml(media, rendered);
+            }).catch(() => {});
         }
     }
 
