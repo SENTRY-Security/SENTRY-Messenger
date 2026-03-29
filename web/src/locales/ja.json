@@ -856,6 +856,7 @@
     "adjustCropArea": "切り抜き範囲を調整",
     "overwriteOriginal": "元のファイルを上書き",
     "pdfPreview": "PDF プレビュー",
+    "pdfPasswordProtected": "🔒 パスワード保護された PDF",
     "saveAsNew": "新規として保存",
     "saveEditedImage": "編集した画像を保存",
     "sentryStreamPlayer": "SENTRY ストリームプレーヤー",

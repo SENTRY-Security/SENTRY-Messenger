@@ -2830,18 +2830,19 @@ function buildPasswordProtectedPdfPlaceholder() {
   canvas.width = W;
   canvas.height = H;
   const ctx = canvas.getContext('2d');
-  // Dark background
   ctx.fillStyle = '#1e293b';
   ctx.fillRect(0, 0, W, H);
-  // Lock emoji
+  const label = t('viewer.pdfPasswordProtected') || '🔒 Password-protected PDF';
+  // Split emoji prefix from text for separate rendering
+  const emoji = label.match(/^\p{Emoji_Presentation}/u)?.[0] || '\u{1F512}';
+  const text = label.replace(/^\p{Emoji_Presentation}\s*/u, '').trim() || label;
   ctx.font = '48px serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('\u{1F512}', W / 2, H / 2 - 30);
-  // Text
+  ctx.fillText(emoji, W / 2, H / 2 - 30);
   ctx.font = '600 16px -apple-system, BlinkMacSystemFont, sans-serif';
   ctx.fillStyle = '#94a3b8';
-  ctx.fillText('\u5DF2\u53D7\u5BC6\u78BC\u4FDD\u8B77\u7684 PDF', W / 2, H / 2 + 30);
+  ctx.fillText(text, W / 2, H / 2 + 30);
   return canvasToJpegBlob(canvas).then(blob => ({
     blob, width: W, height: H, contentType: 'image/jpeg'
   }));

@@ -871,6 +871,7 @@
     "adjustCropArea": "Adjust crop area",
     "overwriteOriginal": "Overwrite original",
     "pdfPreview": "PDF preview",
+    "pdfPasswordProtected": "🔒 Password-protected PDF",
     "saveAsNew": "Save as new",
     "saveEditedImage": "Save edited image",
     "sentryStreamPlayer": "SENTRY Stream Player",

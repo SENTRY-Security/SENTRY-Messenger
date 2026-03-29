@@ -856,6 +856,7 @@
     "adjustCropArea": "자르기 영역 조정",
     "overwriteOriginal": "원본 덮어쓰기",
     "pdfPreview": "PDF 미리보기",
+    "pdfPasswordProtected": "🔒 비밀번호로 보호된 PDF",
     "saveAsNew": "새로 저장",
     "saveEditedImage": "편집된 이미지 저장",
     "sentryStreamPlayer": "SENTRY Stream Player",

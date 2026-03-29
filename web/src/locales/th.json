@@ -856,6 +856,7 @@
     "adjustCropArea": "ปรับพื้นที่ครอป",
     "overwriteOriginal": "เขียนทับต้นฉบับ",
     "pdfPreview": "ตัวอย่าง PDF",
+    "pdfPasswordProtected": "🔒 PDF ที่มีรหัสผ่านป้องกัน",
     "saveAsNew": "บันทึกเป็นใหม่",
     "saveEditedImage": "บันทึกรูปภาพที่แก้ไข",
     "sentryStreamPlayer": "SENTRY Stream Player",

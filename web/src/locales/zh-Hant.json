@@ -871,6 +871,7 @@
     "adjustCropArea": "調整裁切區域",
     "overwriteOriginal": "覆蓋原圖",
     "pdfPreview": "PDF 預覽",
+    "pdfPasswordProtected": "🔒 已受密碼保護的 PDF",
     "saveAsNew": "另存新檔",
     "saveEditedImage": "儲存編輯後的圖片",
     "sentryStreamPlayer": "SENTRY 串流播放器",

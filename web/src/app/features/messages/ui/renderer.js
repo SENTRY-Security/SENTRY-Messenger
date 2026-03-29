@@ -210,13 +210,16 @@ export async function renderPdfThumbnail(media, canvas) {
                 const pCtx = canvas.getContext('2d');
                 pCtx.fillStyle = '#1e293b';
                 pCtx.fillRect(0, 0, 220, 293);
+                const label = t('viewer.pdfPasswordProtected') || '🔒 Password-protected PDF';
+                const emoji = label.match(/^\p{Emoji_Presentation}/u)?.[0] || '\u{1F512}';
+                const text = label.replace(/^\p{Emoji_Presentation}\s*/u, '').trim() || label;
                 pCtx.font = '36px serif';
                 pCtx.textAlign = 'center';
                 pCtx.textBaseline = 'middle';
-                pCtx.fillText('\u{1F512}', 110, 126);
+                pCtx.fillText(emoji, 110, 126);
                 pCtx.font = '600 11px -apple-system, BlinkMacSystemFont, sans-serif';
                 pCtx.fillStyle = '#94a3b8';
-                pCtx.fillText('\u5DF2\u53D7\u5BC6\u78BC\u4FDD\u8B77\u7684 PDF', 110, 166);
+                pCtx.fillText(text, 110, 166);
                 canvas.dataset.previewState = 'ready';
                 return;
             }
