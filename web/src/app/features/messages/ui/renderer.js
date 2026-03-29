@@ -517,6 +517,36 @@ export class MessageRenderer {
         // Clear spinner
         container.innerHTML = '';
 
+        // If a pre-generated preview image exists (uploaded by sender or backfilled),
+        // use it directly as an <img> instead of heavy client-side rendering.
+        if (media?.preview?.objectKey && media?.preview?.envelope) {
+            const img = document.createElement('img');
+            img.className = 'message-file-preview-img';
+            img.alt = media?.name || 'preview';
+            img.decoding = 'async';
+            img.style.cssText = 'width:100%;height:100%;object-fit:contain;border-radius:8px;background:#f8fafc;';
+            container.appendChild(img);
+            // Determine badge
+            let badgeLabel = null, badgeColor = null;
+            if (type === 'application/pdf' || nameLower.endsWith('.pdf')) { badgeLabel = 'PDF'; badgeColor = '#dc2626'; }
+            else if (isPptxMime(type) || isPptxFilename(media?.name)) { badgeLabel = 'PPTX'; badgeColor = '#ea580c'; }
+            else if (isWordMime(type) || isWordFilename(media?.name)) { badgeLabel = 'DOCX'; badgeColor = '#2563eb'; }
+            else if (isExcelMime(type) || isExcelFilename(media?.name)) { badgeLabel = 'XLSX'; badgeColor = '#16a34a'; }
+            if (badgeLabel) container.appendChild(this._fileTypeBadge(badgeLabel, badgeColor));
+            ensureMediaPreviewUrl(media).then(url => {
+                if (url) img.src = url;
+                else this._loadFilePreviewFallback(container, media, type, nameLower);
+            }).catch(() => this._loadFilePreviewFallback(container, media, type, nameLower));
+            return;
+        }
+
+        this._loadFilePreviewFallback(container, media, type, nameLower);
+    }
+
+    /** Fallback: render file preview client-side (no pre-generated preview image) */
+    _loadFilePreviewFallback(container, media, type, nameLower) {
+        container.innerHTML = '';
+
         if (type === 'application/pdf' || nameLower.endsWith('.pdf')) {
             const pdf = document.createElement('canvas');
             pdf.className = 'message-file-preview-pdf';

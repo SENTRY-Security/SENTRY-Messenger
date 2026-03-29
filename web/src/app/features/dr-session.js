@@ -2783,11 +2783,157 @@ const WORD_MIMES = [
   'application/vnd.ms-word.document.macroenabled.12'
 ];
 
+const PDF_MIMES = ['application/pdf'];
+
+const EXCEL_MIMES = [
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel',
+  'application/vnd.ms-excel.sheet.macroenabled.12',
+  'text/csv'
+];
+
+const PPTX_MIMES = [
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.ms-powerpoint.presentation.macroenabled.12'
+];
+
 function isWordFile(file) {
   const ct = resolveContentType(file).toLowerCase().split(';')[0].trim();
   if (WORD_MIMES.some(m => ct === m)) return true;
   const name = file?.name || '';
   return /\.(docx|doc|docm)$/i.test(name);
+}
+
+function isPdfFile(file) {
+  const ct = resolveContentType(file).toLowerCase().split(';')[0].trim();
+  if (PDF_MIMES.some(m => ct === m)) return true;
+  return /\.pdf$/i.test(file?.name || '');
+}
+
+function isExcelFile(file) {
+  const ct = resolveContentType(file).toLowerCase().split(';')[0].trim();
+  if (EXCEL_MIMES.some(m => ct === m)) return true;
+  return /\.(xlsx|xls|xlsm|csv)$/i.test(file?.name || '');
+}
+
+function isPptxFile(file) {
+  const ct = resolveContentType(file).toLowerCase().split(';')[0].trim();
+  if (PPTX_MIMES.some(m => ct === m)) return true;
+  return /\.(pptx|ppt|pptm)$/i.test(file?.name || '');
+}
+
+async function buildPdfPreviewBlob(file) {
+  if (!file) return null;
+  try {
+    const pdfjsLib = await import(/* webpackIgnore: true */ '/assets/libs/pdfjs/pdf.mjs');
+    try { pdfjsLib.GlobalWorkerOptions.workerSrc = '/assets/libs/pdfjs/pdf.worker.min.mjs'; } catch {}
+    const data = await file.arrayBuffer();
+    const doc = await pdfjsLib.getDocument({ data }).promise;
+    try {
+      const page = await doc.getPage(1);
+      const viewport = page.getViewport({ scale: 1 });
+      const target = scaleToPreviewSize(viewport.width, viewport.height);
+      const scale = Math.max(0.5, (target.width || 480) / viewport.width);
+      const vp = page.getViewport({ scale });
+      const canvas = document.createElement('canvas');
+      canvas.width = vp.width;
+      canvas.height = vp.height;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      const blob = await canvasToJpegBlob(canvas);
+      return { blob, width: canvas.width, height: canvas.height, contentType: 'image/jpeg' };
+    } finally {
+      try { doc.cleanup?.(); doc.destroy?.(); } catch {}
+    }
+  } catch (err) {
+    logDrSend('pdf-preview-failed', { error: err?.message || err });
+    return null;
+  }
+}
+
+async function buildExcelPreviewBlob(file) {
+  if (!file) return null;
+  try {
+    const XLSX = (await import(/* webpackIgnore: true */ '/assets/libs/xlsx.min.mjs')).default
+      || (await import(/* webpackIgnore: true */ '/assets/libs/xlsx.min.mjs'));
+    if (!XLSX?.read) return null;
+    const data = await file.arrayBuffer();
+    const wb = XLSX.read(new Uint8Array(data), { type: 'array' });
+    const sheetName = wb.SheetNames[0];
+    if (!sheetName) return null;
+    const sheet = wb.Sheets[sheetName];
+    const ref = sheet['!ref'];
+    if (!ref) return null;
+    // Limit to first 15 rows × 10 cols for preview
+    const range = XLSX.utils.decode_range(ref);
+    range.e.r = Math.min(range.e.r, 14);
+    range.e.c = Math.min(range.e.c, 9);
+    sheet['!ref'] = XLSX.utils.encode_range(range);
+    const html = XLSX.utils.sheet_to_html(sheet, { editable: false });
+
+    // Render HTML table to SVG foreignObject → canvas
+    const RENDER_W = 680;
+    const RENDER_H = 480;
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const tableStyle = 'border-collapse:collapse;font-size:11px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#1e293b;';
+    const cellStyle = 'td,th{border:1px solid #d1d5db;padding:3px 6px;white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis;}th{background:#f1f5f9;font-weight:600;}';
+    const wrappedHtml = `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${RENDER_W}px;height:${RENDER_H}px;overflow:hidden;background:#fff;padding:8px;box-sizing:border-box;">
+      <style>${cellStyle} table{${tableStyle}}</style>${html}</div>`;
+    const svg = `<svg xmlns="${svgNS}" width="${RENDER_W}" height="${RENDER_H}"><foreignObject width="100%" height="100%">${wrappedHtml}</foreignObject></svg>`;
+    const svgBlob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+    const svgUrl = URL.createObjectURL(svgBlob);
+    try {
+      const img = new Image();
+      img.decoding = 'async';
+      await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = reject; img.src = svgUrl; });
+      const target = scaleToPreviewSize(RENDER_W, RENDER_H);
+      const canvas = document.createElement('canvas');
+      canvas.width = target.width || RENDER_W;
+      canvas.height = target.height || RENDER_H;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const blob = await canvasToJpegBlob(canvas);
+      return { blob, width: canvas.width, height: canvas.height, contentType: 'image/jpeg' };
+    } finally {
+      URL.revokeObjectURL(svgUrl);
+    }
+  } catch (err) {
+    logDrSend('excel-preview-failed', { error: err?.message || err });
+    return null;
+  }
+}
+
+async function buildPptxPreviewBlob(file) {
+  if (!file) return null;
+  try {
+    // Reuse the existing pptx-viewer thumbnail renderer
+    const { renderPptxThumbnail } = await import(/* webpackIgnore: true */ '../../ui/mobile/viewers/pptx-viewer.js');
+    const data = await file.arrayBuffer();
+    const canvas = document.createElement('canvas');
+    const ok = await renderPptxThumbnail(data, canvas);
+    if (!ok || !canvas.width || !canvas.height) return null;
+    // Re-scale to standard preview size
+    const target = scaleToPreviewSize(canvas.width, canvas.height);
+    if (target.width === canvas.width && target.height === canvas.height) {
+      const blob = await canvasToJpegBlob(canvas);
+      return { blob, width: canvas.width, height: canvas.height, contentType: 'image/jpeg' };
+    }
+    const scaled = document.createElement('canvas');
+    scaled.width = target.width;
+    scaled.height = target.height;
+    const ctx = scaled.getContext('2d');
+    ctx.drawImage(canvas, 0, 0, target.width, target.height);
+    const blob = await canvasToJpegBlob(scaled);
+    return { blob, width: target.width, height: target.height, contentType: 'image/jpeg' };
+  } catch (err) {
+    logDrSend('pptx-preview-failed', { error: err?.message || err });
+    return null;
+  }
 }
 
 async function buildWordPreviewBlob(file) {
@@ -2897,9 +3043,10 @@ export async function buildMediaPreviewBlob(file) {
       return null;
     }
   }
-  if (isWordFile(file)) {
-    return buildWordPreviewBlob(file);
-  }
+  if (isWordFile(file)) return buildWordPreviewBlob(file);
+  if (isPdfFile(file)) return buildPdfPreviewBlob(file);
+  if (isExcelFile(file)) return buildExcelPreviewBlob(file);
+  if (isPptxFile(file)) return buildPptxPreviewBlob(file);
   return null;
 }
 
