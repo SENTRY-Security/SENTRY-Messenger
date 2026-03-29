@@ -198,7 +198,30 @@ export async function renderPdfThumbnail(media, canvas) {
             return;
         }
         const pdfjsLib = await getPdfJsLibrary();
-        const doc = await pdfjsLib.getDocument({ data: buffer }).promise;
+        let doc;
+        try {
+            doc = await pdfjsLib.getDocument({ data: buffer }).promise;
+        } catch (loadErr) {
+            const msg = (loadErr?.message || '').toLowerCase();
+            if (msg.includes('password') || loadErr?.name === 'PasswordException') {
+                // Render password-protected placeholder
+                canvas.width = 220;
+                canvas.height = 293;
+                const pCtx = canvas.getContext('2d');
+                pCtx.fillStyle = '#1e293b';
+                pCtx.fillRect(0, 0, 220, 293);
+                pCtx.font = '36px serif';
+                pCtx.textAlign = 'center';
+                pCtx.textBaseline = 'middle';
+                pCtx.fillText('\u{1F512}', 110, 126);
+                pCtx.font = '600 11px -apple-system, BlinkMacSystemFont, sans-serif';
+                pCtx.fillStyle = '#94a3b8';
+                pCtx.fillText('\u5DF2\u53D7\u5BC6\u78BC\u4FDD\u8B77\u7684 PDF', 110, 166);
+                canvas.dataset.previewState = 'ready';
+                return;
+            }
+            throw loadErr;
+        }
         const page = await doc.getPage(1);
         const viewport = page.getViewport({ scale: 1 });
         const targetWidth = 220;

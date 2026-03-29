@@ -2823,13 +2823,47 @@ function isPptxFile(file) {
   return /\.(pptx|ppt|pptm)$/i.test(file?.name || '');
 }
 
+function buildPasswordProtectedPdfPlaceholder() {
+  const W = 360;
+  const H = 480;
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  // Dark background
+  ctx.fillStyle = '#1e293b';
+  ctx.fillRect(0, 0, W, H);
+  // Lock emoji
+  ctx.font = '48px serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('\u{1F512}', W / 2, H / 2 - 30);
+  // Text
+  ctx.font = '600 16px -apple-system, BlinkMacSystemFont, sans-serif';
+  ctx.fillStyle = '#94a3b8';
+  ctx.fillText('\u5DF2\u53D7\u5BC6\u78BC\u4FDD\u8B77\u7684 PDF', W / 2, H / 2 + 30);
+  return canvasToJpegBlob(canvas).then(blob => ({
+    blob, width: W, height: H, contentType: 'image/jpeg'
+  }));
+}
+
 async function buildPdfPreviewBlob(file) {
   if (!file) return null;
   try {
     const pdfjsLib = await import(/* webpackIgnore: true */ '/assets/libs/pdfjs/pdf.mjs');
     try { pdfjsLib.GlobalWorkerOptions.workerSrc = '/assets/libs/pdfjs/pdf.worker.min.mjs'; } catch {}
     const data = await file.arrayBuffer();
-    const doc = await pdfjsLib.getDocument({ data }).promise;
+    let doc;
+    try {
+      doc = await pdfjsLib.getDocument({ data }).promise;
+    } catch (loadErr) {
+      // Password-protected PDF: PDF.js throws PasswordException
+      const msg = (loadErr?.message || '').toLowerCase();
+      if (msg.includes('password') || loadErr?.name === 'PasswordException') {
+        return buildPasswordProtectedPdfPlaceholder();
+      }
+      throw loadErr;
+    }
     try {
       const page = await doc.getPage(1);
       const viewport = page.getViewport({ scale: 1 });
