@@ -9260,15 +9260,19 @@ async function handlePublicRoutes(req, env) {
     try {
       const header = JSON.parse(row.header_json || '{}');
       // Only backfill if no preview exists yet (first writer wins)
-      if (header.media?.preview?.objectKey) {
+      // Preview lives at header.meta.media.preview (same structure as sender-side)
+      const meta = header.meta || {};
+      const media = meta.media || {};
+      if (media.preview?.object_key || media.preview?.objectKey) {
         return json({ ok: true, skipped: true });
       }
-      if (!header.media) header.media = {};
-      header.media.preview = {
-        objectKey: preview.objectKey,
+      if (!header.meta) header.meta = {};
+      if (!header.meta.media) header.meta.media = {};
+      header.meta.media.preview = {
+        object_key: preview.objectKey,
         envelope: preview.envelope,
         size: Number(preview.size) || null,
-        contentType: preview.contentType || 'image/jpeg',
+        content_type: preview.contentType || 'image/jpeg',
         width: Number(preview.width) || null,
         height: Number(preview.height) || null
       };
