@@ -1,6 +1,37 @@
 # SENTRY Messenger
 
-Open-source end-to-end encrypted messenger with Signal Protocol, ephemeral chat, secure calls, and encrypted media streaming.
+感應即開、離開即消。不留痕跡的安全通訊。
+
+## 為什麼不是 App？
+
+傳統通訊軟體需要安裝 App — 裝置上永遠留著圖示、通知紀錄、應用程式列表中的痕跡。即使刪除 App，仍可能被資料復原工具找回殘留資料。
+
+SENTRY Messenger 是一個純 Web 應用程式。不需要安裝任何東西。
+
+## 怎麼啟動？
+
+使用者持有一張寫入專屬 URL 的 NFC 晶片（卡片、貼紙、戒指，任何形式）。手機感應晶片，瀏覽器自動開啟，輸入密碼，直接進入加密通訊。
+
+沒有 App 圖示。沒有書籤。沒有桌面捷徑。啟動的唯一方式是那張晶片。
+
+## 離開會怎樣？
+
+螢幕關閉、切換到其他 App、或瀏覽器退到背景 — 系統立即執行：
+
+1. 清除所有本地資料（記憶體、IndexedDB、LocalStorage）
+2. 登出帳號
+3. 將瀏覽器跳轉至使用者預先設定的網頁（預設為 Google）
+4. 覆寫瀏覽紀錄，無法按上一頁返回
+
+結果：拿起手機的人看到的是一個普通的 Google 頁面，沒有任何跡象顯示這支手機剛才在使用加密通訊軟體。
+
+## 下次使用呢？
+
+再次感應晶片、輸入密碼。所有訊息、聯絡人、檔案從伺服器端的加密備份中即時還原。從上次離開的地方繼續。
+
+不在本地留下任何持久性資料。所有敏感資料以端對端加密保存在雲端。裝置只是一個臨時的檢視窗口。
+
+---
 
 **端對端加密即時通訊系統** — 基於 Signal Protocol (X3DH + Double Ratchet)，部署於 Cloudflare Workers 全 Serverless 架構。
 
