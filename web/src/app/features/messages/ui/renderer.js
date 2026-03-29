@@ -554,6 +554,16 @@ export class MessageRenderer {
         try {
             canvas.toBlob((blob) => {
                 if (!blob) return;
+                // Immediately set a local preview URL on the media object so
+                // subsequent IntersectionObserver re-entries use the cached
+                // image instead of re-rendering with heavy libraries.
+                const localUrl = URL.createObjectURL(blob);
+                if (!media.preview) media.preview = {};
+                media.preview.localUrl = localUrl;
+                media.preview.contentType = 'image/jpeg';
+                media.preview.width = canvas.width;
+                media.preview.height = canvas.height;
+                // Background: upload and patch server so other sessions benefit
                 document.dispatchEvent(new CustomEvent('media:preview-backfill', {
                     detail: { messageId, conversationId, messageKeyB64, blob, width: canvas.width, height: canvas.height }
                 }));
