@@ -663,9 +663,6 @@ export class MessageRenderer {
                    isExcelMime(type) || isExcelFilename(media?.name)) {
             // Heavy file previews — lazy load via IntersectionObserver
             this._showPreviewSpinner(container);
-            // Tag media with message-level identifiers for preview backfill
-            media._messageId = media._messageId || msg?.id || msg?.messageId || null;
-            media._conversationId = media._conversationId || msg?.conversationId || null;
             container._lazyMedia = media;
             container._lazyType = 'heavy';
             // Defer observe until element is in DOM (next microtask)
@@ -913,6 +910,9 @@ export class MessageRenderer {
 
     renderMediaBubble(bubble, msg) {
         const media = msg.media || {};
+        // Tag media with message-level identifiers for preview backfill
+        if (!media._messageId) media._messageId = msg?.id || msg?.messageId || null;
+        if (!media._conversationId) media._conversationId = msg?.conversationId || null;
         bubble.classList.add('message-has-media');
         bubble.innerHTML = '';
         const wrapper = document.createElement('div');
