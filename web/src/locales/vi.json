@@ -856,6 +856,7 @@
     "adjustCropArea": "Điều chỉnh vùng cắt",
     "overwriteOriginal": "Ghi đè bản gốc",
     "pdfPreview": "Xem trước PDF",
+    "pdfPasswordProtected": "🔒 PDF được bảo vệ bằng mật khẩu",
     "saveAsNew": "Lưu thành bản mới",
     "saveEditedImage": "Lưu hình ảnh đã chỉnh sửa",
     "sentryStreamPlayer": "SENTRY Stream Player",

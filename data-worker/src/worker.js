@@ -2898,11 +2898,15 @@ async function handleFriendsRoutes(req, env) {
             `DELETE FROM contacts WHERE owner_digest=?1 AND peer_digest=?2`
           ).bind(convOwner, entry.targetAccountDigest).run();
           // Delete new-format rows (slot_id based) — client provides slotId if available
-          const slotId = typeof body?.slotId === 'string' ? body.slotId.trim() : '';
-          if (slotId) {
-            await env.DB.prepare(
-              `DELETE FROM contacts WHERE owner_digest=?1 AND slot_id=?2`
-            ).bind(convOwner, slotId).run();
+          // Only use slotId for the owner's own rows (convOwner === ownerAccountDigest)
+          // because the slotId is derived from the owner's MK.
+          if (convOwner === ownerAccountDigest) {
+            const slotId = typeof body?.slotId === 'string' ? body.slotId.trim() : '';
+            if (slotId) {
+              await env.DB.prepare(
+                `DELETE FROM contacts WHERE owner_digest=?1 AND slot_id=?2`
+              ).bind(convOwner, slotId).run();
+            }
           }
         } catch (err) {
           console.warn('contact_row_delete_failed', err?.message || err);
@@ -6298,6 +6302,7 @@ async function handleContactsRoutes(req, env) {
         return json({ error: 'UpsertFailed', message: err?.message || 'db error' }, { status: 500 });
       }
     }
+
     return json({ ok: true, count });
   }
 
@@ -9207,6 +9212,77 @@ async function handlePublicRoutes(req, env) {
     if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
     const qs = `?accountDigest=${auth.accountDigest}`;
     return handleContactsRoutes(internalRequest(`/d1/contacts/snapshot${qs}`, 'GET', null, baseUrl), env);
+  }
+
+  // POST /api/v1/conversations/verify — check which conversation IDs still have ACL entries
+  if (path === '/api/v1/conversations/verify' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const ids = Array.isArray(body?.conversationIds) ? body.conversationIds : [];
+    if (!ids.length) return json({ ok: true, alive: [] });
+    await ensureDataTables(env);
+    const alive = [];
+    // Batch check: only return IDs where the requesting account has ACL access
+    for (const cid of ids.slice(0, 100)) {
+      const convId = typeof cid === 'string' ? cid.trim() : '';
+      if (!convId) continue;
+      try {
+        const row = await env.DB.prepare(
+          `SELECT 1 FROM conversation_acl WHERE conversation_id=?1 AND account_digest=?2 LIMIT 1`
+        ).bind(convId, auth.accountDigest).first();
+        if (row) alive.push(convId);
+      } catch { /* skip */ }
+    }
+    return json({ ok: true, alive });
+  }
+
+  // POST /api/v1/messages/preview — backfill preview metadata on an existing message
+  if (path === '/api/v1/messages/preview' && method === 'POST') {
+    const auth = await resolvePublicAuth(req, env, { body });
+    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    const messageId = typeof body?.messageId === 'string' ? body.messageId.trim() : '';
+    const conversationId = typeof body?.conversationId === 'string' ? body.conversationId.trim() : '';
+    const preview = body?.preview;
+    if (!messageId || !conversationId || !preview?.objectKey || !preview?.envelope) {
+      return json({ error: 'BadRequest', message: 'messageId, conversationId, preview.objectKey, preview.envelope required' }, { status: 400 });
+    }
+    // Verify caller has ACL access to this conversation
+    await ensureDataTables(env);
+    const acl = await env.DB.prepare(
+      `SELECT 1 FROM conversation_acl WHERE conversation_id=?1 AND account_digest=?2 LIMIT 1`
+    ).bind(conversationId, auth.accountDigest).first();
+    if (!acl) return json({ error: 'Forbidden', message: 'no access to conversation' }, { status: 403 });
+    // Read existing header_json, merge preview, write back
+    const row = await env.DB.prepare(
+      `SELECT header_json FROM messages_secure WHERE id=?1 AND conversation_id=?2`
+    ).bind(messageId, conversationId).first();
+    if (!row) return json({ error: 'NotFound', message: 'message not found' }, { status: 404 });
+    try {
+      const header = JSON.parse(row.header_json || '{}');
+      // Only backfill if no preview exists yet (first writer wins)
+      // Preview lives at header.meta.media.preview (same structure as sender-side)
+      const meta = header.meta || {};
+      const media = meta.media || {};
+      if (media.preview?.object_key || media.preview?.objectKey) {
+        return json({ ok: true, skipped: true });
+      }
+      if (!header.meta) header.meta = {};
+      if (!header.meta.media) header.meta.media = {};
+      header.meta.media.preview = {
+        object_key: preview.objectKey,
+        envelope: preview.envelope,
+        size: Number(preview.size) || null,
+        content_type: preview.contentType || 'image/jpeg',
+        width: Number(preview.width) || null,
+        height: Number(preview.height) || null
+      };
+      await env.DB.prepare(
+        `UPDATE messages_secure SET header_json=?1 WHERE id=?2 AND conversation_id=?3`
+      ).bind(JSON.stringify(header), messageId, conversationId).run();
+      return json({ ok: true });
+    } catch (err) {
+      return json({ error: 'UpdateFailed', message: err?.message || 'header update failed' }, { status: 500 });
+    }
   }
 
   // POST /api/v1/contacts/avatar/sign-put — get presigned upload URL for avatar

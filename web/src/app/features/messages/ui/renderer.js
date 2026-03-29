@@ -198,7 +198,33 @@ export async function renderPdfThumbnail(media, canvas) {
             return;
         }
         const pdfjsLib = await getPdfJsLibrary();
-        const doc = await pdfjsLib.getDocument({ data: buffer }).promise;
+        let doc;
+        try {
+            doc = await pdfjsLib.getDocument({ data: buffer }).promise;
+        } catch (loadErr) {
+            const msg = (loadErr?.message || '').toLowerCase();
+            if (msg.includes('password') || loadErr?.name === 'PasswordException') {
+                // Render password-protected placeholder
+                canvas.width = 220;
+                canvas.height = 293;
+                const pCtx = canvas.getContext('2d');
+                pCtx.fillStyle = '#1e293b';
+                pCtx.fillRect(0, 0, 220, 293);
+                const label = t('viewer.pdfPasswordProtected') || '🔒 Password-protected PDF';
+                const emoji = label.match(/^\p{Emoji_Presentation}/u)?.[0] || '\u{1F512}';
+                const text = label.replace(/^\p{Emoji_Presentation}\s*/u, '').trim() || label;
+                pCtx.font = '36px serif';
+                pCtx.textAlign = 'center';
+                pCtx.textBaseline = 'middle';
+                pCtx.fillText(emoji, 110, 126);
+                pCtx.font = '600 11px -apple-system, BlinkMacSystemFont, sans-serif';
+                pCtx.fillStyle = '#94a3b8';
+                pCtx.fillText(text, 110, 166);
+                canvas.dataset.previewState = 'ready';
+                return;
+            }
+            throw loadErr;
+        }
         const page = await doc.getPage(1);
         const viewport = page.getViewport({ scale: 1 });
         const targetWidth = 220;
@@ -517,6 +543,106 @@ export class MessageRenderer {
         // Clear spinner
         container.innerHTML = '';
 
+        // If a pre-generated preview image exists (uploaded by sender, backfilled,
+        // or locally cached from a previous render), use it directly as an <img>.
+        const hasRemotePreview = media?.preview?.objectKey && media?.preview?.envelope;
+        const hasLocalPreview = media?.preview?.localUrl || media?.previewUrl;
+        if (hasRemotePreview || hasLocalPreview) {
+            const img = document.createElement('img');
+            img.className = 'message-file-preview-img';
+            img.alt = media?.name || 'preview';
+            img.decoding = 'async';
+            img.style.cssText = 'width:100%;height:100%;object-fit:contain;border-radius:8px;background:#f8fafc;';
+            container.appendChild(img);
+            // Determine badge
+            let badgeLabel = null, badgeColor = null;
+            if (type === 'application/pdf' || nameLower.endsWith('.pdf')) { badgeLabel = 'PDF'; badgeColor = '#dc2626'; }
+            else if (isPptxMime(type) || isPptxFilename(media?.name)) { badgeLabel = 'PPTX'; badgeColor = '#ea580c'; }
+            else if (isWordMime(type) || isWordFilename(media?.name)) { badgeLabel = 'DOCX'; badgeColor = '#2563eb'; }
+            else if (isExcelMime(type) || isExcelFilename(media?.name)) { badgeLabel = 'XLSX'; badgeColor = '#16a34a'; }
+            if (badgeLabel) container.appendChild(this._fileTypeBadge(badgeLabel, badgeColor));
+            ensureMediaPreviewUrl(media).then(url => {
+                if (url) img.src = url;
+                else this._loadFilePreviewFallback(container, media, type, nameLower);
+            }).catch(() => this._loadFilePreviewFallback(container, media, type, nameLower));
+            return;
+        }
+
+        this._loadFilePreviewFallback(container, media, type, nameLower);
+    }
+
+    /** Request backfill: emit event so external code can upload and patch the preview */
+    _requestPreviewBackfill(media, canvas) {
+        if (!media || !canvas || !canvas.width || !canvas.height) return;
+        // Only backfill if the message has enough metadata to identify it
+        const messageId = media._messageId || media.messageId || null;
+        const conversationId = media._conversationId || media.conversationId || null;
+        const messageKeyB64 = media.messageKey_b64 || media.message_key_b64 || null;
+        if (!messageId || !conversationId) return;
+        try {
+            canvas.toBlob((blob) => {
+                if (!blob) return;
+                // Immediately set a local preview URL on the media object so
+                // subsequent IntersectionObserver re-entries use the cached
+                // image instead of re-rendering with heavy libraries.
+                const localUrl = URL.createObjectURL(blob);
+                if (!media.preview) media.preview = {};
+                media.preview.localUrl = localUrl;
+                media.preview.contentType = 'image/jpeg';
+                media.preview.width = canvas.width;
+                media.preview.height = canvas.height;
+                // Background: upload and patch server so other sessions benefit
+                document.dispatchEvent(new CustomEvent('media:preview-backfill', {
+                    detail: { messageId, conversationId, messageKeyB64, blob, width: canvas.width, height: canvas.height }
+                }));
+            }, 'image/jpeg', 0.82);
+        } catch { /* best-effort */ }
+    }
+
+    /** Convert an HTML element to a canvas via SVG foreignObject for backfill */
+    _htmlElementToCanvas(el) {
+        if (!el || !el.offsetWidth || !el.offsetHeight) return Promise.resolve(null);
+        const w = el.offsetWidth;
+        const h = el.offsetHeight;
+        const clone = el.cloneNode(true);
+        clone.querySelectorAll?.('script,iframe')?.forEach(n => n.remove());
+        const html = new XMLSerializer().serializeToString(clone);
+        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
+            `<foreignObject width="100%" height="100%">` +
+            `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${w}px;height:${h}px;overflow:hidden;background:#fff;">${html}</div>` +
+            `</foreignObject></svg>`;
+        const svgBlob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+        const url = URL.createObjectURL(svgBlob);
+        return new Promise((resolve) => {
+            const img = new Image();
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                const ctx = canvas.getContext('2d');
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, w, h);
+                ctx.drawImage(img, 0, 0);
+                URL.revokeObjectURL(url);
+                resolve(canvas);
+            };
+            img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+            img.src = url;
+        });
+    }
+
+    /** Request backfill from an HTML element (Word/Excel) by converting to canvas first */
+    _requestPreviewBackfillFromHtml(media, el) {
+        if (!media || !el) return;
+        this._htmlElementToCanvas(el).then(canvas => {
+            if (canvas) this._requestPreviewBackfill(media, canvas);
+        }).catch(() => {});
+    }
+
+    /** Fallback: render file preview client-side (no pre-generated preview image) */
+    _loadFilePreviewFallback(container, media, type, nameLower) {
+        container.innerHTML = '';
+
         if (type === 'application/pdf' || nameLower.endsWith('.pdf')) {
             const pdf = document.createElement('canvas');
             pdf.className = 'message-file-preview-pdf';
@@ -524,7 +650,9 @@ export class MessageRenderer {
             pdf.dataset.previewState = 'loading';
             container.appendChild(pdf);
             container.appendChild(this._fileTypeBadge('PDF', '#dc2626'));
-            renderPdfThumbnail(media, pdf);
+            renderPdfThumbnail(media, pdf).then(() => {
+                if (pdf.dataset.previewState === 'ready') this._requestPreviewBackfill(media, pdf);
+            }).catch(() => {});
         } else if (isPptxMime(type) || isPptxFilename(media?.name)) {
             const pptxCanvas = document.createElement('canvas');
             pptxCanvas.className = 'message-file-preview-pdf';
@@ -532,19 +660,27 @@ export class MessageRenderer {
             pptxCanvas.dataset.previewState = 'loading';
             container.appendChild(pptxCanvas);
             container.appendChild(this._fileTypeBadge('PPTX', '#ea580c'));
-            this._renderPptxThumbnail(media, pptxCanvas, container);
+            this._renderPptxThumbnail(media, pptxCanvas, container).then(() => {
+                if (pptxCanvas.dataset.previewState === 'ready') this._requestPreviewBackfill(media, pptxCanvas);
+            }).catch(() => {});
         } else if (isWordMime(type) || isWordFilename(media?.name)) {
             const wordDiv = document.createElement('div');
             wordDiv.className = 'message-file-preview-generic';
             wordDiv.innerHTML = '<svg class="icon file-type-icon" style="color:#2563eb"><use href="#i-file-text"/></svg>';
             container.appendChild(wordDiv);
-            this._renderWordThumbnail(media, wordDiv, container);
+            this._renderWordThumbnail(media, wordDiv, container).then(() => {
+                const rendered = container.firstElementChild;
+                if (rendered && rendered !== wordDiv) this._requestPreviewBackfillFromHtml(media, rendered);
+            }).catch(() => {});
         } else if (isExcelMime(type) || isExcelFilename(media?.name)) {
             const xlsDiv = document.createElement('div');
             xlsDiv.className = 'message-file-preview-generic';
             xlsDiv.innerHTML = '<svg class="icon file-type-icon" style="color:#16a34a"><use href="#i-file-spreadsheet"/></svg>';
             container.appendChild(xlsDiv);
-            this._renderExcelThumbnail(media, xlsDiv, container);
+            this._renderExcelThumbnail(media, xlsDiv, container).then(() => {
+                const rendered = container.firstElementChild;
+                if (rendered && rendered !== xlsDiv) this._requestPreviewBackfillFromHtml(media, rendered);
+            }).catch(() => {});
         }
     }
 
@@ -858,6 +994,9 @@ export class MessageRenderer {
 
     renderMediaBubble(bubble, msg) {
         const media = msg.media || {};
+        // Tag media with message-level identifiers for preview backfill
+        if (!media._messageId) media._messageId = msg?.id || msg?.messageId || null;
+        if (!media._conversationId) media._conversationId = msg?.conversationId || null;
         bubble.classList.add('message-has-media');
         bubble.innerHTML = '';
         const wrapper = document.createElement('div');

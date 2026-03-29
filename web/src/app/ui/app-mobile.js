@@ -102,6 +102,7 @@ import { hydrateDrStatesFromContactSecrets, persistDrSnapshot, sendDrPlaintext }
 import { resetAllProcessedMessages } from '../features/messages-support/processed-messages-store.js';
 import { resetReceiptStore } from '../features/messages-support/receipt-store.js';
 import { messagesFlowFacade, setMessagesFlowFacadeWsSend } from '../features/messages-flow-facade.js';
+import { initPreviewBackfill } from '../features/messages/preview-backfill.js';
 import { LOCAL_SNAPSHOT_FLUSH_ON_EACH_EVENT } from '../features/restore-policy.js';
 import { wrapMKWithPasswordArgon2id, unwrapMKWithPasswordArgon2id } from '../crypto/kdf.js';
 import { opaqueRegister } from '../features/opaque.js';
@@ -2207,6 +2208,10 @@ const contactsView = initContactsView({
 
 const { loadInitialContacts, renderContacts, addContactEntry: addContactEntryRaw, removeContactLocal: removeContactLocalRaw } = contactsView;
 _restoreContactsBars = contactsView.restoreContactsBars;
+
+// Initialize preview backfill listener (generates and uploads preview images
+// for old PDF/Office messages that lack pre-generated previews)
+initPreviewBackfill();
 
 if (typeof window !== 'undefined') {
   try {
