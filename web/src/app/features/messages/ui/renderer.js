@@ -543,9 +543,11 @@ export class MessageRenderer {
         // Clear spinner
         container.innerHTML = '';
 
-        // If a pre-generated preview image exists (uploaded by sender or backfilled),
-        // use it directly as an <img> instead of heavy client-side rendering.
-        if (media?.preview?.objectKey && media?.preview?.envelope) {
+        // If a pre-generated preview image exists (uploaded by sender, backfilled,
+        // or locally cached from a previous render), use it directly as an <img>.
+        const hasRemotePreview = media?.preview?.objectKey && media?.preview?.envelope;
+        const hasLocalPreview = media?.preview?.localUrl || media?.previewUrl;
+        if (hasRemotePreview || hasLocalPreview) {
             const img = document.createElement('img');
             img.className = 'message-file-preview-img';
             img.alt = media?.name || 'preview';
