@@ -12,6 +12,17 @@ import { log } from '../../core/log.js';
 
 const inflight = new Set();
 
+function b64ToU8(b64) {
+  if (!b64) return null;
+  try {
+    const s = b64.replace(/-/g, '+').replace(/_/g, '/');
+    const bin = atob(s);
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    return u8;
+  } catch { return null; }
+}
+
 function blobToFile(blob, name) {
   try {
     return new File([blob], name, { type: blob.type || 'image/jpeg' });
@@ -31,13 +42,16 @@ async function handleBackfill(event) {
     const accountToken = getAccountToken();
     if (!accountToken) return;
     const file = blobToFile(blob, `${messageId}.preview.jpg`);
-    // Encrypt and upload preview blob
-    // Use MK-based encryption (no shared key — the preview is a new asset)
+    // Encrypt with the message's shared media key so both parties can decrypt.
+    // If no shared key is available, fall back to MK (self-only).
+    const sharedKey = b64ToU8(messageKeyB64);
+    const encryptionKey = sharedKey ? { key: sharedKey, type: 'shared' } : undefined;
     const upload = await encryptAndPutWithProgress({
       convId: conversationId,
       file,
       onProgress: null,
       skipIndex: true,
+      encryptionKey,
       encryptionInfoTag: 'media/preview-v1'
     });
     if (!upload?.objectKey || !upload?.envelope) return;
