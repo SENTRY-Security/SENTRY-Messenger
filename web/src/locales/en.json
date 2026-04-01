@@ -1103,6 +1103,7 @@
   },
   "ephemeral": {
     "splashSublabel": "ONE-TIME SECURE CHAT",
+    "startChat": "Start Conversation",
     "splashVerifying": "Verifying link…",
     "verifyingLink": "Verifying link validity…",
     "generatingTempKey": "Generating temporary identity key…",

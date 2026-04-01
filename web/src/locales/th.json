@@ -1083,6 +1083,7 @@
   },
   "ephemeral": {
     "splashSublabel": "แชทลับครั้งเดียว",
+    "startChat": "เริ่มการสนทนา",
     "splashVerifying": "กำลังตรวจสอบลิงก์…",
     "verifyingLink": "กำลังตรวจสอบความถูกต้องของลิงก์…",
     "generatingTempKey": "กำลังสร้างคีย์ตัวตนชั่วคราว…",

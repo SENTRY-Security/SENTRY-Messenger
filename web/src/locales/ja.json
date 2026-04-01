@@ -1083,6 +1083,7 @@
   },
   "ephemeral": {
     "splashSublabel": "ワンタイム機密チャット",
+    "startChat": "会話を開始",
     "splashVerifying": "リンクを検証中…",
     "verifyingLink": "リンクの有効性を検証中…",
     "generatingTempKey": "一時的なIDキーを生成中…",

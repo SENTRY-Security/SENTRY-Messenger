@@ -748,6 +748,23 @@ async function boot() {
   // Load async i18n (non-blocking; bootstrap __t already covers first paint)
   initI18n().catch(() => {});
 
+  // Wait for user interaction before consuming the token.
+  // Link preview crawlers (Instagram, Facebook, etc.) may execute JS and
+  // auto-consume the one-time token before the real user clicks.
+  const startBtn = document.getElementById('ephStartBtn');
+  const progressTrack = document.getElementById('ephProgressTrack');
+  const statusEl = document.getElementById('ephSplashStatus');
+  if (startBtn) {
+    await new Promise(resolve => {
+      startBtn.addEventListener('click', () => {
+        startBtn.style.display = 'none';
+        if (progressTrack) progressTrack.style.display = '';
+        if (statusEl) statusEl.style.display = '';
+        resolve();
+      }, { once: true });
+    });
+  }
+
   try {
     setProgress(20, _t('ephemeral.verifyingLink'));
     await sleep(400);

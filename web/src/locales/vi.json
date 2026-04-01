@@ -1083,6 +1083,7 @@
   },
   "ephemeral": {
     "splashSublabel": "TRÒ CHUYỆN MẬT MỘT LẦN",
+    "startChat": "Bắt đầu cuộc trò chuyện",
     "splashVerifying": "Đang xác minh liên kết…",
     "verifyingLink": "Đang xác minh tính hợp lệ của liên kết…",
     "generatingTempKey": "Đang tạo khóa nhận dạng tạm thời…",

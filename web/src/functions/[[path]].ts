@@ -98,7 +98,7 @@ function resolveOgLocale(url: URL, request: Request): string {
 /** Detect social-media / bot crawlers that need OG tags */
 function isCrawler(request: Request): boolean {
   const ua = (request.headers.get('User-Agent') || '');
-  return /facebookexternalhit|twitterbot|linkedinbot|slackbot|telegrambot|whatsapp|line\/|discordbot|kakaotalk|googlebot|bingbot|applebot/i.test(ua);
+  return /facebookexternalhit|Instagrambot|Instagram|twitterbot|linkedinbot|slackbot|telegrambot|whatsapp|line\/|discordbot|kakaotalk|googlebot|bingbot|applebot|Pinterestbot|Redditbot|Embedly|Quora|Outbrain|vkShare|W3C_Validator|Slurp|PetalBot/i.test(ua);
 }
 
 /** Detect in-app browsers (LINE, WeChat, FB, IG, KakaoTalk, Telegram, etc.) */
