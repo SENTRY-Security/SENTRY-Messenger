@@ -1103,6 +1103,7 @@
   },
   "ephemeral": {
     "splashSublabel": "單次機密對話",
+    "startChat": "開始對話",
     "splashVerifying": "驗證連結中…",
     "verifyingLink": "驗證連結有效性…",
     "generatingTempKey": "產生臨時身分金鑰…",

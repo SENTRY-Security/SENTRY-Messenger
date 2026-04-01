@@ -91,6 +91,8 @@
     #ephSplash .splash-bar-scan { position: absolute; top: 0; height: 100%; width: 40px; background: linear-gradient(90deg, transparent, rgba(245,158,11,0.6), transparent); animation: eph-scan 2s linear infinite; }
     #ephSplash .splash-status { font-size: 12px; color: rgba(148,163,184,0.7); letter-spacing: 1px; min-height: 1.4em; }
     #ephSplash .splash-error { color: #fca5a5; font-size: 13px; margin-top: 16px; text-align: center; max-width: 300px; display: none; }
+    #ephSplash .eph-start-btn { margin-top: 12px; padding: 14px 36px; border: none; border-radius: 12px; background: linear-gradient(135deg, #f59e0b, #ef4444); color: #fff; font-size: 15px; font-weight: 700; letter-spacing: 1px; cursor: pointer; transition: opacity .15s, transform .1s; box-shadow: 0 0 20px rgba(245,158,11,0.3); }
+    #ephSplash .eph-start-btn:active { opacity: .8; transform: scale(.97); }
 
     @keyframes eph-pulse { 0%,100% { filter: brightness(0) invert(1) drop-shadow(0 0 18px rgba(245,158,11,0.5)); } 50% { filter: brightness(0) invert(1) drop-shadow(0 0 28px rgba(245,158,11,0.8)); } }
     @keyframes eph-scan { 0% { left: -40px; } 100% { left: calc(100% + 40px); } }
@@ -285,11 +287,12 @@
       <img class="splash-logo" src="/assets/images/logo.svg" alt="" />
       <div class="splash-brand" id="ephBrand">SENTRY MESSENGER</div>
       <div class="splash-sublabel" data-i18n="ephemeral.splashSublabel">EPHEMERAL LINK</div>
-      <div class="splash-bar-track">
+      <div class="splash-bar-track" id="ephProgressTrack" style="display:none">
         <div class="splash-bar-fill" id="ephProgressBar"></div>
         <div class="splash-bar-scan"></div>
       </div>
-      <div class="splash-status" id="ephSplashStatus" data-i18n="ephemeral.splashVerifying">Verifying link…</div>
+      <div class="splash-status" id="ephSplashStatus" data-i18n="ephemeral.splashVerifying" style="display:none">Verifying link…</div>
+      <button type="button" id="ephStartBtn" class="eph-start-btn" data-i18n="ephemeral.startChat">Start Conversation</button>
       <div class="splash-error" id="ephSplashError"></div>
       <div id="ephSplashWebrtcWarn" class="eph-webrtc-warning" style="display:none">
         <span class="eph-webrtc-warning-icon" aria-hidden="true">⚠️</span>

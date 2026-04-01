@@ -1083,6 +1083,7 @@
   },
   "ephemeral": {
     "splashSublabel": "일회성 보안 대화",
+    "startChat": "대화 시작",
     "splashVerifying": "링크 확인 중…",
     "verifyingLink": "링크 유효성 확인 중…",
     "generatingTempKey": "임시 신원 키 생성 중…",

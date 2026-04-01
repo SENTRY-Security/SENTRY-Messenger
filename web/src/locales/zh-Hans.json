@@ -1085,6 +1085,7 @@
   },
   "ephemeral": {
     "splashSublabel": "单次机密对话",
+    "startChat": "开始对话",
     "splashVerifying": "验证链接中…",
     "verifyingLink": "验证链接有效性…",
     "generatingTempKey": "生成临时身份密钥…",
