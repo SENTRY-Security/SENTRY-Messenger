@@ -25,7 +25,7 @@ import {
   isEphemeralCallMode,
   deriveCallTokenFromDR
 } from '../../../features/calls/ephemeral-call-adapter.js';
-import { setContactSecret } from '../../../core/contact-secrets.js';
+import { setContactSecret, getConversationTokenForCall } from '../../../core/contact-secrets.js';
 import { bytesToB64Url } from '../../../../shared/utils/base64.js';
 import {
   initCallMediaSession,
@@ -1294,6 +1294,12 @@ export class EphemeralController extends BaseController {
     // x3dhRespond. Without this check, ALL retries fail with "no private key".
     if (this._drStates.has(sessionId)) {
       console.log('[Ephemeral] key-exchange: DR state already exists, resending ack', sessionId);
+      // Re-ensure the call conversation token is stored in contact-secrets.
+      // contact-secrets entries for EPHEMERAL_* digests are not persisted,
+      // so after a page reload _drStates may still have the session while
+      // the call token is gone — leaving owner unable to derive call E2EE
+      // keys and the accept button permanently disabled.
+      await this._ensureEphemeralCallTokenStored(session, this._drStates.get(sessionId));
       const sent = this.deps.wsSend?.({
         type: 'ephemeral-key-exchange-ack',
         sessionId,
@@ -1326,20 +1332,7 @@ export class EphemeralController extends BaseController {
     this._drStates.set(sessionId, drSt);
 
     // Derive call token from DR root key and store for call E2EE
-    if (drSt?.rk && session?.guest_digest) {
-      try {
-        const tokenBytes = await deriveCallTokenFromDR(drSt.rk);
-        const callToken = bytesToB64Url(tokenBytes);
-        setContactSecret(session.guest_digest, {
-          conversation: { token: callToken },
-          peerDeviceId: session.guest_device_id || 'ephemeral-guest',
-          __debugSource: 'ephemeral-call-token-owner'
-        });
-        console.log('[Ephemeral] call token stored for guest', sessionId);
-      } catch (err) {
-        console.warn('[Ephemeral] call token derive failed:', err?.message);
-      }
-    }
+    await this._ensureEphemeralCallTokenStored(session, drSt);
 
     // Clean up pending invite key (no longer needed — DR state is established)
     if (token) {
@@ -1505,12 +1498,50 @@ export class EphemeralController extends BaseController {
       const session = msg.sessionId ? this.ephemeralSessions.get(msg.sessionId) : null;
       const sessionForConv = session || (msg.conversationId ? this.getSessionByConversationId(msg.conversationId) : null);
       if (sessionForConv) {
+        // Defensive: make sure the call conversation token for this
+        // ephemeral guest is present in contact-secrets before the
+        // standard call pipeline tries to derive keys from the invite's
+        // envelope. Without this, a stale _drStates entry (e.g. after
+        // reload) would leave the owner with pendingEnvelope but no
+        // token — permanently disabling the accept button.
+        const drSt = this._drStates.get(sessionForConv.session_id);
+        if (drSt) {
+          const peerDeviceId = sessionForConv.guest_device_id || 'ephemeral-guest';
+          const existing = getConversationTokenForCall(sessionForConv.guest_digest, { peerDeviceId });
+          if (!existing) {
+            // Fire-and-forget — resolves synchronously enough in practice
+            // (single HKDF derive) and markIncomingCall/maybeDeriveKeys
+            // will run on the next microtask.
+            this._ensureEphemeralCallTokenStored(sessionForConv, drSt);
+          }
+        }
         this._activateCallAdapter(sessionForConv);
       }
     }
 
     // Delegate to adapter — translates ephemeral-call-* → call-* for standard pipeline
     handleEphemeralCallMessage(msg);
+  }
+
+  /**
+   * Derive the call E2EE conversation token from the DR root key and
+   * store it in contact-secrets under the guest's (digest, device-id) key.
+   * Idempotent: safe to call multiple times for the same session.
+   */
+  async _ensureEphemeralCallTokenStored(session, drSt) {
+    if (!drSt?.rk || !session?.guest_digest) return;
+    try {
+      const tokenBytes = await deriveCallTokenFromDR(drSt.rk);
+      const callToken = bytesToB64Url(tokenBytes);
+      setContactSecret(session.guest_digest, {
+        conversation: { token: callToken },
+        peerDeviceId: session.guest_device_id || 'ephemeral-guest',
+        __debugSource: 'ephemeral-call-token-owner'
+      });
+      console.log('[Ephemeral] call token stored for guest', session.session_id);
+    } catch (err) {
+      console.warn('[Ephemeral] call token derive failed:', err?.message);
+    }
   }
 
   endCall(fromRemote = false) {
