@@ -23,7 +23,11 @@ import { bytesToB64Url } from '../../shared/utils/base64.js';
 import { initCallOverlay } from './mobile/call-overlay.js';
 import {
   initCallMediaSession,
-  sendCallSignal
+  sendCallSignal,
+  cleanupCallKeyState,
+  subscribeCallEvent,
+  CALL_EVENT,
+  CALL_SESSION_STATUS
 } from '../features/calls/index.js';
 
 // Use bootstrap translator until async i18n is ready, then use async t()
@@ -558,6 +562,7 @@ function handleWsMessage(msg) {
     case 'ephemeral-call-ice-candidate':
     case 'ephemeral-call-end':
       handleEphemeralCallMessage(msg);
+      try { cleanupCallKeyState('ephemeral-call-end'); } catch {}
       break;
     case 'hello':
       updateWsStatus('online');
@@ -712,6 +717,7 @@ function destroyChat({ reason } = {}) {
   cancelKeyExchangeRetry();
   // End any active call
   deactivateEphemeralCallMode();
+  try { cleanupCallKeyState('destroy-chat'); } catch {}
   if (timerInterval) clearInterval(timerInterval);
   // Notify owner when guest ends the conversation
   if (reason === 'guest-terminated' && ws?.readyState === WebSocket.OPEN && sessionState) {
@@ -898,6 +904,21 @@ function _initCallSystem() {
     sendSignalFn: (type, payload) => sendCallSignal(type, payload),
     showToastFn: showToast
   });
+
+  // Guest side does not call initCallKeyManager(), so stale keyContext from a
+  // previous call can leak into the next one (causing decryption noise). Clean
+  // up the shared key-manager state whenever a call transitions to a terminal
+  // status.
+  try {
+    subscribeCallEvent(CALL_EVENT.STATE, (evt) => {
+      const status = evt?.status;
+      if (status === CALL_SESSION_STATUS.ENDED
+          || status === CALL_SESSION_STATUS.FAILED
+          || status === CALL_SESSION_STATUS.IDLE) {
+        try { cleanupCallKeyState(`state:${status}`); } catch {}
+      }
+    });
+  } catch {}
 
   // Activate ephemeral call adapter — translates call-* ↔ ephemeral-call-*
   activateEphemeralCallMode({

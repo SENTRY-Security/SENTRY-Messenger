@@ -43,7 +43,8 @@ export {
   getCallKeyContext,
   supportsInsertableStreams,
   isKeyDerivationPending,
-  retryDeriveKeys
+  retryDeriveKeys,
+  cleanupCallKeyState
 } from './key-manager.js';
 export {
   initCallMediaSession,

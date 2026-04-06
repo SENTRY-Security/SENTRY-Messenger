@@ -862,7 +862,11 @@ async function ensurePeerConnection() {
 async function attachLocalMedia() {
   if (localStream && localStream.getTracks().length) {
     localStream.getTracks().forEach((track) => {
-      peerConnection.addTrack(track, localStream);
+      const sender = peerConnection.addTrack(track, localStream);
+      // Without this, a reused localStream path skips E2EE insertable-streams
+      // setup on the sender and peer receives raw (unencrypted or wrong-key)
+      // frames that sound like noise.
+      setupInsertableStreamsForSender(sender, track);
     });
     return;
   }
