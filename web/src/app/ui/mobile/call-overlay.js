@@ -1578,11 +1578,15 @@ export function initCallOverlay({ showToast }) {
     state.actionBusy = true;
     render(session);
     try {
-      // cancelCall is for server tracking only — do not block the cancel if it fails
-      try {
-        await cancelCall({ callId: session.callId, reason: 'caller_cancelled' });
-      } catch (cancelErr) {
-        log({ callCancelApiError: cancelErr?.message || cancelErr, callId: session.callId });
+      // cancelCall is for server tracking only — do not block the cancel if it fails.
+      // Ephemeral calls do not have a server-tracked session, so skip entirely
+      // to avoid hitting resolvePublicAuth with an EPHEMERAL_* digest (→ 401).
+      if (!isEphemeralCallMode()) {
+        try {
+          await cancelCall({ callId: session.callId, reason: 'caller_cancelled' });
+        } catch (cancelErr) {
+          log({ callCancelApiError: cancelErr?.message || cancelErr, callId: session.callId });
+        }
       }
       endCallMediaSession('cancelled');
       if (session.peerAccountDigest) {

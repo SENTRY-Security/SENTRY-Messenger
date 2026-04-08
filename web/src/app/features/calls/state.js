@@ -56,6 +56,17 @@ const SERVER_STATUS_MAP = Object.freeze({
 
 let activeSession = createEmptySession();
 
+// Flag set by ephemeral-call-adapter when ephemeral mode is active.
+// Avoids circular import (state.js ↔ ephemeral-call-adapter).  Used to
+// short-circuit server-tracking API calls (createCallInvite, etc.) that
+// will always 401 against EPHEMERAL_* digests.
+let _ephemeralModeActive = false;
+
+/** Called by ephemeral-call-adapter to toggle ephemeral mode awareness. */
+export function setStateEphemeralMode(active) {
+  _ephemeralModeActive = !!active;
+}
+
 function resolveSelfProfileSummary() {
   const profile = sessionStore?.profileState || null;
   const nicknameRaw = typeof profile?.nickname === 'string' ? profile.nickname.trim() : '';
@@ -499,17 +510,24 @@ export async function requestOutgoingCall({
     metadata.callerAvatarUrl = selfProfile.avatarUrl;
   }
   let response = null;
-  try {
-    response = await createCallInvite({
-      peerAccountDigest: peerDigest,
-      mode: activeSession.kind === CALL_REQUEST_KIND.VIDEO ? 'video' : 'voice',
-      capabilities: activeSession.localCapability,
-      metadata,
-      traceId: activeSession.traceId,
-      preferredDeviceId: normalizedPeerDeviceId || null
-    });
-  } catch (err) {
-    log({ callInviteApiFailed: err?.message || err, peerAccountDigest: peerDigest });
+  // Skip the server-tracked /calls/invite POST entirely in ephemeral mode.
+  // EPHEMERAL_* digests fail resolvePublicAuth → guaranteed 401, polluting
+  // the Network panel.  Ephemeral calls are routed via WS relay (call-invite
+  // signal), they do not need a server-tracked session.  Fall through to the
+  // local-callId fallback below.
+  if (!_ephemeralModeActive) {
+    try {
+      response = await createCallInvite({
+        peerAccountDigest: peerDigest,
+        mode: activeSession.kind === CALL_REQUEST_KIND.VIDEO ? 'video' : 'voice',
+        capabilities: activeSession.localCapability,
+        metadata,
+        traceId: activeSession.traceId,
+        preferredDeviceId: normalizedPeerDeviceId || null
+      });
+    } catch (err) {
+      log({ callInviteApiFailed: err?.message || err, peerAccountDigest: peerDigest });
+    }
   }
   if (response?.callId) {
     activeSession.callId = response.callId;

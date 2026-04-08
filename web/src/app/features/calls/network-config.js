@@ -5,6 +5,18 @@ import { t } from '/locales/index.js';
 
 const API_CONFIG_URL = '/api/v1/calls/network-config';
 
+// Flag set by ephemeral-call-adapter when ephemeral mode is active.
+// Avoids circular import.  Used to short-circuit the network-config fetch
+// because EPHEMERAL_* digests fail resolvePublicAuth on the worker, leaving
+// only a console warning + a 401 in the Network panel.  We have a perfectly
+// good local FALLBACK_CONFIG so the fetch is wasted work for ephemeral.
+let _ephemeralModeActive = false;
+
+/** Called by ephemeral-call-adapter to toggle ephemeral mode awareness. */
+export function setNetworkConfigEphemeralMode(active) {
+  _ephemeralModeActive = !!active;
+}
+
 // Hardcoded fallback so calls can proceed even when the API endpoint is unreachable.
 const FALLBACK_CONFIG = Object.freeze({
   version: 1,
@@ -178,6 +190,11 @@ export function getCachedCallNetworkConfig() {
 export async function loadCallNetworkConfig({ forceRefresh = false, signal } = {}) {
   if (cachedConfig && !forceRefresh) {
     return { ...cachedConfig };
+  }
+  // Ephemeral mode: skip the API fetch entirely (it would 401) and prime
+  // the cache with the local fallback so subsequent callers see a config.
+  if (_ephemeralModeActive) {
+    return applyConfig(normalizeConfig(FALLBACK_CONFIG));
   }
   if (inflight && !forceRefresh) {
     return inflight;
