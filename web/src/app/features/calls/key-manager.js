@@ -214,6 +214,13 @@ export async function prepareCallKeyEnvelope({
   await finalizeContext(context);
   keyContext = context;
   notifyKeyContextListeners();
+  // [2nd-call-debug] DELETE WHEN DONE — verify owner-side per-call salt
+  console.log('[2nd-call-debug] prepareCallKeyEnvelope', JSON.stringify({
+    callId,
+    cmkSalt: envelope.cmkSalt,
+    role: toRole(effectiveSession.direction),
+    direction: effectiveSession.direction
+  }));
   return envelope;
 }
 
@@ -250,6 +257,14 @@ async function deriveKeysFromEnvelope({ session, envelope, trigger }) {
   keyContext = context;
   notifyKeyContextListeners();
   log({ callKeyReady: true, callId: context.callId, trigger });
+  // [2nd-call-debug] DELETE WHEN DONE — verify guest-side derived salt per call
+  console.log('[2nd-call-debug] deriveKeysFromEnvelope', JSON.stringify({
+    callId: context.callId,
+    cmkSalt: context.envelope?.cmkSalt,
+    role: toRole(session?.direction),
+    direction: session?.direction,
+    trigger
+  }));
   return context;
 }
 
@@ -460,6 +475,12 @@ function resetKeyContext(reason) {
   if (isResettingContext) return;
   isResettingContext = true;
   stopRotationTimer();
+  // [2nd-call-debug] DELETE WHEN DONE — confirm whether/when guest's keyContext gets cleared
+  console.log('[2nd-call-debug] resetKeyContext', JSON.stringify({
+    reason,
+    hadKeyContext: !!keyContext,
+    prevSalt: keyContext?.envelope?.cmkSalt || null
+  }));
   keyContext = null;
   const state = getCallMediaState();
   try {

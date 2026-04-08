@@ -8848,10 +8848,31 @@ async function handlePublicRoutes(req, env) {
     if (!turnTokenId || !turnTokenKey) {
       return json({ error: 'ConfigError', message: 'Cloudflare TURN credentials not configured' }, { status: 500 });
     }
-    const auth = await resolvePublicAuth(req, env, { body });
-    if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    // Ephemeral guests use EPHEMERAL_* digests which resolvePublicAuth does not
+    // recognise (it queries the accounts table).  Authorise them against the
+    // ephemeral_sessions table directly so that guests on symmetric NAT can
+    // still obtain TURN credentials.  Regular accounts keep the original path.
+    const rawDigest = (req.headers.get('x-account-digest') || body?.account_digest || body?.accountDigest || '').trim();
     const senderDeviceId = (req.headers.get('x-device-id') || '').trim();
     if (!senderDeviceId) return json({ error: 'BadRequest', message: 'deviceId header required' }, { status: 400 });
+    if (rawDigest.startsWith('EPHEMERAL_')) {
+      try {
+        await ensureDataTables(env);
+        const nowSec = Math.floor(Date.now() / 1000);
+        const sess = await env.DB.prepare(
+          `SELECT 1 FROM ephemeral_sessions
+           WHERE guest_digest = ?1 AND guest_device_id = ?2
+             AND deleted_at IS NULL AND expires_at > ?3
+           LIMIT 1`
+        ).bind(rawDigest, senderDeviceId, nowSec).first();
+        if (!sess) return json({ error: 'Unauthorized', message: 'ephemeral session not found or expired' }, { status: 401 });
+      } catch (err) {
+        return json({ error: 'EphemeralAuthFailed', message: err?.message || 'ephemeral session lookup failed' }, { status: 500 });
+      }
+    } else {
+      const auth = await resolvePublicAuth(req, env, { body });
+      if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });
+    }
     const ttlSeconds = clampNum(body?.ttl_seconds ?? body?.ttlSeconds ?? 300, 60, 600);
     try {
       const cfResp = await fetch(
