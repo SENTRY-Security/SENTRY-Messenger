@@ -102,11 +102,17 @@ id = "3d14a30fff6344c7bb300d175e84b38c"
 [env.uat.durable_objects]
 bindings = [
   { name = "ACCOUNT_WS", class_name = "AccountWebSocket" },
-  { name = "RATE_LIMITER", class_name = "RateLimiter" },
-  { name = "BROWSER_SESSION", class_name = "BrowserSession" }
+  { name = "RATE_LIMITER", class_name = "RateLimiter" }
+  # BROWSER_SESSION 隨 [[env.uat.containers]] 一併停用；保留 DO class 以避免
+  # migration rollback。需要時連同下方的 containers 區塊一起取消註解。
+  # , { name = "BROWSER_SESSION", class_name = "BrowserSession" }
 ]
 
-[[env.uat.containers]]
-class_name = "BrowserSession"
-image = "./Dockerfile.safe"
-max_instances = 5
+# UAT: SAFE Browser Container 暫時停用以加速部署。
+# 每次 wrangler deploy 都會重 build/push Dockerfile.safe，顯著拖慢部署。
+# 注意：停用後 /api/safe/* 在 UAT 會回 503 NotConfigured（worker.js:7738）。
+# 需要時取消下方註解即可恢復。
+# [[env.uat.containers]]
+# class_name = "BrowserSession"
+# image = "./Dockerfile.safe"
+# max_instances = 5
