@@ -471,6 +471,30 @@ async function rotateEpoch() {
   });
 }
 
+/**
+ * Release the module-level keyContext at call end.  Intended to be called
+ * exclusively from media-session's cleanupPeerConnection so that BOTH owner
+ * and guest end up in the same post-call state.
+ *
+ * Background: guest (ephemeral.html) does not call initCallKeyManager(), so
+ * the handleCallStateEvent → resetKeyContext path that clears keyContext on
+ * STATE=ENDED never runs there.  Without this release hook the first call's
+ * keyContext would survive into the second call, causing
+ * setupInsertableStreamsForReceiver/Sender to decrypt/encrypt audio with the
+ * previous call's cmkSalt — AES-GCM then fails 50 times in a row and the
+ * transform worker drops into passthrough, producing the audible noise that
+ * the user reported.
+ *
+ * This is an IDEMPOTENT, one-way "forget everything" action; it is NOT a
+ * cleanup for the chat DR state, nor does it touch the stored conversation
+ * token (deliberately — that was the PR #23 trap).  Only the in-memory call
+ * derivation context is cleared.
+ */
+export function releaseCallKeyContextOnCleanup(reason = 'media-cleanup') {
+  if (!keyContext) return;
+  resetKeyContext(reason);
+}
+
 function resetKeyContext(reason) {
   if (isResettingContext) return;
   isResettingContext = true;
