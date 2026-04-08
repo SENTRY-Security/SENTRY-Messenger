@@ -19,7 +19,8 @@ import {
   getCallKeyContext,
   supportsInsertableStreams,
   usesScriptTransform,
-  onKeyContextUpdate
+  onKeyContextUpdate,
+  releaseCallKeyContextOnCleanup
 } from './key-manager.js';
 import { CALL_EVENT, subscribeCallEvent } from './events.js';
 import { createFaceBlurPipeline, isFaceBlurSupported, BLUR_MODE } from './face-blur.js';
@@ -1419,6 +1420,17 @@ function cleanupPeerConnection(reason) {
   }
   e2eeReceiverConfirmed = false;
   peerConnectionEncodedStreams = false;
+  // Release the module-level keyContext so the next call (especially on the
+  // guest side of ephemeral calls, which does not run initCallKeyManager())
+  // starts with a clean slate.  Without this, the next call's
+  // setupInsertableStreamsForReceiver/Sender would silently keep using the
+  // previous call's cmkSalt-derived keys → AES-GCM decrypt fails →
+  // passthrough activates → audible noise.
+  //
+  // IMPORTANT: this only clears the in-memory call derivation context.  It
+  // does NOT touch the conversation token or DR state — that was the
+  // PR #23 trap.  See releaseCallKeyContextOnCleanup's doc for context.
+  try { releaseCallKeyContextOnCleanup(reason || 'media-cleanup'); } catch { }
   resetControlStates();
   if (reason) {
     log({ callMediaCleanup: reason });
