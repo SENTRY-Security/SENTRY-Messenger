@@ -456,10 +456,6 @@ async function rotateEpoch() {
   });
 }
 
-export function cleanupCallKeyState(reason = 'manual-cleanup') {
-  resetKeyContext(reason);
-}
-
 function resetKeyContext(reason) {
   if (isResettingContext) return;
   isResettingContext = true;
