@@ -20,7 +20,8 @@ import {
   supportsInsertableStreams,
   usesScriptTransform,
   onKeyContextUpdate,
-  releaseCallKeyContextOnCleanup
+  releaseCallKeyContextOnCleanup,
+  retryDeriveKeys
 } from './key-manager.js';
 import { CALL_EVENT, subscribeCallEvent } from './events.js';
 import { createFaceBlurPipeline, isFaceBlurSupported, BLUR_MODE } from './face-blur.js';
@@ -340,6 +341,16 @@ export async function acceptIncomingCallMedia({ callId } = {}) {
   activePeerKey = identity.peerKey;
   direction = 'incoming';
   awaitingOfferAfterAccept = true;
+  // Defensive: kick off a derive attempt if keyContext isn't set yet.
+  // In normal flow this is a no-op — call-overlay disables the accept button
+  // while isKeyDerivationPending() is true, so by the time the user can click
+  // accept the keyContext is already derived.  But if a render race lets the
+  // user through before the disable propagates, this synchronous gate ensures
+  // sender/receiver transforms downstream see a non-null keyContext, instead
+  // of relying on setupInsertableStreamsForSender's 500ms setTimeout retry
+  // (which races with the SDP exchange).
+  // retryDeriveKeys() returns immediately if keyContext is already set.
+  try { await retryDeriveKeys(); } catch { /* logged inside */ }
   try {
     await ensurePeerConnection();
     if (pendingOffer && pendingOffer.callId === callId) {
@@ -861,11 +872,29 @@ async function ensurePeerConnection() {
 }
 
 async function attachLocalMedia() {
+  // Defensive: attachLocalMedia is called exactly once per peer connection
+  // lifetime (from ensurePeerConnection, which early-returns if peerConnection
+  // already exists; cleanupPeerConnection resets localStream alongside
+  // peerConnection so they stay in sync).  We removed the previous "reuse
+  // existing localStream" early-return because:
+  //   1. It would addTrack() without calling setupInsertableStreamsForSender,
+  //      potentially sending unencrypted / wrong-key audio if the deferred
+  //      sender-transform pass for any reason did not run (e.g. ontrack
+  //      delivered video before audio).
+  //   2. It only ever fired in race conditions that don't occur in the
+  //      normal cleanup → next-call sequence.
+  // If somehow we DO find a stale localStream here, stop its tracks and
+  // reacquire to avoid leaking the mic and to keep the encrypted-frame
+  // pipeline consistent (every track must go through the standard
+  // setup-sender path below).
   if (localStream && localStream.getTracks().length) {
-    localStream.getTracks().forEach((track) => {
-      peerConnection.addTrack(track, localStream);
+    log({
+      attachLocalMediaUnexpectedReuse: true,
+      callId: activeCallId,
+      trackCount: localStream.getTracks().length
     });
-    return;
+    try { localStream.getTracks().forEach((t) => { try { t.stop(); } catch {} }); } catch {}
+    localStream = null;
   }
   try {
     const wantVideo = isVideoCall();

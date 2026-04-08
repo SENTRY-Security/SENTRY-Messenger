@@ -12,8 +12,10 @@ import {
   requestOutgoingCall,
   completeCallSession,
   updateCallMedia,
-  getCallCapability
+  getCallCapability,
+  setStateEphemeralMode
 } from './state.js';
+import { setNetworkConfigEphemeralMode } from './network-config.js';
 import {
   handleCallSignalMessage,
   handleCallAuxMessage,
@@ -91,6 +93,8 @@ export function activateEphemeralCallMode(ctx) {
 
   setCallSignalSender(_ephemeralSignalSender);
   setMediaSessionEphemeralMode(true);
+  setStateEphemeralMode(true);
+  setNetworkConfigEphemeralMode(true);
   log({ ephCallAdapterActivated: true, side: _ephCtx.side });
 }
 
@@ -101,6 +105,8 @@ export function deactivateEphemeralCallMode() {
   _callTokenGate = null;
   _gateQueue.length = 0;
   setMediaSessionEphemeralMode(false);
+  setStateEphemeralMode(false);
+  setNetworkConfigEphemeralMode(false);
   // Restore previous signal sender so regular calls continue working
   if (_prevSignalSender) {
     setCallSignalSender(_prevSignalSender);
