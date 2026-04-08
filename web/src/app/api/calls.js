@@ -89,7 +89,8 @@ export async function cancelCall({ callId, reason } = {}) {
 export async function acknowledgeCall({ callId, traceId } = {}) {
   if (!callId) throw new Error('callId required');
   const payload = buildPayload({ call_id: callId, trace_id: traceId });
-  return postJSON('/api/v1/calls/ack', payload, 'call ack failed');
+  // Server route is /calls/acknowledge — the earlier /calls/ack URL always 404'd.
+  return postJSON('/api/v1/calls/acknowledge', payload, 'call ack failed');
 }
 
 export async function reportCallMetrics({ callId, metrics, status, endReason, ended } = {}) {

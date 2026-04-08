@@ -30,7 +30,8 @@ import {
   BLUR_MODE,
   isKeyDerivationPending,
   retryDeriveKeys,
-  getCallKeyContext
+  getCallKeyContext,
+  isEphemeralCallMode
 } from '../../features/calls/index.js';
 import { sessionStore } from './session-store.js';
 import { CALL_MEDIA_STATE_STATUS } from '../../../shared/calls/schemas.js';
@@ -1522,11 +1523,15 @@ export function initCallOverlay({ showToast }) {
     try { sessionStore.cachedMicrophoneStream = mediaStream; } catch { }
 
     try {
-      // acknowledgeCall is for server tracking only — do not block the call if it fails
-      try {
-        await acknowledgeCall({ callId: session.callId, traceId: session.traceId });
-      } catch (ackErr) {
-        log({ callAcknowledgeError: ackErr?.message || ackErr, callId: session.callId });
+      // acknowledgeCall is for server tracking only — do not block the call if it fails.
+      // Ephemeral calls do not have a server-tracked session, so skip entirely
+      // to avoid hitting resolvePublicAuth with an EPHEMERAL_* digest (→ 401).
+      if (!isEphemeralCallMode()) {
+        try {
+          await acknowledgeCall({ callId: session.callId, traceId: session.traceId });
+        } catch (ackErr) {
+          log({ callAcknowledgeError: ackErr?.message || ackErr, callId: session.callId });
+        }
       }
       updateCallSessionStatus(CALL_SESSION_STATUS.CONNECTING, { callId: session.callId });
       // Send call-accept BEFORE media setup so the caller receives the state
