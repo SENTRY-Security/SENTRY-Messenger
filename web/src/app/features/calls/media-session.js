@@ -20,7 +20,8 @@ import {
   supportsInsertableStreams,
   usesScriptTransform,
   onKeyContextUpdate,
-  releaseCallKeyContextOnCleanup
+  releaseCallKeyContextOnCleanup,
+  retryDeriveKeys
 } from './key-manager.js';
 import { CALL_EVENT, subscribeCallEvent } from './events.js';
 import { createFaceBlurPipeline, isFaceBlurSupported, BLUR_MODE } from './face-blur.js';
@@ -350,6 +351,16 @@ export async function acceptIncomingCallMedia({ callId } = {}) {
   activePeerKey = identity.peerKey;
   direction = 'incoming';
   awaitingOfferAfterAccept = true;
+  // Defensive: kick off a derive attempt if keyContext isn't set yet.
+  // In normal flow this is a no-op — call-overlay disables the accept button
+  // while isKeyDerivationPending() is true, so by the time the user can click
+  // accept the keyContext is already derived.  But if a render race lets the
+  // user through before the disable propagates, this synchronous gate ensures
+  // sender/receiver transforms downstream see a non-null keyContext, instead
+  // of relying on setupInsertableStreamsForSender's 500ms setTimeout retry
+  // (which races with the SDP exchange).
+  // retryDeriveKeys() returns immediately if keyContext is already set.
+  try { await retryDeriveKeys(); } catch { /* logged inside */ }
   try {
     await ensurePeerConnection();
     if (pendingOffer && pendingOffer.callId === callId) {
