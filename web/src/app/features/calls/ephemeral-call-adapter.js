@@ -12,7 +12,7 @@ import {
   requestOutgoingCall,
   completeCallSession,
   updateCallMedia,
-  getCallMediaState as _getCallMediaState
+  getCallCapability
 } from './state.js';
 import {
   handleCallSignalMessage,
@@ -156,10 +156,14 @@ function _ephemeralSignalSender(payload) {
   // Always inject local capabilities into outgoing signals so the peer knows
   // our E2EE status.  Standard call signals (accept, offer, answer) don't
   // carry capabilities, but ephemeral calls need both sides to agree.
+  // IMPORTANT: read from getCallCapability() (the device's true local
+  // capability), NOT from mediaState.capabilities — that field becomes the
+  // PEER's capability after applyCallKeyEnvelopeToState runs, so echoing it
+  // back would advertise the peer's caps as our own.
   if (!msg.capabilities) {
-    const mediaState = _getCallMediaState?.();
-    if (mediaState?.capabilities) {
-      msg.capabilities = mediaState.capabilities;
+    const localCaps = getCallCapability();
+    if (localCaps) {
+      msg.capabilities = localCaps;
     }
   }
 
