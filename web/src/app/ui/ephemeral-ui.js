@@ -23,12 +23,7 @@ import { bytesToB64Url } from '../../shared/utils/base64.js';
 import { initCallOverlay } from './mobile/call-overlay.js';
 import {
   initCallMediaSession,
-  sendCallSignal,
-  cleanupCallKeyState,
-  initCallKeyManager,
-  subscribeCallEvent,
-  CALL_EVENT,
-  CALL_SESSION_STATUS
+  sendCallSignal
 } from '../features/calls/index.js';
 
 // Use bootstrap translator until async i18n is ready, then use async t()
@@ -563,7 +558,6 @@ function handleWsMessage(msg) {
     case 'ephemeral-call-ice-candidate':
     case 'ephemeral-call-end':
       handleEphemeralCallMessage(msg);
-      try { cleanupCallKeyState('ephemeral-call-end'); } catch {}
       break;
     case 'hello':
       updateWsStatus('online');
@@ -718,7 +712,6 @@ function destroyChat({ reason } = {}) {
   cancelKeyExchangeRetry();
   // End any active call
   deactivateEphemeralCallMode();
-  try { cleanupCallKeyState('destroy-chat'); } catch {}
   if (timerInterval) clearInterval(timerInterval);
   // Notify owner when guest ends the conversation
   if (reason === 'guest-terminated' && ws?.readyState === WebSocket.OPEN && sessionState) {
@@ -905,27 +898,6 @@ function _initCallSystem() {
     sendSignalFn: (type, payload) => sendCallSignal(type, payload),
     showToastFn: showToast
   });
-
-  // Install the key manager subscriptions on the guest side too. Without
-  // this, STATE/SIGNAL events never trigger maybeDeriveKeys, so when a fast
-  // accept races ahead of the call-overlay's E2EE retry loop, keyContext
-  // never gets derived → setupInsertableStreamsForReceiver early-returns
-  // → guest plays owner's encrypted audio as raw bytes (silence/noise).
-  // initCallKeyManager also installs the ENDED/FAILED cleanup hook, so the
-  // separate cleanupCallKeyState subscription below is redundant; we keep
-  // it as a defensive belt-and-suspenders cleanup for ephemeral teardown.
-  try { initCallKeyManager(); } catch (err) { console.warn('[Ephemeral] initCallKeyManager failed:', err?.message); }
-
-  try {
-    subscribeCallEvent(CALL_EVENT.STATE, (evt) => {
-      const status = evt?.status;
-      if (status === CALL_SESSION_STATUS.ENDED
-          || status === CALL_SESSION_STATUS.FAILED
-          || status === CALL_SESSION_STATUS.IDLE) {
-        try { cleanupCallKeyState(`state:${status}`); } catch {}
-      }
-    });
-  } catch {}
 
   // Activate ephemeral call adapter — translates call-* ↔ ephemeral-call-*
   activateEphemeralCallMode({
