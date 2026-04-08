@@ -553,12 +553,6 @@ export function markIncomingCall({
       activeSession.status = CALL_SESSION_STATUS.FAILED;
     }
   }
-  // [2nd-call-debug] DELETE WHEN DONE — log the incoming envelope salt
-  console.log('[2nd-call-debug] markIncomingCall', JSON.stringify({
-    callId,
-    incomingCmkSalt: envelope?.cmkSalt || null,
-    direction: activeSession.direction
-  }));
   emitState('incoming-call');
   return { ok: true };
 }
@@ -625,13 +619,6 @@ export function failCallSession(error, extra = {}) {
 }
 
 export function applyCallEnvelope(envelope) {
-  // [2nd-call-debug] DELETE WHEN DONE — log every envelope application
-  console.log('[2nd-call-debug] applyCallEnvelope', JSON.stringify({
-    callId: envelope?.callId || null,
-    cmkSalt: envelope?.cmkSalt || null,
-    sessionDirection: activeSession.direction,
-    sessionStatus: activeSession.status
-  }));
   applyCallKeyEnvelopeToState(activeSession.mediaState, envelope);
   emitState('media-envelope');
   return cloneCallMediaState(activeSession.mediaState);

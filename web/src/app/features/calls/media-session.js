@@ -315,11 +315,6 @@ export async function startOutgoingCallMedia({ callId } = {}) {
     failCall('e2ee-not-supported', new Error(t('callKeys.e2eeNotSupported')));
     return;
   }
-  // [2nd-call-debug] DELETE WHEN DONE — capture stale keyContext before starting outgoing call
-  console.log('[2nd-call-debug] startOutgoingCallMedia', JSON.stringify({
-    callId,
-    staleKeyContextSalt: getCallKeyContext()?.envelope?.cmkSalt || null
-  }));
   activeCallId = callId;
   const identity = requirePeerIdentitySnapshot();
   activePeerKey = identity.peerKey;
@@ -340,11 +335,6 @@ export async function acceptIncomingCallMedia({ callId } = {}) {
     failCall('e2ee-not-supported', new Error(t('callKeys.e2eeNotSupported')));
     return;
   }
-  // [2nd-call-debug] DELETE WHEN DONE — capture stale keyContext before accepting incoming
-  console.log('[2nd-call-debug] acceptIncomingCallMedia', JSON.stringify({
-    callId,
-    staleKeyContextSalt: getCallKeyContext()?.envelope?.cmkSalt || null
-  }));
   activeCallId = callId;
   const identity = requirePeerIdentitySnapshot();
   activePeerKey = identity.peerKey;
@@ -1357,13 +1347,6 @@ function handleSessionState(session) {
 }
 
 function cleanupPeerConnection(reason) {
-  // [2nd-call-debug] DELETE WHEN DONE — see whether keyContext is still set when cleanup runs
-  console.log('[2nd-call-debug] cleanupPeerConnection', JSON.stringify({
-    reason,
-    callId: activeCallId,
-    keyContextSaltAtCleanup: getCallKeyContext()?.envelope?.cmkSalt || null,
-    hadPeerConnection: !!peerConnection
-  }));
   if (audioPlayRetryTimer) {
     clearTimeout(audioPlayRetryTimer);
     audioPlayRetryTimer = null;
@@ -1618,14 +1601,6 @@ function setupInsertableStreamsForSender(sender, track) {
     return;
   }
   const keyName = track.kind === 'video' ? 'videoTx' : 'audioTx';
-  // [2nd-call-debug] DELETE WHEN DONE — capture which salt the sender transform is using
-  console.log('[2nd-call-debug] setupSender about to apply', JSON.stringify({
-    kind: track.kind,
-    callId: activeCallId,
-    keyContextSalt: keyContext?.envelope?.cmkSalt || null,
-    keyContextCallId: keyContext?.callId || null,
-    direction: keyContext?.direction || null
-  }));
   if (usesScriptTransform()) {
     const ok = applyScriptTransform(sender, keyName, 'encrypt');
     log({ e2eeSenderApplied: ok, keyName, scriptTransform: true, callId: activeCallId });
@@ -1696,14 +1671,6 @@ function setupInsertableStreamsForReceiver(receiver, track) {
     return;
   }
   const keyName = track.kind === 'video' ? 'videoRx' : 'audioRx';
-  // [2nd-call-debug] DELETE WHEN DONE — capture which salt the receiver transform is using
-  console.log('[2nd-call-debug] setupReceiver about to apply', JSON.stringify({
-    kind: track.kind,
-    callId: activeCallId,
-    keyContextSalt: keyContext?.envelope?.cmkSalt || null,
-    keyContextCallId: keyContext?.callId || null,
-    direction: keyContext?.direction || null
-  }));
   let applied = false;
   if (usesScriptTransform()) {
     applied = applyScriptTransform(receiver, keyName, 'decrypt');
