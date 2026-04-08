@@ -8855,15 +8855,19 @@ async function handlePublicRoutes(req, env) {
     const senderDeviceId = (req.headers.get('x-device-id') || '').trim();
     if (!senderDeviceId) return json({ error: 'BadRequest', message: 'deviceId header required' }, { status: 400 });
     if (rawDigest.startsWith('EPHEMERAL_')) {
-      await ensureDataTables(env);
-      const nowSec = Math.floor(Date.now() / 1000);
-      const sess = await env.DB.prepare(
-        `SELECT 1 FROM ephemeral_sessions
-         WHERE guest_digest = ?1 AND guest_device_id = ?2
-           AND deleted_at IS NULL AND expires_at > ?3
-         LIMIT 1`
-      ).bind(rawDigest, senderDeviceId, nowSec).first();
-      if (!sess) return json({ error: 'Unauthorized', message: 'ephemeral session not found or expired' }, { status: 401 });
+      try {
+        await ensureDataTables(env);
+        const nowSec = Math.floor(Date.now() / 1000);
+        const sess = await env.DB.prepare(
+          `SELECT 1 FROM ephemeral_sessions
+           WHERE guest_digest = ?1 AND guest_device_id = ?2
+             AND deleted_at IS NULL AND expires_at > ?3
+           LIMIT 1`
+        ).bind(rawDigest, senderDeviceId, nowSec).first();
+        if (!sess) return json({ error: 'Unauthorized', message: 'ephemeral session not found or expired' }, { status: 401 });
+      } catch (err) {
+        return json({ error: 'EphemeralAuthFailed', message: err?.message || 'ephemeral session lookup failed' }, { status: 500 });
+      }
     } else {
       const auth = await resolvePublicAuth(req, env, { body });
       if (!auth) return json({ error: 'Unauthorized' }, { status: 401 });

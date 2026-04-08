@@ -25,6 +25,7 @@ import {
   initCallMediaSession,
   sendCallSignal,
   cleanupCallKeyState,
+  initCallKeyManager,
   subscribeCallEvent,
   CALL_EVENT,
   CALL_SESSION_STATUS
@@ -905,10 +906,16 @@ function _initCallSystem() {
     showToastFn: showToast
   });
 
-  // Guest side does not call initCallKeyManager(), so stale keyContext from a
-  // previous call can leak into the next one (causing decryption noise). Clean
-  // up the shared key-manager state whenever a call transitions to a terminal
-  // status.
+  // Install the key manager subscriptions on the guest side too. Without
+  // this, STATE/SIGNAL events never trigger maybeDeriveKeys, so when a fast
+  // accept races ahead of the call-overlay's E2EE retry loop, keyContext
+  // never gets derived → setupInsertableStreamsForReceiver early-returns
+  // → guest plays owner's encrypted audio as raw bytes (silence/noise).
+  // initCallKeyManager also installs the ENDED/FAILED cleanup hook, so the
+  // separate cleanupCallKeyState subscription below is redundant; we keep
+  // it as a defensive belt-and-suspenders cleanup for ephemeral teardown.
+  try { initCallKeyManager(); } catch (err) { console.warn('[Ephemeral] initCallKeyManager failed:', err?.message); }
+
   try {
     subscribeCallEvent(CALL_EVENT.STATE, (evt) => {
       const status = evt?.status;
