@@ -194,6 +194,28 @@ export function resolveCallPeerProfile({
   };
 }
 
+// Ephemeral call adapter uses these hard-coded placeholder device IDs because
+// the relay protocol does not carry real device IDs end-to-end (the adapter
+// strips targetDeviceId so the WS Durable Object will route the message).  When
+// resolvePeerForCallEvent processes such a signal it will inevitably see a
+// fromDeviceId/toDeviceId that does not match the local selfDevice, falling
+// into the "device-mismatch" branch.  That branch is harmless for ephemeral
+// (downstream call-invite handling sets identity from senderDeviceId / digest
+// directly) but the log spam — once per ICE candidate, etc. — drowns out
+// useful diagnostics.  We treat these placeholders as a known-best-effort
+// signal and skip the log.
+const EPHEMERAL_PLACEHOLDER_DEVICE_IDS = new Set([
+  'owner-device',
+  'ephemeral-device',
+  'ephemeral-self',
+  'ephemeral-guest'
+]);
+
+function isEphemeralPlaceholderDeviceId(deviceId) {
+  if (!deviceId || typeof deviceId !== 'string') return false;
+  return EPHEMERAL_PLACEHOLDER_DEVICE_IDS.has(deviceId);
+}
+
 export function resolvePeerForCallEvent(event = {}, selfDeviceId = null) {
   const selfDevice = normalizePeerDeviceId(selfDeviceId || getDeviceId() || null);
   const fromDeviceId = normalizePeerDeviceId(
@@ -219,8 +241,15 @@ export function resolvePeerForCallEvent(event = {}, selfDeviceId = null) {
     fromDeviceId: fromDeviceId || null,
     toDeviceId: toDeviceId || null
   };
+  // Ephemeral signals carry placeholder device IDs that will never match a
+  // real selfDevice — bail out silently before logging to avoid console spam.
+  const isEphemeralPlaceholderEvent =
+    isEphemeralPlaceholderDeviceId(fromDeviceId)
+    || isEphemeralPlaceholderDeviceId(toDeviceId);
   if (!selfDevice || (!fromDeviceId && !toDeviceId)) {
-    log({ callPeerResolveError: 'missing-device', ...logBase });
+    if (!isEphemeralPlaceholderEvent) {
+      log({ callPeerResolveError: 'missing-device', ...logBase });
+    }
     return null;
   }
   if (toDeviceId && selfDevice === toDeviceId) {
@@ -261,7 +290,12 @@ export function resolvePeerForCallEvent(event = {}, selfDeviceId = null) {
       return null;
     }
   }
-  log({ callPeerResolveError: 'device-mismatch', ...logBase });
+  // Ephemeral signals never reach this branch with matching device IDs because
+  // the placeholders never equal the local self device.  Skip the log to avoid
+  // spamming the console once per ICE candidate.
+  if (!isEphemeralPlaceholderEvent) {
+    log({ callPeerResolveError: 'device-mismatch', ...logBase });
+  }
   return null;
 }
 
