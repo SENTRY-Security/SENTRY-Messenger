@@ -871,11 +871,29 @@ async function ensurePeerConnection() {
 }
 
 async function attachLocalMedia() {
+  // Defensive: attachLocalMedia is called exactly once per peer connection
+  // lifetime (from ensurePeerConnection, which early-returns if peerConnection
+  // already exists; cleanupPeerConnection resets localStream alongside
+  // peerConnection so they stay in sync).  We removed the previous "reuse
+  // existing localStream" early-return because:
+  //   1. It would addTrack() without calling setupInsertableStreamsForSender,
+  //      potentially sending unencrypted / wrong-key audio if the deferred
+  //      sender-transform pass for any reason did not run (e.g. ontrack
+  //      delivered video before audio).
+  //   2. It only ever fired in race conditions that don't occur in the
+  //      normal cleanup → next-call sequence.
+  // If somehow we DO find a stale localStream here, stop its tracks and
+  // reacquire to avoid leaking the mic and to keep the encrypted-frame
+  // pipeline consistent (every track must go through the standard
+  // setup-sender path below).
   if (localStream && localStream.getTracks().length) {
-    localStream.getTracks().forEach((track) => {
-      peerConnection.addTrack(track, localStream);
+    log({
+      attachLocalMediaUnexpectedReuse: true,
+      callId: activeCallId,
+      trackCount: localStream.getTracks().length
     });
-    return;
+    try { localStream.getTracks().forEach((t) => { try { t.stop(); } catch {} }); } catch {}
+    localStream = null;
   }
   try {
     const wantVideo = isVideoCall();
