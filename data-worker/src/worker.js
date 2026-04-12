@@ -300,11 +300,11 @@ function json(obj, init) {
   });
 }
 
-async function verifyHMAC(req, env) {
+async function verifyHMAC(req, env, preReadBody) {
   const sig = req.headers.get('x-auth') || '';
   if (!sig || !env.HMAC_SECRET) return false;
   const url = new URL(req.url);
-  const body = req.method === 'GET' ? '' : await req.clone().text();
+  const body = preReadBody !== undefined ? preReadBody : (req.method === 'GET' ? '' : await req.clone().text());
   const msgPipe = url.pathname + url.search + '|' + body;
   const msgNewline = url.pathname + url.search + '\n' + body;
 
@@ -6527,19 +6527,12 @@ async function handleAccountsRoutes(req, env) {
       `drive-${accountDigest}`,
       `avatar-${accountDigest}`
     ]);
-    const groupIds = new Set();
     const prefixes = new Set();
 
     const addConv = (id) => {
       if (!id) return;
       const normalized = normalizeConversationId(id);
       if (normalized) convIds.add(normalized);
-    };
-
-    const addGroup = (id) => {
-      if (!id) return;
-      const norm = String(id || '').trim();
-      if (norm) groupIds.add(norm);
     };
 
     try {
@@ -6551,26 +6544,14 @@ async function handleAccountsRoutes(req, env) {
       console.warn('account_purge_conv_acl_lookup_failed', err?.message || err);
     }
 
+    // Collect conversations from business_conversation_members
     try {
-      const creatorGroups = await env.DB.prepare(
-        `SELECT group_id, conversation_id FROM groups WHERE creator_account_digest=?1`
+      const rows = await env.DB.prepare(
+        `SELECT conversation_id FROM business_conversation_members WHERE account_digest=?1`
       ).bind(accountDigest).all();
-      for (const row of creatorGroups?.results || []) {
-        addGroup(row?.group_id);
-        addConv(row?.conversation_id);
-      }
-      const memberGroups = await env.DB.prepare(
-        `SELECT gm.group_id, g.conversation_id
-           FROM group_members gm
-           JOIN groups g ON gm.group_id = g.group_id
-          WHERE gm.account_digest=?1`
-      ).bind(accountDigest).all();
-      for (const row of memberGroups?.results || []) {
-        addGroup(row?.group_id);
-        addConv(row?.conversation_id);
-      }
+      for (const row of rows?.results || []) addConv(row?.conversation_id);
     } catch (err) {
-      console.warn('account_purge_group_lookup_failed', err?.message || err);
+      console.warn('account_purge_biz_conv_lookup_failed', err?.message || err);
     }
 
     const mediaKeys = new Set();
@@ -6599,7 +6580,6 @@ async function handleAccountsRoutes(req, env) {
         dryRun: true,
         accountDigest,
         convIds: Array.from(convIds),
-        groupIds: Array.from(groupIds),
         mediaKeys: Array.from(mediaKeys),
         prefixes: Array.from(prefixes)
       });
@@ -6617,8 +6597,6 @@ async function handleAccountsRoutes(req, env) {
 
     const convList = Array.from(convIds);
     const convPlaceholders = convList.length ? convList.map((_, i) => `?${i + 1}`).join(',') : '';
-    const groupList = Array.from(groupIds);
-    const groupPlaceholders = groupList.length ? groupList.map((_, i) => `?${i + 1}`).join(',') : '';
 
     const summary = {};
     if (convList.length) {
@@ -6630,16 +6608,24 @@ async function handleAccountsRoutes(req, env) {
         `DELETE FROM attachments WHERE conversation_id IN (${convPlaceholders})`,
         convList
       );
-      summary.messages = await del(
-        `DELETE FROM messages WHERE conv_id IN (${convPlaceholders})`,
-        convList
-      );
       summary.mediaObjects = await del(
         `DELETE FROM media_objects WHERE conv_id IN (${convPlaceholders})`,
         convList
       );
+      summary.messageKeyVault = await del(
+        `DELETE FROM message_key_vault WHERE conversation_id IN (${convPlaceholders})`,
+        convList
+      );
       summary.conversationAcl = await del(
         `DELETE FROM conversation_acl WHERE conversation_id IN (${convPlaceholders})`,
+        convList
+      );
+      summary.deletionCursors = await del(
+        `DELETE FROM deletion_cursors WHERE conversation_id IN (${convPlaceholders})`,
+        convList
+      );
+      summary.conversationDeletionLog = await del(
+        `DELETE FROM conversation_deletion_log WHERE conversation_id IN (${convPlaceholders})`,
         convList
       );
       summary.conversations = await del(
@@ -6740,23 +6726,39 @@ async function handleAccountsRoutes(req, env) {
       `DELETE FROM opaque_records WHERE account_digest=?1`,
       [accountDigest]
     );
+    summary.contacts = await del(
+      `DELETE FROM contacts WHERE owner_digest=?1`,
+      [accountDigest]
+    );
+    summary.inviteDropbox = await del(
+      `DELETE FROM invite_dropbox WHERE owner_account_digest=?1`,
+      [accountDigest]
+    );
+    summary.ephemeralInvites = await del(
+      `DELETE FROM ephemeral_invites WHERE owner_digest=?1`,
+      [accountDigest]
+    );
+    summary.ephemeralSessions = await del(
+      `DELETE FROM ephemeral_sessions WHERE owner_digest=?1 OR guest_digest=?1`,
+      [accountDigest]
+    );
+    summary.pushSubscriptions = await del(
+      `DELETE FROM push_subscriptions WHERE account_digest=?1`,
+      [accountDigest]
+    );
+    summary.genymotionInstances = await del(
+      `DELETE FROM genymotion_instances WHERE account_digest=?1`,
+      [accountDigest]
+    );
     summary.accounts = await del(
       `DELETE FROM accounts WHERE account_digest=?1`,
       [accountDigest]
     );
 
-    if (convList.length) {
-      summary.conversationAclCleanup = await del(
-        `DELETE FROM conversation_acl WHERE conversation_id IN (${convPlaceholders})`,
-        convList
-      );
-    }
-
     return json({
       ok: true,
       accountDigest,
       convIds: Array.from(convIds),
-      groupIds: Array.from(groupIds),
       mediaKeys: Array.from(mediaKeys),
       prefixes: Array.from(prefixes),
       summary
@@ -7757,10 +7759,14 @@ async function handlePublicRoutes(req, env) {
 
   // ── Parse body for POST requests ─────────────────────────────
   let body = null;
+  let bodyText = '';
   const contentType = (req.headers.get('content-type') || '').toLowerCase();
   const isJsonContent = !contentType || contentType.includes('application/json') || contentType.includes('text/');
   if ((method === 'POST' || method === 'PUT') && isJsonContent) {
-    try { body = await req.json(); } catch {
+    try {
+      bodyText = await req.text();
+      body = JSON.parse(bodyText);
+    } catch {
       return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
     }
   }
@@ -9352,7 +9358,7 @@ async function handlePublicRoutes(req, env) {
   // POST /api/v1/admin/set-brand — set brand info for account/uid
   if (path === '/api/v1/admin/set-brand' && method === 'POST') {
     // Verify admin HMAC (same as Node.js verifyIncomingHmac)
-    if (!await verifyHMAC(req, env)) {
+    if (!await verifyHMAC(req, env, bodyText)) {
       return json({ error: 'Unauthorized', message: 'invalid admin signature' }, { status: 401 });
     }
     if (body?.brand === undefined) {
@@ -9371,7 +9377,7 @@ async function handlePublicRoutes(req, env) {
 
   // POST /api/v1/admin/purge-account — full account purge (D1 + S3 + WS logout)
   if (path === '/api/v1/admin/purge-account' && method === 'POST') {
-    if (!await verifyHMAC(req, env)) {
+    if (!await verifyHMAC(req, env, bodyText)) {
       return json({ error: 'Unauthorized', message: 'invalid admin signature' }, { status: 401 });
     }
     const { uidDigest, accountDigest, dryRun = false } = body || {};
