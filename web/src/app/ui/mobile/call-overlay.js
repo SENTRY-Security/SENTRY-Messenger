@@ -37,6 +37,7 @@ import { sessionStore } from './session-store.js';
 import { CALL_MEDIA_STATE_STATUS } from '../../../shared/calls/schemas.js';
 import { createCallAudioManager } from './call-audio.js';
 import { getCallAudioConstraints } from './browser-detection.js';
+import { showCallInfoOverlay } from '../../features/calls/call-info-overlay.js';
 import { t } from '/locales/index.js';
 
 function getStatusLabel() {
@@ -559,6 +560,7 @@ function ensureOverlayElements() {
       cameraBtn: root.querySelector('[data-call-action="camera"]'),
       flipCameraBtn: root.querySelector('[data-call-action="flip-camera"]'),
       blurModeBtn: root.querySelector('[data-call-action="blur-mode"]'),
+      infoBtn: root.querySelector('[data-call-action="info"]'),
       minifyBtn: root.querySelector('[data-call-action="minify"]'),
       bubble: root.querySelector('.call-mini-bubble'),
       bubbleAvatar: root.querySelector('.call-mini-avatar'),
@@ -616,6 +618,9 @@ function ensureOverlayElements() {
         <button type="button" class="call-btn toggle" data-call-action="flip-camera" style="display:none">
           <svg class="icon"><use href="#i-refresh-cw"/></svg><span>${t('calls.flipCamera')}</span>
         </button>
+        <button type="button" class="call-btn toggle" data-call-action="info" aria-label="${t('calls.info')}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg><span>${t('calls.info')}</span>
+        </button>
       </div>
       <button type="button" class="call-blur-mode-btn" data-call-action="blur-mode" data-blur-mode="face">
         <svg class="icon"><use href="#i-smile"/></svg><span>${t('calls.faceBlur')}</span>
@@ -663,6 +668,7 @@ function ensureOverlayElements() {
       cameraBtn: root.querySelector('[data-call-action="camera"]'),
       flipCameraBtn: root.querySelector('[data-call-action="flip-camera"]'),
       blurModeBtn: root.querySelector('[data-call-action="blur-mode"]'),
+      infoBtn: root.querySelector('[data-call-action="info"]'),
       minifyBtn: root.querySelector('[data-call-action="minify"]'),
       bubble: root.querySelector('.call-mini-bubble'),
       bubbleAvatar: root.querySelector('.call-mini-avatar'),
@@ -1684,6 +1690,7 @@ export function initCallOverlay({ showToast }) {
   ui.cameraBtn?.addEventListener('click', handleCameraToggle);
   ui.flipCameraBtn?.addEventListener('click', handleFlipCamera);
   ui.blurModeBtn?.addEventListener('click', handleBlurModeCycle);
+  ui.infoBtn?.addEventListener('click', () => showCallInfoOverlay());
   ui.minifyBtn?.addEventListener('click', minimizeOverlay);
   // Wire video elements to media-session
   if (ui.remoteVideo) setRemoteVideoElement(ui.remoteVideo);

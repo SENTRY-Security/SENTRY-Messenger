@@ -377,6 +377,13 @@ async function deriveSubMaterial(masterKey, subSalt, label, lengthBits) {
 async function finalizeContext(context) {
   const state = getCallMediaState();
   if (!state) return;
+  // Update nextRotateAt whenever keys are (re)derived so the countdown
+  // shown on the overlay stays accurate on BOTH sides — in particular,
+  // the callee never runs rotateEpoch (only OUTGOING does) and would
+  // otherwise keep the initial nextRotateAt, making the countdown
+  // disappear after the first rotation.
+  const now = Date.now();
+  const interval = Number(state.rotateIntervalMs) > 0 ? Number(state.rotateIntervalMs) : 60_000;
   updateCallMedia({
     pendingEnvelope: null,
     derivedKeys: {
@@ -386,6 +393,8 @@ async function finalizeContext(context) {
       videoRx: context.keys.videoRx
     },
     frameCounters: { ...context.frameCounters },
+    lastRotateAt: now,
+    nextRotateAt: now + interval,
     cmkMaterial: {
       masterKey: context.masterKey,
       proof: context.proofB64,

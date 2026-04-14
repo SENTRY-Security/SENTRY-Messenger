@@ -24,8 +24,7 @@ import { initCallOverlay } from './mobile/call-overlay.js';
 import {
   initCallMediaSession,
   sendCallSignal,
-  initCallKeyManager,
-  showCallInfoOverlay
+  initCallKeyManager
 } from '../features/calls/index.js';
 
 // Use bootstrap translator until async i18n is ready, then use async t()
@@ -649,8 +648,6 @@ if (voiceCallBtn) voiceCallBtn.addEventListener('click', () => {
 if (videoCallBtn) videoCallBtn.addEventListener('click', () => {
   if (isEphemeralCallMode()) initiateEphemeralCall({ mode: 'video' });
 });
-const callInfoBtn = document.getElementById('ephCallInfoBtn');
-if (callInfoBtn) callInfoBtn.addEventListener('click', () => showCallInfoOverlay());
 
 // Image attach
 if (attachBtn) attachBtn.addEventListener('click', () => fileInput?.click());
