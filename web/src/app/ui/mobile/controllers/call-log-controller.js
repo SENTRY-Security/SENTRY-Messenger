@@ -129,12 +129,20 @@ export class CallLogController extends BaseController {
     updateThreadsWithCallLogDisplay({ peerAccountDigest, label, ts, direction }) {
         const threads = this.deps.getConversationThreads?.() || new Map();
         let touched = false;
+        // Normalize to milliseconds — thread.lastMessageTs is consumed by
+        // _formatConversationPreviewTime(new Date(ts)) which expects ms.
+        // Callers here pass entry.ts in SECONDS (endedAtSec), which would
+        // otherwise display as 1970 and sort to the bottom of the list.
+        const n = Number(ts);
+        const tsMs = Number.isFinite(n) && n > 0
+            ? (n > 10_000_000_000 ? n : n * 1000)
+            : null;
         for (const thread of threads.values()) {
             if (this._threadPeer(thread) === normalizePeerKey(peerAccountDigest)) {
                 thread.lastMessageText = label;
-                thread.lastMessageTs = ts;
+                thread.lastMessageTs = tsMs;
                 thread.lastDirection = direction;
-                thread.lastReadTs = ts;
+                thread.lastReadTs = tsMs;
                 thread.unreadCount = 0;
                 thread.needsRefresh = true;
                 touched = true;

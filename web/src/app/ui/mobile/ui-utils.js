@@ -235,7 +235,16 @@ export function isDegradedPreview(text) {
  */
 export function updateThreadPreview(thread, { text, ts, messageId, direction, msgType } = {}, { force = false } = {}) {
   if (!thread) return false;
-  const newTs = Number(ts) || 0;
+  // Normalize ts to milliseconds — some callers (timeline-store, local
+  // call-log append) supply seconds, whereas _formatConversationPreviewTime
+  // and Date() expect milliseconds.  Without normalization mixed-unit writes
+  // make the list sort/display incorrectly (a seconds-value sorts to the
+  // bottom and renders as a 1970 date).
+  const rawTs = Number(ts);
+  const tsMs = Number.isFinite(rawTs) && rawTs > 0
+    ? (rawTs > 10_000_000_000 ? rawTs : rawTs * 1000)
+    : null;
+  const newTs = tsMs || 0;
   const existingTs = Number(thread.lastMessageTs) || 0;
 
   if (thread.previewLoaded && existingTs > 0 && !force) {
@@ -251,7 +260,7 @@ export function updateThreadPreview(thread, { text, ts, messageId, direction, ms
   }
 
   thread.lastMessageText = text ?? '';
-  thread.lastMessageTs = Number.isFinite(Number(ts)) ? Number(ts) : null;
+  thread.lastMessageTs = tsMs;
   thread.lastMessageId = messageId || null;
   thread.lastDirection = direction || null;
   thread.lastMsgType = msgType || null;

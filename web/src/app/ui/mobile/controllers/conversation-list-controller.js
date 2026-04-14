@@ -618,7 +618,11 @@ export class ConversationListController extends BaseController {
      */
     _formatConversationPreviewTime(ts) {
         if (!Number.isFinite(ts)) return '';
-        const date = new Date(ts);
+        // Defensive auto-conversion: if ts looks like seconds (< 10^10),
+        // upscale to ms so we don't fall back to rendering 1970 dates when
+        // a caller accidentally stores a seconds-based timestamp.
+        const tsMs = ts > 10_000_000_000 ? ts : ts * 1000;
+        const date = new Date(tsMs);
         const now = new Date();
         const isToday = date.toDateString() === now.toDateString();
         if (isToday) {
