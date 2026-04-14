@@ -1127,7 +1127,7 @@
     "createLinkFailed": "สร้างลิงก์ล้มเหลว",
     "copyBtn": "คัดลอก",
     "shareBtn": "แชร์",
-    "shareText": "ฉันสร้างแชทลับครั้งเดียวบน SENTRY Messenger แตะลิงก์เพื่อเข้าร่วม\n{url}",
+    "shareText": "SENTRY Messenger: {url}",
     "copiedToast": "✓ คัดลอกไปยังคลิปบอร์ดแล้ว",
     "headerBadge": "ครั้งเดียว",
     "autoLogoutWarnTitle": "คำเตือนออกจากระบบอัตโนมัติ",

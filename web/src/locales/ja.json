@@ -1127,7 +1127,7 @@
     "createLinkFailed": "リンクの作成に失敗しました",
     "copyBtn": "コピー",
     "shareBtn": "共有",
-    "shareText": "SENTRY Messenger でワンタイム機密チャットを作成しました。リンクをタップして参加してください\n{url}",
+    "shareText": "SENTRY Messenger: {url}",
     "copiedToast": "✓ クリップボードにコピーしました",
     "headerBadge": "ワンタイム",
     "autoLogoutWarnTitle": "自動ログアウト警告",

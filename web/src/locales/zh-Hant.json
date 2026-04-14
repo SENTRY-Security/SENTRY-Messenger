@@ -1147,7 +1147,7 @@
     "createLinkFailed": "建立連結失敗",
     "copyBtn": "複製",
     "shareBtn": "分享",
-    "shareText": "我使用 SENTRY Messenger 建立了一個臨時機密對話，請點擊連結進入對話\n{url}",
+    "shareText": "SENTRY Messenger: {url}",
     "copiedToast": "✓ 已複製到剪貼簿",
     "headerBadge": "單次機密",
     "autoLogoutWarnTitle": "自動登出提醒",

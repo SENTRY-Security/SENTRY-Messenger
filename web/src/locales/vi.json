@@ -1127,7 +1127,7 @@
     "createLinkFailed": "Tạo liên kết thất bại",
     "copyBtn": "Sao chép",
     "shareBtn": "Chia sẻ",
-    "shareText": "Tôi đã tạo cuộc trò chuyện mật một lần trên SENTRY Messenger. Nhấn vào liên kết để tham gia\n{url}",
+    "shareText": "SENTRY Messenger: {url}",
     "copiedToast": "✓ Đã sao chép vào bộ nhớ tạm",
     "headerBadge": "Tạm thời",
     "autoLogoutWarnTitle": "Cảnh báo tự động đăng xuất",

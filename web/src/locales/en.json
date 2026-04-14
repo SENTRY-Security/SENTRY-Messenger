@@ -1147,7 +1147,7 @@
     "createLinkFailed": "Failed to create link",
     "copyBtn": "Copy",
     "shareBtn": "Share",
-    "shareText": "I've created a one-time secure conversation on SENTRY Messenger. Tap the link to join:\n{url}",
+    "shareText": "SENTRY Messenger: {url}",
     "copiedToast": "✓ Copied to clipboard",
     "headerBadge": "EPHEMERAL",
     "autoLogoutWarnTitle": "Auto-Logout Warning",
