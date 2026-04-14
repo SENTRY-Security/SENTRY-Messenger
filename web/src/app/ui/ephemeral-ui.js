@@ -23,7 +23,8 @@ import { bytesToB64Url } from '../../shared/utils/base64.js';
 import { initCallOverlay } from './mobile/call-overlay.js';
 import {
   initCallMediaSession,
-  sendCallSignal
+  sendCallSignal,
+  initCallKeyManager
 } from '../features/calls/index.js';
 
 // Use bootstrap translator until async i18n is ready, then use async t()
@@ -549,16 +550,6 @@ function handleWsMessage(msg) {
         destroyChat({ reason: 'owner-terminated' });
       }
       break;
-    case 'ephemeral-call-invite':
-    case 'ephemeral-call-offer':
-    case 'ephemeral-call-answer':
-    case 'ephemeral-call-accept':
-    case 'ephemeral-call-reject':
-    case 'ephemeral-call-busy':
-    case 'ephemeral-call-ice-candidate':
-    case 'ephemeral-call-end':
-      handleEphemeralCallMessage(msg);
-      break;
     case 'hello':
       updateWsStatus('online');
       break;
@@ -595,6 +586,14 @@ function handleWsMessage(msg) {
       break;
     case 'ping':
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'pong' }));
+      break;
+    default:
+      // Route any ephemeral-call-* message through the adapter (prefix filter
+      // instead of explicit list so new signal types — e.g. ephemeral-call-rekey,
+      // ephemeral-call-media-update — don't need to be enumerated here).
+      if (typeof msg?.type === 'string' && msg.type.startsWith('ephemeral-call-')) {
+        handleEphemeralCallMessage(msg);
+      }
       break;
   }
 }
@@ -898,6 +897,17 @@ function _initCallSystem() {
     sendSignalFn: (type, payload) => sendCallSignal(type, payload),
     showToastFn: showToast
   });
+
+  // Initialize call key manager on guest side too.  Historically skipped to
+  // avoid the STATE=ENDED → resetKeyContext path (keyContext used to leak
+  // across calls), but that cleanup is now handled explicitly by
+  // media-session's releaseCallKeyContextOnCleanup.  Enabling it here wires:
+  //   • CALL_EVENT.SIGNAL → maybeDeriveKeys — so incoming call-rekey envelopes
+  //     trigger fresh key derivation (required for owner-initiated calls to
+  //     survive the 10-minute rotation).
+  //   • CALL_EVENT.STATE → startRotationTimer — so guest-initiated calls also
+  //     drive rotation, giving forward secrecy in both directions.
+  initCallKeyManager();
 
   // Activate ephemeral call adapter — translates call-* ↔ ephemeral-call-*
   activateEphemeralCallMode({
