@@ -285,10 +285,20 @@ export class CallLogController extends BaseController {
             outcome = CALL_LOG_OUTCOME.MISSED;
         }
 
-        const messageId = crypto.randomUUID();
+        // Use callId as the timeline messageId so BOTH caller and callee's
+        // local call-log entries share the same key.  The timeline's
+        // appendUserMessage dedupes by messageId; the DR-encrypted call-log
+        // that callee receives from caller is ALSO keyed by this callId
+        // (see sendDrCallLog's messageId: entry.id below), so when it arrives
+        // it collapses into the pre-existing local placeholder instead of
+        // appearing as a second entry.  Previously each side generated an
+        // independent crypto.randomUUID(), so callee ended up with two
+        // entries until re-login re-fetched from server (which only has one).
+        const callId = session.callId || identifier;
+        const messageId = callId || crypto.randomUUID();
         const entry = {
             id: messageId,
-            callId: session.callId || identifier,
+            callId,
             ts: endedAtSec,
             peerAccountDigest: peerDigest,
             peerDeviceId,
@@ -321,7 +331,18 @@ export class CallLogController extends BaseController {
         const viewerMessage = this.createCallLogMessage(entry, { messageDirection: isOutgoing ? 'outgoing' : 'incoming' });
 
         let localMessage = null;
-        if (!exists) {
+        // Only the caller (outgoing side) writes a local placeholder entry —
+        // the caller is the sole sender of the DR call-log, so their local
+        // append is the single source of truth until the server confirms.
+        //
+        // On the callee (incoming) side we intentionally skip the local
+        // append: a placeholder there would be keyed by callId (so the DR
+        // message coming in later could match by messageId), but timeline
+        // dedup skips any non-placeholder/non-failed duplicate — leaving
+        // the pending placeholder stuck forever and showing TWO entries
+        // (the stuck placeholder + the successfully appended DR entry).
+        // Letting the DR message be the sole source avoids that split.
+        if (!exists && isOutgoing) {
             localMessage = { ...viewerMessage };
             localMessage.id = localMessage.id || entry.id;
             localMessage.messageId = localMessage.id;
@@ -332,7 +353,7 @@ export class CallLogController extends BaseController {
             localMessage.failureReason = null;
             localMessage.failureCode = null;
             localMessage.msgType = 'call-log';
-            localMessage.direction = isOutgoing ? 'outgoing' : 'incoming';
+            localMessage.direction = 'outgoing';
             localMessage.ts = localMessage.ts || entry.ts;
             localMessage.conversationId = conversationId;
 
