@@ -4,7 +4,7 @@
  */
 
 import { BaseController } from './base-controller.js';
-import { normalizePeerKey } from '../contact-core-store.js';
+import { normalizePeerKey, splitPeerKey } from '../contact-core-store.js';
 import { getAccountDigest, normalizeAccountDigest, normalizePeerDeviceId, normalizePeerIdentity } from '../../../core/store.js';
 import {
     CALL_SESSION_STATUS,
@@ -128,7 +128,13 @@ export class CallLogController extends BaseController {
      */
     updateThreadsWithCallLogDisplay({ peerAccountDigest, label, ts, direction }) {
         const threads = this.deps.getConversationThreads?.() || new Map();
-        let touched = false;
+        // Match by DIGEST ONLY (not full peer key).  normalizePeerKey requires
+        // BOTH digest and deviceId; missing either returns null.  If the caller
+        // passes a bare-digest peerAccountDigest here, `null === null` matches
+        // every thread whose _threadPeer also happens to be null, causing the
+        // call log label to leak onto every conversation's preview row.
+        const targetDigest = splitPeerKey(peerAccountDigest).digest;
+        if (!targetDigest) return;
         // Normalize to milliseconds — thread.lastMessageTs is consumed by
         // _formatConversationPreviewTime(new Date(ts)) which expects ms.
         // Callers here pass entry.ts in SECONDS (endedAtSec), which would
@@ -137,16 +143,17 @@ export class CallLogController extends BaseController {
         const tsMs = Number.isFinite(n) && n > 0
             ? (n > 10_000_000_000 ? n : n * 1000)
             : null;
+        let touched = false;
         for (const thread of threads.values()) {
-            if (this._threadPeer(thread) === normalizePeerKey(peerAccountDigest)) {
-                thread.lastMessageText = label;
-                thread.lastMessageTs = tsMs;
-                thread.lastDirection = direction;
-                thread.lastReadTs = tsMs;
-                thread.unreadCount = 0;
-                thread.needsRefresh = true;
-                touched = true;
-            }
+            const threadDigest = splitPeerKey(thread.peerAccountDigest).digest;
+            if (!threadDigest || threadDigest !== targetDigest) continue;
+            thread.lastMessageText = label;
+            thread.lastMessageTs = tsMs;
+            thread.lastDirection = direction;
+            thread.lastReadTs = tsMs;
+            thread.unreadCount = 0;
+            thread.needsRefresh = true;
+            touched = true;
         }
         if (touched) {
             this.deps.renderConversationList?.();
