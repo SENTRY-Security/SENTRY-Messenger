@@ -402,7 +402,7 @@ async function finalizeContext(context) {
 
 // ── Epoch rotation (M-8 fix) ──────────────────────────────────────
 // The caller (initiator) drives rotation. Every rotateIntervalMs
-// (default 10 min), it increments epoch, derives fresh keys, and
+// (default 1 min), it increments epoch, derives fresh keys, and
 // emits a CALL_EVENT.REKEY with the new envelope so the signaling
 // layer can send it to the peer.
 
@@ -446,7 +446,7 @@ async function rotateEpoch() {
   const now = Date.now();
   updateCallMedia({
     lastRotateAt: now,
-    nextRotateAt: now + (mediaState.rotateIntervalMs || 600000)
+    nextRotateAt: now + (mediaState.rotateIntervalMs || 60000)
   });
   // Emit rekey event so signaling layer can send envelope to peer
   emitCallEvent(CALL_EVENT.REKEY, {
