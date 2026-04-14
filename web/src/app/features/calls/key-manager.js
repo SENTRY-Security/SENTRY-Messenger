@@ -218,6 +218,7 @@ export async function prepareCallKeyEnvelope({
 }
 
 async function maybeDeriveKeys(trigger = 'auto') {
+  log({ callKeyDeriveInvoked: trigger });
   if (suppressAutoDerive) {
     log({ callKeyDeriveSkip: 'suppressed', trigger });
     return null;

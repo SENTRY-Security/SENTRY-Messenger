@@ -191,6 +191,7 @@ function _ephemeralSignalSender(payload) {
  */
 export function handleEphemeralCallMessage(msg) {
   if (!msg?.type || !msg.type.startsWith('ephemeral-call-')) return false;
+  log({ ephCallMessageReceived: msg.type, callId: msg.callId || null, hasEnvelope: !!msg.envelope, hasCtx: !!_ephCtx, hasGate: !!_callTokenGate });
   if (!_ephCtx) {
     log({ ephCallMessageIgnored: msg.type, reason: 'adapter-not-active' });
     return false;
