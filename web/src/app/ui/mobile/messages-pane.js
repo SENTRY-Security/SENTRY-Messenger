@@ -356,6 +356,7 @@ export function initMessagesPane({
     loadMoreSpinner: dom.messagesLoadMoreSpinner ?? document.querySelector('.messages-load-more .spinner'),
     callBtn: dom.messagesCallBtn ?? document.getElementById('messagesCallBtn'),
     callSubmenu: document.getElementById('callSubmenu'),
+    callInfoBtn: document.getElementById('messagesCallInfoBtn'),
     bizConvSettingsBtn: document.getElementById('bizConvSettingsBtn')
   };
 
@@ -1333,6 +1334,16 @@ export function initMessagesPane({
       elements.callSubmenu.classList.add('hidden');
       if (callType === 'voice' || callType === 'video') {
         controllers.composer.handleConversationAction(callType);
+      }
+    });
+
+    // Call info button — show key rotation overlay
+    elements.callInfoBtn?.addEventListener('click', async () => {
+      try {
+        const { showCallInfoOverlay } = await import('../../features/calls/index.js');
+        showCallInfoOverlay();
+      } catch (err) {
+        console.warn('[messages-pane] callInfo overlay failed to open', err?.message || err);
       }
     });
     if (elements.scrollEl) {

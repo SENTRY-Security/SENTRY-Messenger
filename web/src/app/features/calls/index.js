@@ -87,3 +87,7 @@ export {
   initiateEphemeralCall,
   deriveCallTokenFromDR
 } from './ephemeral-call-adapter.js';
+export {
+  showCallInfoOverlay,
+  hideCallInfoOverlay
+} from './call-info-overlay.js';
