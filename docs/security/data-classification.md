@@ -26,7 +26,7 @@
 | 解密後訊息明文 | C1 | DOM / 變數 | UI 顯示期間 |
 | 解密後媒體明文 | C1 | Blob URL / 變數 | UI 顯示期間 |
 | OPAQUE session key | C1 | 暫存 | OPAQUE 流程完成後丟棄 |
-| Call E2EE key | C1 | `key-manager.js` | 通話期間，每 10 分鐘輪換 |
+| Call E2EE key | C1 | `key-manager.js` | 通話期間，每 1 分鐘輪換 |
 | Cached media stream | C4 | `_cachedMediaStream` | 60 秒後釋放 |
 
 ### sessionStorage

@@ -100,7 +100,7 @@
 | 「抗重放攻擊」 | 正確 | Counter 驗證在客戶端和伺服器端實作 |
 | 「無 Fallback 政策」 | 正確 | DR 實作中明確宣告，程式碼可驗證 |
 | 「InsertableStreams E2EE」 | 正確但有限制 | 不支援 InsertableStreams 的瀏覽器無法使用 |
-| 「金鑰每 10 分鐘自動輪換」（通話） | ⚠️ 待確認 | 需確認 key-manager.js 中的輪換邏輯 |
+| 「金鑰每 1 分鐘自動輪換」（通話） | ✅ 確認 | `key-manager.js` 的 `startRotationTimer` → `rotateEpoch` |
 
 ## 6. 需要未來第三方審查的區域
 

@@ -34,7 +34,7 @@
 | ~~M-5~~ | ~~IV 重用風險~~ | `security-architecture.md` §10 | ⬇️ 降級為 Low：大部分操作使用 per-object HKDF salt 衍生獨立金鑰，IV 碰撞不影響安全性（不同 key）；少數固定 salt 操作（contact-share、contact-blob）碰撞機率 < 10⁻²⁰ |
 | ~~M-6~~ | ~~Invite Dropbox 硬編碼 salt~~ | `security-architecture.md` §10 | ✅ 已修復：改為每次 seal 產生 16-byte random salt，存入 envelope `salt_b64`；舊 envelope 向下相容（fallback 舊 salt） |
 | ~~M-7~~ | ~~Call key 使用零 salt~~ | `security-architecture.md` §10 | ✅ 已修復：CMK 512-bit 輸出拆分為 key (256-bit) + subSalt (256-bit)，子金鑰衍生使用 subSalt 取代零 salt |
-| ~~M-8~~ | ~~Epoch 輪換機制待確認~~ | `security-review-checklist.md` §6.2 | ✅ 已修復：caller 每 10 分鐘自動遞增 epoch 並重新衍生金鑰（`key-manager.js`），透過 `call-rekey` 信號傳送新 envelope 給 peer；`createEncryptionTransform` 動態偵測 epoch 變更並即時切換加密金鑰 |
+| ~~M-8~~ | ~~Epoch 輪換機制待確認~~ | `security-review-checklist.md` §6.2 | ✅ 已修復：caller 每 1 分鐘自動遞增 epoch 並重新衍生金鑰（`key-manager.js`），透過 `call-rekey` 信號傳送新 envelope 給 peer；`createEncryptionTransform` 動態偵測 epoch 變更並即時切換加密金鑰 |
 | ~~M-9~~ | ~~InsertableStreams 不支援時的 fallback~~ | `security-review-checklist.md` §6.2 | ✅ 已修復：本地或對端不支援 InsertableStreams 時拒絕建立通話（`failCall`），不允許靜默降級為未加密通話 |
 | ~~M-10~~ | ~~CSP headers 設定待確認~~ | `security-review-checklist.md` §9 | ✅ Phase 1 已修復：新增 CSP header，白名單限制 script-src (`'self'` + `'wasm-unsafe-eval'` + 3 CDN + `blob:`)、禁止 frame/object、加入 `X-Frame-Options: DENY` 等安全 headers；Phase 2 待移除 `'unsafe-inline'` |
 | ~~M-11~~ | ~~CORS 設定待確認~~ | `security-review-checklist.md` §9 | ✅ 已修復：Pages Function 從 origin reflection 改為白名單比對（`CORS_ALLOWED_ORIGINS`）；Data Worker 設定 `CORS_ORIGINS` 環境變數限制允許的 origin；明確列舉 allow-headers 取代 `*` |
@@ -101,7 +101,7 @@
 - ✅ **M-1/M-12**：新增 `RateLimiter` Durable Object 分散式限流，覆蓋全域 IP、認證、prekey、訊息發送、pairing code
 - ✅ **M-10**：Phase 1 CSP — 白名單 script-src（含 `'wasm-unsafe-eval'` 支援 Argon2 WASM）、禁止 frame/object、加入安全 headers（X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy）
 - ✅ **M-4**：所有 AES-GCM 操作加入 AAD — `aead.js`（info tag）、`invite-dropbox.js`、`context.js`、`contact-share.js`、`kdf.js`（`sentry/mk-wrap`）、`contacts.js`（`contact-storage-v1`）；v2 格式向下相容 v1 legacy
-- ✅ **M-8**：Epoch 輪換實作 — caller 每 10 分鐘自動遞增 epoch 重新衍生金鑰，透過 `call-rekey` 信號同步 peer，`InsertableStreams` transform 動態切換加密金鑰
+- ✅ **M-8**：Epoch 輪換實作 — caller 每 1 分鐘自動遞增 epoch 重新衍生金鑰，透過 `call-rekey` 信號同步 peer，`InsertableStreams` transform 動態切換加密金鑰
 - ✅ **M-11**：CORS 白名單限制 — Pages Function 改用 `CORS_ALLOWED_ORIGINS` 白名單取代 origin reflection；Data Worker 啟用 `CORS_ORIGINS` 環境變數；明確列舉 allow-headers
 - ✅ **L-2**：登出時清除所有 localStorage — `secureLogout()` 已有 `localStorage.clear()`，`app-ui.js` `onLogout()` 修正為清除所有非 SIM key
 - ✅ **L-10**：頭像已確認使用 AES-256-GCM + HKDF(MK, random_salt) 加密上傳，與一般媒體相同加密流程

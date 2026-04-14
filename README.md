@@ -119,7 +119,7 @@ SENTRY Messenger 是一個純 Web 應用程式。不需要安裝任何東西。
 | 金鑰派生 | HKDF-SHA256 / Argon2id | 金鑰衍生與密碼強化 |
 | 主金鑰保護 | Argon2id + AES-256-GCM wrapping | 使用者密碼保護主金鑰 |
 | 媒體分片加密 | HKDF-SHA256 → AES-256-GCM per-chunk | 每 chunk 獨立鑰匙與 IV，info tag 域分離 |
-| 通話 E2EE | InsertableStreams + AES-GCM | WebRTC 逐幀加密，counter-based nonce，10 分鐘金鑰輪換 |
+| 通話 E2EE | InsertableStreams + AES-GCM | WebRTC 逐幀加密，counter-based nonce，1 分鐘金鑰輪換 |
 | 推播預覽 E2EE | ECDH P-256 + HKDF-SHA256 + AES-256-GCM | 推播通知預覽內容端對端加密，伺服器無法讀取 |
 
 ### 通訊功能
@@ -196,7 +196,7 @@ SENTRY Messenger 是一個純 Web 應用程式。不需要安裝任何東西。
 | 視訊接收 | `call-video-tx:callee` | 對端解密 |
 
 - 每幀獨立 nonce（counter-based），防止重放
-- 金鑰每 10 分鐘自動輪換
+- 金鑰每 1 分鐘自動輪換
 
 ### MediaPipe 人臉/背景馬賽克
 
