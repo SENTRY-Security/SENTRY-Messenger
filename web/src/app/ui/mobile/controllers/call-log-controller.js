@@ -285,20 +285,20 @@ export class CallLogController extends BaseController {
             outcome = CALL_LOG_OUTCOME.MISSED;
         }
 
-        // Use callId as the timeline messageId so BOTH caller and callee's
-        // local call-log entries share the same key.  The timeline's
-        // appendUserMessage dedupes by messageId; the DR-encrypted call-log
-        // that callee receives from caller is ALSO keyed by this callId
-        // (see sendDrCallLog's messageId: entry.id below), so when it arrives
-        // it collapses into the pre-existing local placeholder instead of
-        // appearing as a second entry.  Previously each side generated an
-        // independent crypto.randomUUID(), so callee ended up with two
-        // entries until re-login re-fetched from server (which only has one).
-        const callId = session.callId || identifier;
-        const messageId = callId || crypto.randomUUID();
+        // messageId: random UUID (NOT callId).  Earlier we tried reusing
+        // callId so caller/callee placeholders could dedup by messageId,
+        // but with the current model callee no longer creates a local entry
+        // at all — the caller's DR call-log is the sole source — so the
+        // alignment is unnecessary.  More importantly, `identifier` above
+        // is also session.callId; reusing callId as entry.id caused
+        // `sentCallLogIds.has(entry.id)` at the DR-send guard below to match
+        // the identifier added on line ~226, silently skipping the DR send
+        // and making the whole record vanish on both sides (server never
+        // received it, so re-login didn't restore anything either).
+        const messageId = crypto.randomUUID();
         const entry = {
             id: messageId,
-            callId,
+            callId: session.callId || identifier,
             ts: endedAtSec,
             peerAccountDigest: peerDigest,
             peerDeviceId,
