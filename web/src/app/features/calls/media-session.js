@@ -1437,7 +1437,7 @@ function cleanupPeerConnection(reason) {
   // starts with a clean slate.  Without this, the next call's
   // setupInsertableStreamsForReceiver/Sender would silently keep using the
   // previous call's cmkSalt-derived keys → AES-GCM decrypt fails →
-  // passthrough activates → audible noise.
+  // every frame is dropped → persistent silent audio / black video.
   //
   // IMPORTANT: this only clears the in-memory call derivation context.  It
   // does NOT touch the conversation token or DR state — that was the
@@ -1822,11 +1822,13 @@ function createEncryptionTransform(keyName, mode) {
   let rekeyPromise = null;
   let _frameCount = 0;
   let _failCount = 0;
-  let _passthrough = false; // fallback: stop decrypting after too many failures
   const transform = new TransformStream({
     async transform(encodedFrame, controller) {
       if (!cryptoKey) {
-        try { await importPromise; } catch { controller.enqueue(encodedFrame); return; }
+        // Key not yet imported → drop frame (encrypt: must not leak plaintext;
+        // decrypt: ciphertext would be garbage to decoder anyway).
+        try { await importPromise; } catch { return; }
+        if (!cryptoKey) return;
       }
       // Check if epoch has changed (key rotation occurred)
       const latestCtx = getCallKeyContext();
@@ -1845,7 +1847,6 @@ function createEncryptionTransform(keyName, mode) {
             currentEpoch = latestEpoch;
             rekeyPromise = null;
             _failCount = 0;
-            _passthrough = false;
           });
         }
         try { await rekeyPromise; } catch { /* ignore */ }
@@ -1853,13 +1854,7 @@ function createEncryptionTransform(keyName, mode) {
       _frameCount++;
       // Diagnostic: log first frame + every 200th frame
       if (_frameCount === 1 || _frameCount % 200 === 0) {
-        logCapped({ e2eeFrame: { mode, keyName, frame: _frameCount, fails: _failCount, passthrough: _passthrough, hasKey: !!cryptoKey, byteLen: encodedFrame.data?.byteLength } });
-      }
-      // Passthrough mode: too many consecutive decrypt failures → peer likely
-      // not encrypting.  Stop corrupting frames by attempting invalid decryption.
-      if (_passthrough) {
-        controller.enqueue(encodedFrame);
-        return;
+        logCapped({ e2eeFrame: { mode, keyName, frame: _frameCount, fails: _failCount, hasKey: !!cryptoKey, byteLen: encodedFrame.data?.byteLength } });
       }
       try {
         if (mode === 'encrypt') {
@@ -1874,7 +1869,7 @@ function createEncryptionTransform(keyName, mode) {
           encodedFrame.data = combined.buffer;
         } else {
           const data = new Uint8Array(encodedFrame.data);
-          if (data.byteLength < 5) { controller.enqueue(encodedFrame); return; }
+          if (data.byteLength < 5) return; // too short to contain counter + ciphertext → drop
           const counter = new DataView(data.buffer, data.byteOffset, 4).getUint32(0, false);
           const iv = buildNonce(baseNonce, counter);
           const ciphertext = data.slice(4);
@@ -1888,13 +1883,9 @@ function createEncryptionTransform(keyName, mode) {
         if (_failCount <= 3 || _failCount % 100 === 0) {
           log({ callMediaTransformError: err?.message || err, mode, keyName, frame: _frameCount, consecutiveFails: _failCount });
         }
-        // After 50 consecutive decrypt failures, assume E2EE mismatch —
-        // switch to passthrough so audio is at least audible (unencrypted).
-        if (mode === 'decrypt' && _failCount >= 50) {
-          _passthrough = true;
-          log({ e2eePassthroughActivated: true, keyName, frame: _frameCount, reason: 'consecutive-decrypt-failures' });
-        }
-        controller.enqueue(encodedFrame);
+        // Drop the frame: never forward ciphertext to a decoder (noise/garbage)
+        // and never forward plaintext to the peer (would leak media).
+        // A brief in-flight race around rekey will cause a short gap, not a crash.
       }
     }
   });
@@ -1938,7 +1929,6 @@ let mode = 'encrypt';
 let importPromise = null;
 let _fc = 0;
 let _fails = 0;
-let _passthrough = false;
 
 self.onmessage = async (event) => {
   const msg = event.data;
@@ -1948,7 +1938,6 @@ self.onmessage = async (event) => {
     baseNonce = new Uint8Array(msg.nonce);
     if (msg.resetCounter) frameCounter = 0;
     _fails = 0;
-    _passthrough = false;
     try {
       importPromise = crypto.subtle.importKey(
         'raw', new Uint8Array(msg.key), { name: 'AES-GCM' }, false, usages
@@ -1965,11 +1954,12 @@ self.onrtctransform = (event) => {
   const ts = new TransformStream({
     async transform(frame, controller) {
       if (!cryptoKey) {
+        // Drop frame until key is ready: never leak plaintext (encrypt) or
+        // forward ciphertext to decoder (decrypt).
         if (importPromise) { try { await importPromise; } catch {} }
-        if (!cryptoKey) { controller.enqueue(frame); return; }
+        if (!cryptoKey) return;
       }
       _fc++;
-      if (_passthrough) { controller.enqueue(frame); return; }
       try {
         if (mode === 'encrypt') {
           frameCounter++;
@@ -1984,7 +1974,7 @@ self.onrtctransform = (event) => {
           frame.data = combined.buffer;
         } else {
           const data = new Uint8Array(frame.data);
-          if (data.byteLength < 5) { controller.enqueue(frame); return; }
+          if (data.byteLength < 5) return; // too short → drop
           const counter = new DataView(data.buffer, data.byteOffset, 4).getUint32(0, false);
           const iv = new Uint8Array(baseNonce);
           new DataView(iv.buffer).setUint32(iv.length - 4, counter, false);
@@ -1997,11 +1987,7 @@ self.onrtctransform = (event) => {
       } catch (err) {
         _fails++;
         if (_fails <= 3) console.warn('[e2ee-worker]', mode, 'fail #' + _fails, err?.message);
-        if (mode === 'decrypt' && _fails >= 50) {
-          _passthrough = true;
-          console.warn('[e2ee-worker] passthrough activated after', _fails, 'consecutive decrypt failures');
-        }
-        controller.enqueue(frame);
+        // Drop the frame: never forward ciphertext to a decoder or plaintext to the peer.
       }
     }
   });

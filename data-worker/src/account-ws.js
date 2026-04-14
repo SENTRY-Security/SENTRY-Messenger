@@ -42,12 +42,12 @@ const EPH_BUFFERABLE_TYPES = new Set([
 const CALL_SIGNAL_TYPES = new Set([
   'call-invite', 'call-ringing', 'call-accept', 'call-reject',
   'call-cancel', 'call-busy', 'call-end', 'call-ice-candidate',
-  'call-media-update', 'call-offer', 'call-answer'
+  'call-media-update', 'call-offer', 'call-answer', 'call-rekey'
 ]);
 const CALL_RELEASE_EVENTS = new Set(['call-end', 'call-cancel', 'call-reject', 'call-busy']);
 const CALL_RENEW_EVENTS = new Set([
   'call-ringing', 'call-accept', 'call-media-update',
-  'call-ice-candidate', 'call-offer', 'call-answer'
+  'call-ice-candidate', 'call-offer', 'call-answer', 'call-rekey'
 ]);
 
 // ── Helpers (pure, no instance state) ────────────────────────────
