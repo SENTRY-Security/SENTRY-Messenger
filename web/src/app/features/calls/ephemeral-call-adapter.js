@@ -178,6 +178,7 @@ function _ephemeralSignalSender(payload) {
 
   try {
     _ephCtx.wsSend(msg);
+    log({ ephCallSignalSent: true, type: msg.type, callId: msg.callId || null, hasEnvelope: !!msg.envelope });
   } catch (err) {
     log({ ephCallSignalSendError: err?.message, type: msg.type });
   }

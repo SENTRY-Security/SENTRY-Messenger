@@ -218,11 +218,27 @@ export async function prepareCallKeyEnvelope({
 }
 
 async function maybeDeriveKeys(trigger = 'auto') {
-  if (suppressAutoDerive) return null;
+  if (suppressAutoDerive) {
+    log({ callKeyDeriveSkip: 'suppressed', trigger });
+    return null;
+  }
   const session = getCallSessionSnapshot();
   const mediaState = getCallMediaState();
-  if (!session?.peerAccountDigest || !session?.peerDeviceId || !mediaState?.pendingEnvelope) return null;
-  if (deriveTask) return deriveTask;
+  if (!session?.peerAccountDigest || !session?.peerDeviceId || !mediaState?.pendingEnvelope) {
+    log({
+      callKeyDeriveSkip: 'missing-input',
+      trigger,
+      hasDigest: !!session?.peerAccountDigest,
+      hasDeviceId: !!session?.peerDeviceId,
+      hasPendingEnvelope: !!mediaState?.pendingEnvelope,
+      envelopeEpoch: mediaState?.pendingEnvelope?.epoch ?? null
+    });
+    return null;
+  }
+  if (deriveTask) {
+    log({ callKeyDeriveSkip: 'in-flight', trigger });
+    return deriveTask;
+  }
   // Guard against re-entrant calls: deriveKeysFromEnvelope emits STATE
   // events synchronously (setCallMediaStatus(KEY_PENDING)) before its
   // first `await`.  Those events trigger handleCallStateEvent which calls

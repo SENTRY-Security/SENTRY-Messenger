@@ -236,11 +236,30 @@ function applySignalToState(msg) {
 
 function maybeApplyEnvelopeFromSignal(msg) {
   const envelope = msg?.payload?.envelope || msg?.envelope;
-  if (!envelope || !msg?.callId) return;
+  if (!envelope || !msg?.callId) {
+    if (msg?.type && msg.type !== 'call-invite' && msg.type !== 'call-end') {
+      log({
+        callSignalEnvelopeSkip: 'no-envelope-or-callid',
+        type: msg?.type,
+        hasEnvelope: !!envelope,
+        hasCallId: !!msg?.callId
+      });
+    }
+    return;
+  }
   const session = getCallSessionSnapshot();
-  if (!session?.callId || session.callId !== msg.callId) return;
+  if (!session?.callId || session.callId !== msg.callId) {
+    log({
+      callSignalEnvelopeSkip: 'callid-mismatch',
+      type: msg?.type,
+      sessionCallId: session?.callId || null,
+      msgCallId: msg.callId
+    });
+    return;
+  }
   try {
     applyCallEnvelope(envelope);
+    log({ callSignalEnvelopeApplied: true, type: msg?.type, epoch: envelope?.epoch ?? null });
   } catch (err) {
     log({ callSignalEnvelopeError: err?.message || err, callId: msg.callId });
   }
