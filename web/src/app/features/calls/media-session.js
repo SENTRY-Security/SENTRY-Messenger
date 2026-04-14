@@ -1799,6 +1799,10 @@ function requestKeyFrameFromPeer() {
   }, 500);
 }
 
+// Frame wire format: [1 byte epoch LSB][4 bytes counter BE][ciphertext]
+const FRAME_HEADER_BYTES = 5;
+const PREVIOUS_KEY_GRACE_MS = 10_000;
+
 function createEncryptionTransform(keyName, mode) {
   const context = getCallKeyContext();
   const keyEntry = context?.keys?.[keyName];
@@ -1819,6 +1823,13 @@ function createEncryptionTransform(keyName, mode) {
       cryptoKey = key;
       return key;
     });
+  // Dual-epoch retention: when rekey happens, current key is demoted to
+  // previous for PREVIOUS_KEY_GRACE_MS so in-flight frames encrypted by
+  // the peer with the OLD epoch can still be decrypted.
+  let previousCryptoKey = null;
+  let previousBaseNonce = null;
+  let previousEpoch = -1;
+  let previousExpiresAt = 0;
   let rekeyPromise = null;
   let _frameCount = 0;
   let _failCount = 0;
@@ -1829,6 +1840,12 @@ function createEncryptionTransform(keyName, mode) {
         // decrypt: ciphertext would be garbage to decoder anyway).
         try { await importPromise; } catch { return; }
         if (!cryptoKey) return;
+      }
+      // Expire previous key past the grace window
+      if (previousCryptoKey && Date.now() > previousExpiresAt) {
+        previousCryptoKey = null;
+        previousBaseNonce = null;
+        previousEpoch = -1;
       }
       // Check if epoch has changed (key rotation occurred)
       const latestCtx = getCallKeyContext();
@@ -1842,6 +1859,11 @@ function createEncryptionTransform(keyName, mode) {
             false,
             usages
           ).then((key) => {
+            // Promote current to previous (in-flight frames use old key)
+            previousCryptoKey = cryptoKey;
+            previousBaseNonce = baseNonce;
+            previousEpoch = currentEpoch;
+            previousExpiresAt = Date.now() + PREVIOUS_KEY_GRACE_MS;
             cryptoKey = key;
             baseNonce = new Uint8Array(latestCtx.keys[keyName].nonce);
             currentEpoch = latestEpoch;
@@ -1854,26 +1876,45 @@ function createEncryptionTransform(keyName, mode) {
       _frameCount++;
       // Diagnostic: log first frame + every 200th frame
       if (_frameCount === 1 || _frameCount % 200 === 0) {
-        logCapped({ e2eeFrame: { mode, keyName, frame: _frameCount, fails: _failCount, hasKey: !!cryptoKey, byteLen: encodedFrame.data?.byteLength } });
+        logCapped({ e2eeFrame: { mode, keyName, frame: _frameCount, fails: _failCount, hasKey: !!cryptoKey, epoch: currentEpoch, byteLen: encodedFrame.data?.byteLength } });
       }
       try {
         if (mode === 'encrypt') {
           const counter = incrementFrameCounter(keyName);
           const iv = buildNonce(baseNonce, counter);
           const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, cryptoKey, encodedFrame.data);
-          const counterBytes = new Uint8Array(4);
-          new DataView(counterBytes.buffer).setUint32(0, counter, false);
-          const combined = new Uint8Array(4 + encrypted.byteLength);
-          combined.set(counterBytes, 0);
-          combined.set(new Uint8Array(encrypted), 4);
+          // Prepend [1 byte epoch LSB][4 bytes counter BE]
+          const combined = new Uint8Array(FRAME_HEADER_BYTES + encrypted.byteLength);
+          combined[0] = currentEpoch & 0xFF;
+          new DataView(combined.buffer).setUint32(1, counter, false);
+          combined.set(new Uint8Array(encrypted), FRAME_HEADER_BYTES);
           encodedFrame.data = combined.buffer;
         } else {
           const data = new Uint8Array(encodedFrame.data);
-          if (data.byteLength < 5) return; // too short to contain counter + ciphertext → drop
-          const counter = new DataView(data.buffer, data.byteOffset, 4).getUint32(0, false);
-          const iv = buildNonce(baseNonce, counter);
-          const ciphertext = data.slice(4);
-          const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, cryptoKey, ciphertext);
+          if (data.byteLength < FRAME_HEADER_BYTES + 1) return; // need header + at least 1 byte → drop
+          const frameEpoch = data[0];
+          const counter = new DataView(data.buffer, data.byteOffset + 1, 4).getUint32(0, false);
+          const ciphertext = data.slice(FRAME_HEADER_BYTES);
+          // Pick key by epoch byte (current or previous within grace window)
+          let chosenKey = null;
+          let chosenBaseNonce = null;
+          if (frameEpoch === (currentEpoch & 0xFF)) {
+            chosenKey = cryptoKey;
+            chosenBaseNonce = baseNonce;
+          } else if (previousCryptoKey && frameEpoch === (previousEpoch & 0xFF)) {
+            chosenKey = previousCryptoKey;
+            chosenBaseNonce = previousBaseNonce;
+          } else {
+            // Unknown epoch (likely peer rotated ahead of us, envelope not yet
+            // applied) — drop and wait for the envelope to arrive.
+            _failCount++;
+            if (_failCount <= 3) {
+              log({ callMediaTransformUnknownEpoch: frameEpoch, mode, keyName, currentEpoch, previousEpoch });
+            }
+            return;
+          }
+          const iv = buildNonce(chosenBaseNonce, counter);
+          const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, chosenKey, ciphertext);
           encodedFrame.data = decrypted;
           _failCount = 0; // reset on success
         }
@@ -1885,7 +1926,6 @@ function createEncryptionTransform(keyName, mode) {
         }
         // Drop the frame: never forward ciphertext to a decoder (noise/garbage)
         // and never forward plaintext to the peer (would leak media).
-        // A brief in-flight race around rekey will cause a short gap, not a crash.
       }
     }
   });
@@ -1922,21 +1962,36 @@ function applyTransformStream(target, transformStream) {
 // --- RTCRtpScriptTransform support (Safari 15.4+, Chrome 118+) ---
 
 const SCRIPT_TRANSFORM_WORKER_CODE = `
+// Frame wire format: [1 byte epoch LSB][4 bytes counter BE][ciphertext]
+const HEADER_BYTES = 5;
+const PREV_KEY_GRACE_MS = 10000;
 let cryptoKey = null;
 let baseNonce = null;
+let currentEpoch = 0;
 let frameCounter = 0;
 let mode = 'encrypt';
 let importPromise = null;
 let _fc = 0;
 let _fails = 0;
 
+// Dual-epoch retention for in-flight frame decryption
+let previousCryptoKey = null;
+let previousBaseNonce = null;
+let previousEpoch = -1;
+let previousExpiresAt = 0;
+
 self.onmessage = async (event) => {
   const msg = event.data;
   if (msg.type === 'key') {
+    // Initial key setup — clears any previous state
     mode = msg.mode || mode;
     const usages = mode === 'encrypt' ? ['encrypt'] : ['decrypt'];
     baseNonce = new Uint8Array(msg.nonce);
+    currentEpoch = Number(msg.epoch) || 0;
     if (msg.resetCounter) frameCounter = 0;
+    previousCryptoKey = null;
+    previousBaseNonce = null;
+    previousEpoch = -1;
     _fails = 0;
     try {
       importPromise = crypto.subtle.importKey(
@@ -1945,6 +2000,24 @@ self.onmessage = async (event) => {
       await importPromise;
     } catch (err) {
       console.error('[e2ee-worker] key import failed', err?.message || err);
+    }
+  } else if (msg.type === 'rekey') {
+    // Rotation — promote current to previous, install new
+    const usages = mode === 'encrypt' ? ['encrypt'] : ['decrypt'];
+    try {
+      const newKey = await crypto.subtle.importKey(
+        'raw', new Uint8Array(msg.key), { name: 'AES-GCM' }, false, usages
+      );
+      previousCryptoKey = cryptoKey;
+      previousBaseNonce = baseNonce;
+      previousEpoch = currentEpoch;
+      previousExpiresAt = Date.now() + PREV_KEY_GRACE_MS;
+      cryptoKey = newKey;
+      baseNonce = new Uint8Array(msg.nonce);
+      currentEpoch = Number(msg.epoch) || 0;
+      _fails = 0;
+    } catch (err) {
+      console.error('[e2ee-worker] rekey import failed', err?.message || err);
     }
   }
 };
@@ -1959,6 +2032,12 @@ self.onrtctransform = (event) => {
         if (importPromise) { try { await importPromise; } catch {} }
         if (!cryptoKey) return;
       }
+      // Expire previous key past the grace window
+      if (previousCryptoKey && Date.now() > previousExpiresAt) {
+        previousCryptoKey = null;
+        previousBaseNonce = null;
+        previousEpoch = -1;
+      }
       _fc++;
       try {
         if (mode === 'encrypt') {
@@ -1966,20 +2045,34 @@ self.onrtctransform = (event) => {
           const iv = new Uint8Array(baseNonce);
           new DataView(iv.buffer).setUint32(iv.length - 4, frameCounter, false);
           const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, cryptoKey, frame.data);
-          const counterBytes = new Uint8Array(4);
-          new DataView(counterBytes.buffer).setUint32(0, frameCounter, false);
-          const combined = new Uint8Array(4 + encrypted.byteLength);
-          combined.set(counterBytes, 0);
-          combined.set(new Uint8Array(encrypted), 4);
+          const combined = new Uint8Array(HEADER_BYTES + encrypted.byteLength);
+          combined[0] = currentEpoch & 0xFF;
+          new DataView(combined.buffer).setUint32(1, frameCounter, false);
+          combined.set(new Uint8Array(encrypted), HEADER_BYTES);
           frame.data = combined.buffer;
         } else {
           const data = new Uint8Array(frame.data);
-          if (data.byteLength < 5) return; // too short → drop
-          const counter = new DataView(data.buffer, data.byteOffset, 4).getUint32(0, false);
-          const iv = new Uint8Array(baseNonce);
+          if (data.byteLength < HEADER_BYTES + 1) return; // too short → drop
+          const frameEpoch = data[0];
+          const counter = new DataView(data.buffer, data.byteOffset + 1, 4).getUint32(0, false);
+          const ciphertext = data.slice(HEADER_BYTES);
+          let chosenKey = null;
+          let chosenBaseNonce = null;
+          if (frameEpoch === (currentEpoch & 0xFF)) {
+            chosenKey = cryptoKey;
+            chosenBaseNonce = baseNonce;
+          } else if (previousCryptoKey && frameEpoch === (previousEpoch & 0xFF)) {
+            chosenKey = previousCryptoKey;
+            chosenBaseNonce = previousBaseNonce;
+          } else {
+            // Unknown epoch — drop (peer likely rotated before envelope arrived)
+            _fails++;
+            if (_fails <= 3) console.warn('[e2ee-worker] unknown epoch', frameEpoch, 'current=', currentEpoch, 'previous=', previousEpoch);
+            return;
+          }
+          const iv = new Uint8Array(chosenBaseNonce);
           new DataView(iv.buffer).setUint32(iv.length - 4, counter, false);
-          const ciphertext = data.slice(4);
-          const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, cryptoKey, ciphertext);
+          const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, chosenKey, ciphertext);
           frame.data = decrypted;
           _fails = 0;
         }
@@ -2020,7 +2113,8 @@ function applyScriptTransform(target, keyName, mode) {
       keyName,
       key: keyBuf.buffer,
       nonce: nonceBuf.buffer,
-      resetCounter: true
+      resetCounter: true,
+      epoch: context.epoch ?? 0
     }, [keyBuf.buffer.slice(0), nonceBuf.buffer.slice(0)]);
     target.transform = new RTCRtpScriptTransform(worker, { operation: mode, keyName });
     scriptTransformWorkers.set(target, worker);
@@ -2031,7 +2125,9 @@ function applyScriptTransform(target, keyName, mode) {
   }
 }
 
-/** Send updated keys to all active ScriptTransform workers (key rotation). */
+/** Send updated keys to all active ScriptTransform workers (key rotation).
+ *  Uses 'rekey' so the worker promotes the current key to previous (for
+ *  in-flight frame decryption) and installs the new key atomically. */
 function rekeyScriptTransformWorkers() {
   const context = getCallKeyContext();
   if (!context) return;
@@ -2049,10 +2145,10 @@ function rekeyScriptTransformWorkers() {
       const keyBuf = toU8Strict(entry.key, 'media-session:scriptTransform:rekey');
       const nonceBuf = new Uint8Array(entry.nonce);
       worker.postMessage({
-        type: 'key',
+        type: 'rekey',
         key: keyBuf.buffer,
         nonce: nonceBuf.buffer,
-        resetCounter: false
+        epoch: context.epoch ?? 0
       }, [keyBuf.buffer.slice(0), nonceBuf.buffer.slice(0)]);
     } catch (err) {
       log({ callScriptTransformRekeyError: err?.message || err, keyName });
