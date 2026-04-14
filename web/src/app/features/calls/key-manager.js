@@ -260,12 +260,13 @@ async function maybeDeriveKeys(trigger = 'auto') {
 async function deriveKeysFromEnvelope({ session, envelope, trigger }) {
   const mediaState = getCallMediaState();
   if (!mediaState) return null;
+  log({ callKeyDeriveStart: true, trigger, envelopeEpoch: envelope?.epoch ?? null, callId: envelope?.callId || session?.callId || null });
   setCallMediaStatus(CALL_MEDIA_STATE_STATUS.KEY_PENDING);
   const context = await buildKeyContext({ session, envelope });
   await finalizeContext(context);
   keyContext = context;
   notifyKeyContextListeners();
-  log({ callKeyReady: true, callId: context.callId, trigger });
+  log({ callKeyReady: true, callId: context.callId, trigger, epoch: context.epoch });
   return context;
 }
 
@@ -400,6 +401,7 @@ async function finalizeContext(context) {
   // disappear after the first rotation.
   const now = Date.now();
   const interval = Number(state.rotateIntervalMs) > 0 ? Number(state.rotateIntervalMs) : 60_000;
+  log({ callFinalizeContext: true, epoch: context?.epoch ?? null, interval, nextRotateAt: now + interval });
   updateCallMedia({
     pendingEnvelope: null,
     derivedKeys: {
