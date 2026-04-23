@@ -1173,7 +1173,24 @@
     "webrtcUnsupported": "您的浏览器不支持语音/视频通话。您仍可加入进行文字通讯。",
     "webrtcCallsDisabled": "⚠️ 语音与视频通话不可用 — 您的浏览器不支持 WebRTC",
     "peerNoWebrtc": "⚠️ 对方的浏览器不支持语音/视频通话，仅可使用文字通讯。",
-    "randomNicknames": ["🍊 橘子", "🍎 苹果", "🍌 香蕉", "🍇 葡萄", "🍓 草莓", "🍑 水蜜桃", "🍒 樱桃", "🥝 猕猴桃", "🍍 菠萝", "🫐 蓝莓", "🍋 柠檬", "🥭 芒果", "🍉 西瓜", "🌽 玉米", "🥕 胡萝卜", "🌻 向日葵"]
+    "randomNicknames": [
+      "🍊 橘子",
+      "🍎 苹果",
+      "🍌 香蕉",
+      "🍇 葡萄",
+      "🍓 草莓",
+      "🍑 水蜜桃",
+      "🍒 樱桃",
+      "🥝 猕猴桃",
+      "🍍 菠萝",
+      "🫐 蓝莓",
+      "🍋 柠檬",
+      "🥭 芒果",
+      "🍉 西瓜",
+      "🌽 玉米",
+      "🥕 胡萝卜",
+      "🌻 向日葵"
+    ]
   },
   "push": {
     "settingsTitle": "推送通知",
@@ -1311,15 +1328,17 @@
     "clear": "清除标识符",
     "save": "保存",
     "securityNote": "标识符存储在您的加密备份中，仅您的设备可见。服务器和其他用户均无法知道您为联系人指定的标识符。",
-    "cat.animals": "动物",
-    "cat.plants": "植物",
-    "cat.food": "食物",
-    "cat.drinks": "饮品",
-    "cat.nature": "自然",
-    "cat.transport": "交通",
-    "cat.objects": "物品",
-    "cat.symbols": "符号",
-    "cat.activities": "活动",
-    "cat.misc": "其他"
+    "cat": {
+      "animals": "动物",
+      "plants": "植物",
+      "food": "食物",
+      "drinks": "饮品",
+      "nature": "自然",
+      "transport": "交通",
+      "objects": "物品",
+      "symbols": "符号",
+      "activities": "活动",
+      "misc": "其他"
+    }
   }
 }

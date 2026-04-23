@@ -1171,7 +1171,24 @@
     "webrtcUnsupported": "Trình duyệt của bạn không hỗ trợ cuộc gọi thoại/video. Bạn vẫn có thể tham gia để nhắn tin.",
     "webrtcCallsDisabled": "⚠️ Cuộc gọi thoại và video không khả dụng — trình duyệt của bạn không hỗ trợ WebRTC",
     "peerNoWebrtc": "⚠️ Trình duyệt của khách không hỗ trợ cuộc gọi thoại/video. Chỉ có thể nhắn tin.",
-    "randomNicknames": ["🍊 Cam", "🍎 Táo", "🍌 Chuối", "🍇 Nho", "🍓 Dâu tây", "🍑 Đào", "🍒 Cherry", "🥝 Kiwi", "🍍 Dứa", "🫐 Việt quất", "🍋 Chanh", "🥭 Xoài", "🍉 Dưa hấu", "🌽 Ngô", "🥕 Cà rốt", "🌻 Hướng dương"]
+    "randomNicknames": [
+      "🍊 Cam",
+      "🍎 Táo",
+      "🍌 Chuối",
+      "🍇 Nho",
+      "🍓 Dâu tây",
+      "🍑 Đào",
+      "🍒 Cherry",
+      "🥝 Kiwi",
+      "🍍 Dứa",
+      "🫐 Việt quất",
+      "🍋 Chanh",
+      "🥭 Xoài",
+      "🍉 Dưa hấu",
+      "🌽 Ngô",
+      "🥕 Cà rốt",
+      "🌻 Hướng dương"
+    ]
   },
   "push": {
     "settingsTitle": "Thông báo đẩy",
@@ -1309,15 +1326,17 @@
     "clear": "Xóa mã nhận dạng",
     "save": "Lưu",
     "securityNote": "Mã nhận dạng được lưu trong bản sao lưu mã hóa của bạn và chỉ hiển thị trên thiết bị của bạn. Máy chủ và người dùng khác không thể biết mã nhận dạng bạn gán cho liên hệ.",
-    "cat.animals": "Động vật",
-    "cat.plants": "Thực vật",
-    "cat.food": "Thức ăn",
-    "cat.drinks": "Đồ uống",
-    "cat.nature": "Thiên nhiên",
-    "cat.transport": "Giao thông",
-    "cat.objects": "Đồ vật",
-    "cat.symbols": "Ký hiệu",
-    "cat.activities": "Hoạt động",
-    "cat.misc": "Khác"
+    "cat": {
+      "animals": "Động vật",
+      "plants": "Thực vật",
+      "food": "Thức ăn",
+      "drinks": "Đồ uống",
+      "nature": "Thiên nhiên",
+      "transport": "Giao thông",
+      "objects": "Đồ vật",
+      "symbols": "Ký hiệu",
+      "activities": "Hoạt động",
+      "misc": "Khác"
+    }
   }
 }

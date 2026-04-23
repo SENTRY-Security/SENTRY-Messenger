@@ -1191,7 +1191,24 @@
     "webrtcUnsupported": "Your browser does not support voice/video calls. You can still join for text messaging.",
     "webrtcCallsDisabled": "⚠️ Voice and video calls are unavailable — your browser does not support WebRTC",
     "peerNoWebrtc": "⚠️ The guest's browser does not support voice/video calls. Only text messaging is available.",
-    "randomNicknames": ["🍊 Orange", "🍎 Apple", "🍌 Banana", "🍇 Grape", "🍓 Strawberry", "🍑 Peach", "🍒 Cherry", "🥝 Kiwi", "🍍 Pineapple", "🫐 Blueberry", "🍋 Lemon", "🥭 Mango", "🍉 Watermelon", "🌽 Corn", "🥕 Carrot", "🌻 Sunflower"]
+    "randomNicknames": [
+      "🍊 Orange",
+      "🍎 Apple",
+      "🍌 Banana",
+      "🍇 Grape",
+      "🍓 Strawberry",
+      "🍑 Peach",
+      "🍒 Cherry",
+      "🥝 Kiwi",
+      "🍍 Pineapple",
+      "🫐 Blueberry",
+      "🍋 Lemon",
+      "🥭 Mango",
+      "🍉 Watermelon",
+      "🌽 Corn",
+      "🥕 Carrot",
+      "🌻 Sunflower"
+    ]
   },
   "push": {
     "settingsTitle": "Push notifications",
@@ -1329,15 +1346,17 @@
     "clear": "Clear Identifier",
     "save": "Save",
     "securityNote": "Identifiers are stored in your encrypted backup and visible only on your devices. The server and other users cannot see identifiers you assign to contacts.",
-    "cat.animals": "Animals",
-    "cat.plants": "Plants",
-    "cat.food": "Food",
-    "cat.drinks": "Drinks",
-    "cat.nature": "Nature",
-    "cat.transport": "Transport",
-    "cat.objects": "Objects",
-    "cat.symbols": "Symbols",
-    "cat.activities": "Activities",
-    "cat.misc": "Other"
+    "cat": {
+      "animals": "Animals",
+      "plants": "Plants",
+      "food": "Food",
+      "drinks": "Drinks",
+      "nature": "Nature",
+      "transport": "Transport",
+      "objects": "Objects",
+      "symbols": "Symbols",
+      "activities": "Activities",
+      "misc": "Other"
+    }
   }
 }
