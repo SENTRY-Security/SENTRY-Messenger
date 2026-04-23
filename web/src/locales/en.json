@@ -1320,5 +1320,24 @@
     "suggestUpdateBrowser": "Update your browser to the latest version to fix known vulnerabilities.",
     "suggestHttps": "Use HTTPS connections to protect your data in transit.",
     "suggestVpn": "Use a VPN to encrypt your network traffic and protect your IP address."
+  },
+  "emoji": {
+    "modalTitle": "Set Identifier",
+    "setIdentifier": "Set Identifier",
+    "gearLabel": "Conversation menu",
+    "gridLabel": "Select Emoji",
+    "clear": "Clear Identifier",
+    "save": "Save",
+    "securityNote": "Identifiers are stored in your encrypted backup and visible only on your devices. The server and other users cannot see identifiers you assign to contacts.",
+    "cat.animals": "Animals",
+    "cat.plants": "Plants",
+    "cat.food": "Food",
+    "cat.drinks": "Drinks",
+    "cat.nature": "Nature",
+    "cat.transport": "Transport",
+    "cat.objects": "Objects",
+    "cat.symbols": "Symbols",
+    "cat.activities": "Activities",
+    "cat.misc": "Other"
   }
 }

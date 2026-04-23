@@ -8,6 +8,7 @@ import { normalizePeerKey, splitPeerKey, resolveReadyContactCoreEntry, isCoreVau
 import { normalizeAccountDigest, normalizePeerDeviceId } from '../../../core/store.js';
 import { restorePendingInvites } from '../session-store.js';
 import { escapeHtml, resolveMessagePreview, updateThreadPreview, formatThreadPreview } from '../ui-utils.js';
+import { applyAvatarBadge } from '../components/avatar-badge.js';
 import { normalizeTimelineMessageId, extractMessageTimestampMs, normalizeMsgTypeValue, deriveMessageDirectionFromEnvelopeMeta } from '../../../features/messages/parser.js';
 import { getLocalProcessedCounter } from '../../../features/messages-flow/local-counter.js'; // [FIX] Import unread counter logic
 import { listSecureMessages as apiListSecureMessages, batchLatestMessages } from '../../../api/messages.js';
@@ -966,6 +967,10 @@ export class ConversationListController extends BaseController {
         </div>
         <button type="button" class="item-delete" aria-label="${t('messages.deleteConversationAriaLabel')}"><svg class="icon"><use href="#i-trash-2"/></svg></button>
       `;
+
+            // Emoji identifier badge
+            const convAvatarEl = li.querySelector('.conversation-avatar');
+            if (convAvatarEl) applyAvatarBadge(convAvatarEl, splitPeerKey(peerDigest).digest || peerDigest);
 
             const deleteBtn = li.querySelector('.item-delete');
             deleteBtn?.addEventListener('click', (e) => {

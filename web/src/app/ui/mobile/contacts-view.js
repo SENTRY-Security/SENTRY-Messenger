@@ -3,6 +3,7 @@ import { invitesStatus } from '../../api/invites.js';
 import { sessionStore, restorePendingInvites, listPendingInvites, persistPendingInvites } from './session-store.js';
 import { normalizeNickname } from '../../features/profile.js';
 import { escapeHtml } from './ui-utils.js';
+import { applyAvatarBadge } from './components/avatar-badge.js';
 import { deleteContactSecret, getContactSecret, restoreContactSecrets, isContactTombstoned, clearContactTombstone } from '../../core/contact-secrets.js';
 import { triggerContactSecretsBackup } from '../../features/contact-backup.js';
 import { hydrateConversationsFromSecrets } from './session-store.js';
@@ -212,6 +213,11 @@ export function initContactsView(options) {
           </div>
         </div>
         <button type="button" class="item-delete" aria-label="${t('contacts.deleteAriaLabel')}"><svg class="icon"><use href="#i-trash-2"/></svg></button>`;
+
+      // Emoji identifier badge
+      const avatarEl = li.querySelector('.avatar');
+      const digestOnly = key.includes('::') ? key.split('::')[0] : key;
+      applyAvatarBadge(avatarEl, digestOnly);
 
       const deleteBtn = li.querySelector('.item-delete');
       deleteBtn?.addEventListener('click', (e) => {

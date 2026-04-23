@@ -1302,5 +1302,24 @@
     "suggestUpdateBrowser": "请将浏览器更新至最新版本，以修复已知漏洞。",
     "suggestHttps": "请使用 HTTPS 连接以保护传输中的数据。",
     "suggestVpn": "建议使用 VPN 加密网络流量，保护你的 IP 地址。"
+  },
+  "emoji": {
+    "modalTitle": "设置标识符",
+    "setIdentifier": "设置标识符",
+    "gearLabel": "会话菜单",
+    "gridLabel": "选择 Emoji",
+    "clear": "清除标识符",
+    "save": "保存",
+    "securityNote": "标识符存储在您的加密备份中，仅您的设备可见。服务器和其他用户均无法知道您为联系人指定的标识符。",
+    "cat.animals": "动物",
+    "cat.plants": "植物",
+    "cat.food": "食物",
+    "cat.drinks": "饮品",
+    "cat.nature": "自然",
+    "cat.transport": "交通",
+    "cat.objects": "物品",
+    "cat.symbols": "符号",
+    "cat.activities": "活动",
+    "cat.misc": "其他"
   }
 }

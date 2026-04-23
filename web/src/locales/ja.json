@@ -1300,5 +1300,24 @@
     "suggestUpdateBrowser": "既知の脆弱性を修正するため、ブラウザを最新バージョンに更新してください。",
     "suggestHttps": "データを保護するため、HTTPS接続を使用してください。",
     "suggestVpn": "ネットワークトラフィックを暗号化しIPアドレスを保護するため、VPNの使用をお勧めします。"
+  },
+  "emoji": {
+    "modalTitle": "識別子を設定",
+    "setIdentifier": "識別子を設定",
+    "gearLabel": "会話メニュー",
+    "gridLabel": "Emoji を選択",
+    "clear": "識別子をクリア",
+    "save": "保存",
+    "securityNote": "識別子は暗号化バックアップに保存され、お使いの端末でのみ表示されます。サーバーや他のユーザーが連絡先に割り当てた識別子を知ることはできません。",
+    "cat.animals": "動物",
+    "cat.plants": "植物",
+    "cat.food": "食べ物",
+    "cat.drinks": "飲み物",
+    "cat.nature": "自然",
+    "cat.transport": "乗り物",
+    "cat.objects": "物",
+    "cat.symbols": "記号",
+    "cat.activities": "活動",
+    "cat.misc": "その他"
   }
 }

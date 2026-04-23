@@ -1300,5 +1300,24 @@
     "suggestUpdateBrowser": "Cập nhật trình duyệt lên phiên bản mới nhất để khắc phục lỗ hổng đã biết.",
     "suggestHttps": "Sử dụng kết nối HTTPS để bảo vệ dữ liệu khi truyền tải.",
     "suggestVpn": "Nên sử dụng VPN để mã hóa lưu lượng mạng và bảo vệ địa chỉ IP của bạn."
+  },
+  "emoji": {
+    "modalTitle": "Đặt mã nhận dạng",
+    "setIdentifier": "Đặt mã nhận dạng",
+    "gearLabel": "Menu hội thoại",
+    "gridLabel": "Chọn Emoji",
+    "clear": "Xóa mã nhận dạng",
+    "save": "Lưu",
+    "securityNote": "Mã nhận dạng được lưu trong bản sao lưu mã hóa của bạn và chỉ hiển thị trên thiết bị của bạn. Máy chủ và người dùng khác không thể biết mã nhận dạng bạn gán cho liên hệ.",
+    "cat.animals": "Động vật",
+    "cat.plants": "Thực vật",
+    "cat.food": "Thức ăn",
+    "cat.drinks": "Đồ uống",
+    "cat.nature": "Thiên nhiên",
+    "cat.transport": "Giao thông",
+    "cat.objects": "Đồ vật",
+    "cat.symbols": "Ký hiệu",
+    "cat.activities": "Hoạt động",
+    "cat.misc": "Khác"
   }
 }

@@ -1320,5 +1320,24 @@
     "suggestUpdateBrowser": "請將瀏覽器更新至最新版本，以修復已知漏洞。",
     "suggestHttps": "請使用 HTTPS 連線以保護傳輸中的資料。",
     "suggestVpn": "建議使用 VPN 加密網路流量，保護你的 IP 位址。"
+  },
+  "emoji": {
+    "modalTitle": "設定識別符",
+    "setIdentifier": "設定識別符",
+    "gearLabel": "對話選單",
+    "gridLabel": "選擇 Emoji",
+    "clear": "清除識別符",
+    "save": "儲存",
+    "securityNote": "識別符儲存於您的加密備份中，僅您的裝置可見。伺服器與其他使用者均無法得知您為聯絡人指派的識別符。",
+    "cat.animals": "動物",
+    "cat.plants": "植物",
+    "cat.food": "食物",
+    "cat.drinks": "飲品",
+    "cat.nature": "自然",
+    "cat.transport": "交通",
+    "cat.objects": "物品",
+    "cat.symbols": "符號",
+    "cat.activities": "活動",
+    "cat.misc": "其他"
   }
 }
