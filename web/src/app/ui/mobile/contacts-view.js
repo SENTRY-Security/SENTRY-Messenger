@@ -216,7 +216,6 @@ export function initContactsView(options) {
 
       // Emoji identifier badge
       const avatarEl = li.querySelector('.avatar');
-      const digestOnly = key.includes('::') ? key.split('::')[0] : key;
       applyAvatarBadge(avatarEl, digestOnly);
 
       const deleteBtn = li.querySelector('.item-delete');
