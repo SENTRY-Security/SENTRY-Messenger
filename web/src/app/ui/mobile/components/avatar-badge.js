@@ -16,13 +16,20 @@ export function applyAvatarBadge(avatarEl, peerDigest) {
   badge.setAttribute('aria-label', emoji);
   badge.setAttribute('aria-hidden', 'false');
   avatarEl.style.position = 'relative';
+  avatarEl.style.overflow = 'visible';
+  // Ensure img still clips to circle when overflow is visible
+  const img = avatarEl.querySelector('img');
+  if (img) img.style.borderRadius = '50%';
   avatarEl.appendChild(badge);
 }
 
 export function removeBadge(avatarEl) {
   if (!avatarEl) return;
   const existing = avatarEl.querySelector('.' + BADGE_CLASS);
-  if (existing) existing.remove();
+  if (existing) {
+    existing.remove();
+    avatarEl.style.overflow = '';
+  }
 }
 
 export function refreshAllBadges() {

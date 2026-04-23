@@ -143,6 +143,14 @@ export function showIdentifierModal({ peerDigest, nickname, avatarSrc } = {}) {
       clearLabel(peerDigest);
     }
     triggerContactSecretsBackup('emoji-label-change').catch(() => {});
+    // Trigger UI refresh so all avatar badges update immediately
+    try {
+      // Re-render conversation list (badges re-applied during render)
+      document.dispatchEvent(new CustomEvent('contacts:rendered'));
+      // Update the active conversation header badge directly
+      const headerAvatar = document.querySelector('.messages-peer-avatar') || document.getElementById('messagesPeerAvatar');
+      if (headerAvatar) applyAvatarBadge(headerAvatar, peerDigest);
+    } catch { /* ignore */ }
     hideIdentifierModal();
   });
 
