@@ -124,6 +124,11 @@ export function initContactsView(options) {
     const identity = normalizePeerIdentity(entry?.peerAccountDigest ?? entry?.accountDigest ?? entry);
     return identity.key || identity.accountDigest || null;
   };
+  // Re-render contacts when emoji label changes
+  document.addEventListener('contact-label:changed', () => {
+    try { renderContacts(); } catch { /* ignore */ }
+  });
+
   function renderContacts() {
     contactsListEl.innerHTML = '';
 
