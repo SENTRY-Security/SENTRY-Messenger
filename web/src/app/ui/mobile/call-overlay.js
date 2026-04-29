@@ -1287,7 +1287,8 @@ export function initCallOverlay({ showToast }) {
     if (ui.rejectBtn) ui.rejectBtn.style.display = incoming ? 'flex' : 'none';
     if (ui.cancelBtn) ui.cancelBtn.style.display = outgoing ? 'flex' : 'none';
     // E2EE gate: disable accept button until key derivation succeeds
-    const e2eePending = incoming && isKeyDerivationPending();
+    // (bypassed after E2EE_TIMEOUT so the user can still answer)
+    const e2eePending = incoming && isKeyDerivationPending() && !e2eeGateBypass;
     const disable = state.actionBusy || (incoming && e2eePending);
     [ui.acceptBtn, ui.rejectBtn, ui.cancelBtn, ui.hangupBtn].forEach((btn) => {
       if (btn) btn.disabled = (btn === ui.acceptBtn) ? disable : state.actionBusy;
@@ -1734,9 +1735,11 @@ export function initCallOverlay({ showToast }) {
   const E2EE_TIMEOUT = 10_000;
   let e2eeRetryTimer = null;
   let e2eeTimeoutTimer = null;
+  let e2eeGateBypass = false;
 
   function startE2eeRetry() {
     stopE2eeRetry();
+    e2eeGateBypass = false;
     const startedAt = Date.now();
     e2eeRetryTimer = setInterval(async () => {
       const session = getCallSessionSnapshot();
@@ -1766,17 +1769,13 @@ export function initCallOverlay({ showToast }) {
       }
       if (isKeyDerivationPending()) {
         log({ e2eeRetryTimeout: true, callId: session.callId });
-        showToast?.(t('callEncryption.e2eeTimedOut'), { variant: 'error' });
-        // Auto-reject: cannot establish encrypted channel
-        try {
-          sendCallSignal('call-reject', {
-            callId: session.callId,
-            targetAccountDigest: session.peerAccountDigest || null,
-            reason: 'e2ee_unavailable'
-          });
-          endCallMediaSession('e2ee-timeout');
-          completeCallSession({ reason: 'e2ee-timeout' });
-        } catch { }
+        // Instead of auto-rejecting, bypass the E2EE gate and enable the
+        // accept button so the user can answer.  The media session's
+        // capability negotiation handles the E2EE mismatch gracefully.
+        // Silently rejecting caused "can't answer" UX with no explanation.
+        e2eeGateBypass = true;
+        stopE2eeRetry();
+        render(session);
       }
       stopE2eeRetry();
     }, E2EE_TIMEOUT);

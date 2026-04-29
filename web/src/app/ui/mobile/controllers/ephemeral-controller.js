@@ -1515,14 +1515,18 @@ export class EphemeralController extends BaseController {
       const sessionForConv = session || (msg.conversationId ? this.getSessionByConversationId(msg.conversationId) : null);
       if (sessionForConv) {
         this._activateCallAdapter(sessionForConv);
-        // Gate incoming call signals until the call token is ready.
-        // Without this, the invite sets pendingEnvelope but key derivation
-        // fails (token not yet stored from X3DH) → isKeyDerivationPending()
-        // stays true → accept button permanently disabled.
-        const tokenPromise = this._callTokenReadyPromises.get(sessionForConv.session_id);
-        if (tokenPromise) {
-          setCallTokenGate(tokenPromise);
-        }
+      }
+    }
+
+    // Gate incoming call signals until the call token is ready — ALWAYS
+    // set for any ephemeral-call-invite, even if adapter was already active
+    // (covers re-call scenarios and adapter pre-activation from owner-dial).
+    if (msg.type === 'ephemeral-call-invite') {
+      const sid = msg.sessionId || msg.conversationId;
+      const session = sid ? (this.ephemeralSessions.get(sid) || this.getSessionByConversationId(sid)) : null;
+      const tokenPromise = session ? this._callTokenReadyPromises.get(session.session_id) : null;
+      if (tokenPromise) {
+        setCallTokenGate(tokenPromise);
       }
     }
 
