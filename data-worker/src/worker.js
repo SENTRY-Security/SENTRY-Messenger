@@ -4856,9 +4856,13 @@ async function handleMessageKeyVaultRoutes(req, env) {
 }
 
 // [REMOVED] handleGroupsRoutes — replaced by Business Conversation architecture
-// Returns 410 Gone for all legacy group API calls
+// Returns 410 Gone only for legacy /d1/groups/* API calls
 async function handleGroupsRoutes(req, env) {
-  return json({ error: 'Removed', message: 'Legacy groups API removed. Use Business Conversation API.' }, { status: 410 });
+  const url = new URL(req.url);
+  if (url.pathname.startsWith('/d1/groups')) {
+    return json({ error: 'Removed', message: 'Legacy groups API removed. Use Business Conversation API.' }, { status: 410 });
+  }
+  return null;
 }
 
 // _handleGroupsRoutes_REMOVED — legacy group code deleted in Business Conversation redesign
