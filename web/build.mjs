@@ -357,4 +357,61 @@ const manifest = {
 writeFileSync(resolve(dist, 'build-manifest.json'), JSON.stringify(manifest, null, 2));
 console.log(`\nBuild manifest written (${manifestFiles.length} files, commit ${gitCommit.slice(0, 8)})`);
 
+// ── .well-known/sentry-build.json ───────────────────────────────
+// Public endpoint for auditors and independent verifiers to check
+// the current deploy's provenance and file hashes.
+
+const wellKnownDir = resolve(dist, '.well-known');
+mkdirSync(wellKnownDir, { recursive: true });
+
+const fileHashes = {};
+for (const f of manifestFiles) {
+  fileHashes[f.path] = f.sha256;
+}
+
+// Compute a single aggregate hash over all file hashes (sorted paths)
+const aggregateInput = manifestFiles.map(f => `${f.path}:${f.sha256}`).join('\n');
+const aggregateHash = createHash('sha256').update(aggregateInput).digest('hex');
+
+const sentryBuild = {
+  version: '1.0',
+  app: 'sentry-messenger',
+  environment: appEnv,
+  build: {
+    commit: gitCommit,
+    branch: gitBranch,
+    timestamp: new Date().toISOString(),
+    builder: process.env.GITHUB_ACTIONS ? 'github-actions' : 'local',
+    run_id: process.env.GITHUB_RUN_ID || null,
+    workflow: process.env.GITHUB_WORKFLOW || null,
+    dirty: gitDirty
+  },
+  hashes: {
+    algorithm: 'sha256',
+    aggregate: aggregateHash,
+    file_count: manifestFiles.length,
+    files: fileHashes
+  },
+  sri: bundledSRI,
+  service_worker: {
+    update_strategy: 'immediate-skip-waiting',
+    description: 'SW calls skipWaiting() on install and clients.claim() on activate. All connected tabs receive the new SW immediately without user interaction.',
+    hash: fileHashes['/sw.js'] || null
+  },
+  verification: {
+    build_script: 'web/build.mjs',
+    verify_script: 'web/scripts/verify-build.mjs',
+    lockfile: 'web/package-lock.json',
+    instructions: 'Clone repo at the listed commit, run `cd web && npm ci && npm run build`, then compare hashes.'
+  },
+  policies: {
+    canary_deployment: 'prohibited — all users receive identical bundles via Cloudflare Pages atomic deployment',
+    reproducible_build: 'any party can rebuild from the same commit + lockfile and obtain identical output',
+    emergency_revoke: 'see docs/security/emergency-revoke-plan.md'
+  }
+};
+
+writeFileSync(resolve(wellKnownDir, 'sentry-build.json'), JSON.stringify(sentryBuild, null, 2));
+console.log('.well-known/sentry-build.json written (aggregate: ' + aggregateHash.slice(0, 16) + '...)');
+
 console.log('Build complete → dist/');

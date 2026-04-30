@@ -2,7 +2,7 @@ const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 const UUID_COMPACT_REGEX = /^[0-9a-f]{32}$/i;
 const UID_HEX_REGEX = /^[0-9A-F]{14,64}$/;
 const BASE64_REGEX = /^[0-9A-Za-z+/=_-]+$/;
-const DEFAULT_ROTATE_INTERVAL_MS = 10 * 60 * 1000;
+const DEFAULT_ROTATE_INTERVAL_MS = 60 * 1000;
 
 export const CALL_KEY_ENVELOPE_TYPE = 'call-key-envelope';
 export const CALL_KEY_ENVELOPE_VERSION = 1;

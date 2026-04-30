@@ -318,6 +318,15 @@
     "callLog": "통화 기록",
     "voiceCall": "음성 통화",
     "videoCall": "영상 통화",
+    "info": "통화 정보",
+    "infoTitle": "통화 키 정보",
+    "infoRotationStatus": "키 교체",
+    "infoRotationActive": "활성",
+    "infoRotationIdle": "대기",
+    "infoRotationCount": "교체 횟수",
+    "infoNextRotation": "다음 교체",
+    "infoKeyAlgorithm": "키 알고리즘",
+    "infoNoActiveCall": "현재 진행 중인 통화가 없습니다",
     "answer": "응답",
     "answerVideo": "영상 통화 응답",
     "dialing": "전화 거는 중…",
@@ -1127,7 +1136,7 @@
     "createLinkFailed": "링크 생성에 실패했습니다",
     "copyBtn": "복사",
     "shareBtn": "공유",
-    "shareText": "SENTRY Messenger에서 일회성 보안 대화를 생성했습니다. 링크를 탭하여 참여하세요\n{url}",
+    "shareText": "SENTRY Messenger: {url}",
     "copiedToast": "✓ 클립보드에 복사되었습니다",
     "headerBadge": "일회성",
     "autoLogoutWarnTitle": "자동 로그아웃 경고",
@@ -1162,7 +1171,24 @@
     "webrtcUnsupported": "브라우저가 음성/영상 통화를 지원하지 않습니다. 텍스트 메시지는 계속 사용할 수 있습니다.",
     "webrtcCallsDisabled": "⚠️ 음성 및 영상 통화를 사용할 수 없습니다 — 브라우저가 WebRTC를 지원하지 않습니다",
     "peerNoWebrtc": "⚠️ 상대방의 브라우저가 음성/영상 통화를 지원하지 않습니다. 텍스트 메시지만 사용할 수 있습니다.",
-    "randomNicknames": ["🍊 귤", "🍎 사과", "🍌 바나나", "🍇 포도", "🍓 딸기", "🍑 복숭아", "🍒 체리", "🥝 키위", "🍍 파인애플", "🫐 블루베리", "🍋 레몬", "🥭 망고", "🍉 수박", "🌽 옥수수", "🥕 당근", "🌻 해바라기"]
+    "randomNicknames": [
+      "🍊 귤",
+      "🍎 사과",
+      "🍌 바나나",
+      "🍇 포도",
+      "🍓 딸기",
+      "🍑 복숭아",
+      "🍒 체리",
+      "🥝 키위",
+      "🍍 파인애플",
+      "🫐 블루베리",
+      "🍋 레몬",
+      "🥭 망고",
+      "🍉 수박",
+      "🌽 옥수수",
+      "🥕 당근",
+      "🌻 해바라기"
+    ]
   },
   "push": {
     "settingsTitle": "푸시 알림",
@@ -1291,5 +1317,26 @@
     "suggestUpdateBrowser": "알려진 취약점을 수정하려면 브라우저를 최신 버전으로 업데이트하세요.",
     "suggestHttps": "데이터를 보호하려면 HTTPS 연결을 사용하세요.",
     "suggestVpn": "네트워크 트래픽을 암호화하고 IP 주소를 보호하려면 VPN 사용을 권장합니다."
+  },
+  "emoji": {
+    "modalTitle": "식별자 설정",
+    "setIdentifier": "식별자 설정",
+    "gearLabel": "대화 메뉴",
+    "gridLabel": "Emoji 선택",
+    "clear": "식별자 지우기",
+    "save": "저장",
+    "securityNote": "식별자는 암호화된 백업에 저장되며 사용자의 기기에서만 표시됩니다. 서버 및 다른 사용자는 연락처에 지정한 식별자를 알 수 없습니다.",
+    "cat": {
+      "animals": "동물",
+      "plants": "식물",
+      "food": "음식",
+      "drinks": "음료",
+      "nature": "자연",
+      "transport": "교통",
+      "objects": "물건",
+      "symbols": "기호",
+      "activities": "활동",
+      "misc": "기타"
+    }
   }
 }

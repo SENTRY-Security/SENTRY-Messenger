@@ -96,11 +96,11 @@ jobs:
           cache: 'npm'
 
       - name: Install Root Dependencies
-        run: npm install
+        run: npm ci
 
       - name: Install Worker Dependencies
         working-directory: data-worker
-        run: npm install
+        run: npm ci
 
       - name: Check Wrangler Authentication
         run: npx wrangler@4 whoami
@@ -186,11 +186,11 @@ jobs:
           cache: 'npm'
 
       - name: Install Root Dependencies
-        run: npm install
+        run: npm ci
 
       - name: Install Web Dependencies
         working-directory: web
-        run: npm install
+        run: npm ci
 
       - name: Build Web
         working-directory: web

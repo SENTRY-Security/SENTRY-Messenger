@@ -9,10 +9,13 @@
 
 import { BaseController } from './base-controller.js';
 import { normalizePeerKey, splitPeerKey } from '../contact-core-store.js';
-import { normalizePeerIdentity } from '../../../core/store.js';
+import { normalizePeerIdentity, normalizeAccountDigest } from '../../../core/store.js';
 import { MessageKeyVault } from '../../../features/message-key-vault.js';
 import { importContactSecretsSnapshot } from '../../../core/contact-secrets.js';
 import { migrateTimelineConversation } from '../../../features/timeline-store.js';
+import { applyAvatarBadge } from '../components/avatar-badge.js';
+import { createGearMenu } from '../components/conversation-gear-menu.js';
+import { showIdentifierModal } from '../modals/identifier-modal.js';
 import { t } from '/locales/index.js';
 
 export class ActiveConversationController extends BaseController {
@@ -94,6 +97,50 @@ export class ActiveConversationController extends BaseController {
                 targetPlaceholder.textContent = (avatarData?.initials || '?').slice(0, 2);
             }
         }
+
+        // Apply emoji identifier badge
+        const state = this.getMessageState();
+        const digest = normalizeAccountDigest(
+            state?.activePeerDigest?.includes?.('::')
+                ? state.activePeerDigest.split('::')[0]
+                : state?.activePeerDigest
+        );
+        if (digest) applyAvatarBadge(avatarEl, digest);
+    }
+
+    /**
+     * Mount the gear menu for 1:1 conversations.
+     */
+    mountGearMenu() {
+        const actionsEl = this.elements.peerName?.closest?.('.messages-header')?.querySelector?.('.messages-actions');
+        if (!actionsEl) return;
+        if (actionsEl.querySelector('.conversation-gear-wrapper')) return;
+        const state = this.getMessageState();
+        if (state.activeBizConv) return;
+        const digest = normalizeAccountDigest(
+            state?.activePeerDigest?.includes?.('::')
+                ? state.activePeerDigest.split('::')[0]
+                : state?.activePeerDigest
+        );
+        if (!digest) return;
+        const menu = createGearMenu({
+            onSetIdentifier: () => {
+                const contactEntry = this.sessionStore.contactIndex?.get?.(state.activePeerDigest) || null;
+                const avatarSrc = contactEntry?.avatar?.thumbDataUrl || contactEntry?.avatar?.previewDataUrl || contactEntry?.avatar?.url || null;
+                const nickname = contactEntry?.nickname || this.elements.peerName?.textContent || null;
+                showIdentifierModal({ peerDigest: digest, nickname, avatarSrc });
+            }
+        });
+        actionsEl.appendChild(menu);
+    }
+
+    /**
+     * Remove gear menu (e.g. when switching to biz-conv or clearing).
+     */
+    unmountGearMenu() {
+        const actionsEl = this.elements.peerName?.closest?.('.messages-header')?.querySelector?.('.messages-actions');
+        if (!actionsEl) return;
+        actionsEl.querySelector('.conversation-gear-wrapper')?.remove();
     }
 
     /**
@@ -216,6 +263,9 @@ export class ActiveConversationController extends BaseController {
             this.elements.bizConvSettingsBtn.classList.add('hidden');
             this.elements.bizConvSettingsBtn.onclick = null;
         }
+        // Mount gear menu (identifier etc.) for 1-to-1 conversations
+        this.unmountGearMenu();
+        this.mountGearMenu();
 
         // Load messages if conversation exists (Token is optional for local load)
         if (state.conversationId) {

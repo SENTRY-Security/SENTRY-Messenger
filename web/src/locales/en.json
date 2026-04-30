@@ -320,6 +320,15 @@
     "callLog": "Call log",
     "voiceCall": "Voice call",
     "videoCall": "Video call",
+    "info": "Call info",
+    "infoTitle": "Call key info",
+    "infoRotationStatus": "Key rotation",
+    "infoRotationActive": "Active",
+    "infoRotationIdle": "Idle",
+    "infoRotationCount": "Rotations",
+    "infoNextRotation": "Next rotation",
+    "infoKeyAlgorithm": "Key algorithm",
+    "infoNoActiveCall": "No active call",
     "answer": "Answer",
     "answerVideo": "Answer video call",
     "dialing": "Dialing…",
@@ -1147,7 +1156,7 @@
     "createLinkFailed": "Failed to create link",
     "copyBtn": "Copy",
     "shareBtn": "Share",
-    "shareText": "I've created a one-time secure conversation on SENTRY Messenger. Tap the link to join:\n{url}",
+    "shareText": "SENTRY Messenger: {url}",
     "copiedToast": "✓ Copied to clipboard",
     "headerBadge": "EPHEMERAL",
     "autoLogoutWarnTitle": "Auto-Logout Warning",
@@ -1182,7 +1191,24 @@
     "webrtcUnsupported": "Your browser does not support voice/video calls. You can still join for text messaging.",
     "webrtcCallsDisabled": "⚠️ Voice and video calls are unavailable — your browser does not support WebRTC",
     "peerNoWebrtc": "⚠️ The guest's browser does not support voice/video calls. Only text messaging is available.",
-    "randomNicknames": ["🍊 Orange", "🍎 Apple", "🍌 Banana", "🍇 Grape", "🍓 Strawberry", "🍑 Peach", "🍒 Cherry", "🥝 Kiwi", "🍍 Pineapple", "🫐 Blueberry", "🍋 Lemon", "🥭 Mango", "🍉 Watermelon", "🌽 Corn", "🥕 Carrot", "🌻 Sunflower"]
+    "randomNicknames": [
+      "🍊 Orange",
+      "🍎 Apple",
+      "🍌 Banana",
+      "🍇 Grape",
+      "🍓 Strawberry",
+      "🍑 Peach",
+      "🍒 Cherry",
+      "🥝 Kiwi",
+      "🍍 Pineapple",
+      "🫐 Blueberry",
+      "🍋 Lemon",
+      "🥭 Mango",
+      "🍉 Watermelon",
+      "🌽 Corn",
+      "🥕 Carrot",
+      "🌻 Sunflower"
+    ]
   },
   "push": {
     "settingsTitle": "Push notifications",
@@ -1311,5 +1337,26 @@
     "suggestUpdateBrowser": "Update your browser to the latest version to fix known vulnerabilities.",
     "suggestHttps": "Use HTTPS connections to protect your data in transit.",
     "suggestVpn": "Use a VPN to encrypt your network traffic and protect your IP address."
+  },
+  "emoji": {
+    "modalTitle": "Set Identifier",
+    "setIdentifier": "Set Identifier",
+    "gearLabel": "Conversation menu",
+    "gridLabel": "Select Emoji",
+    "clear": "Clear Identifier",
+    "save": "Save",
+    "securityNote": "Identifiers are stored in your encrypted backup and visible only on your devices. The server and other users cannot see identifiers you assign to contacts.",
+    "cat": {
+      "animals": "Animals",
+      "plants": "Plants",
+      "food": "Food",
+      "drinks": "Drinks",
+      "nature": "Nature",
+      "transport": "Transport",
+      "objects": "Objects",
+      "symbols": "Symbols",
+      "activities": "Activities",
+      "misc": "Other"
+    }
   }
 }

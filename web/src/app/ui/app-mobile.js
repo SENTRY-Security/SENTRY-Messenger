@@ -143,6 +143,7 @@ import { createPushModal } from './mobile/modals/push-modal.js';
 import { createWsIntegration } from './mobile/ws-integration.js';
 import { isIosWebKitLikeBrowser } from './mobile/browser-detection.js';
 import { initI18n, t, applyDOMTranslations, setLang, getCurrentLang, onLangChange } from '/locales/index.js';
+import '../features/contact-emoji/contact-label-store.js';
 
 // --- Loading Modal: report JS modules loaded ---
 window.__updateLoadingProgress?.('scripts');

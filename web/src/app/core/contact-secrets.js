@@ -24,6 +24,16 @@ const LEGACY_META_KEY_BASE = 'contactSecrets-v1-meta';
 const LEGACY_CHECKSUM_KEY_BASE = 'contactSecrets-v1-checksum';
 let restored = false;
 let contactSecretsLocked = false;
+
+// Hook for contact emoji label store — avoids circular import.
+// Registered at app init by contact-label-store.js.
+let _exportContactLabels = null;
+let _importContactLabels = null;
+
+export function registerContactLabelHooks(hooks) {
+  if (hooks?.export) _exportContactLabels = hooks.export;
+  if (hooks?.import) _importContactLabels = hooks.import;
+}
 const SNAPSHOT_INFO_TAG = 'contact-secrets/backup/v1';
 const SNAPSHOT_ALLOWED_INFO_TAGS = new Set([SNAPSHOT_INFO_TAG]);
 const encoder = new TextEncoder();
@@ -1101,6 +1111,10 @@ function applySnapshotPayload(map, snapshot, { replace = true, reason = 'import'
       debugLog('restore-skip', { reason: 'legacy-array-format', source: reason });
       return null;
     }
+    // Restore emoji identifier labels (backward-compatible: field may be absent)
+    if (parsed?.contact_labels && _importContactLabels) {
+      try { _importContactLabels(parsed.contact_labels); } catch { /* ignore */ }
+    }
     const structured = parseStructuredSnapshot(parsed);
     if (!structured) {
       debugLog('restore-skip', { reason: 'unsupported-format', source: reason });
@@ -1648,6 +1662,12 @@ function serializeContactSecretsMap(map) {
     generatedAt,
     entries
   };
+  // Embed emoji identifier labels into the encrypted backup (top-level field).
+  // Missing on older backups → importLabels gracefully skips.
+  try {
+    const cl = _exportContactLabels?.();
+    if (cl && Object.keys(cl).length > 0) payloadObj.contact_labels = cl;
+  } catch { /* label store not available — skip */ }
   const payload = JSON.stringify(payloadObj);
   summary.bytes = payload.length;
   summary.generatedAt = generatedAt;

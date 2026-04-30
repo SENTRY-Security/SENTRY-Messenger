@@ -23,7 +23,8 @@ import {
   handleEphemeralCallMessage,
   initiateEphemeralCall,
   isEphemeralCallMode,
-  deriveCallTokenFromDR
+  deriveCallTokenFromDR,
+  setCallTokenGate
 } from '../../../features/calls/ephemeral-call-adapter.js';
 import { setContactSecret } from '../../../core/contact-secrets.js';
 import { bytesToB64Url } from '../../../../shared/utils/base64.js';
@@ -81,6 +82,8 @@ export class EphemeralController extends BaseController {
     this._drStates = new Map();
     /** @type {Map<string, string>} session_id → token (maps sessions back to invite tokens for key lookup) */
     this._sessionTokenMap = _restoreMap(STORAGE_KEY_SESSION_TOKEN_MAP);
+    /** @type {Map<string, Promise>} session_id → promise that resolves when call token is stored */
+    this._callTokenReadyPromises = new Map();
     /** @type {Array<{token, expires_at, created_at}>} pending (unconsumed) invites from server */
     this._pendingInvites = [];
     /** @type {boolean} prevents concurrent _generateLink calls */
@@ -1325,20 +1328,26 @@ export class EphemeralController extends BaseController {
     const drSt = await x3dhRespond(ownerPriv, msg.guestBundle);
     this._drStates.set(sessionId, drSt);
 
-    // Derive call token from DR root key and store for call E2EE
+    // Derive call token from DR root key and store for call E2EE.
+    // Save the promise so _handleCallSignal can gate incoming invites
+    // until the token is ready (prevents grayed-out accept button).
     if (drSt?.rk && session?.guest_digest) {
-      try {
-        const tokenBytes = await deriveCallTokenFromDR(drSt.rk);
-        const callToken = bytesToB64Url(tokenBytes);
-        setContactSecret(session.guest_digest, {
-          conversation: { token: callToken },
-          peerDeviceId: session.guest_device_id || 'ephemeral-guest',
-          __debugSource: 'ephemeral-call-token-owner'
-        });
-        console.log('[Ephemeral] call token stored for guest', sessionId);
-      } catch (err) {
-        console.warn('[Ephemeral] call token derive failed:', err?.message);
-      }
+      const tokenPromise = (async () => {
+        try {
+          const tokenBytes = await deriveCallTokenFromDR(drSt.rk);
+          const callToken = bytesToB64Url(tokenBytes);
+          setContactSecret(session.guest_digest, {
+            conversation: { token: callToken },
+            peerDeviceId: session.guest_device_id || 'ephemeral-guest',
+            __debugSource: 'ephemeral-call-token-owner'
+          });
+          console.log('[Ephemeral] call token stored for guest', sessionId);
+        } catch (err) {
+          console.warn('[Ephemeral] call token derive failed:', err?.message);
+        }
+      })();
+      this._callTokenReadyPromises.set(sessionId, tokenPromise);
+      await tokenPromise;
     }
 
     // Clean up pending invite key (no longer needed — DR state is established)
@@ -1506,6 +1515,18 @@ export class EphemeralController extends BaseController {
       const sessionForConv = session || (msg.conversationId ? this.getSessionByConversationId(msg.conversationId) : null);
       if (sessionForConv) {
         this._activateCallAdapter(sessionForConv);
+      }
+    }
+
+    // Gate incoming call signals until the call token is ready — ALWAYS
+    // set for any ephemeral-call-invite, even if adapter was already active
+    // (covers re-call scenarios and adapter pre-activation from owner-dial).
+    if (msg.type === 'ephemeral-call-invite') {
+      const sid = msg.sessionId || msg.conversationId;
+      const session = sid ? (this.ephemeralSessions.get(sid) || this.getSessionByConversationId(sid)) : null;
+      const tokenPromise = session ? this._callTokenReadyPromises.get(session.session_id) : null;
+      if (tokenPromise) {
+        setCallTokenGate(tokenPromise);
       }
     }
 

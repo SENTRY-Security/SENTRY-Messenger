@@ -129,7 +129,7 @@
 | **演算法** | AES-GCM with counter-based nonce |
 | **產生** | HKDF from shared DR secret — ⚠️ 待確認具體衍生機制 |
 | **儲存** | 客戶端記憶體 |
-| **輪替** | 每 10 分鐘自動輪換 |
+| **輪替** | 每 1 分鐘自動輪換 |
 | **程式碼** | `features/calls/key-manager.js` |
 
 ### 9. Invite Dropbox Key

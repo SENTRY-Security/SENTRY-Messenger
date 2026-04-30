@@ -4,7 +4,7 @@
  */
 
 import { BaseController } from './base-controller.js';
-import { normalizePeerKey } from '../contact-core-store.js';
+import { normalizePeerKey, splitPeerKey } from '../contact-core-store.js';
 import { getAccountDigest, normalizeAccountDigest, normalizePeerDeviceId, normalizePeerIdentity } from '../../../core/store.js';
 import {
     CALL_SESSION_STATUS,
@@ -128,17 +128,32 @@ export class CallLogController extends BaseController {
      */
     updateThreadsWithCallLogDisplay({ peerAccountDigest, label, ts, direction }) {
         const threads = this.deps.getConversationThreads?.() || new Map();
+        // Match by DIGEST ONLY (not full peer key).  normalizePeerKey requires
+        // BOTH digest and deviceId; missing either returns null.  If the caller
+        // passes a bare-digest peerAccountDigest here, `null === null` matches
+        // every thread whose _threadPeer also happens to be null, causing the
+        // call log label to leak onto every conversation's preview row.
+        const targetDigest = splitPeerKey(peerAccountDigest).digest;
+        if (!targetDigest) return;
+        // Normalize to milliseconds — thread.lastMessageTs is consumed by
+        // _formatConversationPreviewTime(new Date(ts)) which expects ms.
+        // Callers here pass entry.ts in SECONDS (endedAtSec), which would
+        // otherwise display as 1970 and sort to the bottom of the list.
+        const n = Number(ts);
+        const tsMs = Number.isFinite(n) && n > 0
+            ? (n > 10_000_000_000 ? n : n * 1000)
+            : null;
         let touched = false;
         for (const thread of threads.values()) {
-            if (this._threadPeer(thread) === normalizePeerKey(peerAccountDigest)) {
-                thread.lastMessageText = label;
-                thread.lastMessageTs = ts;
-                thread.lastDirection = direction;
-                thread.lastReadTs = ts;
-                thread.unreadCount = 0;
-                thread.needsRefresh = true;
-                touched = true;
-            }
+            const threadDigest = splitPeerKey(thread.peerAccountDigest).digest;
+            if (!threadDigest || threadDigest !== targetDigest) continue;
+            thread.lastMessageText = label;
+            thread.lastMessageTs = tsMs;
+            thread.lastDirection = direction;
+            thread.lastReadTs = tsMs;
+            thread.unreadCount = 0;
+            thread.needsRefresh = true;
+            touched = true;
         }
         if (touched) {
             this.deps.renderConversationList?.();
@@ -270,6 +285,16 @@ export class CallLogController extends BaseController {
             outcome = CALL_LOG_OUTCOME.MISSED;
         }
 
+        // messageId: random UUID (NOT callId).  Earlier we tried reusing
+        // callId so caller/callee placeholders could dedup by messageId,
+        // but with the current model callee no longer creates a local entry
+        // at all — the caller's DR call-log is the sole source — so the
+        // alignment is unnecessary.  More importantly, `identifier` above
+        // is also session.callId; reusing callId as entry.id caused
+        // `sentCallLogIds.has(entry.id)` at the DR-send guard below to match
+        // the identifier added on line ~226, silently skipping the DR send
+        // and making the whole record vanish on both sides (server never
+        // received it, so re-login didn't restore anything either).
         const messageId = crypto.randomUUID();
         const entry = {
             id: messageId,
@@ -306,7 +331,18 @@ export class CallLogController extends BaseController {
         const viewerMessage = this.createCallLogMessage(entry, { messageDirection: isOutgoing ? 'outgoing' : 'incoming' });
 
         let localMessage = null;
-        if (!exists) {
+        // Only the caller (outgoing side) writes a local placeholder entry —
+        // the caller is the sole sender of the DR call-log, so their local
+        // append is the single source of truth until the server confirms.
+        //
+        // On the callee (incoming) side we intentionally skip the local
+        // append: a placeholder there would be keyed by callId (so the DR
+        // message coming in later could match by messageId), but timeline
+        // dedup skips any non-placeholder/non-failed duplicate — leaving
+        // the pending placeholder stuck forever and showing TWO entries
+        // (the stuck placeholder + the successfully appended DR entry).
+        // Letting the DR message be the sole source avoids that split.
+        if (!exists && isOutgoing) {
             localMessage = { ...viewerMessage };
             localMessage.id = localMessage.id || entry.id;
             localMessage.messageId = localMessage.id;
@@ -317,7 +353,7 @@ export class CallLogController extends BaseController {
             localMessage.failureReason = null;
             localMessage.failureCode = null;
             localMessage.msgType = 'call-log';
-            localMessage.direction = isOutgoing ? 'outgoing' : 'incoming';
+            localMessage.direction = 'outgoing';
             localMessage.ts = localMessage.ts || entry.ts;
             localMessage.conversationId = conversationId;
 

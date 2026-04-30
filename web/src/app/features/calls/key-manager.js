@@ -218,11 +218,28 @@ export async function prepareCallKeyEnvelope({
 }
 
 async function maybeDeriveKeys(trigger = 'auto') {
-  if (suppressAutoDerive) return null;
+  log({ callKeyDeriveInvoked: trigger });
+  if (suppressAutoDerive) {
+    log({ callKeyDeriveSkip: 'suppressed', trigger });
+    return null;
+  }
   const session = getCallSessionSnapshot();
   const mediaState = getCallMediaState();
-  if (!session?.peerAccountDigest || !session?.peerDeviceId || !mediaState?.pendingEnvelope) return null;
-  if (deriveTask) return deriveTask;
+  if (!session?.peerAccountDigest || !session?.peerDeviceId || !mediaState?.pendingEnvelope) {
+    log({
+      callKeyDeriveSkip: 'missing-input',
+      trigger,
+      hasDigest: !!session?.peerAccountDigest,
+      hasDeviceId: !!session?.peerDeviceId,
+      hasPendingEnvelope: !!mediaState?.pendingEnvelope,
+      envelopeEpoch: mediaState?.pendingEnvelope?.epoch ?? null
+    });
+    return null;
+  }
+  if (deriveTask) {
+    log({ callKeyDeriveSkip: 'in-flight', trigger });
+    return deriveTask;
+  }
   // Guard against re-entrant calls: deriveKeysFromEnvelope emits STATE
   // events synchronously (setCallMediaStatus(KEY_PENDING)) before its
   // first `await`.  Those events trigger handleCallStateEvent which calls
@@ -244,12 +261,13 @@ async function maybeDeriveKeys(trigger = 'auto') {
 async function deriveKeysFromEnvelope({ session, envelope, trigger }) {
   const mediaState = getCallMediaState();
   if (!mediaState) return null;
+  log({ callKeyDeriveStart: true, trigger, envelopeEpoch: envelope?.epoch ?? null, callId: envelope?.callId || session?.callId || null });
   setCallMediaStatus(CALL_MEDIA_STATE_STATUS.KEY_PENDING);
   const context = await buildKeyContext({ session, envelope });
   await finalizeContext(context);
   keyContext = context;
   notifyKeyContextListeners();
-  log({ callKeyReady: true, callId: context.callId, trigger });
+  log({ callKeyReady: true, callId: context.callId, trigger, epoch: context.epoch });
   return context;
 }
 
@@ -377,6 +395,14 @@ async function deriveSubMaterial(masterKey, subSalt, label, lengthBits) {
 async function finalizeContext(context) {
   const state = getCallMediaState();
   if (!state) return;
+  // Update nextRotateAt whenever keys are (re)derived so the countdown
+  // shown on the overlay stays accurate on BOTH sides — in particular,
+  // the callee never runs rotateEpoch (only OUTGOING does) and would
+  // otherwise keep the initial nextRotateAt, making the countdown
+  // disappear after the first rotation.
+  const now = Date.now();
+  const interval = Number(state.rotateIntervalMs) > 0 ? Number(state.rotateIntervalMs) : 60_000;
+  log({ callFinalizeContext: true, epoch: context?.epoch ?? null, interval, nextRotateAt: now + interval });
   updateCallMedia({
     pendingEnvelope: null,
     derivedKeys: {
@@ -386,6 +412,8 @@ async function finalizeContext(context) {
       videoRx: context.keys.videoRx
     },
     frameCounters: { ...context.frameCounters },
+    lastRotateAt: now,
+    nextRotateAt: now + interval,
     cmkMaterial: {
       masterKey: context.masterKey,
       proof: context.proofB64,
@@ -402,7 +430,7 @@ async function finalizeContext(context) {
 
 // ── Epoch rotation (M-8 fix) ──────────────────────────────────────
 // The caller (initiator) drives rotation. Every rotateIntervalMs
-// (default 10 min), it increments epoch, derives fresh keys, and
+// (default 1 min), it increments epoch, derives fresh keys, and
 // emits a CALL_EVENT.REKEY with the new envelope so the signaling
 // layer can send it to the peer.
 
@@ -446,7 +474,7 @@ async function rotateEpoch() {
   const now = Date.now();
   updateCallMedia({
     lastRotateAt: now,
-    nextRotateAt: now + (mediaState.rotateIntervalMs || 600000)
+    nextRotateAt: now + (mediaState.rotateIntervalMs || 60000)
   });
   // Emit rekey event so signaling layer can send envelope to peer
   emitCallEvent(CALL_EVENT.REKEY, {

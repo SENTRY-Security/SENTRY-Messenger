@@ -320,6 +320,15 @@
     "callLog": "通话记录",
     "voiceCall": "语音通话",
     "videoCall": "视频通话",
+    "info": "通话信息",
+    "infoTitle": "通话密钥信息",
+    "infoRotationStatus": "密钥轮替状态",
+    "infoRotationActive": "启用中",
+    "infoRotationIdle": "闲置",
+    "infoRotationCount": "已轮替次数",
+    "infoNextRotation": "下次轮替",
+    "infoKeyAlgorithm": "密钥算法",
+    "infoNoActiveCall": "当前没有进行中的通话",
     "answer": "接听",
     "answerVideo": "接听视频",
     "dialing": "拨号中…",
@@ -1129,7 +1138,7 @@
     "createLinkFailed": "创建链接失败",
     "copyBtn": "复制",
     "shareBtn": "分享",
-    "shareText": "我使用 SENTRY Messenger 创建了一个临时机密对话，请点击链接进入对话\n{url}",
+    "shareText": "SENTRY Messenger: {url}",
     "copiedToast": "✓ 已复制到剪贴板",
     "headerBadge": "单次机密",
     "autoLogoutWarnTitle": "自动退出提醒",
@@ -1164,7 +1173,24 @@
     "webrtcUnsupported": "您的浏览器不支持语音/视频通话。您仍可加入进行文字通讯。",
     "webrtcCallsDisabled": "⚠️ 语音与视频通话不可用 — 您的浏览器不支持 WebRTC",
     "peerNoWebrtc": "⚠️ 对方的浏览器不支持语音/视频通话，仅可使用文字通讯。",
-    "randomNicknames": ["🍊 橘子", "🍎 苹果", "🍌 香蕉", "🍇 葡萄", "🍓 草莓", "🍑 水蜜桃", "🍒 樱桃", "🥝 猕猴桃", "🍍 菠萝", "🫐 蓝莓", "🍋 柠檬", "🥭 芒果", "🍉 西瓜", "🌽 玉米", "🥕 胡萝卜", "🌻 向日葵"]
+    "randomNicknames": [
+      "🍊 橘子",
+      "🍎 苹果",
+      "🍌 香蕉",
+      "🍇 葡萄",
+      "🍓 草莓",
+      "🍑 水蜜桃",
+      "🍒 樱桃",
+      "🥝 猕猴桃",
+      "🍍 菠萝",
+      "🫐 蓝莓",
+      "🍋 柠檬",
+      "🥭 芒果",
+      "🍉 西瓜",
+      "🌽 玉米",
+      "🥕 胡萝卜",
+      "🌻 向日葵"
+    ]
   },
   "push": {
     "settingsTitle": "推送通知",
@@ -1293,5 +1319,26 @@
     "suggestUpdateBrowser": "请将浏览器更新至最新版本，以修复已知漏洞。",
     "suggestHttps": "请使用 HTTPS 连接以保护传输中的数据。",
     "suggestVpn": "建议使用 VPN 加密网络流量，保护你的 IP 地址。"
+  },
+  "emoji": {
+    "modalTitle": "设置标识符",
+    "setIdentifier": "设置标识符",
+    "gearLabel": "会话菜单",
+    "gridLabel": "选择 Emoji",
+    "clear": "清除标识符",
+    "save": "保存",
+    "securityNote": "标识符存储在您的加密备份中，仅您的设备可见。服务器和其他用户均无法知道您为联系人指定的标识符。",
+    "cat": {
+      "animals": "动物",
+      "plants": "植物",
+      "food": "食物",
+      "drinks": "饮品",
+      "nature": "自然",
+      "transport": "交通",
+      "objects": "物品",
+      "symbols": "符号",
+      "activities": "活动",
+      "misc": "其他"
+    }
   }
 }

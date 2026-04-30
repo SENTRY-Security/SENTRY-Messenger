@@ -252,7 +252,7 @@ Caller                     Signaling (WebSocket)              Callee
   │    frame → AES-GCM(call_key, counter_nonce, frame) →    │
   │    encrypted frame via SRTP                              │
   │                                                          │
-  │    Key rotation: every 10 minutes                        │
+  │    Key rotation: every 1 minute                          │
   │    Nonce: counter-based (防重放)                          │
 ```
 

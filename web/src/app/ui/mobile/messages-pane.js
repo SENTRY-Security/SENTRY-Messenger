@@ -1232,7 +1232,8 @@ export function initMessagesPane({
           if (thread) {
             thread.lastMsgType = 'conversation-deleted';
             thread.lastMessageText = '';
-            thread.lastMessageTs = Math.floor(nowMs / 1000);
+            // Store in ms (thread.lastMessageTs is consumed by new Date(ts))
+            thread.lastMessageTs = nowMs;
             thread.previewLoaded = true;
             thread.needsRefresh = false;
           }

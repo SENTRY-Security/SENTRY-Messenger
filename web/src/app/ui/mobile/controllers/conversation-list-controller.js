@@ -8,6 +8,7 @@ import { normalizePeerKey, splitPeerKey, resolveReadyContactCoreEntry, isCoreVau
 import { normalizeAccountDigest, normalizePeerDeviceId } from '../../../core/store.js';
 import { restorePendingInvites } from '../session-store.js';
 import { escapeHtml, resolveMessagePreview, updateThreadPreview, formatThreadPreview } from '../ui-utils.js';
+import { applyAvatarBadge } from '../components/avatar-badge.js';
 import { normalizeTimelineMessageId, extractMessageTimestampMs, normalizeMsgTypeValue, deriveMessageDirectionFromEnvelopeMeta } from '../../../features/messages/parser.js';
 import { getLocalProcessedCounter } from '../../../features/messages-flow/local-counter.js'; // [FIX] Import unread counter logic
 import { listSecureMessages as apiListSecureMessages, batchLatestMessages } from '../../../api/messages.js';
@@ -618,7 +619,11 @@ export class ConversationListController extends BaseController {
      */
     _formatConversationPreviewTime(ts) {
         if (!Number.isFinite(ts)) return '';
-        const date = new Date(ts);
+        // Defensive auto-conversion: if ts looks like seconds (< 10^10),
+        // upscale to ms so we don't fall back to rendering 1970 dates when
+        // a caller accidentally stores a seconds-based timestamp.
+        const tsMs = ts > 10_000_000_000 ? ts : ts * 1000;
+        const date = new Date(tsMs);
         const now = new Date();
         const isToday = date.toDateString() === now.toDateString();
         if (isToday) {
@@ -962,6 +967,10 @@ export class ConversationListController extends BaseController {
         </div>
         <button type="button" class="item-delete" aria-label="${t('messages.deleteConversationAriaLabel')}"><svg class="icon"><use href="#i-trash-2"/></svg></button>
       `;
+
+            // Emoji identifier badge
+            const convAvatarEl = li.querySelector('.conversation-avatar');
+            if (convAvatarEl) applyAvatarBadge(convAvatarEl, splitPeerKey(peerDigest).digest || peerDigest);
 
             const deleteBtn = li.querySelector('.item-delete');
             deleteBtn?.addEventListener('click', (e) => {
