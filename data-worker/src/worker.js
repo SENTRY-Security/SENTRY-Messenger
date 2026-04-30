@@ -6497,6 +6497,59 @@ async function handleAccountsRoutes(req, env) {
     });
   }
 
+  // POST /d1/accounts/created-batch — bulk lookup account creation times
+  if (req.method === 'POST' && url.pathname === '/d1/accounts/created-batch') {
+    await ensureDataTables(env);
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const digests = Array.isArray(body?.digests) ? body.digests : [];
+    if (!digests.length) {
+      return json({ error: 'BadRequest', message: 'digests array required' }, { status: 400 });
+    }
+    if (digests.length > 50) {
+      return json({ error: 'BadRequest', message: 'max 50 digests per batch' }, { status: 400 });
+    }
+
+    const results = [];
+    for (const raw of digests) {
+      const uidDigest = normalizeAccountDigest(raw);
+      if (!uidDigest) {
+        results.push({ digest: String(raw || ''), error: 'invalid_digest' });
+        continue;
+      }
+      try {
+        // Resolve uidDigest → accountDigest
+        const uidRow = await env.DB.prepare(
+          `SELECT account_digest FROM accounts WHERE uid_digest=?1`
+        ).bind(uidDigest).first();
+        const accountDigest = uidRow?.account_digest ? normalizeAccountDigest(uidRow.account_digest) : null;
+        if (!accountDigest) {
+          results.push({ digest: uidDigest, error: 'not_found' });
+          continue;
+        }
+        const acctRow = await env.DB.prepare(
+          `SELECT account_digest, created_at FROM accounts WHERE account_digest=?1`
+        ).bind(accountDigest).first();
+        if (!acctRow) {
+          results.push({ digest: uidDigest, error: 'not_found' });
+          continue;
+        }
+        results.push({
+          digest: uidDigest,
+          account_digest: acctRow.account_digest,
+          created_at: Number(acctRow.created_at) || null
+        });
+      } catch (err) {
+        results.push({ digest: uidDigest, error: 'lookup_failed' });
+      }
+    }
+    return json({ results });
+  }
+
   if (req.method === 'POST' && url.pathname === '/d1/accounts/purge') {
     await ensureDataTables(env);
     let body;
