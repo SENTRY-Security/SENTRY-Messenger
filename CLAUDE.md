@@ -14,6 +14,10 @@
 
 - **資料表異動一律使用 migration**：所有新增 / 修改 / 刪除 D1 資料表的操作，必須透過 `data-worker/migrations/` 下的 SQL migration 檔處理，不得在程式碼中使用 `CREATE TABLE IF NOT EXISTS` 進行隱式建表（`ensureDataTables` 的 auto-create 僅作為舊環境相容 fallback，不得用於新功能）。
 
+## 文件同步
+
+- **README.md 必須與 repo 現狀對齊**：每次對 repo 進行功能性改動（新增功能、修改 API、變更架構、調整安全機制、新增/移除模組等），必須檢查 `README.md` 是否需要同步更新。若相關段落（功能列表、架構圖、安全特性表、端點文件、技術棧、目錄結構等）與改動不一致，須在同一次 commit 或同一個 PR 內一併更新。
+
 ## 架構原則
 
 - **本地零持久化**：不在本地儲存任何持久性資料。
