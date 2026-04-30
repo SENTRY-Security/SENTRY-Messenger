@@ -147,11 +147,11 @@ jobs:
           cache: 'npm'
 
       - name: Install Root Dependencies
-        run: npm install
+        run: npm ci
 
       - name: Install Web Dependencies
         working-directory: web
-        run: npm install
+        run: npm ci
 
       - name: Build Web
         working-directory: web
@@ -161,6 +161,13 @@ jobs:
         env:
           CI: true
           SENTRY_ENV: production
+
+      - name: Verify Build Integrity
+        working-directory: web
+        run: |
+          echo "Verifying build manifest..."
+          npm run verify
+          echo "Build hash: $(cat dist/.well-known/sentry-build.json | node -e "process.stdin.resume(); let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>console.log(JSON.parse(d).hashes.aggregate.slice(0,16)+'...'))")"
 
       - name: Copy Functions to Dist
         working-directory: web
