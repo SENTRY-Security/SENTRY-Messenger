@@ -630,6 +630,10 @@
               <ul id="messagePlaceholders" class="messages-list messages-placeholders"></ul>
               <ul id="messagesList" class="messages-list"></ul>
             </div>
+            <div id="subscriptionExpiredBanner" class="subscription-expired-banner" style="display:none">
+              <span data-i18n="subscription.expiredBanner">Your subscription has expired. Renew to continue messaging.</span>
+              <button type="button" id="subscriptionExpiredBannerBtn" class="subscription-expired-banner-btn" data-i18n="subscription.clickToTopUp">Top Up</button>
+            </div>
             <form id="messageComposer" class="messages-composer">
               <button id="composerAttach" type="button" class="composer-attach" data-i18n-aria-label="messages.attachFile"><svg class="icon"><use href="#i-paperclip"/></svg></button>
               <input id="messageFileInput" type="file" class="sr-only" style="display:none" />

@@ -601,6 +601,7 @@
     "querySubscriptionFailed": "Subscription query failed: {error}",
     "fileParseError": "File parse failed: {error}",
     "accountExpiredMessage": "Account expired, please top up.",
+    "expiredBanner": "Your subscription has expired. Renew to continue messaging.",
     "clickToTopUp": "Top up now",
     "subscriptionStatusTab": "Subscription Status",
     "topUpTab": "Top-up / Extend",

@@ -549,3 +549,33 @@
     opacity: 0.65;
   }
 }
+
+/* ── Subscription expired banner (above composer) ─────────── */
+.subscription-expired-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 14px;
+  background: rgba(239, 68, 68, 0.12);
+  border-top: 1px solid rgba(239, 68, 68, 0.25);
+  color: #fca5a5;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.subscription-expired-banner-btn {
+  flex-shrink: 0;
+  padding: 4px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms;
+}
+.subscription-expired-banner-btn:hover {
+  background: rgba(239, 68, 68, 0.25);
+}

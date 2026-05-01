@@ -1,6 +1,7 @@
 // UI only. Do not add message pipeline logic; call messages-flow-legacy facade.
 
 import { log, logCapped } from '../../core/log.js';
+import { isSubscriptionActive, requireSubscriptionActive } from '../../core/subscription-gate.js';
 import { getAccountToken, getAccountDigest, getMkRaw, normalizePeerIdentity, normalizeAccountDigest, ensureDeviceId, normalizePeerDeviceId } from '../../core/store.js';
 import { resetProcessedMessages } from '../../features/messages-support/processed-messages-store.js';
 import { clearConversationTombstone } from '../../features/messages-support/conversation-tombstone-store.js';
@@ -684,15 +685,7 @@ export function initMessagesPane({
     return String(text || '').replace(/\s+/g, ' ').trim();
   }
 
-  function isSubscriptionActive() {
-    return true; // DEV: 硬解鎖訂閱
-  }
-
-  function requireSubscriptionActive() {
-    if (isSubscriptionActive()) return true;
-    document.dispatchEvent(new CustomEvent('subscription:gate'));
-    return false;
-  }
+  // Subscription gate functions imported at module top level from core/subscription-gate.js
 
   function hasCallLog(callId) {
     if (!callId) return false;

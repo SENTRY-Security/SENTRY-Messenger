@@ -4,6 +4,7 @@
  */
 
 import { BaseController } from './base-controller.js';
+import { isSubscriptionActive } from '../../../core/subscription-gate.js';
 import { normalizePeerKey, resolveContactAvatarUrl } from '../contact-core-store.js';
 import { SECURE_CONVERSATION_STATUS } from '../../../features/secure-conversation-manager.js';
 import {
@@ -235,7 +236,23 @@ export class ComposerController extends BaseController {
         // We no longer show "(同步中)" to keep the interface clean.
         this.elements.input.placeholder = placeholder;
 
+        // Show/hide subscription expired banner
+        this._updateExpiredBanner(!subscriptionOk && conversationReady);
+
         this.updateConversationActionsAvailability();
+    }
+
+    _updateExpiredBanner(show) {
+        const banner = document.getElementById('subscriptionExpiredBanner');
+        if (!banner) return;
+        banner.style.display = show ? 'flex' : 'none';
+        if (show && !banner.__wired) {
+            banner.__wired = true;
+            const btn = document.getElementById('subscriptionExpiredBannerBtn');
+            btn?.addEventListener('click', () => {
+                document.dispatchEvent(new CustomEvent('subscription:gate'));
+            });
+        }
     }
 
     /**

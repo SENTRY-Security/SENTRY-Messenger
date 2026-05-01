@@ -586,6 +586,7 @@
     "querySubscriptionFailed": "Truy vấn đăng ký thất bại: {error}",
     "fileParseError": "Phân tích tệp thất bại: {error}",
     "accountExpiredMessage": "Tài khoản đã hết hạn, vui lòng nạp tiền.",
+    "expiredBanner": "Đăng ký của bạn đã hết hạn. Gia hạn để tiếp tục nhắn tin.",
     "clickToTopUp": "Nạp tiền ngay",
     "subscriptionStatusTab": "Trạng thái đăng ký",
     "topUpTab": "Nạp tiền / Gia hạn",

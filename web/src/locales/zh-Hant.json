@@ -601,6 +601,7 @@
     "querySubscriptionFailed": "訂閱查詢失敗：{error}",
     "fileParseError": "檔案解析失敗：{error}",
     "accountExpiredMessage": "帳號已到期，請儲值。",
+    "expiredBanner": "您的訂閱已到期，請續訂以繼續使用。",
     "clickToTopUp": "立即儲值",
     "subscriptionStatusTab": "訂閱狀態",
     "topUpTab": "儲值 / 展期",
