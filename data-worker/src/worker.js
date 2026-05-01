@@ -5981,6 +5981,60 @@ async function handleSubscriptionRoutes(req, env) {
     });
   }
 
+  // POST /d1/subscription/status-batch — bulk subscription status lookup
+  if (req.method === 'POST' && url.pathname === '/d1/subscription/status-batch') {
+    await ensureDataTables(env);
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'BadRequest', message: 'invalid json' }, { status: 400 });
+    }
+    const digests = Array.isArray(body?.digests) ? body.digests : [];
+    if (!digests.length) {
+      return json({ error: 'BadRequest', message: 'digests array required' }, { status: 400 });
+    }
+    if (digests.length > 50) {
+      return json({ error: 'BadRequest', message: 'max 50 digests per batch' }, { status: 400 });
+    }
+    const now = Math.floor(Date.now() / 1000);
+    const results = [];
+    for (const raw of digests) {
+      const inputDigest = normalizeAccountDigest(raw);
+      if (!inputDigest) {
+        results.push({ digest: String(raw || ''), error: 'invalid_digest' });
+        continue;
+      }
+      try {
+        // Resolve uidDigest → accountDigest
+        const acctRow = await env.DB.prepare(
+          `SELECT account_digest, created_at FROM accounts WHERE uid_digest=?1`
+        ).bind(inputDigest).first();
+        const accountDigest = acctRow?.account_digest ? normalizeAccountDigest(acctRow.account_digest) : null;
+        if (!accountDigest) {
+          results.push({ digest: inputDigest, error: 'not_found' });
+          continue;
+        }
+        const subRow = await env.DB.prepare(
+          `SELECT expires_at, updated_at FROM subscriptions WHERE digest=?1`
+        ).bind(accountDigest).first();
+        const expiresAt = Number(subRow?.expires_at || 0);
+        results.push({
+          digest: inputDigest,
+          account_digest: accountDigest,
+          account_created_at: Number(acctRow.created_at) || null,
+          found: !!subRow,
+          expires_at: subRow ? expiresAt : null,
+          expired: !subRow || expiresAt <= now,
+          now
+        });
+      } catch (err) {
+        results.push({ digest: inputDigest, error: 'lookup_failed' });
+      }
+    }
+    return json({ results });
+  }
+
   if (req.method === 'GET' && url.pathname === '/d1/subscription/token-status') {
     await ensureDataTables(env);
     const tokenId = url.searchParams.get('tokenId') || url.searchParams.get('voucherId') || url.searchParams.get('jti');
