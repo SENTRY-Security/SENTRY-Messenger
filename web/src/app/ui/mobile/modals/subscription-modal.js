@@ -41,9 +41,10 @@ export function createSubscriptionModule({ deps }) {
   }
 
   function computeCountdown(expiresAt) {
-    const now = Date.now();
+    const now = Math.floor(Date.now() / 1000);
     if (!Number.isFinite(expiresAt) || expiresAt <= 0) return { expired: true, text: t('subscription.expired'), seconds: 0 };
-    const diff = expiresAt - now;
+    const expSec = expiresAt > 1e11 ? Math.floor(expiresAt / 1000) : expiresAt;
+    const diff = expSec - now;
     if (diff <= 0) return { expired: true, text: t('subscription.expired'), seconds: 0 };
     const days = Math.floor(diff / 86400);
     const hours = Math.floor((diff % 86400) / 3600);
@@ -66,7 +67,8 @@ export function createSubscriptionModule({ deps }) {
       if (data.found && Number.isFinite(Number(data.expires_at))) {
         state.found = true;
         state.expiresAt = Number(data.expires_at);
-        state.expired = !(state.expiresAt && state.expiresAt > Date.now());
+        const expiresAtMs = state.expiresAt > 1e11 ? state.expiresAt : state.expiresAt * 1000;
+        state.expired = !(expiresAtMs > Date.now());
         state.tier = state.expired ? null : (data.tier || data.plan || 'basic');
       } else {
         state.found = false;
