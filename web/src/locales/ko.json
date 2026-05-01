@@ -586,6 +586,7 @@
     "querySubscriptionFailed": "구독 조회 실패: {error}",
     "fileParseError": "파일 분석 실패: {error}",
     "accountExpiredMessage": "계정이 만료되었습니다. 충전해 주세요.",
+    "expiredBanner": "구독이 만료되었습니다. 메시지를 계속하려면 갱신하세요.",
     "clickToTopUp": "지금 충전",
     "subscriptionStatusTab": "구독 상태",
     "topUpTab": "충전 / 연장",

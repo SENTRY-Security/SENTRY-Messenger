@@ -586,6 +586,7 @@
     "querySubscriptionFailed": "ค้นหาการสมัครสมาชิกไม่สำเร็จ: {error}",
     "fileParseError": "แยกวิเคราะห์ไฟล์ไม่สำเร็จ: {error}",
     "accountExpiredMessage": "บัญชีหมดอายุ กรุณาเติมเงิน",
+    "expiredBanner": "การสมัครสมาชิกของคุณหมดอายุแล้ว ต่ออายุเพื่อส่งข้อความต่อ",
     "clickToTopUp": "เติมเงินเลย",
     "subscriptionStatusTab": "สถานะการสมัครสมาชิก",
     "topUpTab": "เติมเงิน / ขยายเวลา",

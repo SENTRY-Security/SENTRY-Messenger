@@ -9,6 +9,7 @@
  */
 
 import { BaseController } from './base-controller.js';
+import { requireSubscriptionActive } from '../../../core/subscription-gate.js';
 import { ephemeralCreateLink, ephemeralDelete, ephemeralList, ephemeralExtend, ephemeralRevokeInvite, ephemeralClearPendingKeyExchange } from '../../../api/ephemeral.js';
 import { escapeHtml } from '../ui-utils.js';
 import { t } from '/locales/index.js';
@@ -313,6 +314,7 @@ export class EphemeralController extends BaseController {
    * and keep the session list visible so the user can free a slot.
    */
   async _generateLink(loading, result, error, urlInput, sessionList) {
+    if (!requireSubscriptionActive('ephemeral-link')) return;
     // Prevent concurrent generation (e.g. rapid revoke clicks)
     if (this._generating) return;
     this._generating = true;

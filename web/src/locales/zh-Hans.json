@@ -588,6 +588,7 @@
     "querySubscriptionFailed": "订阅查询失败：{error}",
     "fileParseError": "文件解析失败：{error}",
     "accountExpiredMessage": "账号已到期，请充值。",
+    "expiredBanner": "您的订阅已到期，请续订以继续使用。",
     "clickToTopUp": "立即充值",
     "subscriptionStatusTab": "订阅状态",
     "topUpTab": "充值 / 展期",

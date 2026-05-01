@@ -1,4 +1,5 @@
 import { log } from '../../core/log.js';
+import { isSubscriptionActive, requireSubscriptionActive } from '../../core/subscription-gate.js';
 import { getAccountDigest, buildAccountPayload } from '../../core/store.js';
 import { listMessages, createMessage } from '../../api/messages.js';
 import { encryptAndPutWithProgress, deleteEncryptedObjects, downloadAndDecrypt, loadEnvelopeMeta } from '../../features/media.js';
@@ -39,12 +40,7 @@ export function initDrivePane({
   const driveRefreshEl = dom.driveRefresh ?? document.getElementById('driveRefreshHint');
   const driveRefreshLabelEl = dom.driveRefreshLabel ?? document.querySelector('#driveRefreshHint .label');
   const driveScrollEl = dom.driveScroll ?? document.getElementById('tab-drive');
-  const isSubscriptionActive = () => true; // DEV: 硬解鎖訂閱
-  const requireSubscriptionActive = () => {
-    if (isSubscriptionActive()) return true;
-    document.dispatchEvent(new CustomEvent('subscription:gate'));
-    return false;
-  };
+  // Subscription gate imported at module top level from core/subscription-gate.js
 
   function showSubscriptionGateIfExpired() {
     if (!isSubscriptionActive()) {

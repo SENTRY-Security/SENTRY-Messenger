@@ -586,6 +586,7 @@
     "querySubscriptionFailed": "サブスクリプション照会に失敗しました: {error}",
     "fileParseError": "ファイルの解析に失敗しました: {error}",
     "accountExpiredMessage": "アカウントの有効期限が切れています。チャージしてください。",
+    "expiredBanner": "サブスクリプションの有効期限が切れました。メッセージを続けるには更新してください。",
     "clickToTopUp": "チャージする",
     "subscriptionStatusTab": "サブスクリプション状況",
     "topUpTab": "チャージ / 延長",
