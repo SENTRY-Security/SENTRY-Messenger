@@ -2029,8 +2029,8 @@ if (userMenuVersionBtn) {
 
 updateSubscriptionBadge();
 document.getElementById('subscriptionBadge')?.addEventListener('click', () => openSubscriptionModal());
-setTimeout(() => {
-  refreshSubscriptionStatus({ silent: true });
+setTimeout(async () => {
+  await refreshSubscriptionStatus({ silent: true });
   if (drivePane?.showSubscriptionGateIfExpired) drivePane.showSubscriptionGateIfExpired();
 }, 1200);
 
