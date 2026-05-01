@@ -1326,6 +1326,32 @@ async function resolveAccount(env, { uidHex, accountToken, accountDigest } = {},
       `INSERT INTO accounts (account_digest, account_token, account_token_hash, uid_digest, last_ctr, created_at, updated_at)
        VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5)`
     ).bind(acctDigest, acctToken, acctTokenHash, acctUidDigest, now).run();
+
+    // Auto-grant 30-day trial subscription for newly created accounts
+    const TRIAL_DAYS = 30;
+    const trialExpires = now + TRIAL_DAYS * 86400;
+    const trialTokenId = `TRIAL-${acctDigest}`;
+    try {
+      await db.batch([
+        db.prepare(
+          `INSERT INTO subscriptions (digest, expires_at, updated_at, created_at)
+           VALUES (?1, ?2, ?3, ?3)
+           ON CONFLICT(digest) DO NOTHING`
+        ).bind(acctDigest, trialExpires, now),
+        db.prepare(
+          `INSERT INTO tokens (token_id, digest, issued_at, extend_days, nonce, key_id, signature_b64, status, used_at, used_by_digest, created_at)
+           VALUES (?1, ?2, ?3, ?4, NULL, 'system', '', 'used', ?3, ?2, ?3)
+           ON CONFLICT(token_id) DO NOTHING`
+        ).bind(trialTokenId, acctDigest, now, TRIAL_DAYS),
+        db.prepare(
+          `INSERT INTO extend_logs (token_id, digest, extend_days, expires_at_after, used_at, created_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?5)`
+        ).bind(trialTokenId, acctDigest, TRIAL_DAYS, trialExpires, now)
+      ]);
+    } catch (err) {
+      console.warn('trial_subscription_grant_failed', err?.message || err);
+    }
+
     return {
       account_digest: acctDigest,
       account_token: acctToken,
