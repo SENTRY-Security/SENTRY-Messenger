@@ -1,0 +1,83 @@
+name: Independent Build Verification
+
+on:
+  # Run after every production deploy (triggered by deploy workflow)
+  workflow_run:
+    workflows: ["Deploy to Cloudflare"]
+    types: [completed]
+    branches: [main]
+
+  # Daily verification at 06:00 UTC
+  schedule:
+    - cron: '0 6 * * *'
+
+  # Manual trigger
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    name: Rebuild & Verify
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - name: Fetch Production Build Metadata
+        id: prod
+        run: |
+          BUILD_JSON=$(curl -sf https://message.sentry.red/.well-known/sentry-build.json || echo '{}')
+          COMMIT=$(echo "$BUILD_JSON" | jq -r '.build.commit // empty')
+          AGGREGATE=$(echo "$BUILD_JSON" | jq -r '.hashes.aggregate // empty')
+          ENV=$(echo "$BUILD_JSON" | jq -r '.environment // empty')
+          if [ -z "$COMMIT" ] || [ -z "$AGGREGATE" ]; then
+            echo "::error::Failed to fetch production build metadata"
+            exit 1
+          fi
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          echo "aggregate=$AGGREGATE" >> "$GITHUB_OUTPUT"
+          echo "environment=$ENV" >> "$GITHUB_OUTPUT"
+          echo "Production commit: $COMMIT"
+          echo "Production aggregate: ${AGGREGATE:0:16}..."
+
+      - name: Checkout Source at Production Commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.prod.outputs.commit }}
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Dependencies (lockfile-only)
+        working-directory: web
+        run: npm ci
+
+      - name: Rebuild
+        working-directory: web
+        run: npm run build
+        env:
+          CI: true
+          SENTRY_ENV: ${{ steps.prod.outputs.environment }}
+
+      - name: Compare Hashes
+        id: compare
+        working-directory: web
+        run: |
+          LOCAL_AGGREGATE=$(cat dist/.well-known/sentry-build.json | jq -r '.hashes.aggregate')
+          PROD_AGGREGATE="${{ steps.prod.outputs.aggregate }}"
+          echo "Local:      $LOCAL_AGGREGATE"
+          echo "Production: $PROD_AGGREGATE"
+          if [ "$LOCAL_AGGREGATE" = "$PROD_AGGREGATE" ]; then
+            echo "result=MATCH" >> "$GITHUB_OUTPUT"
+            echo "✅ BUILD VERIFIED — hashes match"
+          else
+            echo "result=MISMATCH" >> "$GITHUB_OUTPUT"
+            echo "::error::❌ BUILD MISMATCH — local $LOCAL_AGGREGATE != production $PROD_AGGREGATE"
+
+            # Show per-file diff for debugging
+            echo "--- Per-file comparison ---"
+            LOCAL_FILES=$(cat dist/.well-known/sentry-build.json | jq -r '.hashes.files | to_entries[] | "\(.key) \(.value)"' | sort)
+            PROD_FILES=$(curl -sf https://message.sentry.red/.well-known/sentry-build.json | jq -r '.hashes.files | to_entries[] | "\(.key) \(.value)"' | sort)
+            diff <(echo "$LOCAL_FILES") <(echo "$PROD_FILES") || true
+            exit 1
+          fi

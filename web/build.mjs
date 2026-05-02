@@ -402,7 +402,13 @@ const sentryBuild = {
     build_script: 'web/build.mjs',
     verify_script: 'web/scripts/verify-build.mjs',
     lockfile: 'web/package-lock.json',
-    instructions: 'Clone repo at the listed commit, run `cd web && npm ci && npm run build`, then compare hashes.'
+    instructions: 'Clone repo at the listed commit, run `cd web && npm ci && npm run build`, then compare hashes.',
+    slsa_provenance: process.env.GITHUB_ACTIONS
+      ? `https://github.com/${process.env.GITHUB_REPOSITORY || 'SENTRY-Security/SENTRY-Messenger'}/attestations`
+      : null,
+    github_attestation: process.env.GITHUB_ACTIONS
+      ? `https://github.com/${process.env.GITHUB_REPOSITORY || 'SENTRY-Security/SENTRY-Messenger'}/actions/runs/${process.env.GITHUB_RUN_ID || ''}`
+      : null
   },
   policies: {
     canary_deployment: 'prohibited — all users receive identical bundles via Cloudflare Pages atomic deployment',
