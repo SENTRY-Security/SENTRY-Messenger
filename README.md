@@ -2163,7 +2163,7 @@ npm run verify   # 自動比對所有 hash
 | SLSA provenance (Level 2) | ✅ 已實施 |
 | cosign / Sigstore 簽章 | ✅ 已實施 |
 | 公開建構 hash log（Rekor） | ✅ 已實施 |
-| 獨立建構監視器 | 🔲 規劃中 |
+| 獨立建構監視器 | ✅ 已實施 |
 
 ---
 
