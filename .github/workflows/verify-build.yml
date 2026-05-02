@@ -25,7 +25,7 @@ jobs:
         run: |
           # Retry up to 5 times with 30s intervals (CDN propagation delay)
           for i in 1 2 3 4 5; do
-            BUILD_JSON=$(curl -sf https://message.sentry.red/.well-known/sentry-build.json || echo '{}')
+            BUILD_JSON=$(curl -sf https://message.sentry.red/sentry-build.json || echo '{}')
             COMMIT=$(echo "$BUILD_JSON" | jq -r '.build.commit // empty')
             AGGREGATE=$(echo "$BUILD_JSON" | jq -r '.hashes.aggregate // empty')
             if [ -n "$COMMIT" ] && [ -n "$AGGREGATE" ]; then
@@ -85,7 +85,7 @@ jobs:
             # Show per-file diff for debugging
             echo "--- Per-file comparison ---"
             LOCAL_FILES=$(cat dist/.well-known/sentry-build.json | jq -r '.hashes.files | to_entries[] | "\(.key) \(.value)"' | sort)
-            PROD_FILES=$(curl -sf https://message.sentry.red/.well-known/sentry-build.json | jq -r '.hashes.files | to_entries[] | "\(.key) \(.value)"' | sort)
+            PROD_FILES=$(curl -sf https://message.sentry.red/sentry-build.json | jq -r '.hashes.files | to_entries[] | "\(.key) \(.value)"' | sort)
             diff <(echo "$LOCAL_FILES") <(echo "$PROD_FILES") || true
             exit 1
           fi

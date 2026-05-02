@@ -361,6 +361,7 @@ console.log(`\nBuild manifest written (${manifestFiles.length} files, commit ${g
 // Public endpoint for auditors and independent verifiers to check
 // the current deploy's provenance and file hashes.
 
+// Also write to root /sentry-build.json (some CDN setups block .well-known)
 const wellKnownDir = resolve(dist, '.well-known');
 mkdirSync(wellKnownDir, { recursive: true });
 
@@ -417,7 +418,9 @@ const sentryBuild = {
   }
 };
 
-writeFileSync(resolve(wellKnownDir, 'sentry-build.json'), JSON.stringify(sentryBuild, null, 2));
-console.log('.well-known/sentry-build.json written (aggregate: ' + aggregateHash.slice(0, 16) + '...)');
+const sentryBuildJson = JSON.stringify(sentryBuild, null, 2);
+writeFileSync(resolve(wellKnownDir, 'sentry-build.json'), sentryBuildJson);
+writeFileSync(resolve(dist, 'sentry-build.json'), sentryBuildJson);
+console.log('sentry-build.json written (aggregate: ' + aggregateHash.slice(0, 16) + '...)');
 
 console.log('Build complete → dist/');
