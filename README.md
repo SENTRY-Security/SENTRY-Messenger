@@ -2162,7 +2162,7 @@ npm run verify   # 自動比對所有 hash
 | `sentry-build.json` 自動產出 | ✅ 已實施 |
 | SLSA provenance (Level 2) | ✅ 已實施 |
 | cosign / Sigstore 簽章 | ✅ 已實施 |
-| 公開建構 hash log | 🔲 規劃中 |
+| 公開建構 hash log（Rekor） | ✅ 已實施 |
 | 獨立建構監視器 | 🔲 規劃中 |
 
 ---
