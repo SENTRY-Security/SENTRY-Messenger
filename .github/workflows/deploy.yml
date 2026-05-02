@@ -219,7 +219,10 @@ jobs:
 
       - name: Compute Artifact Digest
         id: digest
-        run: echo "digest=$(sha256sum web-dist.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+        run: |
+          HASH=$(sha256sum web-dist.tar.gz | awk '{print $1}')
+          SUBJECT=$(echo -n "$HASH  web-dist.tar.gz" | base64 -w0)
+          echo "digest=$SUBJECT" >> "$GITHUB_OUTPUT"
 
       - name: Deploy to Cloudflare Pages
         working-directory: web
@@ -250,5 +253,5 @@ jobs:
       contents: write
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
-      base64-subjects: "${{ needs.deploy-pages.outputs.digest }} web-dist.tar.gz"
+      base64-subjects: "${{ needs.deploy-pages.outputs.digest }}"
       upload-assets: true
