@@ -193,6 +193,19 @@ jobs:
           subject-path: web-dist.tar.gz
           subject-name: sentry-messenger-web
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign Artifact (keyless)
+        run: cosign sign-blob --yes web-dist.tar.gz --bundle web-dist.cosign.bundle
+
+      - name: Upload Cosign Bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: cosign-bundle
+          path: web-dist.cosign.bundle
+          retention-days: 90
+
       - name: Copy Functions to Dist
         working-directory: web
         run: |
