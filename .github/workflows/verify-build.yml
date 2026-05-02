@@ -23,12 +23,20 @@ jobs:
       - name: Fetch Production Build Metadata
         id: prod
         run: |
-          BUILD_JSON=$(curl -sf https://message.sentry.red/.well-known/sentry-build.json || echo '{}')
-          COMMIT=$(echo "$BUILD_JSON" | jq -r '.build.commit // empty')
-          AGGREGATE=$(echo "$BUILD_JSON" | jq -r '.hashes.aggregate // empty')
+          # Retry up to 5 times with 30s intervals (CDN propagation delay)
+          for i in 1 2 3 4 5; do
+            BUILD_JSON=$(curl -sf https://message.sentry.red/.well-known/sentry-build.json || echo '{}')
+            COMMIT=$(echo "$BUILD_JSON" | jq -r '.build.commit // empty')
+            AGGREGATE=$(echo "$BUILD_JSON" | jq -r '.hashes.aggregate // empty')
+            if [ -n "$COMMIT" ] && [ -n "$AGGREGATE" ]; then
+              break
+            fi
+            echo "Attempt $i: sentry-build.json not available yet, retrying in 30s..."
+            sleep 30
+          done
           ENV=$(echo "$BUILD_JSON" | jq -r '.environment // empty')
           if [ -z "$COMMIT" ] || [ -z "$AGGREGATE" ]; then
-            echo "::error::Failed to fetch production build metadata"
+            echo "::error::Failed to fetch production build metadata after 5 attempts"
             exit 1
           fi
           echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
