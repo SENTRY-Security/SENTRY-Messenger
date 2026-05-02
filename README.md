@@ -2156,14 +2156,14 @@ npm run verify   # 自動比對所有 hash
 
 | 措施 | 狀態 |
 |------|------|
-| `npm ci`（鎖定依賴樹） | ✅ 已實施 |
-| 建構後 hash 驗證（`verify-build.mjs`） | ✅ 已實施 |
+| `npm ci`（鎖定依賴樹） | ✅ 已實施（web + worker） |
+| 建構後 hash 驗證（`verify-build.mjs`） | ✅ 已實施（aggregate hash；cosign/SLSA 驗證待整合） |
 | SRI 注入所有入口腳本 | ✅ 已實施 |
 | `sentry-build.json` 自動產出 | ✅ 已實施 |
 | SLSA provenance (Level 2) | ✅ 已實施 |
 | cosign / Sigstore 簽章 | ✅ 已實施 |
 | 公開建構 hash log（Rekor） | ✅ 已實施 |
-| 獨立建構監視器 | ✅ 已實施 |
+| 獨立建構監視器 | ✅ 已實施（aggregate hash 比對；簽章驗證待整合） |
 
 ---
 

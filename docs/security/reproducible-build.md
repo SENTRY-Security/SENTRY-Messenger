@@ -37,7 +37,7 @@ npm run verify
 |---|---|
 | Dependency versions | `package-lock.json` committed; `npm ci` installs exact tree |
 | esbuild version | Pinned in `package.json` (`^0.24.0` → lockfile resolves exact) |
-| Build script | `web/build.mjs` — deterministic, no random/timestamp in output |
+| Build script | `web/build.mjs` — deterministic source mapping; metadata files (`build-manifest.json`, `sentry-build.json`) contain build timestamps but are excluded from aggregate hash |
 | Source maps | Generated but excluded from hash comparison |
 | HTML injection | SRI hashes + commit SHA injected deterministically |
 | Environment | `SENTRY_ENV` derived from git branch (main=production) |
