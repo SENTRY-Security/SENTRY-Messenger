@@ -2160,7 +2160,7 @@ npm run verify   # 自動比對所有 hash
 | 建構後 hash 驗證（`verify-build.mjs`） | ✅ 已實施 |
 | SRI 注入所有入口腳本 | ✅ 已實施 |
 | `sentry-build.json` 自動產出 | ✅ 已實施 |
-| SLSA provenance | 🔲 規劃中 |
+| SLSA provenance (Level 2) | ✅ 已實施 |
 | cosign / Sigstore 簽章 | 🔲 規劃中 |
 | 公開建構 hash log | 🔲 規劃中 |
 | 獨立建構監視器 | 🔲 規劃中 |

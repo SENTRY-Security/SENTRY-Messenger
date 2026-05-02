@@ -5,6 +5,11 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+  id-token: write        # OIDC token for SLSA provenance + attestation
+  attestations: write     # GitHub artifact attestation
+
 jobs:
   # ── Detect which projects have changes ──────────────────────────────
   changes:
@@ -169,6 +174,25 @@ jobs:
           npm run verify
           echo "Build hash: $(cat dist/.well-known/sentry-build.json | node -e "process.stdin.resume(); let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>console.log(JSON.parse(d).hashes.aggregate.slice(0,16)+'...'))")"
 
+      - name: Generate Build Artifact
+        working-directory: web
+        run: |
+          tar -czf ../web-dist.tar.gz -C dist .
+          echo "web-dist.tar.gz created ($(du -h ../web-dist.tar.gz | cut -f1))"
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web-dist.tar.gz
+          retention-days: 90
+
+      - name: Attest Build Provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: web-dist.tar.gz
+          subject-name: sentry-messenger-web
+
       - name: Copy Functions to Dist
         working-directory: web
         run: |
@@ -179,6 +203,10 @@ jobs:
           else
             echo "Functions directory not found, skipping copy."
           fi
+
+      - name: Compute Artifact Digest
+        id: digest
+        run: echo "digest=$(sha256sum web-dist.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
       - name: Deploy to Cloudflare Pages
         working-directory: web
@@ -195,3 +223,19 @@ jobs:
           CLOUDFLARE_API_KEY: ${{ secrets.CLOUDFLARE_API_KEY }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CI: true
+
+    outputs:
+      digest: ${{ steps.digest.outputs.digest }}
+
+  # ── SLSA Provenance (Level 2) ───────────────────────────────────────
+  slsa-provenance:
+    needs: [changes, deploy-pages]
+    if: needs.changes.outputs.web == 'true'
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: "${{ needs.deploy-pages.outputs.digest }} web-dist.tar.gz"
+      upload-assets: true

@@ -58,6 +58,22 @@ This JSON contains:
 - SRI values for entry-point scripts and CSS
 - Service worker hash
 
+## SLSA Provenance (Level 2)
+
+Every production deploy automatically generates a [SLSA](https://slsa.dev/) provenance attestation via `slsa-github-generator`. This cryptographically binds the build artifact to:
+
+- The source repository and commit
+- The GitHub Actions workflow that built it
+- The build parameters and environment
+
+Provenance is stored as a GitHub attestation and can be verified with:
+
+```bash
+gh attestation verify web-dist.tar.gz --repo SENTRY-Security/SENTRY-Messenger
+```
+
+The CI also calls `actions/attest-build-provenance@v2` which creates a Sigstore-backed attestation viewable at the repository's Attestations tab.
+
 ## Independent Verification
 
 Any third party can:
@@ -65,4 +81,5 @@ Any third party can:
 2. Checkout that commit
 3. Run `npm ci && npm run build`
 4. Compare `dist/build-manifest.json` hashes against the live endpoint
-5. Report match/mismatch
+5. Verify SLSA provenance via `gh attestation verify`
+6. Report match/mismatch
